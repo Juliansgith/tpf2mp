@@ -192,6 +192,249 @@ def _upsert_service(economy: dict[str, Any], service: Mapping[str, Any]) -> None
     }
 
 
+_SHARE_SCALE = 1_000_000
+
+# Pinned integer exponential shared byte-for-byte with the Lua model:
+# _EXP_TABLE[k] = round(65536 * exp(-k / 10)) for k = 0..80. Both languages
+# interpolate this table so no platform libm can enter a digest.
+_EXP_TABLE = [
+    65536, 59299, 53656, 48550, 43930, 39750, 35967, 32544, 29447,
+    26645, 24109, 21815, 19739, 17861, 16161, 14623, 13231, 11972,
+    10833, 9802, 8869, 8025, 7262, 6571, 5945, 5380, 4868,
+    4404, 3985, 3606, 3263, 2952, 2671, 2417, 2187, 1979,
+    1791, 1620, 1466, 1327, 1200, 1086, 983, 889, 805,
+    728, 659, 596, 539, 488, 442, 400, 362, 327,
+    296, 268, 242, 219, 198, 180, 162, 147, 133,
+    120, 109, 99, 89, 81, 73, 66, 60, 54,
+    49, 44, 40, 36, 33, 30, 27, 24, 22,
+]
+
+
+def _economy_version(economy: Mapping[str, Any]) -> int:
+    return _integer(economy.get("version"), 1)
+
+
+def _economy_params(economy: Mapping[str, Any]) -> dict[str, int]:
+    params = economy.get("params") if isinstance(economy.get("params"), Mapping) else {}
+    return {
+        "alphaUpPm": _integer(params.get("alphaUpPm"), 80),
+        "alphaDownPm": _integer(params.get("alphaDownPm"), 250),
+        "maxWaitSeconds": _integer(params.get("maxWaitSeconds"), 1800),
+        "transferSeconds": _integer(params.get("transferSeconds"), 480),
+        "crowdThresholdPpm": _integer(params.get("crowdThresholdPpm"), 700_000),
+    }
+
+
+def _upsert_market_v2(economy: dict[str, Any], market: Mapping[str, Any]) -> None:
+    cid = str(market["cid"])
+    gc_outside = _integer(market.get("gcOutsideCents"), 2500, 1, 100_000_000)
+    economy.setdefault("markets", {})[cid] = {
+        "cid": cid,
+        "name": str(market.get("name", cid)),
+        "demand": _integer(market.get("demand"), 100, 0, 1_000_000_000),
+        "votCentsPerHour": _integer(market.get("votCentsPerHour"), 450, 30, 100_000),
+        "gcOutsideCents": gc_outside,
+        "thetaCents": _integer(market.get("thetaCents"), max(200, gc_outside * 8 // 100), 50, 1_000_000),
+        "metadata": copy.deepcopy(market.get("metadata", {})),
+    }
+
+
+def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> None:
+    line_cid = str(service["lineCid"])
+    market_cid = str(service["marketCid"])
+    if market_cid not in economy.setdefault("markets", {}):
+        raise ProtocolError(f"replay service references unknown market: {market_cid}")
+    existing = economy.setdefault("services", {}).get(line_cid)
+    if isinstance(existing, dict) and existing.get("sharePpm") is not None:
+        share_ppm = int(existing["sharePpm"])
+        share_resid = int(existing.get("shareResid", 0))
+        lag_load_ppm = int(existing.get("lagLoadPpm", 0))
+    else:
+        share_ppm = _integer(service.get("sharePpm"), 0, 0, _SHARE_SCALE)
+        share_resid = 0
+        lag_load_ppm = 0
+    economy["services"][line_cid] = {
+        "lineCid": line_cid,
+        "marketCid": market_cid,
+        "companyCid": str(service["companyCid"]),
+        "name": str(service.get("name", line_cid)),
+        "headwaySeconds": _integer(service.get("headwaySeconds"), 1800, 30, 86400),
+        "journeySeconds": _integer(service.get("journeySeconds"), 3600, 30, 604800),
+        "fareCents": _integer(service.get("fareCents"), 1000, 0, 100_000_000),
+        "capacity": _integer(service.get("capacity"), 100, 0, 1_000_000_000),
+        "quality": _integer(service.get("quality"), 100, 0, 1000),
+        "transfers": _integer(service.get("transfers"), 0, 0, 8),
+        "enabled": service.get("enabled") is not False,
+        "sharePpm": share_ppm,
+        "shareResid": share_resid,
+        "lagLoadPpm": lag_load_ppm,
+    }
+
+
+def _clamp(value: int, low: int, high: int) -> int:
+    return max(low, min(high, value))
+
+
+def _generalized_cost(
+    params: Mapping[str, int], market: Mapping[str, Any], service: Mapping[str, Any]
+) -> tuple[int, dict[str, int]]:
+    vot = int(market["votCentsPerHour"])
+    wait_seconds = min(int(service["headwaySeconds"]) // 2, int(params["maxWaitSeconds"]))
+    time_cost = vot * int(service["journeySeconds"]) // 3600
+    wait_cost = vot * wait_seconds * 2 // 3600
+    transfer_cost = vot * int(service.get("transfers", 0)) * int(params["transferSeconds"]) // 3600
+    crowd_span = _SHARE_SCALE - int(params["crowdThresholdPpm"])
+    crowd_excess = _clamp(int(service.get("lagLoadPpm", 0)) - int(params["crowdThresholdPpm"]), 0, crowd_span)
+    crowd_cost = time_cost * crowd_excess // crowd_span
+    comfort = int(service["quality"])
+    gc = max(1, int(service["fareCents"]) + time_cost + wait_cost + transfer_cost + crowd_cost - comfort)
+    return gc, {
+        "fareCents": int(service["fareCents"]),
+        "timeCostCents": time_cost,
+        "waitCostCents": wait_cost,
+        "transferCostCents": transfer_cost,
+        "crowdCostCents": crowd_cost,
+        "comfortCents": comfort,
+        "gcCents": gc,
+    }
+
+
+def _logit_weight(gc_cents: int, gc_min_cents: int, theta_cents: int) -> int:
+    centinats = (gc_cents - gc_min_cents) * 100 // theta_cents
+    if centinats >= 800:
+        return 1
+    if centinats < 0:
+        centinats = 0
+    index, fraction = centinats // 10, centinats % 10
+    left, right = _EXP_TABLE[index], _EXP_TABLE[index + 1]
+    return max(1, left + (right - left) * fraction // 10)
+
+
+def _glide_step(actual: int, equilibrium: int, alpha_pm: int, resid: int) -> tuple[int, int]:
+    delta = (equilibrium - actual) * alpha_pm + resid
+    # Lua's math.floor(delta / 1000) floors toward negative infinity, which is
+    # exactly Python's // on integers — do not "simplify" into C truncation.
+    step = delta // 1000
+    return actual + step, delta - step * 1000
+
+
+def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str, Any]:
+    market = economy["markets"][market_cid]
+    params = _economy_params(economy)
+    services: list[dict[str, Any]] = []
+    for line_cid in sorted(economy.get("services", {})):
+        service = economy["services"][line_cid]
+        if service.get("enabled") is not False and service.get("marketCid") == market_cid:
+            gc_cents, factors = _generalized_cost(params, market, service)
+            services.append({"cid": line_cid, "service": service, "gcCents": gc_cents, "factors": factors})
+
+    gc_min = int(market["gcOutsideCents"])
+    for option in services:
+        gc_min = min(gc_min, option["gcCents"])
+    theta = int(market["thetaCents"])
+    weight_items = [{"cid": "~outside", "weight": _logit_weight(int(market["gcOutsideCents"]), gc_min, theta)}]
+    for option in services:
+        option["weight"] = _logit_weight(option["gcCents"], gc_min, theta)
+        weight_items.append({"cid": option["cid"], "weight": option["weight"]})
+    equilibrium_ppm = _proportional(_SHARE_SCALE, weight_items)
+
+    service_share_ppm = 0
+    for option in services:
+        service = option["service"]
+        equilibrium = equilibrium_ppm.get(option["cid"], 0)
+        option["equilibriumPpm"] = equilibrium
+        if service.get("sharePpm") is None:
+            service["sharePpm"], service["shareResid"] = equilibrium, 0
+        else:
+            alpha = params["alphaUpPm"] if equilibrium >= int(service["sharePpm"]) else params["alphaDownPm"]
+            share, resid = _glide_step(
+                int(service["sharePpm"]), equilibrium, alpha, int(service.get("shareResid", 0))
+            )
+            service["sharePpm"] = _clamp(share, 0, _SHARE_SCALE)
+            service["shareResid"] = resid
+        service_share_ppm += int(service["sharePpm"])
+    outside_ppm = max(0, _SHARE_SCALE - service_share_ppm)
+
+    active = list(services)
+    allocations: dict[str, int] = {}
+    remaining = int(market["demand"])
+    while remaining > 0 and active:
+        preview_items = [{"cid": "~outside", "weight": outside_ppm}]
+        preview_items.extend(
+            {"cid": option["cid"], "weight": int(option["service"]["sharePpm"])} for option in active
+        )
+        preview = _proportional(remaining, preview_items)
+        capped = [option for option in active if preview.get(option["cid"], 0) > int(option["service"]["capacity"])]
+        if not capped:
+            for cid, amount in preview.items():
+                allocations[cid] = allocations.get(cid, 0) + amount
+            remaining = 0
+        else:
+            capped_ids = {option["cid"] for option in capped}
+            for option in capped:
+                amount = int(option["service"]["capacity"])
+                allocations[option["cid"]] = amount
+                remaining -= amount
+            active = [option for option in active if option["cid"] not in capped_ids]
+    if remaining > 0:
+        allocations["~outside"] = allocations.get("~outside", 0) + remaining
+
+    result: dict[str, Any] = {
+        "marketCid": market_cid,
+        "name": market["name"],
+        "demand": int(market["demand"]),
+        "gcOutsideCents": int(market["gcOutsideCents"]),
+        "thetaCents": theta,
+        "outside": allocations.get("~outside", 0),
+        "outsidePpm": outside_ppm,
+        "services": {},
+    }
+    for option in services:
+        service = option["service"]
+        amount = allocations.get(option["cid"], 0)
+        if int(service["capacity"]) > 0:
+            service["lagLoadPpm"] = amount * _SHARE_SCALE // int(service["capacity"])
+        else:
+            service["lagLoadPpm"] = _SHARE_SCALE
+        result["services"][option["cid"]] = {
+            "lineCid": option["cid"],
+            "companyCid": service["companyCid"],
+            "name": service["name"],
+            "allocated": amount,
+            "capacity": service["capacity"],
+            "fareCents": service["fareCents"],
+            "revenueCents": amount * int(service["fareCents"]),
+            "shareBasisPoints": amount * 10000 // int(market["demand"]) if int(market["demand"]) > 0 else 0,
+            "sharePpm": int(service["sharePpm"]),
+            "shareResid": int(service["shareResid"]),
+            "equilibriumPpm": option["equilibriumPpm"],
+            "lagLoadPpm": int(service["lagLoadPpm"]),
+            "factors": option["factors"],
+        }
+    return result
+
+
+def _evaluate_all_v2(economy: dict[str, Any]) -> dict[str, Any]:
+    results: dict[str, Any] = {"markets": {}, "companies": {}, "totalDemand": 0, "totalRevenueCents": 0}
+    for market_cid in sorted(economy.get("markets", {})):
+        market = _evaluate_market_v2(economy, market_cid)
+        results["markets"][market_cid] = market
+        results["totalDemand"] += market["demand"]
+        for line_cid in sorted(market["services"]):
+            service = market["services"][line_cid]
+            company_cid = service["companyCid"]
+            company = results["companies"].setdefault(
+                company_cid, {"companyCid": company_cid, "demand": 0, "revenueCents": 0}
+            )
+            company["demand"] += service["allocated"]
+            company["revenueCents"] += service["revenueCents"]
+            results["totalRevenueCents"] += service["revenueCents"]
+    economy["epoch"] = int(economy.get("epoch", 0)) + 1
+    results["epoch"] = economy["epoch"]
+    economy["lastResults"] = copy.deepcopy(results)
+    return results
+
+
 def _attractiveness(service: Mapping[str, Any]) -> tuple[int, dict[str, int]]:
     frequency = 3_600_000 // max(30, int(service["headwaySeconds"]))
     journey = 7_200_000 // max(30, int(service["journeySeconds"]))
@@ -411,8 +654,12 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
     elif action_type == "line.register":
         if not isinstance(action.get("market"), Mapping) or not isinstance(action.get("service"), Mapping):
             raise ProtocolError("portable line.register lacks authoritative facts")
-        _upsert_market(economy, action["market"])
-        _upsert_service(economy, action["service"])
+        if _economy_version(economy) >= 2:
+            _upsert_market_v2(economy, action["market"])
+            _upsert_service_v2(economy, action["service"])
+        else:
+            _upsert_market(economy, action["market"])
+            _upsert_service(economy, action["service"])
     elif action_type == "fare.adjust":
         line_cid = str(action.get("lineCid", ""))
         service = economy.get("services", {}).get(line_cid)
@@ -430,30 +677,63 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
             raise ProtocolError("demo replay requires two companies")
         first, second = str(order[0]), str(order[1])
         companies = _mapping(model.get("companies"), "replay companies")
-        _upsert_market(
-            economy,
-            {"cid": "market:prototype-corridor", "name": "Prototype intercity corridor", "demand": 1000,
-             "outsideWeight": 2500},
-        )
-        _upsert_service(
-            economy,
-            {"lineCid": "line:prototype-company-1", "marketCid": "market:prototype-corridor",
-             "companyCid": first, "name": str(companies[first]["name"]) + " service", "headwaySeconds": 900,
-             "journeySeconds": 2400, "fareCents": 1000, "capacity": 600, "quality": 100},
-        )
-        _upsert_service(
-            economy,
-            {"lineCid": "line:prototype-company-2", "marketCid": "market:prototype-corridor",
-             "companyCid": second, "name": str(companies[second]["name"]) + " service", "headwaySeconds": 1100,
-             "journeySeconds": 2200, "fareCents": 900, "capacity": 600, "quality": 100},
-        )
-        preview_state = copy.deepcopy(economy)
-        preview = _evaluate_all(preview_state)
+        if _economy_version(economy) >= 2:
+            _upsert_market_v2(
+                economy,
+                {"cid": "market:prototype-corridor", "name": "Prototype intercity corridor",
+                 "demand": 1000, "votCentsPerHour": 450, "gcOutsideCents": 2500, "thetaCents": 250},
+            )
+            _upsert_service_v2(
+                economy,
+                {"lineCid": "line:prototype-company-1", "marketCid": "market:prototype-corridor",
+                 "companyCid": first, "name": str(companies[first]["name"]) + " service",
+                 "headwaySeconds": 900, "journeySeconds": 2400, "fareCents": 1000, "capacity": 600,
+                 "quality": 100, "transfers": 0},
+            )
+            _upsert_service_v2(
+                economy,
+                {"lineCid": "line:prototype-company-2", "marketCid": "market:prototype-corridor",
+                 "companyCid": second, "name": str(companies[second]["name"]) + " service",
+                 "headwaySeconds": 1100, "journeySeconds": 2200, "fareCents": 900, "capacity": 600,
+                 "quality": 100, "transfers": 0},
+            )
+            preview_state = copy.deepcopy(economy)
+            preview = _evaluate_all_v2(preview_state)
+        else:
+            _upsert_market(
+                economy,
+                {"cid": "market:prototype-corridor", "name": "Prototype intercity corridor", "demand": 1000,
+                 "outsideWeight": 2500},
+            )
+            _upsert_service(
+                economy,
+                {"lineCid": "line:prototype-company-1", "marketCid": "market:prototype-corridor",
+                 "companyCid": first, "name": str(companies[first]["name"]) + " service", "headwaySeconds": 900,
+                 "journeySeconds": 2400, "fareCents": 1000, "capacity": 600, "quality": 100},
+            )
+            _upsert_service(
+                economy,
+                {"lineCid": "line:prototype-company-2", "marketCid": "market:prototype-corridor",
+                 "companyCid": second, "name": str(companies[second]["name"]) + " service", "headwaySeconds": 1100,
+                 "journeySeconds": 2200, "fareCents": 900, "capacity": 600, "quality": 100},
+            )
+            preview_state = copy.deepcopy(economy)
+            preview = _evaluate_all(preview_state)
         preview["epoch"] = int(economy.get("epoch", 0))
         preview["preview"] = True
         economy["lastResults"] = preview
     elif action_type == "economy.settle":
-        if isinstance(action.get("results"), Mapping):
+        if _economy_version(economy) >= 2:
+            # Version-2 share/crowding stocks live in the authored model, so
+            # replay must advance them by deterministic re-evaluation; embedded
+            # host results are verified against it by canonical checksum.
+            results = _evaluate_all_v2(economy)
+            if isinstance(action.get("results"), Mapping):
+                if checksum(copy.deepcopy(dict(action["results"]))) != checksum(results):
+                    raise ProtocolError(
+                        "economy.settle results diverge from deterministic model replay"
+                    )
+        elif isinstance(action.get("results"), Mapping):
             results = copy.deepcopy(dict(action["results"]))
             economy["epoch"] = int(results["epoch"])
             economy["lastResults"] = copy.deepcopy(results)

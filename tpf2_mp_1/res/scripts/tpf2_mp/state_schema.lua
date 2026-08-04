@@ -254,7 +254,7 @@ function M.migrate(saved, context)
   saved.canonical = saved.canonical or canonical.newState()
   saved.canonical.byCanonical = saved.canonical.byCanonical or {}
   saved.canonical.byLocal = saved.canonical.byLocal or {}
-  saved.economy = saved.economy or economy.newState()
+  saved.economy = economy.migrate(saved.economy or economy.newState())
   saved.economy.markets = saved.economy.markets or {}
   saved.economy.services = saved.economy.services or {}
   saved.economy.lastResults = saved.economy.lastResults or { markets = {}, companies = {} }

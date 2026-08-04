@@ -26,7 +26,7 @@ local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 19
+local STATE_VERSION = 20
 local CHECKPOINT_VERSION = 2
 local EVENT_RECORD_VERSION = 1
 
@@ -716,7 +716,9 @@ local function seedDemo()
     cid = "market:prototype-corridor",
     name = "Prototype intercity corridor",
     demand = 1000,
-    outsideWeight = 2500,
+    votCentsPerHour = 450,
+    gcOutsideCents = 2500,
+    thetaCents = 250,
   })
   economy.upsertService(state.economy, {
     lineCid = "line:prototype-company-1",
@@ -728,6 +730,7 @@ local function seedDemo()
     fareCents = 1000,
     capacity = 600,
     quality = 100,
+    transfers = 0,
   })
   economy.upsertService(state.economy, {
     lineCid = "line:prototype-company-2",
@@ -739,6 +742,7 @@ local function seedDemo()
     fareCents = 900,
     capacity = 600,
     quality = 100,
+    transfers = 0,
   })
   -- Seeding is a setup/preview action, not an authoritative settlement. Run
   -- the evaluator on a copy so opening the demo does not consume an epoch.

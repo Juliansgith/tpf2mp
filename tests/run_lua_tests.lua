@@ -1247,18 +1247,34 @@ test("pre-existing road nodes resolve lazily by geometry across divergent local 
     "stacked public nodes were not rejected as an ambiguous locator")
 end)
 
-local function scenario(fareA, capacityA, capacityB)
+local function marketState(demand)
   local state = economy.newState()
-  economy.upsertMarket(state, { cid = "market:a-b", demand = 1000, outsideWeight = 2500 })
-  economy.upsertService(state, {
-    lineCid = "line:a", marketCid = "market:a-b", companyCid = "company:1",
-    headwaySeconds = 900, journeySeconds = 1800, fareCents = fareA, capacity = capacityA or 1000, quality = 100,
+  economy.upsertMarket(state, {
+    cid = "market:a-b", demand = demand or 1000,
+    votCentsPerHour = 450, gcOutsideCents = 2500, thetaCents = 250,
   })
-  economy.upsertService(state, {
-    lineCid = "line:b", marketCid = "market:a-b", companyCid = "company:2",
-    headwaySeconds = 900, journeySeconds = 1800, fareCents = 1000, capacity = capacityB or 1000, quality = 100,
-  })
-  return economy.evaluateAll(state)
+  return state
+end
+
+local function corridorService(state, key, companyCid, overrides)
+  local service = {
+    lineCid = "line:" .. key, marketCid = "market:a-b", companyCid = companyCid,
+    headwaySeconds = 900, journeySeconds = 1800, fareCents = 1000,
+    capacity = 1000, quality = 100, transfers = 0,
+  }
+  for field, value in pairs(overrides or {}) do service[field] = value end
+  return economy.upsertService(state, service)
+end
+
+-- Shares are stocks that climb from zero, so competitive comparisons are made
+-- at glided steady state rather than on the first epoch.
+local function scenario(fareA, capacityA, capacityB)
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", { fareCents = fareA, capacity = capacityA or 1000 })
+  corridorService(state, "b", "company:2", { capacity = capacityB or 1000 })
+  local results
+  for _ = 1, 60 do results = economy.evaluateAll(state) end
+  return results
 end
 
 test("economy conserves demand and respects capacity", function()
@@ -1278,6 +1294,124 @@ test("lower fares improve allocation deterministically", function()
   local lowerFare = scenario(500).markets["market:a-b"].services["line:a"].allocated
   truthy(lowerFare > equalFare, "lower fare should attract more modeled demand")
   equal(scenario(500).markets["market:a-b"].services["line:a"].allocated, lowerFare)
+end)
+
+test("generalized cost is legible cents and induces demand from the outside option", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", {})
+  local first = economy.evaluateAll(state).markets["market:a-b"]
+  local factors = first.services["line:a"].factors
+  equal(factors.gcCents, factors.fareCents + factors.timeCostCents + factors.waitCostCents
+    + factors.transferCostCents + factors.crowdCostCents - factors.comfortCents,
+    "generalized cost is not the sum of its cent factors")
+  local slowOutside = first.outside
+
+  local fast = marketState(1000)
+  corridorService(fast, "a", "company:1", { journeySeconds = 900, headwaySeconds = 300 })
+  local better = economy.evaluateAll(fast).markets["market:a-b"]
+  truthy(better.outside < slowOutside,
+    "improving the best service must shrink the outside option (induced demand)")
+end)
+
+test("share is a stock: entrants climb from zero and conservation is exact", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", {})
+  for _ = 1, 5 do economy.evaluateAll(state) end
+  corridorService(state, "b", "company:2", { fareCents = 800 })
+  equal(state.services["line:b"].sharePpm, 0, "a new entrant must start with zero share")
+
+  local previous = 0
+  local lastResult
+  for epoch = 1, 60 do
+    lastResult = economy.evaluateAll(state).markets["market:a-b"]
+    local total = lastResult.outside
+    for _, service in pairs(lastResult.services) do total = total + service.allocated end
+    equal(total, lastResult.demand, "conservation broke at epoch " .. epoch)
+    local share = lastResult.services["line:b"].sharePpm
+    truthy(share >= previous, "entrant share must climb monotonically toward equilibrium")
+    previous = share
+  end
+  local entrant = lastResult.services["line:b"]
+  truthy(entrant.sharePpm >= entrant.equilibriumPpm * 9 / 10,
+    "entrant did not reach 90% of equilibrium after 60 epochs")
+end)
+
+test("asymmetric glide punishes fare milking", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", {})
+  corridorService(state, "b", "company:2", {})
+  for _ = 1, 30 do economy.evaluateAll(state) end
+  local settled = state.services["line:b"].sharePpm
+
+  economy.setFare(state, "line:b", 5000)
+  economy.evaluateAll(state)
+  local afterHike = state.services["line:b"].sharePpm
+  local hikeLoss = settled - afterHike
+  truthy(hikeLoss > 0, "a fare hike must bleed share")
+
+  economy.setFare(state, "line:b", 1000)
+  economy.evaluateAll(state)
+  local afterRevert = state.services["line:b"].sharePpm
+  local revertGain = afterRevert - afterHike
+  truthy(revertGain >= 0, "reverting the fare must start recovery")
+  truthy(hikeLoss > revertGain * 2,
+    "losing share must be materially faster than regaining it (milking defense)")
+end)
+
+test("integer glide converges exactly without stalling", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", {})
+  corridorService(state, "b", "company:2", { fareCents = 1200 })
+  local final
+  for _ = 1, 400 do final = economy.evaluateAll(state).markets["market:a-b"] end
+  for _, lineCid in ipairs({ "line:a", "line:b" }) do
+    local service = final.services[lineCid]
+    equal(service.sharePpm, service.equilibriumPpm,
+      lineCid .. " stalled short of its exact integer equilibrium")
+  end
+end)
+
+test("lagged crowding repels demand from an undersized service without oscillating", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", { fareCents = 400, capacity = 100 })
+  corridorService(state, "b", "company:2", { fareCents = 1200, capacity = 900 })
+  local first = economy.evaluateAll(state).markets["market:a-b"]
+  equal(first.services["line:a"].factors.crowdCostCents, 0, "crowding must lag one epoch")
+
+  local result
+  for _ = 1, 200 do result = economy.evaluateAll(state).markets["market:a-b"] end
+  truthy(result.services["line:a"].factors.crowdCostCents > 0,
+    "a full service must carry a crowding penalty")
+  local shares = {}
+  for epoch = 1, 20 do
+    result = economy.evaluateAll(state).markets["market:a-b"]
+    shares[epoch] = result.services["line:a"].sharePpm
+  end
+  local low, high = shares[1], shares[1]
+  for _, share in ipairs(shares) do
+    low, high = math.min(low, share), math.max(high, share)
+  end
+  -- One passenger of allocation quantum moves crowding by about a cent and
+  -- the coupled equilibria by a few hundred ppm; a relay-style limit cycle
+  -- would swing tens of thousands. Bound the dither at 0.1% of the market.
+  truthy(high - low <= 1000, "crowded steady state oscillates beyond allocation-quantum dither")
+end)
+
+test("model evaluation is deterministic across independent replays", function()
+  local function run()
+    local state = marketState(1000)
+    corridorService(state, "a", "company:1", {})
+    corridorService(state, "b", "company:2", { fareCents = 800 })
+    for _ = 1, 25 do economy.evaluateAll(state) end
+    economy.setFare(state, "line:a", 700)
+    for _ = 1, 25 do economy.evaluateAll(state) end
+    return state
+  end
+  local first, second = run(), run()
+  equal(hash.value(first.services), hash.value(second.services),
+    "independent replays diverged in service stocks")
+  equal(hash.value(first.lastResults), hash.value(second.lastResults),
+    "independent replays diverged in results")
 end)
 
 test("settlement ledger is idempotent and produces a scoreboard", function()

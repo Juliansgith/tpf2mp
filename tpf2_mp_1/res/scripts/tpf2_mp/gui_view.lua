@@ -156,16 +156,22 @@ function M.render(gui, snapshot, options)
       local service = market.services[lineCid]
       local factors = service.factors or {}
       lines[#lines + 1] = string.format(
-        "  %s: %d pax (%d.%02d%%), fare %.2f | freq +%d time +%d quality +%d fare -%d",
+        "  %s: %d pax (%d.%02d%%), eff $%.2f = fare %.2f + time %.2f + wait %.2f + xfer %.2f + crowd %.2f - comfort %.2f | share %d.%d%% -> eq %d.%d%%",
         service.name or lineCid,
         service.allocated or 0,
         math.floor((service.shareBasisPoints or 0) / 100),
         (service.shareBasisPoints or 0) % 100,
-        (service.fareCents or 0) / 100,
-        factors.frequency or 0,
-        factors.journey or 0,
-        factors.quality or 0,
-        factors.farePenalty or 0
+        (factors.gcCents or 0) / 100,
+        (factors.fareCents or service.fareCents or 0) / 100,
+        (factors.timeCostCents or 0) / 100,
+        (factors.waitCostCents or 0) / 100,
+        (factors.transferCostCents or 0) / 100,
+        (factors.crowdCostCents or 0) / 100,
+        (factors.comfortCents or 0) / 100,
+        math.floor((service.sharePpm or 0) / 10000),
+        math.floor((service.sharePpm or 0) % 10000 / 1000),
+        math.floor((service.equilibriumPpm or 0) / 10000),
+        math.floor((service.equilibriumPpm or 0) % 10000 / 1000)
       )
     end
   end

@@ -24,6 +24,9 @@ function M.new(env)
         name = value.name,
         demand = value.demand,
         outsideWeight = value.outsideWeight,
+        votCentsPerHour = value.votCentsPerHour,
+        gcOutsideCents = value.gcOutsideCents,
+        thetaCents = value.thetaCents,
         metadata = util.deepCopy(value.metadata or {}),
       }
     end
@@ -39,12 +42,19 @@ function M.new(env)
         fareCents = value.fareCents,
         capacity = value.capacity,
         quality = value.quality,
+        transfers = value.transfers,
         enabled = value.enabled,
+        -- Version-2 share and crowding stocks decide future allocations, so
+        -- they are authored convergence state, not local bookkeeping.
+        sharePpm = value.sharePpm,
+        shareResid = value.shareResid,
+        lagLoadPpm = value.lagLoadPpm,
       }
     end
     return {
       version = currentState().economy.version,
       epoch = currentState().economy.epoch,
+      params = util.deepCopy(currentState().economy.params),
       markets = markets,
       services = services,
       lastResults = util.deepCopy(currentState().economy.lastResults),

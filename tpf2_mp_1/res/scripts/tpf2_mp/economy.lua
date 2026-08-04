@@ -1,6 +1,25 @@
 local util = require "tpf2_mp/util"
+local hash = require "tpf2_mp/hash"
 
 local M = {}
+
+M.VERSION = 2
+M.SHARE_SCALE = 1000000
+
+-- EXP_TABLE[k + 1] = round(65536 * exp(-k / 10)) for k = 0..80. Pinned source
+-- literals shared byte-for-byte with the companion replayer: both languages
+-- must interpolate the same table, never a platform libm.
+local EXP_TABLE = {
+  65536, 59299, 53656, 48550, 43930, 39750, 35967, 32544, 29447,
+  26645, 24109, 21815, 19739, 17861, 16161, 14623, 13231, 11972,
+  10833, 9802, 8869, 8025, 7262, 6571, 5945, 5380, 4868,
+  4404, 3985, 3606, 3263, 2952, 2671, 2417, 2187, 1979,
+  1791, 1620, 1466, 1327, 1200, 1086, 983, 889, 805,
+  728, 659, 596, 539, 488, 442, 400, 362, 327,
+  296, 268, 242, 219, 198, 180, 162, 147, 133,
+  120, 109, 99, 89, 81, 73, 66, 60, 54,
+  49, 44, 40, 36, 33, 30, 27, 24, 22,
+}
 
 local function copyInteger(value, fallback, low, high)
   local number = util.integer(value, fallback)
@@ -9,10 +28,21 @@ local function copyInteger(value, fallback, low, high)
   return number
 end
 
+function M.defaultParams()
+  return {
+    alphaUpPm = 80,
+    alphaDownPm = 250,
+    maxWaitSeconds = 1800,
+    transferSeconds = 480,
+    crowdThresholdPpm = 700000,
+  }
+end
+
 function M.newState()
   return {
-    version = 1,
+    version = M.VERSION,
     epoch = 0,
+    params = M.defaultParams(),
     markets = {},
     services = {},
     lastResults = { markets = {}, companies = {}, totalDemand = 0, totalRevenueCents = 0 },
@@ -26,13 +56,44 @@ function M.newState()
   }
 end
 
+-- A version-1 state carries additive weights and no share stocks. Markets get
+-- the cents-denominated defaults; services keep their operating facts and
+-- initialise their stocks lazily on the first evaluation.
+function M.migrate(state)
+  if type(state) ~= "table" then return M.newState() end
+  if util.integer(state.version, 1) >= M.VERSION then
+    state.params = state.params or M.defaultParams()
+    return state
+  end
+  state.version = M.VERSION
+  state.params = M.defaultParams()
+  for _, market in pairs(state.markets or {}) do
+    market.outsideWeight = nil
+    market.votCentsPerHour = copyInteger(market.votCentsPerHour, 450, 30, 100000)
+    market.gcOutsideCents = copyInteger(market.gcOutsideCents, 2500, 1, 100000000)
+    market.thetaCents = copyInteger(market.thetaCents,
+      math.max(200, math.floor(market.gcOutsideCents * 8 / 100)), 50, 1000000)
+  end
+  for _, service in pairs(state.services or {}) do
+    service.transfers = copyInteger(service.transfers, 0, 0, 8)
+    service.sharePpm = nil
+    service.shareResid = 0
+    service.lagLoadPpm = 0
+  end
+  return state
+end
+
 function M.upsertMarket(state, market)
   assert(type(market.cid) == "string" and market.cid ~= "", "market cid required")
+  local gcOutside = copyInteger(market.gcOutsideCents, 2500, 1, 100000000)
   state.markets[market.cid] = {
     cid = market.cid,
     name = tostring(market.name or market.cid),
     demand = copyInteger(market.demand, 100, 0, 1000000000),
-    outsideWeight = copyInteger(market.outsideWeight, 2500, 1, 1000000000),
+    votCentsPerHour = copyInteger(market.votCentsPerHour, 450, 30, 100000),
+    gcOutsideCents = gcOutside,
+    thetaCents = copyInteger(market.thetaCents,
+      math.max(200, math.floor(gcOutside * 8 / 100)), 50, 1000000),
     metadata = util.deepCopy(market.metadata or {}),
   }
   return state.markets[market.cid]
@@ -42,6 +103,7 @@ function M.upsertService(state, service)
   assert(type(service.lineCid) == "string" and service.lineCid ~= "", "lineCid required")
   assert(type(service.marketCid) == "string" and state.markets[service.marketCid], "known marketCid required")
   assert(type(service.companyCid) == "string" and service.companyCid ~= "", "companyCid required")
+  local existing = state.services[service.lineCid]
   state.services[service.lineCid] = {
     lineCid = service.lineCid,
     marketCid = service.marketCid,
@@ -52,7 +114,13 @@ function M.upsertService(state, service)
     fareCents = copyInteger(service.fareCents, 1000, 0, 100000000),
     capacity = copyInteger(service.capacity, 100, 0, 1000000000),
     quality = copyInteger(service.quality, 100, 0, 1000),
+    transfers = copyInteger(service.transfers, 0, 0, 8),
     enabled = service.enabled ~= false,
+    -- Share is a stock: a re-upserted service keeps its earned position, a
+    -- brand-new one starts from nothing and must climb at alphaUp.
+    sharePpm = existing and existing.sharePpm or copyInteger(service.sharePpm, 0, 0, M.SHARE_SCALE),
+    shareResid = existing and existing.shareResid or 0,
+    lagLoadPpm = existing and existing.lagLoadPpm or 0,
     metadata = util.deepCopy(service.metadata or {}),
   }
   return state.services[service.lineCid]
@@ -69,18 +137,43 @@ function M.setFare(state, lineCid, fareCents)
   return true, service.fareCents
 end
 
-function M.attractiveness(service)
-  local frequency = math.floor(3600000 / math.max(30, service.headwaySeconds))
-  local journey = math.floor(7200000 / math.max(30, service.journeySeconds))
-  local quality = service.quality * 25
-  local farePenalty = service.fareCents * 2
-  local weight = 100 + frequency + journey + quality - farePenalty
-  return util.clamp(weight, 1, 1000000000), {
-    frequency = frequency,
-    journey = journey,
-    quality = quality,
-    farePenalty = farePenalty,
+-- Everything the passenger experiences is converted into cents so every
+-- factor shares a unit the player can read. Waiting is twice as painful as
+-- riding; crowding scales the in-vehicle cost from the previous epoch's load.
+function M.generalizedCost(params, market, service)
+  local vot = market.votCentsPerHour
+  local waitSeconds = math.min(math.floor(service.headwaySeconds / 2), params.maxWaitSeconds)
+  local timeCostCents = math.floor(vot * service.journeySeconds / 3600)
+  local waitCostCents = math.floor(vot * waitSeconds * 2 / 3600)
+  local transferCostCents = math.floor(vot * service.transfers * params.transferSeconds / 3600)
+  local crowdSpan = M.SHARE_SCALE - params.crowdThresholdPpm
+  local crowdExcess = util.clamp((service.lagLoadPpm or 0) - params.crowdThresholdPpm, 0, crowdSpan)
+  local crowdCostCents = math.floor(timeCostCents * crowdExcess / crowdSpan)
+  local comfortCents = service.quality
+  local gcCents = math.max(1, service.fareCents + timeCostCents + waitCostCents
+    + transferCostCents + crowdCostCents - comfortCents)
+  return gcCents, {
+    fareCents = service.fareCents,
+    timeCostCents = timeCostCents,
+    waitCostCents = waitCostCents,
+    transferCostCents = transferCostCents,
+    crowdCostCents = crowdCostCents,
+    comfortCents = comfortCents,
+    gcCents = gcCents,
   }
+end
+
+-- Interpolated integer exp(-(gc - gcMin)/theta) scaled to 65536. Identical on
+-- every machine because only the pinned table and integer division are used.
+function M.logitWeight(gcCents, gcMinCents, thetaCents)
+  local centinats = math.floor((gcCents - gcMinCents) * 100 / thetaCents)
+  if centinats >= 800 then return 1 end
+  if centinats < 0 then centinats = 0 end
+  local index = math.floor(centinats / 10)
+  local fraction = centinats % 10
+  local left = EXP_TABLE[index + 1]
+  local right = EXP_TABLE[index + 2]
+  return math.max(1, left + math.floor((right - left) * fraction / 10))
 end
 
 local function proportional(total, items)
@@ -109,13 +202,22 @@ local function proportional(total, items)
   return allocations
 end
 
+-- Drift-free integer glide with a carried residual: converges to the exact
+-- equilibrium instead of stalling 1000/alpha below it.
+local function glideStep(actual, equilibrium, alphaPm, resid)
+  local delta = (equilibrium - actual) * alphaPm + resid
+  local step = math.floor(delta / 1000)
+  return actual + step, delta - step * 1000
+end
+
 local function marketServices(state, marketCid)
+  local market = state.markets[marketCid]
   local services = {}
   for _, lineCid in ipairs(util.sortedKeys(state.services)) do
     local service = state.services[lineCid]
     if service.enabled and service.marketCid == marketCid then
-      local weight, factors = M.attractiveness(service)
-      services[#services + 1] = { service = service, cid = lineCid, weight = weight, factors = factors }
+      local gcCents, factors = M.generalizedCost(state.params, market, service)
+      services[#services + 1] = { service = service, cid = lineCid, gcCents = gcCents, factors = factors }
     end
   end
   return services
@@ -124,14 +226,46 @@ end
 function M.evaluateMarket(state, marketCid)
   local market = state.markets[marketCid]
   if not market then return nil, "unknown market" end
+  local params = state.params
   local services = marketServices(state, marketCid)
+
+  local gcMin = market.gcOutsideCents
+  for _, option in ipairs(services) do gcMin = math.min(gcMin, option.gcCents) end
+  local weightItems = { { cid = "~outside", weight = M.logitWeight(market.gcOutsideCents, gcMin, market.thetaCents) } }
+  for _, option in ipairs(services) do
+    option.weight = M.logitWeight(option.gcCents, gcMin, market.thetaCents)
+    weightItems[#weightItems + 1] = { cid = option.cid, weight = option.weight }
+  end
+  local equilibriumPpm = proportional(M.SHARE_SCALE, weightItems)
+
+  -- Services glide toward equilibrium; the outside option is the residual, so
+  -- conservation is exact and a collapsing service dumps its passengers back
+  -- to not-traveling immediately while survivors must climb at alphaUp.
+  local serviceSharePpm = 0
+  for _, option in ipairs(services) do
+    local service = option.service
+    local equilibrium = equilibriumPpm[option.cid] or 0
+    option.equilibriumPpm = equilibrium
+    if service.sharePpm == nil then
+      service.sharePpm, service.shareResid = equilibrium, 0
+    else
+      local alphaPm = equilibrium >= service.sharePpm and params.alphaUpPm or params.alphaDownPm
+      service.sharePpm, service.shareResid =
+        glideStep(service.sharePpm, equilibrium, alphaPm, service.shareResid or 0)
+      service.sharePpm = util.clamp(service.sharePpm, 0, M.SHARE_SCALE)
+    end
+    serviceSharePpm = serviceSharePpm + service.sharePpm
+  end
+  local outsidePpm = math.max(0, M.SHARE_SCALE - serviceSharePpm)
+
   local active, allocations = {}, {}
   for _, option in ipairs(services) do active[#active + 1] = option end
-
   local remaining = market.demand
   while remaining > 0 and #active > 0 do
-    local previewItems = { { cid = "~outside", weight = market.outsideWeight } }
-    for _, option in ipairs(active) do previewItems[#previewItems + 1] = { cid = option.cid, weight = option.weight } end
+    local previewItems = { { cid = "~outside", weight = outsidePpm } }
+    for _, option in ipairs(active) do
+      previewItems[#previewItems + 1] = { cid = option.cid, weight = option.service.sharePpm }
+    end
     local preview = proportional(remaining, previewItems)
     local capped, survivors = {}, {}
     for _, option in ipairs(active) do
@@ -155,21 +289,34 @@ function M.evaluateMarket(state, marketCid)
     marketCid = marketCid,
     name = market.name,
     demand = market.demand,
+    gcOutsideCents = market.gcOutsideCents,
+    thetaCents = market.thetaCents,
     outside = allocations["~outside"] or 0,
+    outsidePpm = outsidePpm,
     services = {},
   }
   for _, option in ipairs(services) do
+    local service = option.service
     local amount = allocations[option.cid] or 0
+    -- Next epoch's crowding responds to this epoch's realised load.
+    if service.capacity > 0 then
+      service.lagLoadPpm = math.floor(amount * M.SHARE_SCALE / service.capacity)
+    else
+      service.lagLoadPpm = M.SHARE_SCALE
+    end
     result.services[option.cid] = {
       lineCid = option.cid,
-      companyCid = option.service.companyCid,
-      name = option.service.name,
+      companyCid = service.companyCid,
+      name = service.name,
       allocated = amount,
-      capacity = option.service.capacity,
-      fareCents = option.service.fareCents,
-      revenueCents = amount * option.service.fareCents,
+      capacity = service.capacity,
+      fareCents = service.fareCents,
+      revenueCents = amount * service.fareCents,
       shareBasisPoints = market.demand > 0 and math.floor(amount * 10000 / market.demand) or 0,
-      weight = option.weight,
+      sharePpm = service.sharePpm,
+      shareResid = service.shareResid,
+      equilibriumPpm = option.equilibriumPpm,
+      lagLoadPpm = service.lagLoadPpm,
       factors = option.factors,
     }
   end
@@ -197,6 +344,11 @@ function M.evaluateAll(state)
   return results
 end
 
+-- The model is deterministic integer arithmetic over replicated state, so the
+-- strongest validation of host results is an independent local evaluation and
+-- a canonical checksum comparison. On success the local mutation is already
+-- the authoritative one; on mismatch the model state has diverged and the
+-- caller must fail the session closed.
 function M.acceptAuthoritativeResults(state, results)
   if type(results) ~= "table" or type(results.markets) ~= "table" or type(results.companies) ~= "table" then
     return false, "authoritative results are malformed"
@@ -204,52 +356,19 @@ function M.acceptAuthoritativeResults(state, results)
   if tonumber(results.epoch) ~= (state.epoch or 0) + 1 then
     return false, "authoritative epoch is not the next epoch"
   end
-  if util.tableCount(results.markets) ~= util.tableCount(state.markets) then
-    return false, "authoritative market count mismatch"
+  -- Evaluate on a copy so a diverging or tampered result rejects without
+  -- advancing local stocks; adopt the copy only after the digests agree.
+  local preview = util.deepCopy(state)
+  local localResults = M.evaluateAll(preview)
+  local localDigest = hash.value(localResults)
+  local authoritativeDigest = hash.value(results)
+  if localDigest ~= authoritativeDigest then
+    return false, "authoritative results diverge from deterministic local evaluation: "
+      .. tostring(authoritativeDigest) .. " ~= " .. tostring(localDigest)
   end
-  local companyTotals, totalDemand, totalRevenue = {}, 0, 0
-  for _, marketCid in ipairs(util.sortedKeys(state.markets)) do
-    local market = state.markets[marketCid]
-    local result = results.markets[marketCid]
-    if type(result) ~= "table" or tonumber(result.demand) ~= market.demand then
-      return false, "authoritative market mismatch: " .. marketCid
-    end
-    local allocated = tonumber(result.outside) or 0
-    for _, lineCid in ipairs(util.sortedKeys(result.services or {})) do
-      local serviceResult = result.services[lineCid]
-      local service = state.services[lineCid]
-      if not service or service.marketCid ~= marketCid or service.companyCid ~= serviceResult.companyCid then
-        return false, "authoritative service mismatch: " .. tostring(lineCid)
-      end
-      if tonumber(serviceResult.fareCents) ~= service.fareCents then
-        return false, "authoritative fare mismatch: " .. tostring(lineCid)
-      end
-      local amount = util.integer(serviceResult.allocated, -1)
-      if amount < 0 or amount > service.capacity then return false, "authoritative allocation outside capacity" end
-      if tonumber(serviceResult.revenueCents) ~= amount * service.fareCents then
-        return false, "authoritative revenue mismatch: " .. tostring(lineCid)
-      end
-      allocated = allocated + amount
-      totalRevenue = totalRevenue + serviceResult.revenueCents
-      local company = companyTotals[service.companyCid] or { companyCid = service.companyCid, demand = 0, revenueCents = 0 }
-      company.demand = company.demand + amount
-      company.revenueCents = company.revenueCents + serviceResult.revenueCents
-      companyTotals[service.companyCid] = company
-    end
-    if allocated ~= market.demand then return false, "authoritative demand is not conserved: " .. marketCid end
-    totalDemand = totalDemand + market.demand
-  end
-  if tonumber(results.totalDemand) ~= totalDemand or tonumber(results.totalRevenueCents) ~= totalRevenue then
-    return false, "authoritative totals mismatch"
-  end
-  for _, companyCid in ipairs(util.sortedKeys(companyTotals)) do
-    local expected, actual = companyTotals[companyCid], results.companies[companyCid]
-    if not actual or tonumber(actual.demand) ~= expected.demand or tonumber(actual.revenueCents) ~= expected.revenueCents then
-      return false, "authoritative company totals mismatch: " .. companyCid
-    end
-  end
-  state.epoch = results.epoch
-  state.lastResults = util.deepCopy(results)
+  state.epoch = preview.epoch
+  state.services = preview.services
+  state.lastResults = preview.lastResults
   return true, state.lastResults
 end
 

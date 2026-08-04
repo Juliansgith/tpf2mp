@@ -143,7 +143,7 @@ assert(initialized.initialized == true, "committed match was not applied")
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 19,
+assert(initialized.version == 20,
   "state schema was not migrated to the asset-root construction version")
 assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
 

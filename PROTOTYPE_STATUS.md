@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-04 for prototype `0.21.2-alpha`, state schema `19`,
+Last updated: 2026-08-04 for prototype `0.21.2-alpha`, state schema `20`,
 checkpoint format `2`, edge proposal schema `5`, construction proposal schema
 `7`, and native hook `0.12.0`.
 

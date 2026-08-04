@@ -272,13 +272,13 @@ do
 end
 
 do
-  local versions = { stateVersion = 19, checkpointVersion = 2 }
+  local versions = { stateVersion = 20, checkpointVersion = 2 }
   local cfg = baseConfig()
   local first = stateSchema.new(cfg, versions)
   local second = stateSchema.new(cfg, versions)
   first.world.logicalOwners.test = "company:1"
   assert(second.world.logicalOwners.test == nil, "new states share mutable nested tables")
-  assert(first.version == 19 and first.checkpoint.version == 2,
+  assert(first.version == 20 and first.checkpoint.version == 2,
     "new state did not retain its schema versions")
   assert(first.networkMode == "network" and first.bridge.peerId == "player1",
     "new state did not retain its runtime identity")
@@ -289,10 +289,10 @@ do
   local migrated = stateSchema.migrate(first, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 19,
+    stateVersion = 20,
     checkpointVersion = 2,
   })
-  assert(migrated.version == 19 and migrated.world.networkClock.generation == 0,
+  assert(migrated.version == 20 and migrated.world.networkClock.generation == 0,
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
