@@ -1,0 +1,412 @@
+local util = require "tpf2_mp/util"
+local hash = require "tpf2_mp/hash"
+local canonical = require "tpf2_mp/canonical"
+local bridge = require "tpf2_mp/bridge"
+local world = require "tpf2_mp/world"
+local operationCodec = require "tpf2_mp/operation_codec"
+
+local M = {}
+
+function M.new(env)
+  assert(type(env) == "table", "operation runtime environment is required")
+  assert(type(env.getState) == "function", "operation runtime state provider is required")
+  assert(type(env.requireRunningMatch) == "function", "running-match guard is required")
+  assert(type(env.balanceOf) == "function", "balance provider is required")
+  assert(type(env.coreDigest) == "function", "core digest provider is required")
+  assert(type(env.refreshOwnershipProbe) == "function", "ownership refresher is required")
+  assert(type(env.proposalPreparation) == "table", "operation origin registry is required")
+
+  local function currentState() return env.getState() end
+
+  local function pruneOperationRecords(targetRetained)
+    targetRetained = math.max(0, util.integer(targetRetained, 24))
+    local records, completed = currentState().world.operations.byId, {}
+    for operationId, record in pairs(records) do
+      if record.status == "applied" or record.status == "failed" then
+        completed[#completed + 1] = {
+          operationId = operationId,
+          completedTick = util.integer(record.completedTick, record.queuedTick or 0),
+        }
+      end
+    end
+    table.sort(completed, function(a, b)
+      if a.completedTick ~= b.completedTick then return a.completedTick < b.completedTick end
+      return tostring(a.operationId) < tostring(b.operationId)
+    end)
+    for _, item in ipairs(completed) do
+      if util.tableCount(records) <= targetRetained then break end
+      records[item.operationId] = nil
+      currentState().world.operationConsensus.byId[item.operationId] = nil
+    end
+  end
+  
+  local function operationResolve(record, cid, expectedKind)
+    local localId = record.localRefs and record.localRefs[cid]
+      or canonical.resolveLocal(currentState().canonical, cid)
+    if not localId then return nil, "canonical object is not mapped locally: " .. tostring(cid) end
+    local binding = currentState().canonical.byCanonical[cid]
+    if expectedKind and expectedKind ~= "entity" and binding and binding.kind ~= expectedKind then
+      return nil, "canonical object kind mismatch for " .. tostring(cid)
+    end
+    return tonumber(localId)
+  end
+  
+  local function operationOwner(localId)
+    return world.logicalOwnerOf(currentState().world, currentState().companies, localId)
+  end
+  
+  local function operationAccess(transaction, cid, expectedKind, localRefs)
+    local binding = currentState().canonical.byCanonical[cid]
+    local localId = binding and binding.localId or canonical.resolveLocal(currentState().canonical, cid)
+    if not localId then return false, "canonical object is not mapped locally: " .. tostring(cid) end
+    if currentState().networkMode == "network" and cid:find(":pre:", 1, true)
+      and not (binding and binding.metadata and binding.metadata.manifestBound == true) then
+      return false, "pre-existing object is not uniquely bound by the world manifest: " .. tostring(cid)
+    end
+    if expectedKind and expectedKind ~= "entity" and binding and binding.kind ~= expectedKind then
+      return false, "canonical object kind mismatch for " .. tostring(cid)
+    end
+    local owner = operationOwner(localId)
+    local metadataOwner = binding and binding.metadata and binding.metadata.owner or nil
+    owner = owner or metadataOwner
+    if owner and owner ~= transaction.companyCid then
+      return false, "operation cannot mutate rival-owned " .. tostring(expectedKind or "entity")
+        .. " " .. tostring(cid)
+    end
+    localRefs[cid] = localId
+    return true, localId
+  end
+  
+  local function queueCanonicalOperation(transaction, eventId, commitSeq, originCaptureToken)
+    local running, runningError = env.requireRunningMatch()
+    if not running then return false, runningError end
+    local valid, validationError = operationCodec.validate(transaction)
+    if not valid then return false, validationError end
+    local company = currentState().companies[transaction.companyCid]
+    if not company then return false, "operation targets an unknown company" end
+    if util.tableCount(currentState().world.operations.byId) >= 48 then pruneOperationRecords(24) end
+    if util.tableCount(currentState().world.operations.byId) >= 48 then
+      return false, "too many in-flight canonical operations"
+    end
+    if currentState().world.operations.byId[eventId] then return false, "duplicate canonical operation event" end
+  
+    local data, localRefs = transaction.data, {}
+    local spec = operationCodec.spec(transaction.kind)
+    if data.targetCid then
+      local ok, err = operationAccess(transaction, data.targetCid, spec.targetKind, localRefs)
+      if not ok then return false, err end
+    end
+    if data.depotCid then
+      local ok, err = operationAccess(transaction, data.depotCid, "depot", localRefs)
+      if not ok then return false, err end
+    end
+    if data.lineCid then
+      local ok, err = operationAccess(transaction, data.lineCid, "line", localRefs)
+      if not ok then return false, err end
+    end
+    if data.line and type(data.line.stops) == "table" then
+      for _, stop in ipairs(data.line.stops) do
+        local cid = stop.stationGroupCid
+        local binding = currentState().canonical.byCanonical[cid]
+        local localId = binding and binding.localId or canonical.resolveLocal(currentState().canonical, cid)
+        if not localId then return false, "line stop is not mapped locally: " .. tostring(cid) end
+        if currentState().networkMode == "network" and cid:find(":pre:", 1, true)
+          and not (binding and binding.metadata and binding.metadata.manifestBound == true) then
+          return false, "station group is ambiguous in the pre-existing world manifest: " .. tostring(cid)
+        end
+        -- Public station groups are legal; a positively identified rival group
+        -- is not. This keeps shared/public infrastructure possible without
+        -- reopening the rival-asset mutation hole.
+        local owner = operationOwner(localId)
+        if owner and owner ~= transaction.companyCid then
+          return false, "line cannot use a rival-owned station group: " .. tostring(cid)
+        end
+        localRefs[cid] = localId
+      end
+    end
+  
+    local originPeer = tostring(eventId):match(":([^:]+):%d+$")
+    local originApplied
+    originCaptureToken = originCaptureToken ~= nil and tostring(originCaptureToken) or nil
+    if originPeer == currentState().bridge.peerId and originCaptureToken then
+      originApplied = env.proposalPreparation.originAppliedOperations[originCaptureToken]
+      env.proposalPreparation.originAppliedOperations[originCaptureToken] = nil
+      if not originApplied then
+        return false, "optimistic local operation result is unavailable for "
+          .. tostring(originCaptureToken)
+      end
+      if originApplied.transactionId ~= transaction.transactionId
+        or originApplied.kind ~= transaction.kind
+        or originApplied.companyCid ~= transaction.companyCid then
+        return false, "optimistic local operation result does not match the ordered transaction"
+      end
+    end
+  
+    local issuerPlayerId = game.interface.getPlayer()
+    local nativePlayerId = currentState().world.proxyMode and issuerPlayerId or company.playerId
+    local record = {
+      operationId = eventId,
+      transactionId = transaction.transactionId,
+      eventId = eventId,
+      commitSeq = tonumber(commitSeq),
+      originPeer = originPeer,
+      originCaptureToken = originCaptureToken,
+      originApplied = originApplied and {
+        localId = tonumber(originApplied.localId),
+        capturedTick = tonumber(originApplied.capturedTick),
+      } or nil,
+      companyCid = transaction.companyCid,
+      transaction = util.deepCopy(transaction),
+      localRefs = localRefs,
+      issuerPlayerId = tonumber(issuerPlayerId),
+      nativePlayerId = tonumber(nativePlayerId),
+      balanceBefore = env.balanceOf(nativePlayerId),
+      status = "queued",
+      queuedTick = currentState().tick,
+    }
+    if record.balanceBefore == nil then return false, "operation company balance is unavailable" end
+    currentState().world.operations.byId[eventId] = record
+    currentState().world.operations.queued = (currentState().world.operations.queued or 0) + 1
+    if currentState().networkMode == "network" then
+      currentState().world.operationConsensus.byId[eventId] = {
+        operationId = eventId,
+        commitSeq = tonumber(commitSeq),
+        operationDigest = transaction.digest,
+        status = "pending",
+      }
+    end
+    return true, {
+      queued = true,
+      operationId = eventId,
+      transactionId = transaction.transactionId,
+      operationDigest = transaction.digest,
+      kind = transaction.kind,
+      companyCid = transaction.companyCid,
+    }
+  end
+  
+  local function operationFailure(record, message)
+    local value = type(message) == "table" and message or { error = tostring(message) }
+    if value.error == nil then value.error = "canonical operation failed" end
+    record.status = "failed"
+    record.completedTick = currentState().tick
+    record.error = tostring(value.error)
+    record.result = util.deepCopy(value)
+    currentState().world.operations.failed = (currentState().world.operations.failed or 0) + 1
+    currentState().probes.capture.operationReplayFailureCount =
+      (currentState().probes.capture.operationReplayFailureCount or 0) + 1
+    return false, record.result
+  end
+  
+  local function safeOperationComponent(localId, componentType)
+    if not componentType then return nil end
+    local ok, value = pcall(api.engine.getComponent, localId, componentType)
+    return ok and value or nil
+  end
+  
+  local function operationPostcondition(record, outputCid, outputLocalId)
+    local transaction, data = record.transaction, record.transaction.data
+    local kind, types = transaction.kind, api.type.ComponentType
+    local targetCid = outputCid or data.targetCid
+    local localId = outputLocalId
+    if not localId and data.targetCid then localId = operationResolve(record, data.targetCid) end
+    if kind == "line.delete" or kind == "vehicle.sell" then
+      return { kind = kind, targetCid = data.targetCid, exists = world.entityExists(localId) }
+    end
+    if not localId or not world.entityExists(localId) then
+      return nil, "operation output/target does not exist after native success"
+    end
+    local result = { kind = kind, targetCid = targetCid, exists = true }
+    if kind == "line.create" or kind == "line.update" then
+      local line = safeOperationComponent(localId, types.LINE)
+      if not line then return nil, "native line component is unavailable after operation" end
+      result.stops = {}
+      for _, stop in ipairs(line.stops or {}) do
+        local groupId = tonumber(stop.stationGroup or stop.group or stop.station)
+        local cid = groupId and canonical.resolveCanonical(currentState().canonical, "station_group", groupId) or nil
+        if not cid then return nil, "native line contains an unmapped station group" end
+        result.stops[#result.stops + 1] = {
+          stationGroupCid = cid,
+          station = util.integer(stop.station, 0),
+          terminal = util.integer(stop.terminal, 0),
+        }
+      end
+    elseif kind:sub(1, 8) == "vehicle." then
+      local vehicle = safeOperationComponent(localId, types.TRANSPORT_VEHICLE)
+      if not vehicle then return nil, "native vehicle component is unavailable after operation" end
+      result.userStopped = vehicle.userStopped == true
+      result.sellOnArrival = vehicle.sellOnArrival == true
+      local lineId = tonumber(vehicle.line)
+      if lineId and lineId >= 0 then
+        result.lineCid = canonical.resolveCanonical(currentState().canonical, "line", lineId)
+      end
+      result.stopIndex = tonumber(vehicle.stopIndex)
+      local config = vehicle.transportVehicleConfig
+      result.vehicleParts = config and #(config.vehicles or {}) or nil
+    elseif kind == "entity.name" then
+      local name = safeOperationComponent(localId, types.NAME)
+      result.name = name and tostring(name.name or "") or nil
+    elseif kind == "entity.color" then
+      -- Color userdata layout has varied between API states. Callback success,
+      -- target existence, and the canonical transaction remain authoritative;
+      -- retain an explicit marker instead of guessing component fields.
+      result.colorApplied = safeOperationComponent(localId, types.COLOR) ~= nil
+    end
+    return result
+  end
+  
+  local function bindOperationOutput(record, localId)
+    local spec = operationCodec.spec(record.transaction.kind)
+    if not spec.outputKind then return nil end
+    if not localId or not world.entityExists(localId) then
+      return nil, "native operation did not produce a valid local output"
+    end
+    if world.kindOf(localId) ~= spec.outputKind then
+      return nil, "native operation output kind mismatch"
+    end
+    local cid = canonical.createdId(spec.outputKind, record.eventId, 1)
+    local metadata = {
+      owner = record.companyCid,
+      operationDigest = record.transaction.digest,
+      outputSlot = spec.outputKind .. ":1",
+    }
+    if spec.outputKind == "line" then
+      metadata.name = record.transaction.data.name
+      metadata.stops = util.deepCopy(record.transaction.data.line.stops)
+    elseif spec.outputKind == "vehicle" then
+      metadata.models = util.deepCopy(record.transaction.data.config.vehicles)
+      metadata.depotCid = record.transaction.data.depotCid
+    end
+    local ok, err = canonical.bind(currentState().canonical, cid, spec.outputKind, localId, metadata)
+    if not ok then return nil, err end
+    currentState().world.logicalOwners[tostring(localId)] = record.companyCid
+    return { kind = spec.outputKind, cid = cid, slot = spec.outputKind .. ":1", localId = localId }
+  end
+  
+  local function applyOperationMetadata(record)
+    local transaction, data = record.transaction, record.transaction.data
+    local binding = data.targetCid and currentState().canonical.byCanonical[data.targetCid] or nil
+    if binding then
+      binding.metadata = binding.metadata or {}
+      binding.metadata.owner = binding.metadata.owner or record.companyCid
+      binding.metadata.lastOperationDigest = transaction.digest
+      if transaction.kind == "line.update" then binding.metadata.stops = util.deepCopy(data.line.stops)
+      elseif transaction.kind == "vehicle.assign" then binding.metadata.lineCid = data.lineCid
+      elseif transaction.kind == "entity.name" then binding.metadata.name = data.name
+      elseif transaction.kind == "entity.color" then binding.metadata.color = util.deepCopy(data.color)
+      elseif transaction.kind == "vehicle.stop" then binding.metadata.userStopped = data.stopped
+      elseif transaction.kind == "vehicle.maintenance" then
+        binding.metadata.maintenanceBasisPoints = data.valueBasisPoints
+      end
+    end
+    if transaction.kind == "line.delete" or transaction.kind == "vehicle.sell" then
+      local localId = binding and binding.localId or record.localRefs[data.targetCid]
+      canonical.unbindCanonical(currentState().canonical, data.targetCid)
+      if localId then currentState().world.logicalOwners[tostring(localId)] = nil end
+    end
+  end
+  
+  local function emitOperationCompletion(record, success, result)
+    if currentState().networkMode ~= "network" or record.completionEmitted == true then return true end
+    local outputs = {}
+    for _, output in ipairs(success and type(result) == "table" and (result.outputs or {}) or {}) do
+      outputs[#outputs + 1] = { kind = output.kind, cid = output.cid, slot = output.slot }
+    end
+    local view = {
+      operationId = record.operationId,
+      commitSeq = tonumber(record.commitSeq),
+      operationDigest = record.transaction.digest,
+      success = success == true,
+      outputs = outputs,
+      postcondition = success and util.deepCopy(result.postcondition) or {},
+      coreDigest = env.coreDigest(),
+    }
+    local payload = util.deepCopy(view)
+    payload.financeDelta = success and util.integer(result.financeDelta, 0) or nil
+    payload.resultDigest = hash.value(view)
+    if not success then payload.errorCode = "native-operation-failed" end
+    local emitted, messageOrError = bridge.emit(
+      currentState().bridge, "operation_completion", payload, currentState().tick)
+    if not emitted then record.completionError = tostring(messageOrError); return false, record.completionError end
+    record.completionEmitted = true
+    record.completionError = nil
+    record.completion = util.deepCopy(payload)
+    return true, payload
+  end
+  
+  local function finaliseCanonicalOperation(payload)
+    payload = type(payload) == "table" and payload or {}
+    local operationId = tostring(payload.operationId or "")
+    local record = currentState().world.operations.byId[operationId]
+    if not record then return false, "unknown pending canonical operation" end
+    if record.status == "applied" then return true, util.deepCopy(record.result) end
+    if record.status == "failed" then return false, util.deepCopy(record.result) end
+    if payload.success ~= true then
+      local ok, result = operationFailure(record,
+        { error = tostring(payload.error or "GUI-state native operation was rejected") })
+      emitOperationCompletion(record, false, result)
+      return ok, result
+    end
+  
+    local output
+    if operationCodec.spec(record.transaction.kind).outputKind then
+      local bound, bindError = bindOperationOutput(record, tonumber(payload.outputLocalId))
+      if not bound then
+        local ok, result = operationFailure(record, bindError)
+        emitOperationCompletion(record, false, result)
+        return ok, result
+      end
+      output = bound
+    end
+    local postcondition, postError = operationPostcondition(
+      record, output and output.cid or nil, output and output.localId or nil)
+    if not postcondition then
+      if output then canonical.unbindCanonical(currentState().canonical, output.cid) end
+      local ok, result = operationFailure(record, postError)
+      emitOperationCompletion(record, false, result)
+      return ok, result
+    end
+    if (record.transaction.kind == "line.delete" or record.transaction.kind == "vehicle.sell")
+      and postcondition.exists == true then
+      local ok, result = operationFailure(record, "native delete/sell left the target entity alive")
+      emitOperationCompletion(record, false, result)
+      return ok, result
+    end
+    applyOperationMetadata(record)
+    local balanceAfter = tonumber(payload.balanceAfter) or env.balanceOf(record.nativePlayerId)
+    local financeDelta = tonumber(payload.financeDelta) ~= nil
+      and util.integer(payload.financeDelta, 0)
+      or (balanceAfter and record.balanceBefore
+        and util.integer(balanceAfter - record.balanceBefore, 0) or 0)
+    local result = {
+      operationId = operationId,
+      transactionId = record.transaction.transactionId,
+      operationDigest = record.transaction.digest,
+      kind = record.transaction.kind,
+      companyCid = record.companyCid,
+      outputs = output and { {
+        kind = output.kind, cid = output.cid, slot = output.slot,
+      } } or {},
+      postcondition = postcondition,
+      financeDelta = financeDelta,
+    }
+    record.status = "applied"
+    record.completedTick = currentState().tick
+    record.result = util.deepCopy(result)
+    currentState().world.operations.applied = (currentState().world.operations.applied or 0) + 1
+    currentState().probes.capture.operationReplayCount =
+      (currentState().probes.capture.operationReplayCount or 0) + 1
+    env.refreshOwnershipProbe()
+    emitOperationCompletion(record, true, result)
+    return true, result
+  end
+  
+  
+  return {
+    queue = queueCanonicalOperation,
+    finalise = finaliseCanonicalOperation,
+    emitCompletion = emitOperationCompletion,
+  }
+end
+
+return M

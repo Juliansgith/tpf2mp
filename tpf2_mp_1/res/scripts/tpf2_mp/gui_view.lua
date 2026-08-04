@@ -1,0 +1,362 @@
+local util = require "tpf2_mp/util"
+
+local M = {}
+
+local function compactResult(value)
+  if value == nil then return "-" end
+  if type(value) ~= "table" then return tostring(value) end
+  if value.mode then return "mode=" .. tostring(value.mode) end
+  if value.lineCid then return tostring(value.lineCid) .. (value.fareCents and (" fare=" .. value.fareCents .. "c") or "") end
+  if value.queued then return "queued seq " .. tostring(value.localSeq) end
+  if value.mobilityDigest then return "mobility=" .. tostring(value.mobilityDigest) end
+  if value.structuralDigest then return "world=" .. tostring(value.structuralDigest) end
+  return "table"
+end
+
+function M.render(gui, snapshot, options)
+  if not gui.status then return end
+  options = options or {}
+  snapshot = snapshot or gui.snapshot or {}
+  local companion = snapshot.bridge and snapshot.bridge.companion or {}
+  local linkStatus = snapshot.networkMode ~= "network" and "local"
+    or (companion.connected == true and "connected" or tostring(companion.status or "offline"))
+  local status = string.format(
+    "Mode: %s | Peer: %s | Link: %s | Active: %s | Proxy: %s | Selected: %s (%s) | Markets: %d | Services: %d | Epoch: %d",
+    tostring(snapshot.networkMode or "?"),
+    tostring(snapshot.peerId or "?"),
+    linkStatus,
+    tostring(snapshot.activeCompanyName or "not initialised"),
+    tostring(snapshot.proxyMode == true),
+    tostring(gui.selectedEntityId or "none"),
+    tostring(gui.selectedEntityKind or "-"),
+    tonumber(snapshot.marketCount) or 0,
+    tonumber(snapshot.serviceCount) or 0,
+    tonumber(snapshot.epoch) or 0
+  )
+  gui.status:setText(status)
+  local lines = {
+    "Session: " .. tostring(snapshot.sessionId or "?") .. " | digest " .. tostring(snapshot.digest or "?"),
+    string.format("Match: %s | epoch limit %s | value target %.2f | winner %s",
+      tostring(snapshot.match and snapshot.match.status or "setup"),
+      tostring(snapshot.match and snapshot.match.rules and snapshot.match.rules.maxEpochs or "-"),
+      (snapshot.match and snapshot.match.rules and snapshot.match.rules.valuationTargetCents or 0) / 100,
+      tostring(snapshot.match and snapshot.match.winnerCid or "-")),
+    string.format("Starting cash: target %.0f | setup grants %.0f | repairs %d%s",
+      snapshot.startingCash and snapshot.startingCash.target or 0,
+      snapshot.startingCash and snapshot.startingCash.totalGranted or 0,
+      snapshot.startingCash and snapshot.startingCash.repairs or 0,
+      snapshot.startingCash and snapshot.startingCash.lastError and (" | ERROR " .. tostring(snapshot.startingCash.lastError)) or ""),
+    "Canonical objects: " .. tostring(snapshot.canonicalCount or 0) .. " | autonomy frozen: " .. tostring(snapshot.autonomyFrozen == true),
+    "World manifest: " .. tostring(snapshot.probes and snapshot.probes.worldManifestDigest or "-")
+      .. " | ambiguous operational fingerprints "
+      .. tostring(snapshot.probes and snapshot.probes.worldManifest
+        and snapshot.probes.worldManifest.ambiguousCount or 0)
+      .. " | deferred scenery "
+      .. tostring(snapshot.probes and snapshot.probes.worldManifest
+        and snapshot.probes.worldManifest.deferredUnique or 0),
+    "Bridge out/in: " .. tostring(snapshot.bridge and snapshot.bridge.emitted or 0) .. "/" .. tostring(snapshot.bridge and snapshot.bridge.received or 0),
+    "Last result: " .. compactResult(snapshot.lastResult),
+    "Route draft: " .. tostring(#(gui.routeDraft or {}))
+      .. " stops | retained line " .. tostring(gui.selectedLineId or "-")
+      .. " | vehicle " .. tostring(gui.selectedVehicleId or "-")
+      .. " | depot " .. tostring(gui.selectedDepotId or "-"),
+  }
+  if snapshot.networkMode == "network" then
+    local endpoint = companion.role == "host"
+      and (tostring(companion.bind or "?") .. ":" .. tostring(companion.port or "?"))
+      or (tostring(companion.host or "?") .. ":" .. tostring(companion.port or "?"))
+    local peers = type(companion.connectedPeers) == "table"
+      and table.concat(companion.connectedPeers, ",") or "-"
+    lines[#lines + 1] = string.format(
+      "Companion: %s/%s | endpoint %s | TCP %s | remote peers %s",
+      tostring(companion.role or "missing"),
+      tostring(companion.status or "not-running"),
+      endpoint,
+      companion.connected == true and "connected" or "waiting",
+      peers
+    )
+    local capture = gui.nativeBuildCapture or {}
+    lines[#lines + 1] = string.format(
+      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | construction previews %d/%d projected/skipped",
+      gui.pendingNetworkBuildSuppression and "settling click"
+        or (gui.pendingNetworkBuildExact and "exact click latched"
+          or (gui.pendingNetworkBuildPreview and "preview armed" or "idle")),
+      tonumber(capture.captured) or 0,
+      tonumber(capture.exactCaptures) or 0,
+      tonumber(capture.previewFallbacks) or 0,
+      tonumber(capture.duplicates) or 0,
+      tonumber(capture.orphaned) or 0,
+      tonumber(capture.constructionPreviewsProjected) or 0,
+      tonumber(capture.constructionPreviewsSkipped) or 0
+    )
+    local clock = snapshot.networkClock or {}
+    lines[#lines + 1] = string.format(
+      "Shared clock: requested %s | effective %s | generation %s | %s",
+      tostring(clock.requestedSpeed or 0),
+      tostring(clock.effectiveSpeed or 0),
+      tostring(clock.generation or 0),
+      tostring(clock.reason or "waiting for host"))
+    local clockCapture = gui.nativeClockCapture or {}
+    lines[#lines + 1] = string.format(
+      "Vanilla clock bridge: captured %d | duplicate %d | invalid %d | last %s",
+      tonumber(clockCapture.captured) or 0,
+      tonumber(clockCapture.duplicates) or 0,
+      tonumber(clockCapture.invalid) or 0,
+      tostring(clockCapture.lastRequestedSpeed or "-"))
+  end
+  if snapshot.validation and snapshot.validation.enabled then
+    lines[#lines + 1] = string.format(
+      "Unattended validation: %s | stage %s | checks %d",
+      tostring(snapshot.validation.status or "?"),
+      tostring(snapshot.validation.stage or "?"),
+      #(snapshot.validation.checks or {})
+    )
+  end
+  if snapshot.turn and snapshot.turn.lastFailure then
+    local failure = snapshot.turn.lastFailure
+    local migration = failure.failure and failure.failure.migration or nil
+    local failedAssets = failure.failed or (migration and migration.failed) or {}
+    local recoveryFailures = failure.recoveryFailed or (migration and migration.recoveryFailed) or {}
+    lines[#lines + 1] = string.format(
+      "TURN FAILURE: stage %s at tick %s | failed assets %d | recovery failures %d",
+      tostring(failure.stage or "unknown"),
+      tostring(failure.tick or "?"),
+      #failedAssets,
+      #recoveryFailures
+    )
+  end
+  local errorText = gui.lastError or snapshot.lastError or (snapshot.bridge and snapshot.bridge.lastError)
+  if errorText then lines[#lines + 1] = "ERROR: " .. tostring(errorText) end
+  local results = snapshot.lastResults or {}
+  local scoreboard = snapshot.scoreboard or {}
+  for _, companyCid in ipairs(snapshot.companyOrder or {}) do
+    local company = snapshot.companies and snapshot.companies[companyCid] or {}
+    local score = results.companies and results.companies[companyCid] or {}
+    local total = scoreboard[companyCid] or {}
+    lines[#lines + 1] = string.format(
+      "%s: balance %.0f, loan %.0f | assets %d | epoch demand %d, revenue %.2f | value %.2f, reach %d, wins %d",
+      company.name or companyCid,
+      company.effectiveBalance or company.balance or 0,
+      company.loan or 0,
+      company.assets and company.assets.total or 0,
+      score.demand or 0,
+      (score.revenueCents or 0) / 100,
+      (total.modelValueCents or 0) / 100,
+      total.marketsReached or 0,
+      total.marketWins or 0
+    )
+  end
+  local shownMarkets = 0
+  for _, marketCid in ipairs(util.sortedKeys(results.markets or {})) do
+    if shownMarkets >= 8 then break end
+    shownMarkets = shownMarkets + 1
+    local market = results.markets[marketCid]
+    lines[#lines + 1] = string.format("Market %s: demand %d, outside %d", market.name or marketCid, market.demand or 0, market.outside or 0)
+    for _, lineCid in ipairs(util.sortedKeys(market.services or {})) do
+      local service = market.services[lineCid]
+      local factors = service.factors or {}
+      lines[#lines + 1] = string.format(
+        "  %s: %d pax (%d.%02d%%), fare %.2f | freq +%d time +%d quality +%d fare -%d",
+        service.name or lineCid,
+        service.allocated or 0,
+        math.floor((service.shareBasisPoints or 0) / 100),
+        (service.shareBasisPoints or 0) % 100,
+        (service.fareCents or 0) / 100,
+        factors.frequency or 0,
+        factors.journey or 0,
+        factors.quality or 0,
+        factors.farePenalty or 0
+      )
+    end
+  end
+  local capture = snapshot.probes and snapshot.probes.capture or {}
+  lines[#lines + 1] = string.format(
+    "Observed proposals GUI/native/commits: %d/%d/%d | vehicle accepts/resolved: %d/%d | claimed: %d",
+    capture.preCommitCount or 0,
+    capture.nativePreCommitCount or 0,
+    capture.postCommitCount or 0,
+    capture.vehicleIntentCount or 0,
+    capture.vehicleResolvedCount or 0,
+    capture.claimedCount or 0
+  )
+  local operational = snapshot.probes and snapshot.probes.operational or {}
+  if operational.enabled then
+    local sample = operational.lastSample or {}
+    lines[#lines + 1] = string.format(
+      "OPERATIONAL CAPTURE ONLY (not synchronized): samples %d | speed %s | lines %d | vehicles %d | native commands %d | GUI actions %d",
+      operational.sampleCount or 0,
+      tostring(sample.gameSpeed or "-"),
+      sample.lineCount or 0,
+      sample.vehicleCount or 0,
+      capture.nativeCommandCount or 0,
+      capture.operationalGuiCount or 0
+    )
+    if operational.autoInit and operational.autoInit.success ~= true then
+      lines[#lines + 1] = "CAPTURE AUTO-INIT ERROR: " .. tostring(operational.autoInit.error or "unknown")
+    end
+  end
+  lines[#lines + 1] = string.format(
+    "Edge replacements observed/rebound/failures/recoveries: %d/%d/%d/%d",
+    capture.replacementObservedCount or 0,
+    capture.replacementReboundCount or 0,
+    capture.replacementFailureCount or 0,
+    capture.replacementRecoveryCount or 0
+  )
+  lines[#lines + 1] = string.format(
+    "Rival edits blocked before commit: proposals %d | entity actions %d",
+    capture.accessDeniedCount or 0,
+    capture.entityAccessDeniedCount or 0
+  )
+  local proposals = snapshot.proposals or {}
+  lines[#lines + 1] = string.format(
+    "Canonical proposals queued/applied/failed/retained: %d/%d/%d/%d",
+    proposals.queued or 0, proposals.applied or 0, proposals.failed or 0, proposals.retained or 0
+  )
+  local operations = snapshot.operations or {}
+  lines[#lines + 1] = string.format(
+    "Canonical line/vehicle operations queued/applied/failed/retained: %d/%d/%d/%d",
+    operations.queued or 0, operations.applied or 0,
+    operations.failed or 0, operations.retained or 0)
+  local consensus = snapshot.proposalConsensus or {}
+  lines[#lines + 1] = string.format(
+    "Physical consensus pending/complete/faulted: %d/%d/%d | session %s",
+    consensus.pending or 0,
+    consensus.completed or 0,
+    consensus.failed or 0,
+    consensus.sessionFault and "FAULTED" or "healthy"
+  )
+  local operationConsensus = snapshot.operationConsensus or {}
+  lines[#lines + 1] = string.format(
+    "Operation consensus pending/complete/faulted: %d/%d/%d | session %s",
+    operationConsensus.pending or 0,
+    operationConsensus.completed or 0,
+    operationConsensus.failed or 0,
+    operationConsensus.sessionFault and "FAULTED" or "healthy")
+  local checkpoints = snapshot.checkpointConsensus or {}
+  lines[#lines + 1] = string.format(
+    "Checkpoint barriers pending/complete/faulted: %d/%d/%d | last agreed %s",
+    checkpoints.pending or 0,
+    checkpoints.completed or 0,
+    checkpoints.failed or 0,
+    checkpoints.lastAgreed and tostring(checkpoints.lastAgreed.boundarySeq or "yes") or "-"
+  )
+  local deferred = snapshot.deferredNetworkIntent
+  if deferred then
+    lines[#lines + 1] = string.format(
+      "Queued multiplayer physical actions: %d/%d | oldest tick %s | %s",
+      deferred.queueDepth or 1,
+      deferred.capacity or (options.maxDeferredNetworkIntents or 32),
+      tostring(deferred.queuedTick or "-"),
+      tostring(deferred.reason or "waiting for authority"))
+  end
+  local deferredQueue = snapshot.deferredNetworkQueue or {}
+  if deferredQueue.awaitingOrder then
+    lines[#lines + 1] = string.format(
+      "Outbound intent %s awaiting host order | %s",
+      tostring(deferredQueue.awaitingOrder.localSeq or "-"),
+      tostring(deferredQueue.awaitingOrder.type or "action"))
+  end
+  local mobility = snapshot.probes and snapshot.probes.mobility or nil
+  if mobility then
+    lines[#lines + 1] = string.format(
+      "Native mobility: people %s | line uses pax %s cargo %s | vehicles %s | digest %s",
+      tostring(mobility.totalPersons or "-"),
+      tostring(mobility.totals and mobility.totals.passengerLineUses or "-"),
+      tostring(mobility.totals and mobility.totals.cargoLineUses or "-"),
+      tostring(mobility.totals and mobility.totals.vehicles or "-"),
+      tostring(snapshot.probes.mobilityDigest or "-")
+    )
+  end
+  local native = snapshot.probes and snapshot.probes.nativeHook or {}
+  lines[#lines + 1] = string.format(
+    "Native hook: %s | stage %s | active %s",
+    native.available == true and "loaded" or "not loaded",
+    tostring(native.stage or "-"),
+    tostring(native.active == true)
+  )
+  lines[#lines + 1] = string.format(
+    "Native pre-issue observer states: %d | sendCommand calls: %d",
+    tonumber(native.commandObserverStateCount) or 0,
+    tonumber(native.commandCalls) or 0
+  )
+  local buildGate = native.gates and native.gates.buildProposal or {}
+  lines[#lines + 1] = string.format(
+    "Build gate: %s | calls %d | pending auth %d | passed %d | suppressed %d | ABI mismatches %d",
+    tostring(buildGate.enabled == true),
+    tonumber(buildGate.calls) or 0,
+    tonumber(buildGate.authorizations) or 0,
+    tonumber(buildGate.allowed) or 0,
+    tonumber(buildGate.suppressed) or 0,
+    tonumber(buildGate.tagMismatches) or 0
+  )
+  local commandGate = native.gates and native.gates.commandVisitors or {}
+  lines[#lines + 1] = string.format(
+    "Command gates: %s | visitors %d | passed %d | suppressed %d | mismatches %d",
+    tostring(commandGate.enabled == true),
+    tonumber(commandGate.hooked) or 0,
+    tonumber(commandGate.allowedTotal) or 0,
+    tonumber(commandGate.suppressedTotal) or 0,
+    tonumber(commandGate.tagMismatches) or 0
+  )
+  local nativeLines = gui.nativeLineCapture or {}
+  lines[#lines + 1] = string.format(
+    "Vanilla line manager captured create/delete/update/name/color: %d/%d/%d/%d/%d | invalid %d | last stops %d",
+    tonumber(nativeLines.creates) or 0,
+    tonumber(nativeLines.deletes) or 0,
+    tonumber(nativeLines.updates) or 0,
+    tonumber(nativeLines.names) or 0,
+    tonumber(nativeLines.colors) or 0,
+    tonumber(nativeLines.invalid) or 0,
+    tonumber(nativeLines.lastStopCount) or 0)
+  local authority = snapshot.probes and snapshot.probes.networkAuthority or {}
+  if snapshot.networkMode == "network" then
+    lines[#lines + 1] = "Network authority: "
+      .. (authority.ready == true and "ready" or "FAULTED - " .. tostring(authority.error or "unknown"))
+    local calendar = snapshot.probes and snapshot.probes.networkCalendar or {}
+    lines[#lines + 1] = "Network calendar: "
+      .. (calendar.frozen == true and "frozen (native recurring finance disabled)"
+        or "FAULTED - " .. tostring(calendar.error or "freeze unavailable"))
+    local sessionFault = (snapshot.proposalConsensus and snapshot.proposalConsensus.sessionFault)
+      or (snapshot.operationConsensus and snapshot.operationConsensus.sessionFault)
+    local ready = authority.ready == true and companion.connected == true and not sessionFault
+    lines[#lines + 1] = "Multiplayer readiness: " .. (ready and "READY"
+      or "WAITING - start the matching host/client companion and use the same session/manifest")
+    local networkAccounts = snapshot.networkAccounts or {}
+    local reconciliation = networkAccounts.reconciliation or {}
+    lines[#lines + 1] = string.format(
+      "Canonical finance: %s | entries %d | native reconciliations %d/%d failed",
+      networkAccounts.initialized == true and "active" or "NOT READY",
+      #(networkAccounts.entries or {}),
+      tonumber(reconciliation.attempts) or 0,
+      tonumber(reconciliation.failures) or 0
+    )
+  end
+  if snapshot.proxyMode then
+    local turn = snapshot.turn or {}
+    lines[#lines + 1] = string.format("Turn desk: %s | leased assets %d | started tick %s | build pause %s",
+      tostring(turn.companyCid or "inactive"), turn.leasedAssets or 0, tostring(turn.startedTick or "-"), tostring(turn.paused == true))
+    local pinned = snapshot.ownership and snapshot.ownership.pinned or {}
+    lines[#lines + 1] = string.format(
+      "Tracked edge custody: %d | native holder desk/rightful company; rival edits blocked before commit",
+      tonumber(pinned.total) or 0)
+    lines[#lines + 1] = "Native borrow/repay is locked on the turn desk; competitive credit is not implemented yet."
+  end
+  local codecFailure = capture.lastProposalCodecFailure
+  if codecFailure then
+    local diagnostic = codecFailure.diagnostic or {}
+    local counts = diagnostic.counts or {}
+    local sample = diagnostic.constructionSamples and diagnostic.constructionSamples[1] or nil
+    lines[#lines + 1] = string.format(
+      "Last unsupported build: %s | construction add/remove %d/%d%s",
+      tostring(codecFailure.error or "unknown"),
+      tonumber(counts.constructionsToAdd) or 0,
+      tonumber(counts.constructionsToRemove) or 0,
+      sample and (" | " .. tostring(sample.fileName or sample.kindHint or "construction")) or ""
+    )
+  end
+  lines[#lines + 1] = "Implemented multiplayer slice: canonical roads/tracks/signals, portable depot/construction/asset build and removal, modular station placement/edit/removal, plus host-ordered line and railway-vehicle operations. Unsupported opaque mod callbacks fail closed; host-owned autonomous simulation remains a research gate."
+  gui.details:setText(table.concat(lines, "\n"))
+end
+
+
+return M

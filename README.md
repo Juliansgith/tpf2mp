@@ -218,6 +218,9 @@ The plan names the exact convergence boundary and new session ID. Host sessions 
 
 ## Repository map
 
+- [ARCHITECTURE.md](ARCHITECTURE.md) - runtime layers, module ownership,
+  authority invariants, and the supported path for adding command families.
+
 - `tpf2_mp_1/` — installable prototype 0.21; state schema 19, checkpoint format 2, edge schema 5, and construction schema 7.
 - `companion/tpf2mp/` — dependency-free protocol, bridge, host/client sequencer, manifests, replay, and reports.
 - `native/` — pinned Build 35924 DLL/injector, signatures, MinHook pin, tests, and documentation.

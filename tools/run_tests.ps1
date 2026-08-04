@@ -27,8 +27,14 @@ $traceInbox = Join-Path $traceBridge 'game_inbox'
 New-Item -ItemType Directory -Force -Path $gameOutbox, $gameInbox, $mainOutbox, $mainInbox, $hotseatOutbox, $hotseatInbox, $networkMapOutbox, $networkMapInbox, $traceOutbox, $traceInbox | Out-Null
 
 try {
+    & (Join-Path $projectRoot 'tools\check_source_boundaries.ps1') -ProjectRoot $projectRoot
+    if (-not $?) { throw 'Architecture boundary checks failed' }
+
     & $lua (Join-Path $projectRoot 'tests\run_lua_tests.lua') $projectRoot $temporary
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed with exit code $LASTEXITCODE" }
+
+    & $lua (Join-Path $projectRoot 'tests\run_runtime_module_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Runtime module tests failed with exit code $LASTEXITCODE" }
 
     & $lua (Join-Path $projectRoot 'tests\run_edge_ownership_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Edge ownership tests failed with exit code $LASTEXITCODE" }

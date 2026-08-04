@@ -4,23 +4,26 @@ import socket
 import re
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Mapping
+from typing import Any, Mapping
 
 from .bridge import AuditLog, GameBridge
 from .checkpoint import verify_checkpoint
+from .consensus import (
+    ConsensusTrackers,
+    clock_health_payload,
+    operation_completion_payload,
+    proposal_completion_payload,
+)
 from .protocol import (
-    MAX_PROPOSAL_OUTPUTS,
     PROTOCOL_VERSION,
     ProtocolError,
-    decode_line,
-    encode_line,
-    hello,
     sign,
     validate_action,
     validate_envelope,
 )
+from .client import CommitClient
+from .transport import ConnectedPeer, read_frame as _read_frame, send as _send
 
 HOST_AUTHORITY_ACTIONS = {
     "match.initialise",
@@ -32,31 +35,6 @@ HOST_AUTHORITY_ACTIONS = {
     "probe.mobility",
     "finance.toggle_neutralizer",
 }
-
-
-def _read_frame(reader: BinaryIO) -> dict[str, Any]:
-    raw = reader.readline()
-    if not raw:
-        raise ConnectionError("peer closed the connection")
-    if len(raw) > 4 * 1024 * 1024:
-        raise ProtocolError("frame exceeds 4 MiB")
-    return decode_line(raw)
-
-
-def _send(sock: socket.socket, message: Mapping[str, Any], lock: threading.Lock | None = None) -> None:
-    payload = encode_line(message)
-    if lock is None:
-        sock.sendall(payload)
-    else:
-        with lock:
-            sock.sendall(payload)
-
-
-@dataclass
-class ConnectedPeer:
-    peer: str
-    sock: socket.socket
-    send_lock: threading.Lock
 
 
 class CommitHost:
@@ -88,7 +66,6 @@ class CommitHost:
         self.clock_requested_speed = 0
         self.clock_effective_speed = 0
         self.clock_generation = 0
-        self.clock_controls: dict[int, dict[str, Any]] = {}
         self.clock_health: dict[str, dict[str, Any]] = {}
         self.clock_last_adjustment = 0.0
         self.clock_healthy_since: float | None = None
@@ -97,10 +74,18 @@ class CommitHost:
         self.required_peers = tuple(sorted(configured_peers))
         self.completion_timeout = max(1.0, float(completion_timeout))
         self.require_connected_peers = bool(require_connected_peers)
-        self.proposal_prepares: dict[int, dict[str, Any]] = {}
-        self.proposal_consensus: dict[int, dict[str, Any]] = {}
-        self.operation_consensus: dict[int, dict[str, Any]] = {}
-        self.checkpoint_consensus: dict[int, dict[str, Any]] = {}
+        self.consensus = ConsensusTrackers(
+            self.bridge.session,
+            self.required_peers,
+            self.completion_timeout,
+        )
+        # Compatibility aliases are intentionally retained for status readers,
+        # tests, and recovery tooling that inspect CommitHost directly.
+        self.proposal_prepares = self.consensus.proposal_prepares
+        self.proposal_consensus = self.consensus.proposals
+        self.operation_consensus = self.consensus.operations
+        self.checkpoint_consensus = self.consensus.checkpoints
+        self.clock_controls = self.consensus.clock_controls
         self.last_agreed_checkpoint: dict[str, Any] | None = None
         self.session_fault: str | None = None
         self.status = "starting"
@@ -275,43 +260,13 @@ class CommitHost:
                         )
 
     def _track_proposal_prepare(self, commit: Mapping[str, Any]) -> dict[str, Any]:
-        seq = int(commit["seq"])
-        action = commit.get("payload", {}).get("action", {})
-        transaction = action.get("transaction", {})
-        tracker = self.proposal_prepares.get(seq)
-        if tracker is None:
-            tracker = {
-                "prepareSeq": seq,
-                "originPeer": str(commit.get("origin_peer")),
-                "originLocalSeq": int(commit.get("origin_local_seq", -1)),
-                "originTick": int(commit.get("tick", 0)),
-                "proposalDigest": transaction.get("digest"),
-                "transaction": dict(transaction),
-                "requiredPeers": self.required_peers,
-                "acks": {},
-                "status": "pending",
-                "deadline": time.monotonic() + self.completion_timeout,
-            }
-            self.proposal_prepares[seq] = tracker
-        return tracker
+        return self.consensus.track_prepare(commit)
 
     def _track_clock(self, commit: Mapping[str, Any]) -> dict[str, Any]:
         seq = int(commit["seq"])
-        action = commit.get("payload", {}).get("action", {})
-        tracker = self.clock_controls.get(seq)
-        if tracker is None:
-            tracker = {
-                "commitSeq": seq,
-                "requestedSpeed": int(action.get("requestedSpeed", 0)),
-                "effectiveSpeed": int(action.get("effectiveSpeed", 0)),
-                "generation": int(action.get("generation", 0)),
-                "reason": str(action.get("reason", "host-order")),
-                "requiredPeers": self.required_peers,
-                "acks": {},
-                "status": "pending",
-                "deadline": time.monotonic() + min(self.completion_timeout, 10.0),
-            }
-            self.clock_controls[seq] = tracker
+        created = seq not in self.clock_controls
+        tracker = self.consensus.track_clock(commit)
+        if created:
             self.clock_last_adjustment = time.monotonic()
         self.clock_requested_speed = tracker["requestedSpeed"]
         self.clock_effective_speed = tracker["effectiveSpeed"]
@@ -319,50 +274,13 @@ class CommitHost:
         return tracker
 
     def _pending_clock_seq(self) -> int | None:
-        pending = [
-            seq for seq, tracker in self.clock_controls.items()
-            if tracker.get("status") == "pending"
-        ]
-        return min(pending) if pending else None
+        return self.consensus.pending_clock_seq()
 
     def _track_proposal(self, commit: Mapping[str, Any]) -> dict[str, Any]:
-        seq = int(commit["seq"])
-        action = commit.get("payload", {}).get("action", {})
-        transaction = action.get("transaction", {})
-        tracker = self.proposal_consensus.get(seq)
-        if tracker is None:
-            tracker = {
-                "commitSeq": seq,
-                "proposalId": f"{self.bridge.session}:{commit.get('origin_peer')}:{seq}",
-                "originPeer": str(commit.get("origin_peer")),
-                "proposalDigest": transaction.get("digest"),
-                "requiredPeers": self.required_peers,
-                "completions": {},
-                "status": "pending",
-                "deadline": time.monotonic() + self.completion_timeout,
-            }
-            self.proposal_consensus[seq] = tracker
-        return tracker
+        return self.consensus.track_proposal(commit)
 
     def _track_operation(self, commit: Mapping[str, Any]) -> dict[str, Any]:
-        seq = int(commit["seq"])
-        action = commit.get("payload", {}).get("action", {})
-        transaction = action.get("transaction", {})
-        tracker = self.operation_consensus.get(seq)
-        if tracker is None:
-            tracker = {
-                "commitSeq": seq,
-                "operationId": f"{self.bridge.session}:{commit.get('origin_peer')}:{seq}",
-                "originPeer": str(commit.get("origin_peer")),
-                "operationDigest": transaction.get("digest"),
-                "operationKind": transaction.get("kind"),
-                "requiredPeers": self.required_peers,
-                "completions": {},
-                "status": "pending",
-                "deadline": time.monotonic() + self.completion_timeout,
-            }
-            self.operation_consensus[seq] = tracker
-        return tracker
+        return self.consensus.track_operation(commit)
 
     def _track_checkpoint_boundary(
         self,
@@ -370,47 +288,19 @@ class CommitHost:
         reason: str,
         proposal_id: str | None = None,
     ) -> dict[str, Any]:
-        tracker = self.checkpoint_consensus.get(boundary_seq)
-        if tracker is None:
-            tracker = {
-                "boundarySeq": int(boundary_seq),
-                "reason": str(reason),
-                "proposalId": proposal_id,
-                "requiredPeers": self.required_peers,
-                "checkpoints": {},
-                "status": "pending",
-                "deadline": time.monotonic() + self.completion_timeout,
-            }
-            self.checkpoint_consensus[int(boundary_seq)] = tracker
-        return tracker
+        return self.consensus.track_checkpoint(boundary_seq, reason, proposal_id)
 
     def _pending_proposal(self) -> dict[str, Any] | None:
-        for seq in sorted(self.proposal_consensus):
-            tracker = self.proposal_consensus[seq]
-            if tracker.get("status") == "pending":
-                return tracker
-        return None
+        return self.consensus.pending(self.proposal_consensus)
 
     def _pending_prepare(self) -> dict[str, Any] | None:
-        for seq in sorted(self.proposal_prepares):
-            tracker = self.proposal_prepares[seq]
-            if tracker.get("status") == "pending":
-                return tracker
-        return None
+        return self.consensus.pending(self.proposal_prepares)
 
     def _pending_operation(self) -> dict[str, Any] | None:
-        for seq in sorted(self.operation_consensus):
-            tracker = self.operation_consensus[seq]
-            if tracker.get("status") == "pending":
-                return tracker
-        return None
+        return self.consensus.pending(self.operation_consensus)
 
     def _pending_checkpoint(self) -> dict[str, Any] | None:
-        for seq in sorted(self.checkpoint_consensus):
-            tracker = self.checkpoint_consensus[seq]
-            if tracker.get("status") == "pending":
-                return tracker
-        return None
+        return self.consensus.pending(self.checkpoint_consensus)
 
     def _commit(self, intent: Mapping[str, Any]) -> dict[str, Any] | None:
         validate_envelope(intent, self.bridge.session)
@@ -603,105 +493,8 @@ class CommitHost:
             self._broadcast(control)
             return control
 
-    @staticmethod
-    def _completion_payload(payload: Any) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise ProtocolError("proposal completion payload must be an object")
-        allowed = {
-            "proposalId", "commitSeq", "proposalDigest", "success", "outputs",
-            "financeDelta", "coreDigest", "resultDigest", "errorCode",
-        }
-        if set(payload) - allowed:
-            raise ProtocolError("proposal completion has unknown fields")
-        required = allowed - {"errorCode", "financeDelta"}
-        if not required <= set(payload):
-            raise ProtocolError("proposal completion has missing fields")
-        commit_seq = payload.get("commitSeq")
-        if not isinstance(commit_seq, int) or isinstance(commit_seq, bool) or commit_seq < 1:
-            raise ProtocolError("proposal completion commitSeq must be positive")
-        if not isinstance(payload.get("proposalId"), str) or not payload["proposalId"]:
-            raise ProtocolError("proposal completion has no proposalId")
-        if not isinstance(payload.get("success"), bool):
-            raise ProtocolError("proposal completion success must be boolean")
-        for field in ("proposalDigest", "coreDigest", "resultDigest"):
-            value = payload.get(field)
-            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{8}", value) is None:
-                raise ProtocolError(f"proposal completion {field} is not a canonical digest")
-        outputs = payload.get("outputs")
-        # Failed Lua completions have no output slots, so the deterministic
-        # game encoder spells the empty table as `{}`. Preserve that spelling
-        # for the peer result digest but treat it as an empty sequence during
-        # validation. A non-empty object is never a valid output collection.
-        lua_empty_outputs = isinstance(outputs, dict) and not outputs
-        if (not isinstance(outputs, list) and not lua_empty_outputs) or len(outputs) > MAX_PROPOSAL_OUTPUTS:
-            raise ProtocolError("proposal completion outputs are invalid")
-        for output in [] if lua_empty_outputs else outputs:
-            if not isinstance(output, dict) or set(output) != {"kind", "cid", "slot"}:
-                raise ProtocolError("proposal completion output is malformed")
-            if output["kind"] not in {
-                "node", "edge", "edge_object", "construction", "station", "station_group", "depot", "asset",
-            }:
-                raise ProtocolError("proposal completion output kind is unsupported")
-            if not isinstance(output["cid"], str) or not output["cid"].startswith(output["kind"] + ":"):
-                raise ProtocolError("proposal completion output has a non-canonical id")
-            if not isinstance(output["slot"], str) or not output["slot"].startswith(output["kind"] + ":"):
-                raise ProtocolError("proposal completion output has an invalid slot")
-        if "errorCode" in payload and not isinstance(payload["errorCode"], str):
-            raise ProtocolError("proposal completion errorCode must be a string")
-        if payload["success"]:
-            finance_delta = payload.get("financeDelta")
-            if not isinstance(finance_delta, int) or isinstance(finance_delta, bool):
-                raise ProtocolError("successful proposal completion requires integer financeDelta")
-        return dict(payload)
-
-    @staticmethod
-    def _operation_completion_payload(payload: Any) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise ProtocolError("operation completion payload must be an object")
-        allowed = {
-            "operationId", "commitSeq", "operationDigest", "success", "outputs",
-            "postcondition", "financeDelta", "coreDigest", "resultDigest", "errorCode",
-        }
-        if set(payload) - allowed:
-            raise ProtocolError("operation completion has unknown fields")
-        required = allowed - {"errorCode", "financeDelta"}
-        if not required <= set(payload):
-            raise ProtocolError("operation completion has missing fields")
-        commit_seq = payload.get("commitSeq")
-        if not isinstance(commit_seq, int) or isinstance(commit_seq, bool) or commit_seq < 1:
-            raise ProtocolError("operation completion commitSeq must be positive")
-        if not isinstance(payload.get("operationId"), str) or not payload["operationId"]:
-            raise ProtocolError("operation completion has no operationId")
-        if not isinstance(payload.get("success"), bool):
-            raise ProtocolError("operation completion success must be boolean")
-        for field in ("operationDigest", "coreDigest", "resultDigest"):
-            value = payload.get(field)
-            if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{8}", value) is None:
-                raise ProtocolError(f"operation completion {field} is not a canonical digest")
-        outputs = payload.get("outputs")
-        # Delete/update operations and failures can legitimately produce no
-        # canonical output object; Lua encodes that empty table as `{}`.
-        lua_empty_outputs = isinstance(outputs, dict) and not outputs
-        if (not isinstance(outputs, list) and not lua_empty_outputs) or len(outputs) > 1:
-            raise ProtocolError("operation completion outputs are invalid")
-        for output in [] if lua_empty_outputs else outputs:
-            if not isinstance(output, dict) or set(output) != {"kind", "cid", "slot"}:
-                raise ProtocolError("operation completion output is malformed")
-            if output["kind"] not in {"line", "vehicle"}:
-                raise ProtocolError("operation completion output kind is unsupported")
-            if not isinstance(output["cid"], str) or not output["cid"].startswith(output["kind"] + ":"):
-                raise ProtocolError("operation completion output has a non-canonical id")
-            if output["slot"] != output["kind"] + ":1":
-                raise ProtocolError("operation completion output has an invalid slot")
-        if not isinstance(payload.get("postcondition"), dict):
-            raise ProtocolError("operation completion postcondition must be an object")
-        if "errorCode" in payload and not isinstance(payload["errorCode"], str):
-            raise ProtocolError("operation completion errorCode must be a string")
-        if payload["success"]:
-            finance_delta = payload.get("financeDelta")
-            if not isinstance(finance_delta, int) or isinstance(finance_delta, bool):
-                raise ProtocolError("successful operation completion requires integer financeDelta")
-        return dict(payload)
+    _completion_payload = staticmethod(proposal_completion_payload)
+    _operation_completion_payload = staticmethod(operation_completion_payload)
 
     def _record_message(self, message: Mapping[str, Any]) -> dict[str, Any]:
         return sign(
@@ -891,33 +684,7 @@ class CommitHost:
                 tracker["requestedSpeed"], 0, self.last_error + ":resync-pause"
             )
 
-    @staticmethod
-    def _clock_health_payload(payload: Any) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise ProtocolError("clock health payload must be an object")
-        required = {
-            "schemaVersion", "requestedSpeed", "effectiveSpeed", "generation",
-            "engineTick", "lastCommitSeq", "proposalPending",
-        }
-        allowed = required | {"observedSpeed", "gameTime"}
-        if not required <= set(payload) or set(payload) - allowed:
-            raise ProtocolError("clock health payload has unknown or missing fields")
-        if payload.get("schemaVersion") != 1:
-            raise ProtocolError("unsupported clock health schema")
-        for field in (
-            "requestedSpeed", "effectiveSpeed", "generation", "engineTick", "lastCommitSeq"
-        ):
-            if not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool):
-                raise ProtocolError(f"clock health {field} must be an integer")
-        if not isinstance(payload.get("proposalPending"), bool):
-            raise ProtocolError("clock health proposalPending must be boolean")
-        for field in ("observedSpeed", "gameTime"):
-            value = payload.get(field)
-            if value is not None and (
-                not isinstance(value, (int, float)) or isinstance(value, bool)
-            ):
-                raise ProtocolError(f"clock health {field} must be numeric when present")
-        return dict(payload)
+    _clock_health_payload = staticmethod(clock_health_payload)
 
     def _record_clock_health_locked(self, message: Mapping[str, Any]) -> None:
         peer = str(message.get("peer", "unknown"))
@@ -1624,141 +1391,4 @@ class CommitHost:
             with self.peers_lock:
                 for peer in self.peers.values():
                     peer.sock.close()
-            self._write_status("stopped")
-
-
-class CommitClient:
-    def __init__(
-        self,
-        bridge: GameBridge,
-        host: str,
-        port: int,
-        match_fingerprint: str | None = None,
-    ) -> None:
-        self.bridge = bridge
-        self.host = host
-        self.port = port
-        self.match_fingerprint = match_fingerprint
-        self.stop = threading.Event()
-        self.status = "starting"
-        self.connected = False
-        self.last_error: str | None = None
-        self.next_host_seq: int | None = None
-
-    def _write_status(self, status: str | None = None) -> None:
-        if status is not None:
-            self.status = status
-        self.bridge.write_status(
-            {
-                "role": "client",
-                "status": self.status,
-                "connected": self.connected,
-                "host": self.host,
-                "port": self.port,
-                "nextHostSeq": self.next_host_seq,
-                "outboxCursor": self.bridge.outbox_cursor,
-                "lastCommitSeq": self._last_commit(),
-                "lastError": self.last_error,
-                "matchFingerprint": self.match_fingerprint,
-            }
-        )
-
-    def _last_commit(self) -> int:
-        sequences = self.bridge.existing_commit_sequences()
-        current = 0
-        while current + 1 in sequences:
-            current += 1
-        return current
-
-    def _session(self, poll_seconds: float) -> None:
-        sock = socket.create_connection((self.host, self.port), timeout=5)
-        sock.settimeout(None)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        reader = sock.makefile("rb")
-        send_lock = threading.Lock()
-        _send(
-            sock,
-            hello(self.bridge.session, self.bridge.peer, self._last_commit(), self.match_fingerprint),
-            send_lock,
-        )
-        acknowledgement = _read_frame(reader)
-        validate_envelope(acknowledgement, self.bridge.session)
-        if acknowledgement.get("kind") != "hello_ack":
-            raise ProtocolError("host did not acknowledge handshake")
-        if self.match_fingerprint and acknowledgement.get("match_fingerprint") != self.match_fingerprint:
-            raise ProtocolError("host acknowledged a different match fingerprint")
-        self.connected = True
-        self.status = "connected"
-        self.last_error = None
-        self.next_host_seq = int(acknowledgement.get("next_seq", 0))
-        self._write_status()
-        print(f"connected to {self.host}:{self.port}; next host sequence {acknowledgement.get('next_seq')}")
-        receiver_error: list[BaseException] = []
-        sent_pending: set[int] = set()
-
-        def receive() -> None:
-            try:
-                while not self.stop.is_set():
-                    message = _read_frame(reader)
-                    validate_envelope(message, self.bridge.session)
-                    if message.get("kind") in {"commit", "control"}:
-                        self.bridge.write_inbound(message)
-                    elif message.get("kind") == "receipt":
-                        if str(message.get("recipient")) != self.bridge.peer:
-                            raise ProtocolError("receipt was addressed to another peer")
-                        local_seq = int(message.get("local_seq", 0))
-                        self.bridge.acknowledge_outbound(local_seq)
-                        if not message.get("accepted"):
-                            print(f"host rejected local sequence {local_seq}: {message.get('reason')}")
-            except BaseException as exc:  # surfaced in the owning reconnect loop
-                receiver_error.append(exc)
-
-        thread = threading.Thread(target=receive, daemon=True)
-        thread.start()
-        try:
-            next_status = time.monotonic()
-            while not self.stop.is_set() and not receiver_error:
-                had_work = False
-                for local_seq, message in self.bridge.pending_outbound():
-                    if local_seq not in sent_pending:
-                        _send(sock, message, send_lock)
-                        sent_pending.add(local_seq)
-                        had_work = True
-                if not had_work:
-                    time.sleep(poll_seconds)
-                if time.monotonic() >= next_status:
-                    self._write_status()
-                    next_status = time.monotonic() + 0.5
-            if receiver_error:
-                raise ConnectionError(str(receiver_error[0]))
-        finally:
-            self.connected = False
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            reader.close()
-            sock.close()
-
-    def run(self, poll_seconds: float = 0.1, retry_seconds: float = 2.0) -> None:
-        print(f"TPF2MP client peer={self.bridge.peer} session={self.bridge.session} bridge={self.bridge.root}")
-        print(f"match fingerprint={self.match_fingerprint or 'UNVERIFIED'}")
-        self._write_status("connecting")
-        try:
-            while not self.stop.is_set():
-                try:
-                    self._session(poll_seconds)
-                except (ConnectionError, OSError, ProtocolError) as exc:
-                    if self.stop.is_set():
-                        break
-                    self.connected = False
-                    self.last_error = str(exc)
-                    self._write_status("retrying")
-                    print(f"connection unavailable: {exc}; retrying in {retry_seconds:.1f}s")
-                    self.stop.wait(retry_seconds)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.stop.set()
-            self.connected = False
             self._write_status("stopped")

@@ -138,7 +138,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_verify.cmd') -Destinati
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_uninstall.cmd') -Destination (Join-Path $releaseRoot 'UNINSTALL_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination (Join-Path $releaseRoot 'LAUNCH_TPF2MP.cmd')
 $documentNames = @(
-    'README.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
+    'README.md', 'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
     'tpf2-competitive-multiplayer-concept.md', 'tpf2-competitive-multiplayer-technical-plan.md',
     'multiplayer-companies-audit.md'
 )

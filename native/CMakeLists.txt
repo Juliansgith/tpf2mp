@@ -20,12 +20,20 @@ target_include_directories(tpf2mp_native_common PUBLIC include)
 target_compile_definitions(tpf2mp_native_common PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(tpf2mp_native_common PUBLIC bcrypt)
 
+add_library(tpf2mp_hook_support STATIC
+  src/native_command_codec.cpp
+  src/native_hook_status.cpp
+)
+target_link_libraries(tpf2mp_hook_support PUBLIC tpf2mp_native_common)
+target_include_directories(tpf2mp_hook_support PUBLIC include)
+target_compile_definitions(tpf2mp_hook_support PUBLIC UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
+
 add_library(tpf2mp_hook SHARED
   src/hook_dll.cpp
 )
 target_include_directories(tpf2mp_hook PRIVATE include)
 target_compile_definitions(tpf2mp_hook PRIVATE TPF2MP_HOOK_EXPORTS)
-target_link_libraries(tpf2mp_hook PRIVATE tpf2mp_native_common minhook)
+target_link_libraries(tpf2mp_hook PRIVATE tpf2mp_native_common tpf2mp_hook_support minhook)
 set_target_properties(tpf2mp_hook PROPERTIES OUTPUT_NAME "tpf2mp_hook_build35924")
 
 add_executable(tpf2mp_injector
@@ -38,7 +46,7 @@ add_executable(tpf2mp_native_tests
   tests/native_tests.cpp
 )
 target_include_directories(tpf2mp_native_tests PRIVATE include)
-target_link_libraries(tpf2mp_native_tests PRIVATE tpf2mp_native_common)
+target_link_libraries(tpf2mp_native_tests PRIVATE tpf2mp_native_common tpf2mp_hook_support)
 
 add_executable(tpf2mp_dll_load_test
   tests/dll_load_test.cpp
@@ -46,7 +54,7 @@ add_executable(tpf2mp_dll_load_test
 target_include_directories(tpf2mp_dll_load_test PRIVATE include)
 target_link_libraries(tpf2mp_dll_load_test PRIVATE tpf2mp_native_common)
 
-foreach(target tpf2mp_native_common tpf2mp_hook tpf2mp_injector tpf2mp_native_tests tpf2mp_dll_load_test)
+foreach(target tpf2mp_native_common tpf2mp_hook_support tpf2mp_hook tpf2mp_injector tpf2mp_native_tests tpf2mp_dll_load_test)
   target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc /utf-8)
 endforeach()
 

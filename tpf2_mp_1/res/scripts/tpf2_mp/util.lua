@@ -28,6 +28,15 @@ function M.tableCount(t)
   return count
 end
 
+function M.setDifference(after, before)
+  local result = {}
+  for entity in pairs(after or {}) do
+    if not (before or {})[entity] then result[#result + 1] = entity end
+  end
+  table.sort(result)
+  return result
+end
+
 function M.clamp(value, low, high)
   if value < low then return low end
   if value > high then return high end

@@ -1,4 +1,6 @@
 #include "tpf2mp/native_common.hpp"
+#include "tpf2mp/native_command_codec.hpp"
+#include "tpf2mp/native_hook_status.hpp"
 
 #include <MinHook.h>
 
@@ -54,9 +56,8 @@ constexpr int kPendingSendCommandTable = -0x54504631;
 constexpr int kPendingSendCommandFunction = -0x54504632;
 constexpr int kCommandObserverFunction = -0x54504633;
 constexpr std::size_t kNativeCommandSize = 0x38;
-constexpr std::size_t kNativeCommandTagOffset = 0xB18;
 constexpr std::size_t kNativeCommandSuccessOffset = 0x30;
-constexpr std::size_t kNativeCommandTypeCount = 37;
+constexpr std::size_t kNativeCommandTypeCount = tpf2mp::native_command::kCommandTypeCount;
 constexpr std::size_t kNativeCommandEventLimit = 256;
 constexpr std::size_t kNativeRecentCommandEventLimit = 64;
 constexpr int kNativeBindingRegistryBase = -0x54504800;
@@ -72,69 +73,23 @@ constexpr std::array<std::string_view, 42> kInterestingBindings{
     "simPersonSystem", "simPersonAtTerminalSystem", "simCargoSystem", "simCargoAtTerminalSystem"};
 static_assert(kInterestingBindings.size() <= 64);
 
-struct NativeVectorLayout {
-  std::uint8_t* begin{};
-  std::uint8_t* end{};
-  std::uint8_t* capacity{};
-};
-
-struct PendingNativeCommand {
-  std::uint64_t local_sequence{};
-  std::uint64_t batch{};
-  std::uint64_t index{};
-  int tag{-1};
-  DWORD queue_thread{};
-};
-
-struct CompletedNativeCommand {
-  PendingNativeCommand pending;
-  DWORD apply_thread{};
-  int success{-1};
-};
-
-struct SuppressedLineStop {
-  std::int32_t station_group{-1};
-  std::int32_t station{};
-  std::int32_t terminal{};
-};
-
-struct SuppressedLineCommand {
-  int tag{-1};
-  std::int32_t target{-1};
-  std::int32_t player{-1};
-  std::array<std::int32_t, 3> color{};
-  std::string name;
-  std::vector<SuppressedLineStop> stops;
-};
-
-struct LuaStateObservation {
-  std::string pointer;
-  std::string context = "unknown";
-  DWORD first_thread{};
-  DWORD last_thread{};
-  std::uint64_t print_calls{};
-  std::uint64_t command_calls{};
-  int last_command_argument_count{};
-  DWORD last_command_thread{};
-  std::uint64_t setfield_calls{};
-  bool native_api_registered{};
-  bool send_command_wrapped{};
-  bool command_observer_registered{};
-  std::set<std::string> interesting_bindings;
-  std::set<std::string> mirrored_bindings;
-};
-
-struct HookFlags {
-  bool minhook_initialised{};
-  bool lua_print_created{};
-  bool lua_setfield_created{};
-  bool setup_command_created{};
-  bool command_list_swap_created{};
-  bool apply_command_created{};
-  bool build_proposal_visitor_created{};
-  std::uint64_t authority_command_visitors_created{};
-  bool enabled{};
-};
+using tpf2mp::native_command::CommandTypeName;
+using tpf2mp::native_command::DecodeSuppressedLineCommand;
+using tpf2mp::native_command::EncodeSuppressedLineCommand;
+using tpf2mp::native_command::IsReadableRange;
+using tpf2mp::native_command::NativeCommandDataTag;
+using tpf2mp::native_command::NativeCommandTag;
+using tpf2mp::native_command::NativeVectorLayout;
+using tpf2mp::native_command::SumTagCounts;
+using tpf2mp::native_command::SuppressedLineCommand;
+using tpf2mp::native_command::SuppressedLineStop;
+using tpf2mp::native_command::WriteTagCounts;
+using tpf2mp::native_status::CompletedNativeCommand;
+using tpf2mp::native_status::HookFlags;
+using tpf2mp::native_status::HookStatusView;
+using tpf2mp::native_status::LuaStateObservation;
+using tpf2mp::native_status::PendingNativeCommand;
+using tpf2mp::native_status::SerializeHookStatus;
 
 HMODULE g_dll = nullptr;
 std::atomic<bool> g_stop{false};
@@ -279,237 +234,6 @@ void RequestStatusWrite() {
   }
 }
 
-std::string_view CommandTypeName(const int tag) {
-  static constexpr std::array<std::string_view, kNativeCommandTypeCount> names{
-      "SetGameSpeed", "SetCalendarSpeed", "UpdateLogo", "CreateLine", "DeleteLine",
-      "UpdateLine", "SetLine", "Reverse", "SetUserStopped",
-      "SetVehicleTargetMaintenanceState", "SetVehicleShouldDepart", "SendToDepot",
-      "SellVehicle", "BuyVehicle", "ReplaceVehicle", "BuildProposal", "RemoveField",
-      "CreateTowns", "RemoveTown", "DevelopTown", "SetTownInfo",
-      "InstantlyUpdateTownCargoNeeds", "ConnectTownsAndIndustries",
-      "SetSimBuildingManualDevelopment", "SetSimBuildingClosureTimeStamp", "ReplaceTerrain",
-      "SetDate", "SaveGame", "SetColor", "SetName", "SetVehicleManualDeparture", "Book",
-      "SendScriptEvent", "SetNoCosts", "SetAnimalState", "SpawnAnimal",
-      "Debug_SetSimPersonState"};
-  if (tag < 0 || static_cast<std::size_t>(tag) >= names.size()) return "unknown";
-  return names[static_cast<std::size_t>(tag)];
-}
-
-bool IsReadableRange(const void* pointer, const std::size_t size) {
-  if (pointer == nullptr || size == 0) return false;
-  const auto start = reinterpret_cast<std::uintptr_t>(pointer);
-  if (start > UINTPTR_MAX - size) return false;
-  const auto end = start + size;
-  auto cursor = start;
-  while (cursor < end) {
-    MEMORY_BASIC_INFORMATION information{};
-    if (VirtualQuery(reinterpret_cast<const void*>(cursor), &information, sizeof(information)) == 0 ||
-        information.State != MEM_COMMIT || (information.Protect & PAGE_GUARD) != 0) {
-      return false;
-    }
-    const DWORD access = information.Protect & 0xFF;
-    if (access != PAGE_READONLY && access != PAGE_READWRITE && access != PAGE_WRITECOPY &&
-        access != PAGE_EXECUTE_READ && access != PAGE_EXECUTE_READWRITE &&
-        access != PAGE_EXECUTE_WRITECOPY) {
-      return false;
-    }
-    const auto region_start = reinterpret_cast<std::uintptr_t>(information.BaseAddress);
-    if (region_start > UINTPTR_MAX - information.RegionSize) return false;
-    const auto region_end = region_start + information.RegionSize;
-    if (region_end <= cursor) return false;
-    cursor = std::min(end, region_end);
-  }
-  return true;
-}
-
-template <typename Value>
-bool ReadNativeValue(const std::uint8_t* base, const std::size_t offset, Value& output) {
-  if (base == nullptr || !IsReadableRange(base + offset, sizeof(Value))) return false;
-  std::memcpy(&output, base + offset, sizeof(Value));
-  return true;
-}
-
-bool DecodeNativeString(const std::uint8_t* value, std::string& output) {
-  // Build 35924 is linked against the x64 MSVC std::string layout: a 16-byte
-  // SSO union followed by size and capacity.  Keep this exact-profile decoder
-  // bounded and fail closed before dereferencing an external allocation.
-  constexpr std::size_t kStringSizeOffset = 0x10;
-  constexpr std::size_t kStringCapacityOffset = 0x18;
-  constexpr std::size_t kSmallStringCapacity = 15;
-  constexpr std::size_t kMaximumCapturedName = 160;
-  std::uint64_t size = 0;
-  std::uint64_t capacity = 0;
-  if (!ReadNativeValue(value, kStringSizeOffset, size) ||
-      !ReadNativeValue(value, kStringCapacityOffset, capacity) ||
-      size > kMaximumCapturedName || capacity < size) {
-    return false;
-  }
-  const char* characters = reinterpret_cast<const char*>(value);
-  if (capacity > kSmallStringCapacity) {
-    const char* external = nullptr;
-    if (!ReadNativeValue(value, 0, external) ||
-        (size > 0 && !IsReadableRange(external, static_cast<std::size_t>(size)))) {
-      return false;
-    }
-    characters = external;
-  } else if (size > 0 && !IsReadableRange(characters, static_cast<std::size_t>(size))) {
-    return false;
-  }
-  if (size == 0) output.clear();
-  else output.assign(characters, static_cast<std::size_t>(size));
-  return output.find('\0') == std::string::npos;
-}
-
-bool DecodeLineStops(const std::uint8_t* line, std::vector<SuppressedLineStop>& output) {
-  std::uintptr_t begin = 0;
-  std::uintptr_t end = 0;
-  std::uintptr_t capacity = 0;
-  if (!ReadNativeValue(line, tpf2mp::profile::kLineStopsBeginOffset, begin) ||
-      !ReadNativeValue(line, tpf2mp::profile::kLineStopsEndOffset, end) ||
-      !ReadNativeValue(line, tpf2mp::profile::kLineStopsCapacityOffset, capacity)) {
-    return false;
-  }
-  if (begin == 0 || end == 0 || capacity == 0) {
-    if (begin == 0 && end == 0 && capacity == 0) {
-      output.clear();
-      return true;
-    }
-    return false;
-  }
-  if (begin > end || end > capacity) return false;
-  const auto used_bytes = end - begin;
-  const auto capacity_bytes = capacity - begin;
-  if (used_bytes % tpf2mp::profile::kLineStopSize != 0 ||
-      capacity_bytes % tpf2mp::profile::kLineStopSize != 0) {
-    return false;
-  }
-  const auto count = used_bytes / tpf2mp::profile::kLineStopSize;
-  const auto capacity_count = capacity_bytes / tpf2mp::profile::kLineStopSize;
-  if (count > tpf2mp::profile::kMaximumLineStops ||
-      capacity_count > tpf2mp::profile::kMaximumLineStops ||
-      (used_bytes > 0 && !IsReadableRange(reinterpret_cast<const void*>(begin), used_bytes))) {
-    return false;
-  }
-  output.clear();
-  output.reserve(static_cast<std::size_t>(count));
-  for (std::size_t index = 0; index < count; ++index) {
-    const auto* stop = reinterpret_cast<const std::uint8_t*>(begin) +
-                       index * tpf2mp::profile::kLineStopSize;
-    SuppressedLineStop decoded;
-    if (!ReadNativeValue(stop, tpf2mp::profile::kLineStopStationGroupOffset,
-                         decoded.station_group) ||
-        !ReadNativeValue(stop, tpf2mp::profile::kLineStopStationOffset,
-                         decoded.station) ||
-        !ReadNativeValue(stop, tpf2mp::profile::kLineStopTerminalOffset,
-                         decoded.terminal) ||
-        decoded.station_group < 0 || decoded.station < 0 || decoded.station > 4095 ||
-        decoded.terminal < 0 || decoded.terminal > 4095) {
-      output.clear();
-      return false;
-    }
-    output.push_back(decoded);
-  }
-  return true;
-}
-
-std::int32_t ColorBasisPoints(const float value) {
-  if (!std::isfinite(value) || value < -0.001F || value > 1.001F) return -1;
-  return static_cast<std::int32_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 1000.0F));
-}
-
-bool DecodeSuppressedLineCommand(const int tag, const void* command_data,
-                                 SuppressedLineCommand& output) {
-  const auto* data = static_cast<const std::uint8_t*>(command_data);
-  output = SuppressedLineCommand{};
-  output.tag = tag;
-  if (tag == 3) {
-    if (!IsReadableRange(data, tpf2mp::profile::kCreateLineMinimumSize) ||
-        !DecodeLineStops(data + tpf2mp::profile::kCreateLineLineOffset, output.stops) ||
-        !DecodeNativeString(data + tpf2mp::profile::kCreateLineNameOffset, output.name) ||
-        !ReadNativeValue(data, tpf2mp::profile::kCreateLinePlayerOffset, output.player)) {
-      return false;
-    }
-    std::array<float, 3> color{};
-    if (!ReadNativeValue(data, tpf2mp::profile::kCreateLineColorOffset, color)) return false;
-    for (std::size_t index = 0; index < color.size(); ++index) {
-      output.color[index] = ColorBasisPoints(color[index]);
-      if (output.color[index] < 0) return false;
-    }
-    return output.player >= 0;
-  }
-  if (tag == 4) {
-    return IsReadableRange(data, tpf2mp::profile::kDeleteLineMinimumSize) &&
-           ReadNativeValue(data, tpf2mp::profile::kDeleteLineTargetOffset, output.target) &&
-           output.target >= 0;
-  }
-  if (tag == 5) {
-    return IsReadableRange(data, tpf2mp::profile::kUpdateLineMinimumSize) &&
-           ReadNativeValue(data, tpf2mp::profile::kUpdateLineTargetOffset, output.target) &&
-           output.target >= 0 &&
-           DecodeLineStops(data + tpf2mp::profile::kUpdateLineLineOffset, output.stops);
-  }
-  if (tag == 28) {
-    if (!IsReadableRange(data, tpf2mp::profile::kSetColorMinimumSize) ||
-        !ReadNativeValue(data, tpf2mp::profile::kSetColorTargetOffset, output.target) ||
-        output.target < 0) {
-      return false;
-    }
-    std::array<float, 3> color{};
-    if (!ReadNativeValue(data, tpf2mp::profile::kSetColorValueOffset, color)) return false;
-    for (std::size_t index = 0; index < color.size(); ++index) {
-      output.color[index] = ColorBasisPoints(color[index]);
-      if (output.color[index] < 0) return false;
-    }
-    return true;
-  }
-  if (tag == 29) {
-    return IsReadableRange(data, tpf2mp::profile::kSetNameMinimumSize) &&
-           ReadNativeValue(data, tpf2mp::profile::kSetNameTargetOffset, output.target) &&
-           output.target >= 0 &&
-           DecodeNativeString(data + tpf2mp::profile::kSetNameValueOffset, output.name);
-  }
-  return false;
-}
-
-std::string HexEncode(const std::string_view value) {
-  static constexpr char digits[] = "0123456789abcdef";
-  std::string output;
-  output.reserve(value.size() * 2);
-  for (const auto character : value) {
-    const auto byte = static_cast<std::uint8_t>(character);
-    output.push_back(digits[byte >> 4]);
-    output.push_back(digits[byte & 0x0F]);
-  }
-  return output;
-}
-
-std::string EncodeSuppressedLineCommand(const SuppressedLineCommand& command) {
-  // Delimiter protocol L1 is intentionally tiny and pointer-free. Names are
-  // hex encoded; all other values are bounded decimal integers.
-  std::ostringstream output;
-  output << "L1|" << command.tag << '|' << command.target << '|' << command.player << '|'
-         << command.color[0] << '|' << command.color[1] << '|' << command.color[2] << '|'
-         << HexEncode(command.name) << '|' << command.stops.size() << '|';
-  for (std::size_t index = 0; index < command.stops.size(); ++index) {
-    if (index != 0) output << ';';
-    const auto& stop = command.stops[index];
-    output << stop.station_group << ',' << stop.station << ',' << stop.terminal;
-  }
-  return output.str();
-}
-
-int NativeCommandDataTag(const void* data) {
-  if (data == nullptr) return -1;
-  const auto tag_pointer = static_cast<const std::uint8_t*>(data) + kNativeCommandTagOffset;
-  if (!IsReadableRange(tag_pointer, sizeof(std::int8_t))) return -1;
-  const int tag = *reinterpret_cast<const std::int8_t*>(tag_pointer);
-  return tag >= 0 && static_cast<std::size_t>(tag) < kNativeCommandTypeCount ? tag : -1;
-}
-
-int NativeCommandTag(const void* command) {
-  if (!IsReadableRange(command, sizeof(void*))) return -1;
-  return NativeCommandDataTag(*reinterpret_cast<void* const*>(command));
-}
 
 bool IsAuthorityCommandTag(const int tag) {
   return std::any_of(
@@ -518,239 +242,74 @@ bool IsAuthorityCommandTag(const int tag) {
       [tag](const tpf2mp::profile::CommandVisitor& visitor) { return visitor.tag == tag; });
 }
 
-std::uint64_t SumTagCounts(
-    const std::array<std::uint64_t, kNativeCommandTypeCount>& counts) {
-  std::uint64_t result = 0;
-  for (const auto count : counts) result += count;
-  return result;
-}
-
-void WriteTagCounts(std::ostringstream& output,
-                    const std::array<std::uint64_t, kNativeCommandTypeCount>& counts) {
-  output << '[';
-  bool first = true;
-  for (std::size_t tag = 0; tag < counts.size(); ++tag) {
-    if (counts[tag] == 0) continue;
-    if (!first) output << ',';
-    first = false;
-    output << "{\"tag\":" << tag << ",\"name\":\"" << CommandTypeName(static_cast<int>(tag))
-           << "\",\"count\":" << counts[tag] << '}';
-  }
-  output << ']';
-}
 
 std::string StatusJson() {
   StateLock lock;
-  std::ostringstream output;
-  output << "{\"schemaVersion\":1"
-         << ",\"component\":\"tpf2mp-native-hook\""
-         << ",\"hookVersion\":\"0.12.0\""
-         << ",\"profile\":\"" << tpf2mp::JsonEscape(std::string(tpf2mp::profile::kProfileName)) << "\""
-         << ",\"processId\":" << GetCurrentProcessId()
-         << ",\"stage\":\"" << tpf2mp::JsonEscape(g_stage) << "\""
-         << ",\"active\":" << (g_hooks.enabled ? "true" : "false")
-         << ",\"executablePath\":\"" << tpf2mp::JsonEscape(tpf2mp::WideToUtf8(g_validation.path.wstring())) << "\""
-         << ",\"dllPath\":\"" << tpf2mp::JsonEscape(tpf2mp::WideToUtf8(g_dll_path.wstring())) << "\""
-         << ",\"validation\":{"
-         << "\"valid\":" << (g_validation.valid ? "true" : "false")
-         << ",\"expectedSha256\":\"" << tpf2mp::profile::kSha256 << "\""
-         << ",\"observedSha256\":\"" << tpf2mp::JsonEscape(g_validation.sha256) << "\""
-         << ",\"expectedTimestamp\":" << tpf2mp::profile::kPeTimestamp
-         << ",\"observedTimestamp\":" << g_validation.pe_timestamp
-         << ",\"expectedImageSize\":" << tpf2mp::profile::kImageSize
-         << ",\"observedImageSize\":" << g_validation.image_size
-         << ",\"error\":\"" << tpf2mp::JsonEscape(g_validation.error) << "\""
-         << ",\"signatures\":[";
-  for (std::size_t index = 0; index < g_validation.signatures.size(); ++index) {
-    const auto& signature = g_validation.signatures[index];
-    if (index != 0) output << ',';
-    output << "{\"name\":\"" << tpf2mp::JsonEscape(signature.name) << "\""
-           << ",\"expectedRva\":" << signature.expected_rva
-           << ",\"observedRva\":" << signature.observed_rva
-           << ",\"matches\":" << signature.matches
-           << ",\"valid\":" << (signature.expected_bytes_match ? "true" : "false") << '}';
-  }
-  output << "]}"
-         << ",\"hooks\":{"
-         << "\"minHookInitialised\":" << (g_hooks.minhook_initialised ? "true" : "false")
-         << ",\"luaPrint\":" << (g_hooks.lua_print_created ? "true" : "false")
-         << ",\"luaSetField\":" << (g_hooks.lua_setfield_created ? "true" : "false")
-         << ",\"setupCommandInterface\":" << (g_hooks.setup_command_created ? "true" : "false")
-         << ",\"commandListSwap\":" << (g_hooks.command_list_swap_created ? "true" : "false")
-         << ",\"applyCommand\":" << (g_hooks.apply_command_created ? "true" : "false")
-         << ",\"buildProposalVisitor\":"
-         << (g_hooks.build_proposal_visitor_created ? "true" : "false")
-         << ",\"authorityCommandVisitors\":"
-         << g_hooks.authority_command_visitors_created
-         << ",\"sendCommandWrapping\":true"
-         << ",\"enabled\":" << (g_hooks.enabled ? "true" : "false") << '}';
-  output << ",\"setupCommandInterface\":{" 
-         << "\"calls\":" << g_setup_calls
-         << ",\"lastThread\":" << g_setup_last_thread
-         << ",\"lastArgs\":[";
-  for (std::size_t index = 0; index < g_setup_last_args.size(); ++index) {
-    if (index != 0) output << ',';
-    output << '"' << tpf2mp::JsonEscape(g_setup_last_args[index]) << '"';
-  }
-  output << "]}"
-         << ",\"commandList\":{"
-         << "\"swapCalls\":" << g_command_swap_calls
-         << ",\"nonEmptyBatches\":" << g_command_nonempty_batches
-         << ",\"commands\":" << g_command_queued
-         << ",\"invalidLayouts\":" << g_command_invalid_layouts
-         << ",\"unknownTags\":" << g_command_unknown_tags
-         << ",\"lastBatchCount\":" << g_command_last_batch
-         << ",\"lastBatchId\":" << g_command_last_batch_id
-         << ",\"pendingCommands\":" << g_pending_commands.size()
-         << ",\"pendingOverwrites\":" << g_command_pending_overwrites
-         << ",\"lastThread\":" << g_command_swap_last_thread
-         << ",\"tagCounts\":";
-  WriteTagCounts(output, g_queued_tags);
-  output << '}'
-         << ",\"applyCommand\":{"
-         << "\"calls\":" << g_apply_calls
-         << ",\"succeeded\":" << g_apply_succeeded
-         << ",\"failed\":" << g_apply_failed
-         << ",\"unknown\":" << g_apply_unknown
-         << ",\"unknownTags\":" << g_apply_unknown_tags
-         << ",\"direct\":" << g_apply_direct
-         << ",\"tagMismatches\":" << g_apply_tag_mismatches
-         << ",\"filteredScriptEvents\":" << g_apply_filtered_script_events
-         << ",\"lastTag\":" << g_apply_last_tag
-         << ",\"lastTagName\":\"" << CommandTypeName(g_apply_last_tag) << "\""
-         << ",\"lastThread\":" << g_apply_last_thread
-         << ",\"tagCounts\":";
-  WriteTagCounts(output, g_applied_tags);
-  output << '}'
-         << ",\"commandEvents\":[";
-  bool first_command_event = true;
-  for (const auto& event : g_completed_commands) {
-    if (!first_command_event) output << ',';
-    first_command_event = false;
-    output << "{\"localSequence\":" << event.pending.local_sequence
-           << ",\"batch\":" << event.pending.batch
-           << ",\"index\":" << event.pending.index
-           << ",\"tag\":" << event.pending.tag
-           << ",\"name\":\"" << CommandTypeName(event.pending.tag) << "\""
-           << ",\"queueThread\":" << event.pending.queue_thread
-           << ",\"applyThread\":" << event.apply_thread
-           << ",\"success\":";
-    if (event.success < 0) {
-      output << "null";
-    } else {
-      output << (event.success > 0 ? "true" : "false");
-    }
-    output << '}';
-  }
-  output << ']'
-         << ",\"recentCommandEvents\":[";
-  first_command_event = true;
-  for (const auto& event : g_recent_completed_commands) {
-    if (!first_command_event) output << ',';
-    first_command_event = false;
-    output << "{\"localSequence\":" << event.pending.local_sequence
-           << ",\"batch\":" << event.pending.batch
-           << ",\"index\":" << event.pending.index
-           << ",\"tag\":" << event.pending.tag
-           << ",\"name\":\"" << CommandTypeName(event.pending.tag) << "\""
-           << ",\"success\":";
-    if (event.success < 0) {
-      output << "null";
-    } else {
-      output << (event.success > 0 ? "true" : "false");
-    }
-    output << '}';
-  }
-  output << ']'
-         << ",\"commandEventFilter\":\"commandEvents retains non-SendScriptEvent commands; recentCommandEvents retains the latest 64 commands\""
-         << ",\"gates\":{\"buildProposal\":{"
-         << "\"enabled\":" << (g_build_gate_enabled ? "true" : "false")
-         << ",\"authorizations\":" << g_build_gate_authorizations
-         << ",\"allowed\":" << g_build_gate_allowed
-         << ",\"suppressed\":" << g_build_gate_suppressed
-         << ",\"calls\":" << g_build_gate_calls
-         << ",\"tagMismatches\":" << g_build_gate_tag_mismatches
-         << ",\"lastTag\":" << g_build_gate_last_tag
-         << ",\"lastThread\":" << g_build_gate_last_thread
-         << "},\"commandVisitors\":{"
-         << "\"enabled\":" << (g_command_gate_enabled ? "true" : "false")
-         << ",\"hooked\":" << g_hooks.authority_command_visitors_created
-         << ",\"tagMismatches\":" << g_command_gate_tag_mismatches
-         << ",\"pendingTotal\":" << SumTagCounts(g_command_gate_authorizations)
-         << ",\"allowedTotal\":" << SumTagCounts(g_command_gate_allowed)
-         << ",\"suppressedTotal\":" << SumTagCounts(g_command_gate_suppressed)
-         << ",\"gatedTags\":";
-  std::array<std::uint64_t, kNativeCommandTypeCount> gated_tags{};
-  for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
-    gated_tags[visitor.tag] = 1;
-  }
-  WriteTagCounts(output, gated_tags);
-  output << ",\"pending\":";
-  WriteTagCounts(output, g_command_gate_authorizations);
-  output << ",\"allowed\":";
-  WriteTagCounts(output, g_command_gate_allowed);
-  output << ",\"suppressed\":";
-  WriteTagCounts(output, g_command_gate_suppressed);
-  output << ",\"optimisticPassthrough\":";
-  WriteTagCounts(output, g_command_gate_passthrough);
-  output << ",\"calls\":";
-  WriteTagCounts(output, g_command_gate_calls);
-  output << ",\"suppressedGameSpeed\":{"
-         << "\"queued\":" << g_suppressed_game_speeds.size()
-         << ",\"captured\":" << g_suppressed_game_speed_captured
-         << ",\"consumed\":" << g_suppressed_game_speed_consumed
-         << ",\"invalid\":" << g_suppressed_game_speed_invalid
-         << ",\"dropped\":" << g_suppressed_game_speed_dropped
-         << ",\"last\":" << g_suppressed_game_speed_last
-         << "},\"suppressedLineCommands\":{"
-         << "\"queued\":" << g_suppressed_line_commands.size()
-         << ",\"captured\":" << g_suppressed_line_command_captured
-         << ",\"consumed\":" << g_suppressed_line_command_consumed
-         << ",\"invalid\":" << g_suppressed_line_command_invalid
-         << ",\"dropped\":" << g_suppressed_line_command_dropped
-         << ",\"lastTag\":" << g_suppressed_line_command_last_tag
-         << ",\"lastTarget\":" << g_suppressed_line_command_last_target
-         << ",\"lastStopCount\":" << g_suppressed_line_command_last_stop_count
-         << "}}}"
-         << ",\"luaStates\":[";
-  bool first_state = true;
-  for (const auto& [_, state] : g_states) {
-    if (!first_state) output << ',';
-    first_state = false;
-    output << "{\"pointer\":\"" << state.pointer << "\""
-           << ",\"context\":\"" << tpf2mp::JsonEscape(state.context) << "\""
-           << ",\"firstThread\":" << state.first_thread
-           << ",\"lastThread\":" << state.last_thread
-           << ",\"printCalls\":" << state.print_calls
-           << ",\"commandCalls\":" << state.command_calls
-           << ",\"lastCommandArgumentCount\":" << state.last_command_argument_count
-           << ",\"lastCommandThread\":" << state.last_command_thread
-           << ",\"setFieldCalls\":" << state.setfield_calls
-            << ",\"nativeApiRegistered\":" << (state.native_api_registered ? "true" : "false")
-            << ",\"sendCommandWrapped\":" << (state.send_command_wrapped ? "true" : "false")
-            << ",\"commandObserverRegistered\":"
-            << (state.command_observer_registered ? "true" : "false")
-           << ",\"bindings\":[";
-    bool first_binding = true;
-    for (const auto& binding : state.interesting_bindings) {
-      if (!first_binding) output << ',';
-      first_binding = false;
-      output << '"' << tpf2mp::JsonEscape(binding) << '"';
-    }
-    output << "]"
-           << ",\"mirroredBindings\":[";
-    bool first_mirrored_binding = true;
-    for (const auto& binding : state.mirrored_bindings) {
-      if (!first_mirrored_binding) output << ',';
-      first_mirrored_binding = false;
-      output << '"' << tpf2mp::JsonEscape(binding) << '"';
-    }
-    output << "]}";
-  }
-  output << "]"
-         << ",\"scope\":\"Lua command-binding mirrors, sendCommand call-through with an opt-in pre-issue Lua observer, native command observers, a BuildProposal visitor gate, 23 fail-closed consequential-command visitors, suppressed game-speed capture, and exact-build typed Create/Delete/Update Line capture\""
-         << ",\"lastError\":\"" << tpf2mp::JsonEscape(g_last_error) << "\"}";
-  return output.str();
+  return SerializeHookStatus(HookStatusView{
+      .process_id = GetCurrentProcessId(),
+      .stage = g_stage,
+      .last_error = g_last_error,
+      .dll_path = g_dll_path,
+      .validation = g_validation,
+      .hooks = g_hooks,
+      .setup_calls = g_setup_calls,
+      .setup_last_thread = g_setup_last_thread,
+      .setup_last_args = g_setup_last_args,
+      .command_swap_calls = g_command_swap_calls,
+      .command_nonempty_batches = g_command_nonempty_batches,
+      .command_queued = g_command_queued,
+      .command_invalid_layouts = g_command_invalid_layouts,
+      .command_unknown_tags = g_command_unknown_tags,
+      .command_last_batch = g_command_last_batch,
+      .command_last_batch_id = g_command_last_batch_id,
+      .pending_commands = g_pending_commands.size(),
+      .command_pending_overwrites = g_command_pending_overwrites,
+      .command_swap_last_thread = g_command_swap_last_thread,
+      .queued_tags = g_queued_tags,
+      .apply_calls = g_apply_calls,
+      .apply_succeeded = g_apply_succeeded,
+      .apply_failed = g_apply_failed,
+      .apply_unknown = g_apply_unknown,
+      .apply_unknown_tags = g_apply_unknown_tags,
+      .apply_direct = g_apply_direct,
+      .apply_tag_mismatches = g_apply_tag_mismatches,
+      .apply_filtered_script_events = g_apply_filtered_script_events,
+      .apply_last_tag = g_apply_last_tag,
+      .apply_last_thread = g_apply_last_thread,
+      .applied_tags = g_applied_tags,
+      .completed_commands = g_completed_commands,
+      .recent_completed_commands = g_recent_completed_commands,
+      .build_gate_enabled = g_build_gate_enabled,
+      .build_gate_authorizations = g_build_gate_authorizations,
+      .build_gate_allowed = g_build_gate_allowed,
+      .build_gate_suppressed = g_build_gate_suppressed,
+      .build_gate_calls = g_build_gate_calls,
+      .build_gate_tag_mismatches = g_build_gate_tag_mismatches,
+      .build_gate_last_tag = g_build_gate_last_tag,
+      .build_gate_last_thread = g_build_gate_last_thread,
+      .command_gate_enabled = g_command_gate_enabled,
+      .command_gate_tag_mismatches = g_command_gate_tag_mismatches,
+      .command_gate_authorizations = g_command_gate_authorizations,
+      .command_gate_allowed = g_command_gate_allowed,
+      .command_gate_suppressed = g_command_gate_suppressed,
+      .command_gate_passthrough = g_command_gate_passthrough,
+      .command_gate_calls = g_command_gate_calls,
+      .suppressed_game_speed_queued = g_suppressed_game_speeds.size(),
+      .suppressed_game_speed_captured = g_suppressed_game_speed_captured,
+      .suppressed_game_speed_consumed = g_suppressed_game_speed_consumed,
+      .suppressed_game_speed_invalid = g_suppressed_game_speed_invalid,
+      .suppressed_game_speed_dropped = g_suppressed_game_speed_dropped,
+      .suppressed_game_speed_last = g_suppressed_game_speed_last,
+      .suppressed_line_command_queued = g_suppressed_line_commands.size(),
+      .suppressed_line_command_captured = g_suppressed_line_command_captured,
+      .suppressed_line_command_consumed = g_suppressed_line_command_consumed,
+      .suppressed_line_command_invalid = g_suppressed_line_command_invalid,
+      .suppressed_line_command_dropped = g_suppressed_line_command_dropped,
+      .suppressed_line_command_last_tag = g_suppressed_line_command_last_tag,
+      .suppressed_line_command_last_target = g_suppressed_line_command_last_target,
+      .suppressed_line_command_last_stop_count = g_suppressed_line_command_last_stop_count,
+      .states = g_states,
+  });
 }
 
 void WriteStatusFiles() {
