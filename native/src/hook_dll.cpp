@@ -1,0 +1,1688 @@
+#include "tpf2mp/native_common.hpp"
+
+#include <MinHook.h>
+
+#include <Windows.h>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <cwchar>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <set>
+#include <sstream>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace {
+
+struct lua_State;
+using LuaCFunction = int (*)(lua_State*);
+using LuaPrint = int (*)(lua_State*);
+using LuaSetField = void (*)(lua_State*, int, const char*);
+using LuaPushCClosure = void (*)(lua_State*, LuaCFunction, int);
+using LuaPushValue = void (*)(lua_State*, int);
+using LuaInsert = void (*)(lua_State*, int);
+using LuaCallK = void (*)(lua_State*, int, int, int, LuaCFunction);
+using LuaGetTop = int (*)(lua_State*);
+using LuaSetTop = void (*)(lua_State*, int);
+using LuaRawGetI = void (*)(lua_State*, int, int);
+using LuaRawSetI = void (*)(lua_State*, int, int);
+using LuaRawSet = void (*)(lua_State*, int);
+using LuaPushLString = const char* (*)(lua_State*, const char*, std::size_t);
+using LuaToLString = const char* (*)(lua_State*, int, std::size_t*);
+using SetupCommandInterface = std::uintptr_t (*)(void*, void*, void*, void*);
+using CommandListSwap = void (*)(void*, void*);
+using ApplyCommand = void (*)(void*, void*);
+using BuildProposalVisitor = bool (*)(void*, void*);
+using AuthorityCommandVisitor = bool (*)(void*, void*);
+
+constexpr int kLuaRegistryIndex = -1001000;
+constexpr int kLuaGlobalsRegistryIndex = 2;
+constexpr int kLuaMultiReturn = -1;
+constexpr int kFirstUpvalueIndex = kLuaRegistryIndex - 1;
+constexpr int kPendingSendCommandTable = -0x54504631;
+constexpr int kPendingSendCommandFunction = -0x54504632;
+constexpr int kCommandObserverFunction = -0x54504633;
+constexpr std::size_t kNativeCommandSize = 0x38;
+constexpr std::size_t kNativeCommandTagOffset = 0xB18;
+constexpr std::size_t kNativeCommandSuccessOffset = 0x30;
+constexpr std::size_t kNativeCommandTypeCount = 37;
+constexpr std::size_t kNativeCommandEventLimit = 256;
+constexpr std::size_t kNativeRecentCommandEventLimit = 64;
+constexpr int kNativeBindingRegistryBase = -0x54504800;
+constexpr std::array<std::string_view, 42> kInterestingBindings{
+    "sendCommand", "setGameSpeed", "setCalendarSpeed", "updateLogo", "createLine",
+    "deleteLine", "updateLine", "setLine", "reverseVehicle", "setUserStopped",
+    "setVehicleTargetMaintenanceState", "setVehicleShouldDepart", "sendToDepot", "sellVehicle",
+    "buyVehicle", "replaceVehicle", "buildProposal", "removeField", "createTowns", "removeTown",
+    "developTown", "setTownInfo", "instantlyUpdateTownCargoNeeds", "connectTownsAndIndustries",
+    "setSimBuildingManualDevelopment", "setSimBuildingClosureTimeStamp", "replaceTerrain", "setDate",
+    "saveGame", "setColor", "setName", "setVehicleManualDeparture", "bookJournalEntry",
+    "sendScriptEvent", "setNoCosts", "setAnimalState", "spawnAnimal", "debugSetSimPersonState",
+    "simPersonSystem", "simPersonAtTerminalSystem", "simCargoSystem", "simCargoAtTerminalSystem"};
+static_assert(kInterestingBindings.size() <= 64);
+
+struct NativeVectorLayout {
+  std::uint8_t* begin{};
+  std::uint8_t* end{};
+  std::uint8_t* capacity{};
+};
+
+struct PendingNativeCommand {
+  std::uint64_t local_sequence{};
+  std::uint64_t batch{};
+  std::uint64_t index{};
+  int tag{-1};
+  DWORD queue_thread{};
+};
+
+struct CompletedNativeCommand {
+  PendingNativeCommand pending;
+  DWORD apply_thread{};
+  int success{-1};
+};
+
+struct SuppressedLineStop {
+  std::int32_t station_group{-1};
+  std::int32_t station{};
+  std::int32_t terminal{};
+};
+
+struct SuppressedLineCommand {
+  int tag{-1};
+  std::int32_t target{-1};
+  std::int32_t player{-1};
+  std::array<std::int32_t, 3> color{};
+  std::string name;
+  std::vector<SuppressedLineStop> stops;
+};
+
+struct LuaStateObservation {
+  std::string pointer;
+  std::string context = "unknown";
+  DWORD first_thread{};
+  DWORD last_thread{};
+  std::uint64_t print_calls{};
+  std::uint64_t command_calls{};
+  int last_command_argument_count{};
+  DWORD last_command_thread{};
+  std::uint64_t setfield_calls{};
+  bool native_api_registered{};
+  bool send_command_wrapped{};
+  bool command_observer_registered{};
+  std::set<std::string> interesting_bindings;
+  std::set<std::string> mirrored_bindings;
+};
+
+struct HookFlags {
+  bool minhook_initialised{};
+  bool lua_print_created{};
+  bool lua_setfield_created{};
+  bool setup_command_created{};
+  bool command_list_swap_created{};
+  bool apply_command_created{};
+  bool build_proposal_visitor_created{};
+  std::uint64_t authority_command_visitors_created{};
+  bool enabled{};
+};
+
+HMODULE g_dll = nullptr;
+std::atomic<bool> g_stop{false};
+std::atomic<bool> g_status_dirty{true};
+HANDLE g_status_event = nullptr;
+SRWLOCK g_state_lock = SRWLOCK_INIT;
+std::string g_stage = "loading";
+std::string g_last_error;
+std::filesystem::path g_dll_path;
+tpf2mp::ValidationResult g_validation;
+HookFlags g_hooks;
+std::map<void*, LuaStateObservation> g_states;
+std::uint64_t g_setup_calls = 0;
+DWORD g_setup_last_thread = 0;
+std::array<std::string, 4> g_setup_last_args{};
+std::uint64_t g_command_swap_calls = 0;
+std::uint64_t g_command_nonempty_batches = 0;
+std::uint64_t g_command_queued = 0;
+std::uint64_t g_command_invalid_layouts = 0;
+std::uint64_t g_command_unknown_tags = 0;
+std::uint64_t g_command_last_batch = 0;
+std::uint64_t g_command_last_batch_id = 0;
+std::uint64_t g_command_next_batch_id = 1;
+std::uint64_t g_command_next_local_sequence = 1;
+std::uint64_t g_command_pending_overwrites = 0;
+DWORD g_command_swap_last_thread = 0;
+std::array<std::uint64_t, kNativeCommandTypeCount> g_queued_tags{};
+std::map<const void*, PendingNativeCommand> g_pending_commands;
+std::deque<CompletedNativeCommand> g_completed_commands;
+std::deque<CompletedNativeCommand> g_recent_completed_commands;
+std::uint64_t g_apply_calls = 0;
+std::uint64_t g_apply_succeeded = 0;
+std::uint64_t g_apply_failed = 0;
+std::uint64_t g_apply_unknown = 0;
+std::uint64_t g_apply_unknown_tags = 0;
+std::uint64_t g_apply_direct = 0;
+std::uint64_t g_apply_tag_mismatches = 0;
+std::uint64_t g_apply_filtered_script_events = 0;
+int g_apply_last_tag = -1;
+DWORD g_apply_last_thread = 0;
+std::array<std::uint64_t, kNativeCommandTypeCount> g_applied_tags{};
+bool g_build_gate_enabled = false;
+std::uint64_t g_build_gate_authorizations = 0;
+std::uint64_t g_build_gate_allowed = 0;
+std::uint64_t g_build_gate_suppressed = 0;
+std::uint64_t g_build_gate_calls = 0;
+std::uint64_t g_build_gate_tag_mismatches = 0;
+int g_build_gate_last_tag = -1;
+DWORD g_build_gate_last_thread = 0;
+bool g_command_gate_enabled = false;
+std::array<std::uint64_t, kNativeCommandTypeCount> g_command_gate_authorizations{};
+std::array<std::uint64_t, kNativeCommandTypeCount> g_command_gate_allowed{};
+std::array<std::uint64_t, kNativeCommandTypeCount> g_command_gate_suppressed{};
+std::array<std::uint64_t, kNativeCommandTypeCount> g_command_gate_passthrough{};
+std::array<std::uint64_t, kNativeCommandTypeCount> g_command_gate_calls{};
+std::uint64_t g_command_gate_tag_mismatches = 0;
+constexpr std::size_t kSuppressedGameSpeedQueueLimit = 32;
+std::deque<std::int32_t> g_suppressed_game_speeds;
+std::uint64_t g_suppressed_game_speed_captured = 0;
+std::uint64_t g_suppressed_game_speed_consumed = 0;
+std::uint64_t g_suppressed_game_speed_invalid = 0;
+std::uint64_t g_suppressed_game_speed_dropped = 0;
+int g_suppressed_game_speed_last = -1;
+constexpr std::size_t kSuppressedLineCommandQueueLimit = 32;
+std::deque<SuppressedLineCommand> g_suppressed_line_commands;
+std::uint64_t g_suppressed_line_command_captured = 0;
+std::uint64_t g_suppressed_line_command_consumed = 0;
+std::uint64_t g_suppressed_line_command_invalid = 0;
+std::uint64_t g_suppressed_line_command_dropped = 0;
+int g_suppressed_line_command_last_tag = -1;
+std::int32_t g_suppressed_line_command_last_target = -1;
+std::size_t g_suppressed_line_command_last_stop_count = 0;
+
+LuaPrint g_original_print = nullptr;
+LuaSetField g_original_setfield = nullptr;
+SetupCommandInterface g_original_setup_command = nullptr;
+CommandListSwap g_original_command_list_swap = nullptr;
+ApplyCommand g_original_apply_command = nullptr;
+BuildProposalVisitor g_original_build_proposal_visitor = nullptr;
+std::array<AuthorityCommandVisitor, kNativeCommandTypeCount> g_original_authority_visitors{};
+LuaPushCClosure g_lua_pushcclosure = nullptr;
+LuaPushValue g_lua_pushvalue = nullptr;
+LuaInsert g_lua_insert = nullptr;
+LuaCallK g_lua_callk = nullptr;
+LuaGetTop g_lua_gettop = nullptr;
+LuaSetTop g_lua_settop = nullptr;
+LuaRawGetI g_lua_rawgeti = nullptr;
+LuaRawSetI g_lua_rawseti = nullptr;
+LuaRawSet g_lua_rawset = nullptr;
+LuaPushLString g_lua_pushlstring = nullptr;
+LuaToLString g_lua_tolstring = nullptr;
+
+thread_local bool g_native_registration = false;
+thread_local int g_setup_command_depth = 0;
+thread_local lua_State* g_pending_send_command_state = nullptr;
+thread_local lua_State* g_pending_binding_state = nullptr;
+thread_local std::uint64_t g_pending_binding_mask = 0;
+
+class StateLock final {
+ public:
+  StateLock() { AcquireSRWLockExclusive(&g_state_lock); }
+  ~StateLock() { ReleaseSRWLockExclusive(&g_state_lock); }
+  StateLock(const StateLock&) = delete;
+  StateLock& operator=(const StateLock&) = delete;
+};
+
+void BootTrace(const char* stage) {
+  // Deliberately Win32-only so it is safe before/inside CRT-backed worker
+  // startup. This tiny trace distinguishes DLL mapping from worker failures.
+  wchar_t temp[32768]{};
+  const DWORD length = GetTempPathW(static_cast<DWORD>(std::size(temp)), temp);
+  if (length == 0 || length >= std::size(temp)) return;
+  wchar_t directory[32768]{};
+  if (swprintf_s(directory, L"%stpf2mp_native", temp) < 0) return;
+  CreateDirectoryW(directory, nullptr);
+  wchar_t path[32768]{};
+  if (swprintf_s(path, L"%s\\boot-%lu.log", directory, GetCurrentProcessId()) < 0) return;
+  HANDLE file = CreateFileW(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return;
+  DWORD written = 0;
+  WriteFile(file, stage, static_cast<DWORD>(strlen(stage)), &written, nullptr);
+  WriteFile(file, "\r\n", 2, &written, nullptr);
+  CloseHandle(file);
+}
+
+LuaStateObservation& ObserveStateLocked(lua_State* state) {
+  auto [iterator, inserted] = g_states.try_emplace(state);
+  auto& value = iterator->second;
+  if (inserted) {
+    value.pointer = tpf2mp::HexPointer(state);
+    value.first_thread = GetCurrentThreadId();
+  }
+  value.last_thread = GetCurrentThreadId();
+  return value;
+}
+
+void RequestStatusWrite() {
+  g_status_dirty.store(true, std::memory_order_release);
+  if (g_status_event != nullptr) {
+    SetEvent(g_status_event);
+  }
+}
+
+std::string_view CommandTypeName(const int tag) {
+  static constexpr std::array<std::string_view, kNativeCommandTypeCount> names{
+      "SetGameSpeed", "SetCalendarSpeed", "UpdateLogo", "CreateLine", "DeleteLine",
+      "UpdateLine", "SetLine", "Reverse", "SetUserStopped",
+      "SetVehicleTargetMaintenanceState", "SetVehicleShouldDepart", "SendToDepot",
+      "SellVehicle", "BuyVehicle", "ReplaceVehicle", "BuildProposal", "RemoveField",
+      "CreateTowns", "RemoveTown", "DevelopTown", "SetTownInfo",
+      "InstantlyUpdateTownCargoNeeds", "ConnectTownsAndIndustries",
+      "SetSimBuildingManualDevelopment", "SetSimBuildingClosureTimeStamp", "ReplaceTerrain",
+      "SetDate", "SaveGame", "SetColor", "SetName", "SetVehicleManualDeparture", "Book",
+      "SendScriptEvent", "SetNoCosts", "SetAnimalState", "SpawnAnimal",
+      "Debug_SetSimPersonState"};
+  if (tag < 0 || static_cast<std::size_t>(tag) >= names.size()) return "unknown";
+  return names[static_cast<std::size_t>(tag)];
+}
+
+bool IsReadableRange(const void* pointer, const std::size_t size) {
+  if (pointer == nullptr || size == 0) return false;
+  const auto start = reinterpret_cast<std::uintptr_t>(pointer);
+  if (start > UINTPTR_MAX - size) return false;
+  const auto end = start + size;
+  auto cursor = start;
+  while (cursor < end) {
+    MEMORY_BASIC_INFORMATION information{};
+    if (VirtualQuery(reinterpret_cast<const void*>(cursor), &information, sizeof(information)) == 0 ||
+        information.State != MEM_COMMIT || (information.Protect & PAGE_GUARD) != 0) {
+      return false;
+    }
+    const DWORD access = information.Protect & 0xFF;
+    if (access != PAGE_READONLY && access != PAGE_READWRITE && access != PAGE_WRITECOPY &&
+        access != PAGE_EXECUTE_READ && access != PAGE_EXECUTE_READWRITE &&
+        access != PAGE_EXECUTE_WRITECOPY) {
+      return false;
+    }
+    const auto region_start = reinterpret_cast<std::uintptr_t>(information.BaseAddress);
+    if (region_start > UINTPTR_MAX - information.RegionSize) return false;
+    const auto region_end = region_start + information.RegionSize;
+    if (region_end <= cursor) return false;
+    cursor = std::min(end, region_end);
+  }
+  return true;
+}
+
+template <typename Value>
+bool ReadNativeValue(const std::uint8_t* base, const std::size_t offset, Value& output) {
+  if (base == nullptr || !IsReadableRange(base + offset, sizeof(Value))) return false;
+  std::memcpy(&output, base + offset, sizeof(Value));
+  return true;
+}
+
+bool DecodeNativeString(const std::uint8_t* value, std::string& output) {
+  // Build 35924 is linked against the x64 MSVC std::string layout: a 16-byte
+  // SSO union followed by size and capacity.  Keep this exact-profile decoder
+  // bounded and fail closed before dereferencing an external allocation.
+  constexpr std::size_t kStringSizeOffset = 0x10;
+  constexpr std::size_t kStringCapacityOffset = 0x18;
+  constexpr std::size_t kSmallStringCapacity = 15;
+  constexpr std::size_t kMaximumCapturedName = 160;
+  std::uint64_t size = 0;
+  std::uint64_t capacity = 0;
+  if (!ReadNativeValue(value, kStringSizeOffset, size) ||
+      !ReadNativeValue(value, kStringCapacityOffset, capacity) ||
+      size > kMaximumCapturedName || capacity < size) {
+    return false;
+  }
+  const char* characters = reinterpret_cast<const char*>(value);
+  if (capacity > kSmallStringCapacity) {
+    const char* external = nullptr;
+    if (!ReadNativeValue(value, 0, external) ||
+        (size > 0 && !IsReadableRange(external, static_cast<std::size_t>(size)))) {
+      return false;
+    }
+    characters = external;
+  } else if (size > 0 && !IsReadableRange(characters, static_cast<std::size_t>(size))) {
+    return false;
+  }
+  if (size == 0) output.clear();
+  else output.assign(characters, static_cast<std::size_t>(size));
+  return output.find('\0') == std::string::npos;
+}
+
+bool DecodeLineStops(const std::uint8_t* line, std::vector<SuppressedLineStop>& output) {
+  std::uintptr_t begin = 0;
+  std::uintptr_t end = 0;
+  std::uintptr_t capacity = 0;
+  if (!ReadNativeValue(line, tpf2mp::profile::kLineStopsBeginOffset, begin) ||
+      !ReadNativeValue(line, tpf2mp::profile::kLineStopsEndOffset, end) ||
+      !ReadNativeValue(line, tpf2mp::profile::kLineStopsCapacityOffset, capacity)) {
+    return false;
+  }
+  if (begin == 0 || end == 0 || capacity == 0) {
+    if (begin == 0 && end == 0 && capacity == 0) {
+      output.clear();
+      return true;
+    }
+    return false;
+  }
+  if (begin > end || end > capacity) return false;
+  const auto used_bytes = end - begin;
+  const auto capacity_bytes = capacity - begin;
+  if (used_bytes % tpf2mp::profile::kLineStopSize != 0 ||
+      capacity_bytes % tpf2mp::profile::kLineStopSize != 0) {
+    return false;
+  }
+  const auto count = used_bytes / tpf2mp::profile::kLineStopSize;
+  const auto capacity_count = capacity_bytes / tpf2mp::profile::kLineStopSize;
+  if (count > tpf2mp::profile::kMaximumLineStops ||
+      capacity_count > tpf2mp::profile::kMaximumLineStops ||
+      (used_bytes > 0 && !IsReadableRange(reinterpret_cast<const void*>(begin), used_bytes))) {
+    return false;
+  }
+  output.clear();
+  output.reserve(static_cast<std::size_t>(count));
+  for (std::size_t index = 0; index < count; ++index) {
+    const auto* stop = reinterpret_cast<const std::uint8_t*>(begin) +
+                       index * tpf2mp::profile::kLineStopSize;
+    SuppressedLineStop decoded;
+    if (!ReadNativeValue(stop, tpf2mp::profile::kLineStopStationGroupOffset,
+                         decoded.station_group) ||
+        !ReadNativeValue(stop, tpf2mp::profile::kLineStopStationOffset,
+                         decoded.station) ||
+        !ReadNativeValue(stop, tpf2mp::profile::kLineStopTerminalOffset,
+                         decoded.terminal) ||
+        decoded.station_group < 0 || decoded.station < 0 || decoded.station > 4095 ||
+        decoded.terminal < 0 || decoded.terminal > 4095) {
+      output.clear();
+      return false;
+    }
+    output.push_back(decoded);
+  }
+  return true;
+}
+
+std::int32_t ColorBasisPoints(const float value) {
+  if (!std::isfinite(value) || value < -0.001F || value > 1.001F) return -1;
+  return static_cast<std::int32_t>(std::lround(std::clamp(value, 0.0F, 1.0F) * 1000.0F));
+}
+
+bool DecodeSuppressedLineCommand(const int tag, const void* command_data,
+                                 SuppressedLineCommand& output) {
+  const auto* data = static_cast<const std::uint8_t*>(command_data);
+  output = SuppressedLineCommand{};
+  output.tag = tag;
+  if (tag == 3) {
+    if (!IsReadableRange(data, tpf2mp::profile::kCreateLineMinimumSize) ||
+        !DecodeLineStops(data + tpf2mp::profile::kCreateLineLineOffset, output.stops) ||
+        !DecodeNativeString(data + tpf2mp::profile::kCreateLineNameOffset, output.name) ||
+        !ReadNativeValue(data, tpf2mp::profile::kCreateLinePlayerOffset, output.player)) {
+      return false;
+    }
+    std::array<float, 3> color{};
+    if (!ReadNativeValue(data, tpf2mp::profile::kCreateLineColorOffset, color)) return false;
+    for (std::size_t index = 0; index < color.size(); ++index) {
+      output.color[index] = ColorBasisPoints(color[index]);
+      if (output.color[index] < 0) return false;
+    }
+    return output.player >= 0;
+  }
+  if (tag == 4) {
+    return IsReadableRange(data, tpf2mp::profile::kDeleteLineMinimumSize) &&
+           ReadNativeValue(data, tpf2mp::profile::kDeleteLineTargetOffset, output.target) &&
+           output.target >= 0;
+  }
+  if (tag == 5) {
+    return IsReadableRange(data, tpf2mp::profile::kUpdateLineMinimumSize) &&
+           ReadNativeValue(data, tpf2mp::profile::kUpdateLineTargetOffset, output.target) &&
+           output.target >= 0 &&
+           DecodeLineStops(data + tpf2mp::profile::kUpdateLineLineOffset, output.stops);
+  }
+  if (tag == 28) {
+    if (!IsReadableRange(data, tpf2mp::profile::kSetColorMinimumSize) ||
+        !ReadNativeValue(data, tpf2mp::profile::kSetColorTargetOffset, output.target) ||
+        output.target < 0) {
+      return false;
+    }
+    std::array<float, 3> color{};
+    if (!ReadNativeValue(data, tpf2mp::profile::kSetColorValueOffset, color)) return false;
+    for (std::size_t index = 0; index < color.size(); ++index) {
+      output.color[index] = ColorBasisPoints(color[index]);
+      if (output.color[index] < 0) return false;
+    }
+    return true;
+  }
+  if (tag == 29) {
+    return IsReadableRange(data, tpf2mp::profile::kSetNameMinimumSize) &&
+           ReadNativeValue(data, tpf2mp::profile::kSetNameTargetOffset, output.target) &&
+           output.target >= 0 &&
+           DecodeNativeString(data + tpf2mp::profile::kSetNameValueOffset, output.name);
+  }
+  return false;
+}
+
+std::string HexEncode(const std::string_view value) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string output;
+  output.reserve(value.size() * 2);
+  for (const auto character : value) {
+    const auto byte = static_cast<std::uint8_t>(character);
+    output.push_back(digits[byte >> 4]);
+    output.push_back(digits[byte & 0x0F]);
+  }
+  return output;
+}
+
+std::string EncodeSuppressedLineCommand(const SuppressedLineCommand& command) {
+  // Delimiter protocol L1 is intentionally tiny and pointer-free. Names are
+  // hex encoded; all other values are bounded decimal integers.
+  std::ostringstream output;
+  output << "L1|" << command.tag << '|' << command.target << '|' << command.player << '|'
+         << command.color[0] << '|' << command.color[1] << '|' << command.color[2] << '|'
+         << HexEncode(command.name) << '|' << command.stops.size() << '|';
+  for (std::size_t index = 0; index < command.stops.size(); ++index) {
+    if (index != 0) output << ';';
+    const auto& stop = command.stops[index];
+    output << stop.station_group << ',' << stop.station << ',' << stop.terminal;
+  }
+  return output.str();
+}
+
+int NativeCommandDataTag(const void* data) {
+  if (data == nullptr) return -1;
+  const auto tag_pointer = static_cast<const std::uint8_t*>(data) + kNativeCommandTagOffset;
+  if (!IsReadableRange(tag_pointer, sizeof(std::int8_t))) return -1;
+  const int tag = *reinterpret_cast<const std::int8_t*>(tag_pointer);
+  return tag >= 0 && static_cast<std::size_t>(tag) < kNativeCommandTypeCount ? tag : -1;
+}
+
+int NativeCommandTag(const void* command) {
+  if (!IsReadableRange(command, sizeof(void*))) return -1;
+  return NativeCommandDataTag(*reinterpret_cast<void* const*>(command));
+}
+
+bool IsAuthorityCommandTag(const int tag) {
+  return std::any_of(
+      tpf2mp::profile::kAuthorityCommandVisitors.begin(),
+      tpf2mp::profile::kAuthorityCommandVisitors.end(),
+      [tag](const tpf2mp::profile::CommandVisitor& visitor) { return visitor.tag == tag; });
+}
+
+std::uint64_t SumTagCounts(
+    const std::array<std::uint64_t, kNativeCommandTypeCount>& counts) {
+  std::uint64_t result = 0;
+  for (const auto count : counts) result += count;
+  return result;
+}
+
+void WriteTagCounts(std::ostringstream& output,
+                    const std::array<std::uint64_t, kNativeCommandTypeCount>& counts) {
+  output << '[';
+  bool first = true;
+  for (std::size_t tag = 0; tag < counts.size(); ++tag) {
+    if (counts[tag] == 0) continue;
+    if (!first) output << ',';
+    first = false;
+    output << "{\"tag\":" << tag << ",\"name\":\"" << CommandTypeName(static_cast<int>(tag))
+           << "\",\"count\":" << counts[tag] << '}';
+  }
+  output << ']';
+}
+
+std::string StatusJson() {
+  StateLock lock;
+  std::ostringstream output;
+  output << "{\"schemaVersion\":1"
+         << ",\"component\":\"tpf2mp-native-hook\""
+         << ",\"hookVersion\":\"0.12.0\""
+         << ",\"profile\":\"" << tpf2mp::JsonEscape(std::string(tpf2mp::profile::kProfileName)) << "\""
+         << ",\"processId\":" << GetCurrentProcessId()
+         << ",\"stage\":\"" << tpf2mp::JsonEscape(g_stage) << "\""
+         << ",\"active\":" << (g_hooks.enabled ? "true" : "false")
+         << ",\"executablePath\":\"" << tpf2mp::JsonEscape(tpf2mp::WideToUtf8(g_validation.path.wstring())) << "\""
+         << ",\"dllPath\":\"" << tpf2mp::JsonEscape(tpf2mp::WideToUtf8(g_dll_path.wstring())) << "\""
+         << ",\"validation\":{"
+         << "\"valid\":" << (g_validation.valid ? "true" : "false")
+         << ",\"expectedSha256\":\"" << tpf2mp::profile::kSha256 << "\""
+         << ",\"observedSha256\":\"" << tpf2mp::JsonEscape(g_validation.sha256) << "\""
+         << ",\"expectedTimestamp\":" << tpf2mp::profile::kPeTimestamp
+         << ",\"observedTimestamp\":" << g_validation.pe_timestamp
+         << ",\"expectedImageSize\":" << tpf2mp::profile::kImageSize
+         << ",\"observedImageSize\":" << g_validation.image_size
+         << ",\"error\":\"" << tpf2mp::JsonEscape(g_validation.error) << "\""
+         << ",\"signatures\":[";
+  for (std::size_t index = 0; index < g_validation.signatures.size(); ++index) {
+    const auto& signature = g_validation.signatures[index];
+    if (index != 0) output << ',';
+    output << "{\"name\":\"" << tpf2mp::JsonEscape(signature.name) << "\""
+           << ",\"expectedRva\":" << signature.expected_rva
+           << ",\"observedRva\":" << signature.observed_rva
+           << ",\"matches\":" << signature.matches
+           << ",\"valid\":" << (signature.expected_bytes_match ? "true" : "false") << '}';
+  }
+  output << "]}"
+         << ",\"hooks\":{"
+         << "\"minHookInitialised\":" << (g_hooks.minhook_initialised ? "true" : "false")
+         << ",\"luaPrint\":" << (g_hooks.lua_print_created ? "true" : "false")
+         << ",\"luaSetField\":" << (g_hooks.lua_setfield_created ? "true" : "false")
+         << ",\"setupCommandInterface\":" << (g_hooks.setup_command_created ? "true" : "false")
+         << ",\"commandListSwap\":" << (g_hooks.command_list_swap_created ? "true" : "false")
+         << ",\"applyCommand\":" << (g_hooks.apply_command_created ? "true" : "false")
+         << ",\"buildProposalVisitor\":"
+         << (g_hooks.build_proposal_visitor_created ? "true" : "false")
+         << ",\"authorityCommandVisitors\":"
+         << g_hooks.authority_command_visitors_created
+         << ",\"sendCommandWrapping\":true"
+         << ",\"enabled\":" << (g_hooks.enabled ? "true" : "false") << '}';
+  output << ",\"setupCommandInterface\":{" 
+         << "\"calls\":" << g_setup_calls
+         << ",\"lastThread\":" << g_setup_last_thread
+         << ",\"lastArgs\":[";
+  for (std::size_t index = 0; index < g_setup_last_args.size(); ++index) {
+    if (index != 0) output << ',';
+    output << '"' << tpf2mp::JsonEscape(g_setup_last_args[index]) << '"';
+  }
+  output << "]}"
+         << ",\"commandList\":{"
+         << "\"swapCalls\":" << g_command_swap_calls
+         << ",\"nonEmptyBatches\":" << g_command_nonempty_batches
+         << ",\"commands\":" << g_command_queued
+         << ",\"invalidLayouts\":" << g_command_invalid_layouts
+         << ",\"unknownTags\":" << g_command_unknown_tags
+         << ",\"lastBatchCount\":" << g_command_last_batch
+         << ",\"lastBatchId\":" << g_command_last_batch_id
+         << ",\"pendingCommands\":" << g_pending_commands.size()
+         << ",\"pendingOverwrites\":" << g_command_pending_overwrites
+         << ",\"lastThread\":" << g_command_swap_last_thread
+         << ",\"tagCounts\":";
+  WriteTagCounts(output, g_queued_tags);
+  output << '}'
+         << ",\"applyCommand\":{"
+         << "\"calls\":" << g_apply_calls
+         << ",\"succeeded\":" << g_apply_succeeded
+         << ",\"failed\":" << g_apply_failed
+         << ",\"unknown\":" << g_apply_unknown
+         << ",\"unknownTags\":" << g_apply_unknown_tags
+         << ",\"direct\":" << g_apply_direct
+         << ",\"tagMismatches\":" << g_apply_tag_mismatches
+         << ",\"filteredScriptEvents\":" << g_apply_filtered_script_events
+         << ",\"lastTag\":" << g_apply_last_tag
+         << ",\"lastTagName\":\"" << CommandTypeName(g_apply_last_tag) << "\""
+         << ",\"lastThread\":" << g_apply_last_thread
+         << ",\"tagCounts\":";
+  WriteTagCounts(output, g_applied_tags);
+  output << '}'
+         << ",\"commandEvents\":[";
+  bool first_command_event = true;
+  for (const auto& event : g_completed_commands) {
+    if (!first_command_event) output << ',';
+    first_command_event = false;
+    output << "{\"localSequence\":" << event.pending.local_sequence
+           << ",\"batch\":" << event.pending.batch
+           << ",\"index\":" << event.pending.index
+           << ",\"tag\":" << event.pending.tag
+           << ",\"name\":\"" << CommandTypeName(event.pending.tag) << "\""
+           << ",\"queueThread\":" << event.pending.queue_thread
+           << ",\"applyThread\":" << event.apply_thread
+           << ",\"success\":";
+    if (event.success < 0) {
+      output << "null";
+    } else {
+      output << (event.success > 0 ? "true" : "false");
+    }
+    output << '}';
+  }
+  output << ']'
+         << ",\"recentCommandEvents\":[";
+  first_command_event = true;
+  for (const auto& event : g_recent_completed_commands) {
+    if (!first_command_event) output << ',';
+    first_command_event = false;
+    output << "{\"localSequence\":" << event.pending.local_sequence
+           << ",\"batch\":" << event.pending.batch
+           << ",\"index\":" << event.pending.index
+           << ",\"tag\":" << event.pending.tag
+           << ",\"name\":\"" << CommandTypeName(event.pending.tag) << "\""
+           << ",\"success\":";
+    if (event.success < 0) {
+      output << "null";
+    } else {
+      output << (event.success > 0 ? "true" : "false");
+    }
+    output << '}';
+  }
+  output << ']'
+         << ",\"commandEventFilter\":\"commandEvents retains non-SendScriptEvent commands; recentCommandEvents retains the latest 64 commands\""
+         << ",\"gates\":{\"buildProposal\":{"
+         << "\"enabled\":" << (g_build_gate_enabled ? "true" : "false")
+         << ",\"authorizations\":" << g_build_gate_authorizations
+         << ",\"allowed\":" << g_build_gate_allowed
+         << ",\"suppressed\":" << g_build_gate_suppressed
+         << ",\"calls\":" << g_build_gate_calls
+         << ",\"tagMismatches\":" << g_build_gate_tag_mismatches
+         << ",\"lastTag\":" << g_build_gate_last_tag
+         << ",\"lastThread\":" << g_build_gate_last_thread
+         << "},\"commandVisitors\":{"
+         << "\"enabled\":" << (g_command_gate_enabled ? "true" : "false")
+         << ",\"hooked\":" << g_hooks.authority_command_visitors_created
+         << ",\"tagMismatches\":" << g_command_gate_tag_mismatches
+         << ",\"pendingTotal\":" << SumTagCounts(g_command_gate_authorizations)
+         << ",\"allowedTotal\":" << SumTagCounts(g_command_gate_allowed)
+         << ",\"suppressedTotal\":" << SumTagCounts(g_command_gate_suppressed)
+         << ",\"gatedTags\":";
+  std::array<std::uint64_t, kNativeCommandTypeCount> gated_tags{};
+  for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
+    gated_tags[visitor.tag] = 1;
+  }
+  WriteTagCounts(output, gated_tags);
+  output << ",\"pending\":";
+  WriteTagCounts(output, g_command_gate_authorizations);
+  output << ",\"allowed\":";
+  WriteTagCounts(output, g_command_gate_allowed);
+  output << ",\"suppressed\":";
+  WriteTagCounts(output, g_command_gate_suppressed);
+  output << ",\"optimisticPassthrough\":";
+  WriteTagCounts(output, g_command_gate_passthrough);
+  output << ",\"calls\":";
+  WriteTagCounts(output, g_command_gate_calls);
+  output << ",\"suppressedGameSpeed\":{"
+         << "\"queued\":" << g_suppressed_game_speeds.size()
+         << ",\"captured\":" << g_suppressed_game_speed_captured
+         << ",\"consumed\":" << g_suppressed_game_speed_consumed
+         << ",\"invalid\":" << g_suppressed_game_speed_invalid
+         << ",\"dropped\":" << g_suppressed_game_speed_dropped
+         << ",\"last\":" << g_suppressed_game_speed_last
+         << "},\"suppressedLineCommands\":{"
+         << "\"queued\":" << g_suppressed_line_commands.size()
+         << ",\"captured\":" << g_suppressed_line_command_captured
+         << ",\"consumed\":" << g_suppressed_line_command_consumed
+         << ",\"invalid\":" << g_suppressed_line_command_invalid
+         << ",\"dropped\":" << g_suppressed_line_command_dropped
+         << ",\"lastTag\":" << g_suppressed_line_command_last_tag
+         << ",\"lastTarget\":" << g_suppressed_line_command_last_target
+         << ",\"lastStopCount\":" << g_suppressed_line_command_last_stop_count
+         << "}}}"
+         << ",\"luaStates\":[";
+  bool first_state = true;
+  for (const auto& [_, state] : g_states) {
+    if (!first_state) output << ',';
+    first_state = false;
+    output << "{\"pointer\":\"" << state.pointer << "\""
+           << ",\"context\":\"" << tpf2mp::JsonEscape(state.context) << "\""
+           << ",\"firstThread\":" << state.first_thread
+           << ",\"lastThread\":" << state.last_thread
+           << ",\"printCalls\":" << state.print_calls
+           << ",\"commandCalls\":" << state.command_calls
+           << ",\"lastCommandArgumentCount\":" << state.last_command_argument_count
+           << ",\"lastCommandThread\":" << state.last_command_thread
+           << ",\"setFieldCalls\":" << state.setfield_calls
+            << ",\"nativeApiRegistered\":" << (state.native_api_registered ? "true" : "false")
+            << ",\"sendCommandWrapped\":" << (state.send_command_wrapped ? "true" : "false")
+            << ",\"commandObserverRegistered\":"
+            << (state.command_observer_registered ? "true" : "false")
+           << ",\"bindings\":[";
+    bool first_binding = true;
+    for (const auto& binding : state.interesting_bindings) {
+      if (!first_binding) output << ',';
+      first_binding = false;
+      output << '"' << tpf2mp::JsonEscape(binding) << '"';
+    }
+    output << "]"
+           << ",\"mirroredBindings\":[";
+    bool first_mirrored_binding = true;
+    for (const auto& binding : state.mirrored_bindings) {
+      if (!first_mirrored_binding) output << ',';
+      first_mirrored_binding = false;
+      output << '"' << tpf2mp::JsonEscape(binding) << '"';
+    }
+    output << "]}";
+  }
+  output << "]"
+         << ",\"scope\":\"Lua command-binding mirrors, sendCommand call-through with an opt-in pre-issue Lua observer, native command observers, a BuildProposal visitor gate, 23 fail-closed consequential-command visitors, suppressed game-speed capture, and exact-build typed Create/Delete/Update Line capture\""
+         << ",\"lastError\":\"" << tpf2mp::JsonEscape(g_last_error) << "\"}";
+  return output.str();
+}
+
+void WriteStatusFiles() {
+  const auto json = StatusJson();
+  std::string error;
+  if (!tpf2mp::AtomicWriteUtf8(tpf2mp::NativeStatusPath(GetCurrentProcessId()), json, error)) {
+    StateLock lock;
+    g_last_error = error;
+    return;
+  }
+  // latest.json is intentionally only a convenience for single-process local
+  // testing. The PID-specific file is authoritative when multiple instances run.
+  std::string ignored;
+  tpf2mp::AtomicWriteUtf8(tpf2mp::NativeStatusDirectory() / "latest.json", json, ignored);
+}
+
+bool IsInterestingBinding(const char* key) {
+  if (key == nullptr) return false;
+  return std::find(kInterestingBindings.begin(), kInterestingBindings.end(), key) !=
+         kInterestingBindings.end();
+}
+
+int InterestingBindingIndex(const char* key) {
+  if (key == nullptr) return -1;
+  const auto found = std::find(kInterestingBindings.begin(), kInterestingBindings.end(), key);
+  if (found == kInterestingBindings.end()) return -1;
+  return static_cast<int>(std::distance(kInterestingBindings.begin(), found));
+}
+
+int NativeBindingRegistrySlot(const std::size_t index) {
+  return kNativeBindingRegistryBase - static_cast<int>(index);
+}
+
+std::string NativeBindingGlobalName(const std::string_view name) {
+  return "tpf2mp_native_binding_" + std::string(name);
+}
+
+int NativeStatus(lua_State* state) {
+  const auto json = StatusJson();
+  g_lua_pushlstring(state, json.data(), json.size());
+  return 1;
+}
+
+int NativeMarkContext(lua_State* state) {
+  std::size_t length = 0;
+  const char* raw = g_lua_tolstring(state, 1, &length);
+  if (raw != nullptr && length <= 64) {
+    StateLock lock;
+    ObserveStateLocked(state).context.assign(raw, length);
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeEnableBuildGate(lua_State*) {
+  {
+    StateLock lock;
+    g_build_gate_enabled = true;
+    g_build_gate_authorizations = 0;
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeDisableBuildGate(lua_State*) {
+  {
+    StateLock lock;
+    g_build_gate_enabled = false;
+    g_build_gate_authorizations = 0;
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeAuthorizeBuild(lua_State*) {
+  {
+    StateLock lock;
+    if (g_build_gate_enabled && g_build_gate_authorizations < 1024) {
+      ++g_build_gate_authorizations;
+    }
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeEnableCommandGate(lua_State*) {
+  {
+    StateLock lock;
+    g_command_gate_enabled = true;
+    g_command_gate_authorizations.fill(0);
+    g_suppressed_game_speeds.clear();
+    g_suppressed_line_commands.clear();
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeDisableCommandGate(lua_State*) {
+  {
+    StateLock lock;
+    g_command_gate_enabled = false;
+    g_command_gate_authorizations.fill(0);
+    g_suppressed_game_speeds.clear();
+    g_suppressed_line_commands.clear();
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeAuthorizeCommand(lua_State* state) {
+  if (g_lua_gettop(state) < 1) return 0;
+  std::size_t length = 0;
+  const char* raw = g_lua_tolstring(state, 1, &length);
+  if (raw == nullptr || length == 0 || length > 8) return 0;
+  std::string value(raw, length);
+  char* end = nullptr;
+  const long parsed = std::strtol(value.c_str(), &end, 10);
+  if (end == value.c_str() || *end != '\0' || parsed < 0 ||
+      parsed >= static_cast<long>(kNativeCommandTypeCount) ||
+      !IsAuthorityCommandTag(static_cast<int>(parsed))) {
+    return 0;
+  }
+  {
+    StateLock lock;
+    auto& tokens = g_command_gate_authorizations[static_cast<std::size_t>(parsed)];
+    if (g_command_gate_enabled && tokens < 1024) ++tokens;
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeSetCommandObserver(lua_State* state) {
+  if (g_lua_gettop(state) < 1) return 0;
+  // Keep the callback in the registry belonging to this exact Lua state. The
+  // mod supplies a no-throw callback; avoiding a cross-state/global pointer is
+  // essential because Transport Fever 2 owns separate GUI and engine states.
+  g_lua_pushvalue(state, 1);
+  g_lua_rawseti(state, kLuaRegistryIndex, kCommandObserverFunction);
+  {
+    StateLock lock;
+    ObserveStateLocked(state).command_observer_registered = true;
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeTakeSuppressedGameSpeed(lua_State* state) {
+  std::int32_t speed = -1;
+  {
+    StateLock lock;
+    if (g_suppressed_game_speeds.empty()) return 0;
+    speed = g_suppressed_game_speeds.front();
+    g_suppressed_game_speeds.pop_front();
+    ++g_suppressed_game_speed_consumed;
+  }
+  const auto text = std::to_string(speed);
+  g_lua_pushlstring(state, text.data(), text.size());
+  RequestStatusWrite();
+  return 1;
+}
+
+int NativeTakeSuppressedLineCommand(lua_State* state) {
+  std::string encoded;
+  {
+    StateLock lock;
+    if (g_suppressed_line_commands.empty()) return 0;
+    encoded = EncodeSuppressedLineCommand(g_suppressed_line_commands.front());
+    g_suppressed_line_commands.pop_front();
+    ++g_suppressed_line_command_consumed;
+  }
+  g_lua_pushlstring(state, encoded.data(), encoded.size());
+  RequestStatusWrite();
+  return 1;
+}
+
+void RegisterNativeApi(lua_State* state) {
+  {
+    StateLock lock;
+    auto& observed = ObserveStateLocked(state);
+    if (observed.native_api_registered) return;
+    observed.native_api_registered = true;
+  }
+  g_native_registration = true;
+  g_lua_rawgeti(state, kLuaRegistryIndex, kLuaGlobalsRegistryIndex);
+  g_lua_pushlstring(state, "tpf2mp_native_status", std::strlen("tpf2mp_native_status"));
+  g_lua_pushcclosure(state, NativeStatus, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_mark_context",
+                    std::strlen("tpf2mp_native_mark_context"));
+  g_lua_pushcclosure(state, NativeMarkContext, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_enable_build_gate",
+                    std::strlen("tpf2mp_native_enable_build_gate"));
+  g_lua_pushcclosure(state, NativeEnableBuildGate, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_disable_build_gate",
+                    std::strlen("tpf2mp_native_disable_build_gate"));
+  g_lua_pushcclosure(state, NativeDisableBuildGate, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_authorize_build",
+                    std::strlen("tpf2mp_native_authorize_build"));
+  g_lua_pushcclosure(state, NativeAuthorizeBuild, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_enable_command_gate",
+                    std::strlen("tpf2mp_native_enable_command_gate"));
+  g_lua_pushcclosure(state, NativeEnableCommandGate, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_disable_command_gate",
+                    std::strlen("tpf2mp_native_disable_command_gate"));
+  g_lua_pushcclosure(state, NativeDisableCommandGate, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_authorize_command",
+                    std::strlen("tpf2mp_native_authorize_command"));
+  g_lua_pushcclosure(state, NativeAuthorizeCommand, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_set_command_observer",
+                    std::strlen("tpf2mp_native_set_command_observer"));
+  g_lua_pushcclosure(state, NativeSetCommandObserver, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_take_suppressed_game_speed",
+                    std::strlen("tpf2mp_native_take_suppressed_game_speed"));
+  g_lua_pushcclosure(state, NativeTakeSuppressedGameSpeed, 0);
+  g_lua_rawset(state, -3);
+  g_lua_pushlstring(state, "tpf2mp_native_take_suppressed_line_command",
+                    std::strlen("tpf2mp_native_take_suppressed_line_command"));
+  g_lua_pushcclosure(state, NativeTakeSuppressedLineCommand, 0);
+  g_lua_rawset(state, -3);
+  // 0.11 names the actual contract: an unauthorised vanilla line command is
+  // decoded, allowed to complete locally so its stock UI callback remains
+  // valid, and then consumed for canonical peer replay.  Keep the old symbol
+  // for 0.10 mod-script compatibility during rolling development installs.
+  g_lua_pushlstring(state, "tpf2mp_native_take_line_command",
+                    std::strlen("tpf2mp_native_take_line_command"));
+  g_lua_pushcclosure(state, NativeTakeSuppressedLineCommand, 0);
+  g_lua_rawset(state, -3);
+  g_lua_settop(state, -2); // pop the global table; restore caller stack
+  g_native_registration = false;
+  RequestStatusWrite();
+}
+
+int SendCommandObserver(lua_State* state) {
+  BootTrace("send-command-called");
+  const int argument_count = g_lua_gettop(state);
+  {
+    StateLock lock;
+    auto& observation = ObserveStateLocked(state);
+    ++observation.command_calls;
+    observation.last_command_argument_count = argument_count;
+    observation.last_command_thread = GetCurrentThreadId();
+  }
+  RequestStatusWrite();
+
+  bool notify_observer = false;
+  {
+    StateLock lock;
+    notify_observer = ObserveStateLocked(state).command_observer_registered;
+  }
+  if (notify_observer && argument_count >= 1) {
+    // The callback sees the original command before api.cmd.sendCommand can
+    // enqueue or commit it. It must not throw; the Lua side wraps all capture
+    // work in pcall and never calls sendCommand recursively.
+    g_lua_rawgeti(state, kLuaRegistryIndex, kCommandObserverFunction);
+    g_lua_pushvalue(state, 1);
+    g_lua_callk(state, 1, 0, 0, nullptr);
+  }
+
+  // The original Lua/sol closure is upvalue 1. Move it below all arguments,
+  // call it normally, and return exactly the values it returned.
+  g_lua_pushvalue(state, kFirstUpvalueIndex);
+  g_lua_insert(state, 1);
+  g_lua_callk(state, argument_count, kLuaMultiReturn, 0, nullptr);
+  return g_lua_gettop(state);
+}
+
+int DetourLuaPrint(lua_State* state) {
+  {
+    StateLock lock;
+    ++ObserveStateLocked(state).print_calls;
+  }
+  const int result = g_original_print(state);
+  RegisterNativeApi(state);
+  RequestStatusWrite();
+  return result;
+}
+
+void DetourLuaSetField(lua_State* state, int index, const char* key) {
+  const int binding_index = InterestingBindingIndex(key);
+  const bool has_stack_value = g_lua_gettop(state) >= 1;
+  const bool capture_binding = binding_index > 0 && !g_native_registration &&
+                               g_setup_command_depth > 0 && has_stack_value;
+  const bool capture_send_command = binding_index == 0 && !g_native_registration &&
+                                    g_setup_command_depth > 0 && has_stack_value;
+  {
+    StateLock lock;
+    auto& observed = ObserveStateLocked(state);
+    ++observed.setfield_calls;
+    if (IsInterestingBinding(key)) observed.interesting_bindings.emplace(key);
+  }
+  if (capture_binding) {
+    // Root a copy in this Lua state's registry while sol2 is constructing the
+    // API table. It is mirrored into a namespaced global only after the full
+    // setup routine returns, avoiding the binding-library re-entrancy that an
+    // immediate table replacement caused in the first prototype.
+    g_lua_pushvalue(state, -1);
+    g_lua_rawseti(state, kLuaRegistryIndex,
+                  NativeBindingRegistrySlot(static_cast<std::size_t>(binding_index)));
+    g_pending_binding_state = state;
+    g_pending_binding_mask |= std::uint64_t{1} << static_cast<unsigned>(binding_index);
+  }
+  if (capture_send_command) {
+    // sol2 examines the closure while SetupCommandInterface is still building
+    // the API table. Preserve both values in this state's registry, let the
+    // original assignment complete untouched, and replace it only after the
+    // entire setup routine has returned on the same owning thread.
+    const int top = g_lua_gettop(state);
+    int absolute_index = index;
+    if (index < 0 && index > kLuaRegistryIndex) absolute_index = top + index + 1;
+    g_lua_pushvalue(state, -1);
+    g_lua_rawseti(state, kLuaRegistryIndex, kPendingSendCommandFunction);
+    g_lua_pushvalue(state, absolute_index);
+    g_lua_rawseti(state, kLuaRegistryIndex, kPendingSendCommandTable);
+    g_pending_send_command_state = state;
+    g_original_setfield(state, index, key);
+    BootTrace("send-command-captured");
+    RequestStatusWrite();
+    return;
+  }
+  g_original_setfield(state, index, key);
+  if (IsInterestingBinding(key)) RequestStatusWrite();
+}
+
+void InstallDeferredNativeBindings() {
+  lua_State* state = g_pending_binding_state;
+  const std::uint64_t mask = g_pending_binding_mask;
+  g_pending_binding_state = nullptr;
+  g_pending_binding_mask = 0;
+  if (state == nullptr || mask == 0) return;
+
+  const int original_top = g_lua_gettop(state);
+  g_lua_rawgeti(state, kLuaRegistryIndex, kLuaGlobalsRegistryIndex);
+  std::vector<std::string> mirrored;
+  for (std::size_t index = 1; index < kInterestingBindings.size(); ++index) {
+    if ((mask & (std::uint64_t{1} << index)) == 0) continue;
+    const auto global_name = NativeBindingGlobalName(kInterestingBindings[index]);
+    g_lua_pushlstring(state, global_name.data(), global_name.size());
+    g_lua_rawgeti(state, kLuaRegistryIndex, NativeBindingRegistrySlot(index));
+    g_lua_rawset(state, -3);
+    mirrored.emplace_back(kInterestingBindings[index]);
+  }
+  g_lua_settop(state, original_top);
+  {
+    StateLock lock;
+    auto& observation = ObserveStateLocked(state);
+    observation.mirrored_bindings.insert(mirrored.begin(), mirrored.end());
+  }
+  BootTrace("native-bindings-mirrored-deferred");
+  RequestStatusWrite();
+}
+
+void InstallDeferredSendCommandWrapper() {
+  lua_State* state = g_pending_send_command_state;
+  g_pending_send_command_state = nullptr;
+  if (state == nullptr) return;
+
+  const int original_top = g_lua_gettop(state);
+  g_lua_rawgeti(state, kLuaRegistryIndex, kPendingSendCommandTable);
+  g_lua_rawgeti(state, kLuaRegistryIndex, kPendingSendCommandFunction);
+  g_lua_pushcclosure(state, SendCommandObserver, 1); // consumes original function
+  g_original_setfield(state, -2, "sendCommand");   // consumes wrapper
+  g_lua_settop(state, original_top);
+  {
+    StateLock lock;
+    ObserveStateLocked(state).send_command_wrapped = true;
+  }
+  BootTrace("send-command-wrapped-deferred");
+  RequestStatusWrite();
+}
+
+std::uintptr_t DetourSetupCommandInterface(void* first, void* second, void* third, void* fourth) {
+  {
+    StateLock lock;
+    ++g_setup_calls;
+    g_setup_last_thread = GetCurrentThreadId();
+    g_setup_last_args = {tpf2mp::HexPointer(first), tpf2mp::HexPointer(second),
+                         tpf2mp::HexPointer(third), tpf2mp::HexPointer(fourth)};
+  }
+  RequestStatusWrite();
+  ++g_setup_command_depth;
+  const auto result = g_original_setup_command(first, second, third, fourth);
+  --g_setup_command_depth;
+  BootTrace("setup-command-returned");
+  if (g_setup_command_depth == 0) {
+    InstallDeferredSendCommandWrapper();
+    InstallDeferredNativeBindings();
+  }
+  return result;
+}
+
+void DetourCommandListSwap(void* owner, void* raw_output) {
+  g_original_command_list_swap(owner, raw_output);
+
+  std::uint64_t batch_count = 0;
+  std::uint64_t unknown_tags = 0;
+  bool valid_layout = IsReadableRange(raw_output, sizeof(NativeVectorLayout));
+  std::array<std::uint64_t, kNativeCommandTypeCount> local_tags{};
+  std::vector<std::pair<const void*, int>> local_commands;
+  if (valid_layout) {
+    const auto layout = *static_cast<const NativeVectorLayout*>(raw_output);
+    const auto begin = reinterpret_cast<std::uintptr_t>(layout.begin);
+    const auto end = reinterpret_cast<std::uintptr_t>(layout.end);
+    const auto capacity = reinterpret_cast<std::uintptr_t>(layout.capacity);
+    if (begin == 0 && end == 0 && capacity == 0) {
+      batch_count = 0;
+    } else if (begin == 0 || end < begin || capacity < end ||
+               (end - begin) % kNativeCommandSize != 0) {
+      valid_layout = false;
+    } else {
+      batch_count = (end - begin) / kNativeCommandSize;
+      // A player-command queue should be tiny. This guard prevents a bad
+      // reverse-engineered layout from turning into a long memory walk.
+      if (batch_count > 100'000 ||
+          !IsReadableRange(layout.begin, static_cast<std::size_t>(end - begin))) {
+        valid_layout = false;
+        batch_count = 0;
+      } else {
+        local_commands.reserve(static_cast<std::size_t>(batch_count));
+        for (std::uint64_t index = 0; index < batch_count; ++index) {
+          const auto* command = layout.begin + index * kNativeCommandSize;
+          const int tag = NativeCommandTag(command);
+          local_commands.emplace_back(command, tag);
+          if (tag >= 0) {
+            ++local_tags[static_cast<std::size_t>(tag)];
+          } else {
+            ++unknown_tags;
+          }
+        }
+      }
+    }
+  }
+
+  {
+    StateLock lock;
+    ++g_command_swap_calls;
+    g_command_swap_last_thread = GetCurrentThreadId();
+    g_command_last_batch = batch_count;
+    if (!valid_layout) {
+      ++g_command_invalid_layouts;
+    } else {
+      if (batch_count != 0) ++g_command_nonempty_batches;
+      g_command_queued += batch_count;
+      g_command_unknown_tags += unknown_tags;
+      if (batch_count != 0) {
+        const auto batch_id = g_command_next_batch_id++;
+        g_command_last_batch_id = batch_id;
+        for (std::size_t index = 0; index < local_commands.size(); ++index) {
+          const auto [command, tag] = local_commands[index];
+          PendingNativeCommand pending{
+              g_command_next_local_sequence++, batch_id, index, tag, GetCurrentThreadId()};
+          const auto [_, inserted] = g_pending_commands.insert_or_assign(command, pending);
+          if (!inserted) ++g_command_pending_overwrites;
+        }
+      }
+      for (std::size_t tag = 0; tag < local_tags.size(); ++tag) {
+        g_queued_tags[tag] += local_tags[tag];
+      }
+    }
+  }
+  RequestStatusWrite();
+}
+
+void DetourApplyCommand(void* context, void* command) {
+  const int tag = NativeCommandTag(command);
+  PendingNativeCommand pending{};
+  {
+    StateLock lock;
+    const auto found = g_pending_commands.find(command);
+    if (found == g_pending_commands.end()) {
+      pending = {g_command_next_local_sequence++, 0, 0, tag, 0};
+      ++g_apply_direct;
+    } else {
+      pending = found->second;
+      g_pending_commands.erase(found);
+      if (pending.tag != tag) ++g_apply_tag_mismatches;
+    }
+  }
+  g_original_apply_command(context, command);
+
+  int success = -1;
+  if (command != nullptr) {
+    const auto* success_pointer = static_cast<const std::uint8_t*>(command) +
+                                  kNativeCommandSuccessOffset;
+    if (IsReadableRange(success_pointer, sizeof(std::uint8_t))) {
+      success = *success_pointer == 0 ? 0 : 1;
+    }
+  }
+  bool wake_status_writer = false;
+  {
+    StateLock lock;
+    ++g_apply_calls;
+    wake_status_writer = g_apply_calls <= 4 || (g_apply_calls % 64) == 0;
+    g_apply_last_tag = tag;
+    g_apply_last_thread = GetCurrentThreadId();
+    if (tag >= 0) {
+      ++g_applied_tags[static_cast<std::size_t>(tag)];
+    } else {
+      ++g_apply_unknown_tags;
+    }
+    if (success > 0) {
+      ++g_apply_succeeded;
+    } else if (success == 0) {
+      ++g_apply_failed;
+    } else {
+      ++g_apply_unknown;
+    }
+    const CompletedNativeCommand completed{pending, GetCurrentThreadId(), success};
+    g_recent_completed_commands.push_back(completed);
+    while (g_recent_completed_commands.size() > kNativeRecentCommandEventLimit) {
+      g_recent_completed_commands.pop_front();
+    }
+    if (pending.tag == 32) {
+      ++g_apply_filtered_script_events;
+    } else {
+      g_completed_commands.push_back(completed);
+      while (g_completed_commands.size() > kNativeCommandEventLimit) {
+        g_completed_commands.pop_front();
+      }
+    }
+  }
+  // Keep the in-process status exact on every call, but do not wake the
+  // atomic JSON writer thousands of times per second. Queue-swap events also
+  // wake it once per batch.
+  g_status_dirty.store(true, std::memory_order_release);
+  if (wake_status_writer && g_status_event != nullptr) SetEvent(g_status_event);
+}
+
+bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {
+  bool suppress = false;
+  {
+    StateLock lock;
+    ++g_build_gate_calls;
+    g_build_gate_last_thread = GetCurrentThreadId();
+    g_build_gate_last_tag = NativeCommandDataTag(build_proposal);
+    const bool tag_mismatch = g_build_gate_last_tag != 15;
+    if (tag_mismatch) {
+      ++g_build_gate_tag_mismatches;
+      g_last_error = "BuildProposal visitor tag mismatch; expected 15, observed " +
+                     std::to_string(g_build_gate_last_tag);
+    }
+    if (g_build_gate_enabled) {
+      if (tag_mismatch) {
+        ++g_build_gate_suppressed;
+        suppress = true;
+      } else if (g_build_gate_authorizations > 0) {
+        --g_build_gate_authorizations;
+        ++g_build_gate_allowed;
+      } else {
+        ++g_build_gate_suppressed;
+        suppress = true;
+      }
+    }
+  }
+  RequestStatusWrite();
+  if (suppress) return false;
+  return g_original_build_proposal_visitor(visitor_context, build_proposal);
+}
+
+template <std::size_t Tag>
+bool DetourAuthorityCommandVisitor(void* visitor_context, void* command_data) {
+  static_assert(Tag < kNativeCommandTypeCount);
+  bool suppress = false;
+  bool gate_observed = false;
+  bool optimistic_line_passthrough = false;
+  SuppressedLineCommand optimistic_line_command;
+  {
+    StateLock lock;
+    ++g_command_gate_calls[Tag];
+    const bool tag_mismatch =
+        NativeCommandDataTag(command_data) != static_cast<int>(Tag);
+    if (tag_mismatch) {
+      ++g_command_gate_tag_mismatches;
+      g_last_error = "authority command visitor tag mismatch at visitor " +
+                     std::to_string(Tag);
+    }
+    gate_observed = g_command_gate_enabled;
+    if (g_command_gate_enabled) {
+      if (tag_mismatch) {
+        ++g_command_gate_suppressed[Tag];
+        suppress = true;
+      } else if (g_command_gate_authorizations[Tag] > 0) {
+        --g_command_gate_authorizations[Tag];
+        ++g_command_gate_allowed[Tag];
+      } else {
+        if constexpr ((Tag >= 3 && Tag <= 5) || Tag == 28 || Tag == 29) {
+          // Vanilla's Line Manager callback immediately dereferences the
+          // command result (notably the entity created by New Line). Returning
+          // false here does not merely reject the click: Build 35924 feeds an
+          // invalid EntityRev into that callback and asserts. Decode first and
+          // allow only exact pinned-layout line/name/color commands to complete locally;
+          // Lua binds the local result to the ordered canonical operation and
+          // the other peer replays it with a normal one-shot authorization.
+          if (!tag_mismatch && DecodeSuppressedLineCommand(
+                static_cast<int>(Tag), command_data, optimistic_line_command)) {
+            optimistic_line_passthrough = true;
+            ++g_command_gate_passthrough[Tag];
+          } else {
+            ++g_command_gate_suppressed[Tag];
+            ++g_suppressed_line_command_invalid;
+            g_last_error = "optimistic " + std::string(CommandTypeName(static_cast<int>(Tag))) +
+                           " payload did not match the pinned Build 35924 layout";
+            suppress = true;
+          }
+        } else {
+          ++g_command_gate_suppressed[Tag];
+          suppress = true;
+        }
+      }
+      if constexpr (Tag == 0) {
+        if (suppress && !tag_mismatch) {
+          const auto* value = static_cast<const std::uint8_t*>(command_data) +
+                              tpf2mp::profile::kSetGameSpeedValueOffset;
+          if (IsReadableRange(value, sizeof(std::int32_t))) {
+            std::int32_t speed = -1;
+            std::memcpy(&speed, value, sizeof(speed));
+            if (speed >= tpf2mp::profile::kSetGameSpeedMinimum &&
+                speed <= tpf2mp::profile::kSetGameSpeedMaximum) {
+              if (g_suppressed_game_speeds.size() >= kSuppressedGameSpeedQueueLimit) {
+                g_suppressed_game_speeds.pop_front();
+                ++g_suppressed_game_speed_dropped;
+              }
+              g_suppressed_game_speeds.push_back(speed);
+              g_suppressed_game_speed_last = speed;
+              ++g_suppressed_game_speed_captured;
+            } else {
+              ++g_suppressed_game_speed_invalid;
+            }
+          } else {
+            ++g_suppressed_game_speed_invalid;
+          }
+        }
+      }
+    }
+  }
+  if (gate_observed) RequestStatusWrite();
+  if (suppress) return false;
+  const auto original = g_original_authority_visitors[Tag];
+  if (original == nullptr) {
+    StateLock lock;
+    g_last_error = "authority command visitor original is unavailable for tag " +
+                   std::to_string(Tag);
+    return false;
+  }
+  const bool result = original(visitor_context, command_data);
+  if (optimistic_line_passthrough && result) {
+    {
+      StateLock lock;
+      if (g_suppressed_line_commands.size() >= kSuppressedLineCommandQueueLimit) {
+        g_suppressed_line_commands.pop_front();
+        ++g_suppressed_line_command_dropped;
+      }
+      g_suppressed_line_command_last_tag = optimistic_line_command.tag;
+      g_suppressed_line_command_last_target = optimistic_line_command.target;
+      g_suppressed_line_command_last_stop_count = optimistic_line_command.stops.size();
+      g_suppressed_line_commands.push_back(std::move(optimistic_line_command));
+      ++g_suppressed_line_command_captured;
+    }
+    RequestStatusWrite();
+  }
+  return result;
+}
+
+AuthorityCommandVisitor AuthorityDetourForTag(const int tag) {
+  switch (tag) {
+    case 0: return DetourAuthorityCommandVisitor<0>;
+    case 1: return DetourAuthorityCommandVisitor<1>;
+    case 2: return DetourAuthorityCommandVisitor<2>;
+    case 3: return DetourAuthorityCommandVisitor<3>;
+    case 4: return DetourAuthorityCommandVisitor<4>;
+    case 5: return DetourAuthorityCommandVisitor<5>;
+    case 6: return DetourAuthorityCommandVisitor<6>;
+    case 7: return DetourAuthorityCommandVisitor<7>;
+    case 8: return DetourAuthorityCommandVisitor<8>;
+    case 9: return DetourAuthorityCommandVisitor<9>;
+    case 10: return DetourAuthorityCommandVisitor<10>;
+    case 11: return DetourAuthorityCommandVisitor<11>;
+    case 12: return DetourAuthorityCommandVisitor<12>;
+    case 13: return DetourAuthorityCommandVisitor<13>;
+    case 14: return DetourAuthorityCommandVisitor<14>;
+    case 16: return DetourAuthorityCommandVisitor<16>;
+    case 25: return DetourAuthorityCommandVisitor<25>;
+    case 26: return DetourAuthorityCommandVisitor<26>;
+    case 28: return DetourAuthorityCommandVisitor<28>;
+    case 29: return DetourAuthorityCommandVisitor<29>;
+    case 30: return DetourAuthorityCommandVisitor<30>;
+    case 33: return DetourAuthorityCommandVisitor<33>;
+    case 36: return DetourAuthorityCommandVisitor<36>;
+    default: return nullptr;
+  }
+}
+
+template <typename Function>
+Function AtRva(HMODULE module, const std::uint32_t rva) {
+  return reinterpret_cast<Function>(reinterpret_cast<std::uint8_t*>(module) + rva);
+}
+
+std::uint32_t ValidatedRva(const std::string_view name) {
+  for (const auto& signature : g_validation.signatures) {
+    if (signature.name == name && signature.matches == 1 && signature.expected_bytes_match) {
+      return signature.observed_rva;
+    }
+  }
+  return 0;
+}
+
+bool CreateHook(void* target, void* detour, void** original, bool& flag, const char* name) {
+  const auto status = MH_CreateHook(target, detour, original);
+  if (status != MH_OK) {
+    StateLock lock;
+    g_last_error = std::string("MH_CreateHook(") + name + ") failed: " + MH_StatusToString(status);
+    return false;
+  }
+  flag = true;
+  return true;
+}
+
+bool ValidateAuthorityVisitorTable(HMODULE executable) {
+  const auto table = AtRva<AuthorityCommandVisitor*>(
+      executable, tpf2mp::profile::kCommandVisitorTableRva);
+  if (!IsReadableRange(table,
+                       sizeof(AuthorityCommandVisitor) *
+                           tpf2mp::profile::kCommandVisitorCount)) {
+    StateLock lock;
+    g_last_error = "command visitor table is unreadable";
+    return false;
+  }
+  for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
+    if (visitor.tag >= tpf2mp::profile::kCommandVisitorCount ||
+        table[visitor.tag] != AtRva<AuthorityCommandVisitor>(executable, visitor.rva)) {
+      StateLock lock;
+      g_last_error = "command visitor table mismatch for tag " +
+                     std::to_string(visitor.tag);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool InstallHooks(HMODULE executable) {
+  constexpr std::array<std::string_view, 17> required_signatures{
+      "luaB_print",          "lua_setfield", "SetupCommandInterface", "lua_pushcclosure",
+      "lua_pushvalue",       "lua_insert",   "lua_callk",              "lua_gettop",
+      "lua_settop",          "lua_rawgeti",  "lua_rawseti",            "lua_rawset",
+      "lua_pushlstring",     "lua_tolstring", "CommandList::Swap",      "ApplyCommand",
+      "BuildProposalVisitor",
+  };
+  for (const auto name : required_signatures) {
+    if (ValidatedRva(name) == 0) {
+      StateLock lock;
+      g_last_error = "validated signature is unavailable: " + std::string(name);
+      return false;
+    }
+  }
+  if (!ValidateAuthorityVisitorTable(executable)) return false;
+  const auto status = MH_Initialize();
+  if (status != MH_OK) {
+    StateLock lock;
+    g_last_error = std::string("MH_Initialize failed: ") + MH_StatusToString(status);
+    return false;
+  }
+  g_hooks.minhook_initialised = true;
+
+  const auto print_target = AtRva<void*>(executable, ValidatedRva("luaB_print"));
+  const auto setfield_target = AtRva<void*>(executable, ValidatedRva("lua_setfield"));
+  const auto setup_target = AtRva<void*>(executable, ValidatedRva("SetupCommandInterface"));
+  const auto command_list_swap_target =
+      AtRva<void*>(executable, ValidatedRva("CommandList::Swap"));
+  const auto apply_command_target = AtRva<void*>(executable, ValidatedRva("ApplyCommand"));
+  const auto build_proposal_visitor_target =
+      AtRva<void*>(executable, ValidatedRva("BuildProposalVisitor"));
+  if (!CreateHook(print_target, reinterpret_cast<void*>(DetourLuaPrint),
+                  reinterpret_cast<void**>(&g_original_print), g_hooks.lua_print_created, "luaB_print") ||
+      !CreateHook(setfield_target, reinterpret_cast<void*>(DetourLuaSetField),
+                  reinterpret_cast<void**>(&g_original_setfield), g_hooks.lua_setfield_created, "lua_setfield") ||
+      !CreateHook(setup_target, reinterpret_cast<void*>(DetourSetupCommandInterface),
+                  reinterpret_cast<void**>(&g_original_setup_command), g_hooks.setup_command_created,
+                  "SetupCommandInterface") ||
+      !CreateHook(command_list_swap_target, reinterpret_cast<void*>(DetourCommandListSwap),
+                  reinterpret_cast<void**>(&g_original_command_list_swap),
+                  g_hooks.command_list_swap_created, "CommandList::Swap") ||
+      !CreateHook(apply_command_target, reinterpret_cast<void*>(DetourApplyCommand),
+                  reinterpret_cast<void**>(&g_original_apply_command),
+                  g_hooks.apply_command_created, "ApplyCommand") ||
+      !CreateHook(build_proposal_visitor_target,
+                  reinterpret_cast<void*>(DetourBuildProposalVisitor),
+                  reinterpret_cast<void**>(&g_original_build_proposal_visitor),
+                  g_hooks.build_proposal_visitor_created, "BuildProposalVisitor")) {
+    MH_Uninitialize();
+    return false;
+  }
+
+  for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
+    const auto detour = AuthorityDetourForTag(visitor.tag);
+    bool created = false;
+    const auto hook_name = std::string("CommandVisitor[") + std::to_string(visitor.tag) + "]";
+    if (detour == nullptr ||
+        !CreateHook(AtRva<void*>(executable, visitor.rva),
+                    reinterpret_cast<void*>(detour),
+                    reinterpret_cast<void**>(&g_original_authority_visitors[visitor.tag]),
+                    created, hook_name.c_str())) {
+      MH_Uninitialize();
+      return false;
+    }
+    if (created) ++g_hooks.authority_command_visitors_created;
+  }
+
+  g_lua_pushcclosure = AtRva<LuaPushCClosure>(executable, ValidatedRva("lua_pushcclosure"));
+  g_lua_pushvalue = AtRva<LuaPushValue>(executable, ValidatedRva("lua_pushvalue"));
+  g_lua_insert = AtRva<LuaInsert>(executable, ValidatedRva("lua_insert"));
+  g_lua_callk = AtRva<LuaCallK>(executable, ValidatedRva("lua_callk"));
+  g_lua_gettop = AtRva<LuaGetTop>(executable, ValidatedRva("lua_gettop"));
+  g_lua_settop = AtRva<LuaSetTop>(executable, ValidatedRva("lua_settop"));
+  g_lua_rawgeti = AtRva<LuaRawGetI>(executable, ValidatedRva("lua_rawgeti"));
+  g_lua_rawseti = AtRva<LuaRawSetI>(executable, ValidatedRva("lua_rawseti"));
+  g_lua_rawset = AtRva<LuaRawSet>(executable, ValidatedRva("lua_rawset"));
+  g_lua_pushlstring = AtRva<LuaPushLString>(executable, ValidatedRva("lua_pushlstring"));
+  g_lua_tolstring = AtRva<LuaToLString>(executable, ValidatedRva("lua_tolstring"));
+
+  MH_QueueEnableHook(print_target);
+  MH_QueueEnableHook(setfield_target);
+  MH_QueueEnableHook(setup_target);
+  MH_QueueEnableHook(command_list_swap_target);
+  MH_QueueEnableHook(apply_command_target);
+  MH_QueueEnableHook(build_proposal_visitor_target);
+  for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
+    MH_QueueEnableHook(AtRva<void*>(executable, visitor.rva));
+  }
+  const auto apply = MH_ApplyQueued();
+  if (apply != MH_OK) {
+    StateLock lock;
+    g_last_error = std::string("MH_ApplyQueued failed: ") + MH_StatusToString(apply);
+    MH_Uninitialize();
+    return false;
+  }
+  g_hooks.enabled = true;
+  return true;
+}
+
+DWORD WINAPI Worker(void*) {
+  BootTrace("worker-enter");
+  // A LoadLibrary worker can be scheduled while the process is still leaving
+  // its initial loader phase. Keep the first CRT-heavy work out of that window.
+  Sleep(250);
+  BootTrace("worker-after-startup-delay");
+  {
+    BootTrace("worker-before-state-lock");
+    StateLock lock;
+    wchar_t dll_path[32768]{};
+    const DWORD dll_path_length =
+        GetModuleFileNameW(g_dll, dll_path, static_cast<DWORD>(std::size(dll_path)));
+    if (dll_path_length > 0 && dll_path_length < std::size(dll_path)) {
+      g_dll_path = std::wstring(dll_path, dll_path_length);
+    }
+    g_stage = "validating";
+  }
+  BootTrace("worker-before-initial-status");
+  WriteStatusFiles();
+  BootTrace("worker-validating");
+
+  HMODULE executable = GetModuleHandleW(nullptr);
+  auto validation = tpf2mp::ValidatePinnedModule(executable);
+  {
+    StateLock lock;
+    g_validation = std::move(validation);
+    if (!g_validation.valid) {
+      g_stage = "rejected";
+      g_last_error = g_validation.error;
+    }
+  }
+  if (!g_validation.valid) {
+    WriteStatusFiles();
+    BootTrace("worker-rejected");
+    return 2;
+  }
+
+  if (!InstallHooks(executable)) {
+    {
+      StateLock lock;
+      g_stage = "hook-error";
+    }
+    WriteStatusFiles();
+    BootTrace("worker-hook-error");
+    return 3;
+  }
+  {
+    StateLock lock;
+    g_stage = "active";
+  }
+  WriteStatusFiles();
+  BootTrace("worker-active");
+
+  while (!g_stop.load(std::memory_order_acquire)) {
+    WaitForSingleObject(g_status_event, 1000);
+    if (g_status_dirty.exchange(false, std::memory_order_acq_rel)) WriteStatusFiles();
+  }
+  return 0;
+}
+
+} // namespace
+
+extern "C" __declspec(dllexport) const char* TPF2MP_HookProfile() {
+  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.12.0";
+}
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
+  if (reason == DLL_PROCESS_ATTACH) {
+    BootTrace("dllmain-attach");
+    g_dll = instance;
+    DisableThreadLibraryCalls(instance);
+    g_status_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (g_status_event == nullptr) return FALSE;
+    HANDLE worker = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+    if (worker == nullptr) {
+      CloseHandle(g_status_event);
+      g_status_event = nullptr;
+      return FALSE;
+    }
+    CloseHandle(worker);
+  } else if (reason == DLL_PROCESS_DETACH) {
+    g_stop.store(true, std::memory_order_release);
+    if (g_status_event != nullptr) SetEvent(g_status_event);
+    // The injector never unloads the DLL. During normal process termination,
+    // Windows is already tearing down every thread/module, so doing MinHook or
+    // CRT cleanup under the loader lock would be less safe than leaving it.
+  }
+  return TRUE;
+}

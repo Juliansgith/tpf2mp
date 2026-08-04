@@ -1,0 +1,8 @@
+Upstream: https://github.com/TsudaKageyu/minhook
+Tag: v1.3.4
+Commit: c3fcafdc10146beb5919319d0683e44e3c30d537
+Licence: BSD-2-Clause (see LICENSE.txt in this directory)
+
+This source is vendored so the Build 35924 hook can be reproduced without a
+network fetch. Do not update it without rerunning the exact-build verifier,
+native tests, fail-closed DLL-load test, and disposable-world live probe.

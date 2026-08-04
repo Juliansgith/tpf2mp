@@ -1,0 +1,424 @@
+local util = require "tpf2_mp/util"
+
+local M = {}
+
+function M.newState()
+  return {
+    totalPaid = 0,
+    lastPayouts = {},
+    startingCash = {
+      target = 0,
+      totalGranted = 0,
+      grants = {},
+      repairs = 0,
+      lastReason = nil,
+      lastError = nil,
+    },
+    transfers = {
+      nextSeq = 1,
+      items = {},
+      totalAbsolute = 0,
+      failures = 0,
+    },
+    neutralizer = {
+      enabled = false,
+      lastTimeMs = nil,
+      totalNeutralized = 0,
+      lastNativeIncome = 0,
+      lastError = nil,
+    },
+    -- Native player accounts are machine-local presentation state. Build
+    -- journal entries can become visible on different engine updates and the
+    -- base game can add peer-local maintenance entries. Network play therefore
+    -- owns a small ordered account ledger and treats native balances as a cache
+    -- that is reconciled after authoritative finance events.
+    networkAccounts = {
+      version = 1,
+      initialized = false,
+      accounts = {},
+      nextEntrySeq = 1,
+      entries = {},
+      totalApplied = 0,
+      reconciliation = {
+        attempts = 0,
+        commands = 0,
+        failures = 0,
+        totalAbsolute = 0,
+        lastReason = nil,
+        lastError = nil,
+        items = {},
+      },
+    },
+  }
+end
+
+function M.ensureNetworkAccounts(state)
+  local defaults = M.newState().networkAccounts
+  local ledger = state.networkAccounts
+  if type(ledger) ~= "table" then
+    ledger = defaults
+    state.networkAccounts = ledger
+  end
+  if ledger.version == nil then ledger.version = defaults.version end
+  if ledger.initialized == nil then ledger.initialized = false end
+  ledger.accounts = ledger.accounts or {}
+  ledger.nextEntrySeq = math.max(1, util.integer(ledger.nextEntrySeq, 1))
+  ledger.entries = ledger.entries or {}
+  ledger.totalApplied = util.integer(ledger.totalApplied, 0)
+  ledger.reconciliation = ledger.reconciliation or defaults.reconciliation
+  local reconciliation = ledger.reconciliation
+  reconciliation.attempts = math.max(0, util.integer(reconciliation.attempts, 0))
+  reconciliation.commands = math.max(0, util.integer(reconciliation.commands, 0))
+  reconciliation.failures = math.max(0, util.integer(reconciliation.failures, 0))
+  reconciliation.totalAbsolute = math.max(0, util.integer(reconciliation.totalAbsolute, 0))
+  reconciliation.items = reconciliation.items or {}
+  return ledger
+end
+
+local function appendBounded(items, value, maximum)
+  items[#items + 1] = value
+  while #items > maximum do table.remove(items, 1) end
+end
+
+function M.initialiseNetworkAccounts(state, companyCids, startingCash, context)
+  local ledger = M.ensureNetworkAccounts(state)
+  startingCash = math.max(0, util.integer(startingCash, 0))
+  ledger.initialized = true
+  ledger.accounts = {}
+  ledger.nextEntrySeq = 1
+  ledger.entries = {}
+  ledger.totalApplied = 0
+  ledger.initializedContext = util.deepCopy(context or {})
+  for _, companyCid in ipairs(companyCids or {}) do
+    companyCid = tostring(companyCid)
+    ledger.accounts[companyCid] = {
+      companyCid = companyCid,
+      balance = startingCash,
+      loan = 0,
+      totalCredits = 0,
+      totalDebits = 0,
+      entryCount = 0,
+    }
+  end
+  return ledger
+end
+
+function M.networkAccount(state, companyCid)
+  local ledger = M.ensureNetworkAccounts(state)
+  return ledger.accounts[tostring(companyCid or "")]
+end
+
+function M.networkDigestView(state)
+  local ledger = M.ensureNetworkAccounts(state)
+  local accounts = {}
+  for _, companyCid in ipairs(util.sortedKeys(ledger.accounts)) do
+    local account = ledger.accounts[companyCid]
+    accounts[companyCid] = {
+      balance = util.integer(account.balance, 0),
+      loan = util.integer(account.loan, 0),
+    }
+  end
+  return {
+    version = util.integer(ledger.version, 1),
+    initialized = ledger.initialized == true,
+    accounts = accounts,
+  }
+end
+
+function M.applyNetworkDelta(state, companyCid, amount, context)
+  local ledger = M.ensureNetworkAccounts(state)
+  if ledger.initialized ~= true then return false, "canonical network accounts are not initialised" end
+  companyCid = tostring(companyCid or "")
+  local account = ledger.accounts[companyCid]
+  if not account then return false, "canonical network account is unavailable for " .. companyCid end
+  amount = util.integer(amount, 0)
+  local before = util.integer(account.balance, 0)
+  local entry = {
+    seq = ledger.nextEntrySeq,
+    companyCid = companyCid,
+    amount = amount,
+    before = before,
+    after = before + amount,
+    context = util.deepCopy(context or {}),
+  }
+  ledger.nextEntrySeq = ledger.nextEntrySeq + 1
+  account.balance = entry.after
+  account.entryCount = math.max(0, util.integer(account.entryCount, 0)) + 1
+  if amount >= 0 then
+    account.totalCredits = math.max(0, util.integer(account.totalCredits, 0)) + amount
+  else
+    account.totalDebits = math.max(0, util.integer(account.totalDebits, 0)) - amount
+  end
+  ledger.totalApplied = util.integer(ledger.totalApplied, 0) + amount
+  appendBounded(ledger.entries, entry, 256)
+  return true, util.deepCopy(entry)
+end
+
+local function ensureTransfers(state)
+  state.transfers = state.transfers or {}
+  state.transfers.nextSeq = state.transfers.nextSeq or 1
+  state.transfers.items = state.transfers.items or {}
+  state.transfers.totalAbsolute = state.transfers.totalAbsolute or 0
+  state.transfers.failures = state.transfers.failures or 0
+  return state.transfers
+end
+
+local function recordTransfer(state, value)
+  local transfers = ensureTransfers(state)
+  value.seq = transfers.nextSeq
+  transfers.nextSeq = transfers.nextSeq + 1
+  transfers.items[#transfers.items + 1] = value
+  while #transfers.items > 128 do table.remove(transfers.items, 1) end
+  if value.ok and not value.noop then
+    transfers.totalAbsolute = transfers.totalAbsolute + math.abs(value.nativeDelta or 0)
+  elseif not value.ok then
+    transfers.failures = transfers.failures + 1
+  end
+  return value
+end
+
+local function categoryOther()
+  local category = api.type.JournalEntryCategory.new()
+  category.type = 6
+  category.carrier = 3
+  category.construction = 6
+  category.maintenance = 2
+  category.other = 0
+  return category
+end
+
+function M.book(playerId, amount)
+  amount = util.integer(amount, 0)
+  if amount == 0 then return true end
+  local bookJournalEntry = util.commandFactory("bookJournalEntry")
+  if api and api.cmd and type(api.cmd.sendCommand) == "function" and bookJournalEntry then
+    local journal = api.type.JournalEntry.new()
+    journal.amount = amount
+    journal.category = categoryOther()
+    journal.time = -1
+    local ok, err = util.sendCommand(
+      bookJournalEntry(playerId, journal), nil, "mod.finance.book-journal-entry")
+    if ok then return true end
+    return false, err
+  end
+  if game and game.interface and game.interface.book and playerId == game.interface.getPlayer() then
+    return pcall(game.interface.book, amount)
+  end
+  return false, "no arbitrary-player journal command available"
+end
+
+local function nativeBalance(playerId)
+  if not (game and game.interface and type(game.interface.getEntity) == "function") then return nil end
+  local ok, entity = pcall(game.interface.getEntity, playerId)
+  if not ok or not entity then return nil end
+  return tonumber(entity.balance)
+end
+
+-- Move every local native representative toward the replicated balance. A
+-- successful journal command is sufficient here: Build 35924 may expose the
+-- resulting balance on a later engine update, so the post-read is diagnostic
+-- and deliberately is not treated as a synchronous postcondition.
+function M.reconcileNetworkAccounts(state, companies, context)
+  local ledger = M.ensureNetworkAccounts(state)
+  if ledger.initialized ~= true then return false, "canonical network accounts are not initialised" end
+  local reconciliation = ledger.reconciliation
+  reconciliation.attempts = reconciliation.attempts + 1
+  reconciliation.lastReason = tostring(type(context) == "table" and context.reason or context or "ordered-event")
+  reconciliation.lastError = nil
+  local run = {
+    reason = reconciliation.lastReason,
+    context = util.deepCopy(type(context) == "table" and context or {}),
+    accounts = {},
+    ok = true,
+  }
+  local errors = {}
+  for _, companyCid in ipairs(util.sortedKeys(ledger.accounts)) do
+    local account = ledger.accounts[companyCid]
+    local company = type(companies) == "table" and companies[companyCid] or nil
+    local playerId = company and tonumber(company.playerId) or nil
+    local before = playerId and nativeBalance(playerId) or nil
+    local target = util.integer(account.balance, 0)
+    local adjustment = before and (target - util.integer(before, 0)) or nil
+    local booked, bookingError = false, nil
+    if not playerId then
+      bookingError = "native player binding is unavailable"
+    elseif before == nil then
+      bookingError = "native balance is unavailable"
+    elseif adjustment == 0 then
+      booked = true
+    else
+      booked, bookingError = M.book(playerId, adjustment)
+      if booked then
+        reconciliation.commands = reconciliation.commands + 1
+        reconciliation.totalAbsolute = reconciliation.totalAbsolute + math.abs(adjustment)
+      end
+    end
+    local after = playerId and nativeBalance(playerId) or nil
+    local item = {
+      companyCid = companyCid,
+      playerId = playerId,
+      target = target,
+      before = before,
+      adjustment = adjustment,
+      after = after,
+      settledImmediately = booked == true and after ~= nil and math.abs(after - target) < 0.5,
+      ok = booked == true,
+      error = booked and nil or tostring(bookingError),
+    }
+    run.accounts[companyCid] = item
+    if not booked then
+      run.ok = false
+      errors[#errors + 1] = companyCid .. ": " .. item.error
+    end
+  end
+  if not run.ok then
+    reconciliation.failures = reconciliation.failures + 1
+    reconciliation.lastError = table.concat(errors, "; ")
+  end
+  run.error = reconciliation.lastError
+  appendBounded(reconciliation.items, util.deepCopy(run), 64)
+  return run.ok, run
+end
+
+-- Reallocate a signed balance change that originally landed on the native UI
+-- player. A negative delta is a cost; a positive delta is income/refund.
+-- The two compensating journal entries preserve total money across players.
+function M.transferNativeDelta(state, nativePlayerId, companyPlayerId, nativeDelta, context)
+  nativeDelta = util.integer(nativeDelta, 0)
+  local record = {
+    nativePlayerId = nativePlayerId,
+    companyPlayerId = companyPlayerId,
+    nativeDelta = nativeDelta,
+    context = util.deepCopy(context or {}),
+    ok = false,
+  }
+  if nativeDelta == 0 or nativePlayerId == companyPlayerId then
+    record.ok = true
+    record.noop = true
+    return true, recordTransfer(state, record)
+  end
+
+  local reversed, reverseError = M.book(nativePlayerId, -nativeDelta)
+  if not reversed then
+    record.error = tostring(reverseError)
+    return false, recordTransfer(state, record)
+  end
+
+  local applied, applyError = M.book(companyPlayerId, nativeDelta)
+  if not applied then
+    local rolledBack, rollbackError = M.book(nativePlayerId, nativeDelta)
+    record.error = tostring(applyError)
+    record.rollbackOk = rolledBack and true or false
+    record.rollbackError = rollbackError and tostring(rollbackError) or nil
+    return false, recordTransfer(state, record)
+  end
+
+  record.ok = true
+  return true, recordTransfer(state, record)
+end
+
+-- Close a proxy turn that began by mirroring the company's starting balance
+-- onto the control player. On success the company receives only the gameplay
+-- delta and the control player returns to its neutral baseline. The begin/end
+-- mirror entries and settlement entries sum to zero across all players.
+function M.settleProxyTurn(state, controlPlayerId, companyPlayerId, turnStart, turnEnd, controlBaseline, context)
+  turnStart = util.integer(turnStart, 0)
+  turnEnd = util.integer(turnEnd, turnStart)
+  controlBaseline = util.integer(controlBaseline, turnStart)
+  local nativeDelta = turnEnd - turnStart
+  local resetDelta = controlBaseline - turnStart
+  local record = {
+    nativePlayerId = controlPlayerId,
+    companyPlayerId = companyPlayerId,
+    nativeDelta = nativeDelta,
+    mirrorResetDelta = resetDelta,
+    context = util.deepCopy(context or {}),
+    kind = "proxy-turn-settlement",
+    ok = false,
+  }
+
+  local reversed, reverseError = M.book(controlPlayerId, -nativeDelta)
+  if not reversed then
+    record.error = tostring(reverseError)
+    return false, recordTransfer(state, record)
+  end
+  local applied, applyError = M.book(companyPlayerId, nativeDelta)
+  if not applied then
+    local rolledBack, rollbackError = M.book(controlPlayerId, nativeDelta)
+    record.error = tostring(applyError)
+    record.rollbackOk = rolledBack and true or false
+    record.rollbackError = rollbackError and tostring(rollbackError) or nil
+    return false, recordTransfer(state, record)
+  end
+  local reset, resetError = M.book(controlPlayerId, resetDelta)
+  if not reset then
+    local companyRollback, companyRollbackError = M.book(companyPlayerId, -nativeDelta)
+    local controlRollback, controlRollbackError = M.book(controlPlayerId, nativeDelta)
+    record.error = tostring(resetError)
+    record.rollbackOk = companyRollback and controlRollback
+    record.companyRollbackError = companyRollbackError and tostring(companyRollbackError) or nil
+    record.controlRollbackError = controlRollbackError and tostring(controlRollbackError) or nil
+    return false, recordTransfer(state, record)
+  end
+
+  record.ok = true
+  record.noop = nativeDelta == 0 and resetDelta == 0
+  return true, recordTransfer(state, record)
+end
+
+function M.payResults(state, companies, results)
+  state.lastPayouts = {}
+  local errors = {}
+  for _, companyCid in ipairs(util.sortedKeys(results.companies or {})) do
+    local companyResult = results.companies[companyCid]
+    local company = companies[companyCid]
+    local amount = math.floor((companyResult.revenueCents or 0) / 100)
+    if company and company.playerId and amount ~= 0 then
+      local ok, err = M.book(company.playerId, amount)
+      state.lastPayouts[companyCid] = { amount = amount, ok = ok, error = err }
+      if ok then state.totalPaid = (state.totalPaid or 0) + amount else errors[#errors + 1] = tostring(err) end
+    else
+      state.lastPayouts[companyCid] = { amount = amount, ok = false, error = "company has no native player binding" }
+    end
+  end
+  return #errors == 0, errors
+end
+
+local function journalSum(value)
+  if type(value) == "number" then return value end
+  if type(value) == "table" then return tonumber(value._sum) or 0 end
+  return 0
+end
+
+function M.updateNeutralizer(state)
+  local probe = state.neutralizer
+  if not probe.enabled then return true end
+  if not (game and game.interface and game.interface.getGameTime and game.interface.getPlayerJournal) then
+    probe.lastError = "legacy journal reader unavailable"
+    return false, probe.lastError
+  end
+
+  local nowMs = math.floor((game.interface.getGameTime().time or 0) * 1000)
+  if not probe.lastTimeMs then probe.lastTimeMs = nowMs; return true end
+  if nowMs <= probe.lastTimeMs then return true end
+
+  local ok, journal = pcall(game.interface.getPlayerJournal, probe.lastTimeMs + 1, nowMs, false)
+  probe.lastTimeMs = nowMs
+  if not ok or type(journal) ~= "table" then
+    probe.lastError = "journal read failed: " .. tostring(journal)
+    return false, probe.lastError
+  end
+
+  local income = journalSum(journal.income)
+  probe.lastNativeIncome = income
+  if income > 0 then
+    local playerId = game.interface.getPlayer()
+    local booked, err = M.book(playerId, -income)
+    if not booked then probe.lastError = tostring(err); return false, err end
+    probe.totalNeutralized = (probe.totalNeutralized or 0) + income
+  end
+  probe.lastError = nil
+  return true
+end
+
+return M

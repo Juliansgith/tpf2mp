@@ -1,0 +1,152 @@
+from __future__ import annotations
+
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any, Iterator, Mapping
+
+from .protocol import ProtocolError, canonical_json, decode_line, validate_envelope
+
+
+def _sequence(path: Path) -> int:
+    try:
+        return int(path.stem)
+    except ValueError:
+        return -1
+
+
+def atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with temporary.open("wb") as handle:
+        handle.write(data)
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+
+
+class GameBridge:
+    """Reliable cursor over the game's immutable numbered file queues."""
+
+    def __init__(self, root: Path | str, session: str, peer: str) -> None:
+        self.root = Path(root).expanduser().resolve()
+        self.session = session
+        self.peer = peer
+        self.outbox = self.root / "game_outbox"
+        self.inbox = self.root / "game_inbox"
+        self.state_dir = self.root / "companion_state"
+        self.audit_dir = self.root / "audit"
+        for directory in (self.outbox, self.inbox, self.state_dir, self.audit_dir):
+            directory.mkdir(parents=True, exist_ok=True)
+        self.cursor_path = self.state_dir / f"outbox_cursor_{session}.json"
+        self.status_path = self.state_dir / "companion_status.json"
+        self.outbox_cursor = self._load_cursor()
+
+    def _load_cursor(self) -> int:
+        try:
+            value = json.loads(self.cursor_path.read_text(encoding="utf-8"))
+            if value.get("session") == self.session:
+                return int(value.get("last_local_seq", 0))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return 0
+
+    def _save_cursor(self) -> None:
+        data = canonical_json({"session": self.session, "last_local_seq": self.outbox_cursor})
+        atomic_write(self.cursor_path, (data + "\n").encode("utf-8"))
+
+    def pending_outbound(self, limit: int = 64) -> Iterator[tuple[int, dict[str, Any]]]:
+        paths = sorted(self.outbox.glob("*.json"), key=_sequence)
+        yielded = 0
+        for path in paths:
+            seq = _sequence(path)
+            if seq <= self.outbox_cursor:
+                continue
+            if yielded >= limit:
+                break
+            try:
+                message = decode_line(path.read_bytes())
+                validate_envelope(message, self.session)
+            except (OSError, ProtocolError) as exc:
+                raise ProtocolError(f"cannot consume {path}: {exc}") from exc
+            local_seq = int(message.get("local_seq", -1))
+            if local_seq != seq:
+                raise ProtocolError(f"filename/message sequence mismatch at {path}")
+            if str(message.get("peer")) != self.peer:
+                raise ProtocolError(f"peer mismatch in {path}: {message.get('peer')}")
+            yielded += 1
+            yield seq, message
+
+    def acknowledge_outbound(self, seq: int) -> None:
+        if seq < self.outbox_cursor:
+            return
+        if seq > self.outbox_cursor + 1 and self.outbox_cursor != 0:
+            raise ProtocolError(f"outbox acknowledgement gap: {self.outbox_cursor} -> {seq}")
+        self.outbox_cursor = seq
+        self._save_cursor()
+
+    def write_inbound(self, message: Mapping[str, Any]) -> Path:
+        validate_envelope(message, self.session)
+        seq = int(message.get("seq", -1))
+        if seq < 1:
+            raise ProtocolError("inbound commit has no positive global sequence")
+        path = self.inbox / f"{seq:012d}.json"
+        payload = (canonical_json(message) + "\n").encode("utf-8")
+        if path.exists():
+            if path.read_bytes() != payload:
+                raise ProtocolError(f"conflicting inbound commit at sequence {seq}")
+            return path
+        atomic_write(path, payload)
+        return path
+
+    def existing_commit_sequences(self) -> set[int]:
+        result: set[int] = set()
+        for path in self.inbox.glob("*.json"):
+            try:
+                message = decode_line(path.read_bytes())
+                if message.get("session") == self.session and message.get("kind") in {"commit", "control"}:
+                    result.add(int(message["seq"]))
+            except (OSError, KeyError, TypeError, ValueError, ProtocolError):
+                continue
+        return result
+
+    def write_status(self, values: Mapping[str, Any]) -> Path:
+        """Publish replaceable launcher/UI health without entering the commit log."""
+
+        status = dict(values)
+        status.setdefault("schemaVersion", 1)
+        status.setdefault("session", self.session)
+        status.setdefault("peer", self.peer)
+        status["pid"] = os.getpid()
+        status["updatedAtUnixMs"] = int(time.time() * 1000)
+        atomic_write(
+            self.status_path,
+            (canonical_json(status) + "\n").encode("utf-8"),
+        )
+        return self.status_path
+
+
+class AuditLog:
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path).expanduser().resolve()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+    def append(self, message: Mapping[str, Any]) -> None:
+        line = (canonical_json(message) + "\n").encode("utf-8")
+        with self.path.open("ab") as handle:
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def messages(self) -> Iterator[dict[str, Any]]:
+        if not self.path.exists():
+            return
+        with self.path.open("rb") as handle:
+            for number, raw in enumerate(handle, 1):
+                if not raw.strip():
+                    continue
+                try:
+                    yield decode_line(raw)
+                except ProtocolError as exc:
+                    raise ProtocolError(f"invalid audit line {number}: {exc}") from exc

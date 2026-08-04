@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tpf2mp-companion"
+version = "0.7.0"
+description = "Deterministic commit-ordering companion for the TPF2MP research prototype"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+tpf2mp = "tpf2mp.cli:main"
+
+[tool.setuptools]
+packages = ["tpf2mp"]

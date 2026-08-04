@@ -1,0 +1,374 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][ValidateSet('Host', 'Join')][string]$Role,
+    [Parameter(Mandatory = $true)][string]$Session,
+    [string]$HostAddress = '127.0.0.1',
+    [string]$BindAddress = '0.0.0.0',
+    [ValidateRange(1, 65535)][int]$Port = 29742,
+    [string]$StartingSave,
+    [string]$ManifestPath,
+    [string]$BundleRoot,
+    [string]$GameExecutable,
+    [string]$LocalModsPath,
+    [string]$SaveDirectory,
+    [ValidateRange(5, 600)][int]$CompletionTimeoutSeconds = 45,
+    [switch]$NoLaunchGame
+)
+
+$ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'native_load_common.ps1')
+
+if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
+$bundle = Resolve-Tpf2mpFullPath $BundleRoot
+$safeSession = Assert-Tpf2mpSessionId $Session
+$peer = if ($Role -eq 'Host') { 'player1' } else { 'player2' }
+if ($Role -eq 'Join' -and ($HostAddress -notmatch '^[A-Za-z0-9.:-]{1,253}$')) {
+    throw 'Host address contains unsupported characters.'
+}
+if ($BindAddress -notmatch '^[A-Za-z0-9.:-]{1,253}$') { throw 'Bind address contains unsupported characters.' }
+
+$existingState = Read-Tpf2mpSessionState $safeSession $peer
+if ($existingState) {
+    $existingPids = @()
+    foreach ($property in @('companionPid', 'companionLauncherPid')) {
+        if ($existingState.PSObject.Properties[$property] -and $existingState.$property) {
+            $existingPids += [int]$existingState.$property
+        }
+    }
+    $existingStatusPath = if ($existingState.bridgePath) {
+        Join-Path ([string]$existingState.bridgePath) 'companion_state\companion_status.json'
+    } else { $null }
+    if ($existingStatusPath -and (Test-Path -LiteralPath $existingStatusPath -PathType Leaf)) {
+        try {
+            $existingStatus = Get-Content -LiteralPath $existingStatusPath -Raw | ConvertFrom-Json
+            if ($existingStatus.session -eq $safeSession -and $existingStatus.peer -eq $peer -and $existingStatus.pid) {
+                $existingPids += [int]$existingStatus.pid
+            }
+        }
+        catch { }
+    }
+    $existingExecutable = if ($existingState.PSObject.Properties['companionExecutable']) {
+        [string]$existingState.companionExecutable
+    } else { $null }
+    foreach ($existingPid in @($existingPids | Select-Object -Unique)) {
+        $existingProcess = Get-Tpf2mpVerifiedCompanionProcess -ProcessId $existingPid `
+            -Session $safeSession -Peer $peer -ExecutablePath $existingExecutable
+        if ($existingProcess) {
+            throw "Session '$safeSession' already has a running $peer companion (PID $($existingProcess.Id))."
+        }
+    }
+}
+
+$game = Find-Tpf2mpGameExecutable $GameExecutable
+if (-not $game) { throw 'Transport Fever 2 executable was not discovered; pass -GameExecutable.' }
+$gameHash = (Get-FileHash -LiteralPath $game -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($gameHash -ne $script:Tpf2ExeHash) {
+    throw "Network mode supports only Transport Fever 2 Build 35924; installed SHA-256 is $gameHash"
+}
+$mods = Find-Tpf2mpLocalModsPath $LocalModsPath
+$resolvedSaveDirectory = Find-Tpf2mpSaveDirectory -SaveDirectory $SaveDirectory -LocalModsPath $mods
+$installedMod = Assert-Tpf2mpModTarget (Join-Path $mods 'tpf2_mp_1') $mods
+if (-not (Test-Path -LiteralPath $installedMod -PathType Container)) {
+    throw "TPF2MP is not installed at $installedMod"
+}
+$installedModLua = Join-Path $installedMod 'mod.lua'
+if (-not (Test-Path -LiteralPath $installedModLua -PathType Leaf) `
+    -or (Get-Content -LiteralPath $installedModLua -Raw) -notmatch 'tpf2mp_launcher/active\.ini') {
+    throw 'The installed mod predates launcher-managed sessions. Reinstall TPF2MP 0.17 before hosting or joining.'
+}
+$companionSource = Join-Path $bundle 'companion\tpf2mp'
+if (-not (Test-Path -LiteralPath $companionSource -PathType Container)) {
+    throw "Companion fingerprint source is missing: $companionSource"
+}
+$native = Get-Tpf2mpNativePaths $bundle
+$companion = Get-Tpf2mpCompanionCommand $bundle
+
+$sessionRoot = Get-Tpf2mpSessionRoot $safeSession $peer
+New-Item -ItemType Directory -Force -Path $sessionRoot | Out-Null
+$bridge = Resolve-Tpf2mpFullPath (Join-Path ([IO.Path]::GetTempPath()) "tpf2mp_bridge\$safeSession\$peer")
+foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit')) {
+    New-Item -ItemType Directory -Force -Path (Join-Path $bridge $folder) | Out-Null
+}
+$staleTraffic = @(Get-ChildItem -LiteralPath (Join-Path $bridge 'game_outbox') -File -Filter '*.json' -ErrorAction SilentlyContinue).Count `
+    + @(Get-ChildItem -LiteralPath (Join-Path $bridge 'game_inbox') -File -Filter '*.json' -ErrorAction SilentlyContinue).Count
+if ($staleTraffic -gt 0) {
+    throw "Session '$safeSession' already has bridge traffic. Use a new session name to prevent replaying stale commands."
+}
+
+$startingSaveOriginal = $StartingSave
+$pinnedSave = $null
+$stagedSave = $null
+$gameProcess = $null
+$nativeStatusPath = $null
+$runtimeOverlay = $null
+$menuBootstrap = $null
+$directLaunch = $null
+if ($StartingSave) {
+    $startingSaveOriginal = Resolve-Tpf2mpFullPath $StartingSave
+    $pinnedSave = Copy-Tpf2mpPinnedStartingSave $startingSaveOriginal (Join-Path $sessionRoot 'starting-save')
+    $StartingSave = $pinnedSave.savePath
+    $pinnedSave | ConvertTo-Json -Depth 8 | Set-Content `
+        -LiteralPath (Join-Path $sessionRoot 'starting-save-manifest.json') -Encoding UTF8
+}
+else {
+    Write-Warning 'No starting save was pinned. Both peers must still enter structurally identical worlds; an identical shared save is strongly recommended.'
+}
+if (-not $ManifestPath) { $ManifestPath = Join-Path $sessionRoot 'match-manifest.json' }
+$manifest = Resolve-Tpf2mpFullPath $ManifestPath
+$fingerprintArgs = @(
+    'fingerprint', '--game-exe', $game, '--mod-dir', $installedMod,
+    '--companion-dir', $companionSource, '--extra', $native.Root, '--output', $manifest
+)
+if ($StartingSave) { $fingerprintArgs += @('--save', $StartingSave) }
+$invokeFingerprint = @($companion.Prefix) + $fingerprintArgs
+& $companion.FilePath @invokeFingerprint
+if ($LASTEXITCODE -ne 0) { throw "Match fingerprint generation failed with exit code $LASTEXITCODE" }
+$fingerprint = [string](Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).fingerprint
+
+$launcherConfig = Write-Tpf2mpLauncherConfig -Session $safeSession -Peer $peer -BridgePath $bridge
+$stdout = Join-Path $sessionRoot 'companion.stdout.log'
+$stderr = Join-Path $sessionRoot 'companion.stderr.log'
+$companionArgs = if ($Role -eq 'Host') {
+    @(
+        'host', '--session', $safeSession, '--peer', $peer, '--bind', $BindAddress,
+        '--port', $Port, '--bridge', $bridge,
+        '--required-peer', 'player1', '--required-peer', 'player2',
+        '--completion-timeout', $CompletionTimeoutSeconds, '--manifest', $manifest
+    )
+}
+else {
+    @('client', $HostAddress, '--session', $safeSession, '--peer', $peer,
+        '--port', $Port, '--bridge', $bridge, '--manifest', $manifest)
+}
+$companionCommandLine = ConvertTo-Tpf2mpCommandLine (@($companion.Prefix) + $companionArgs)
+$companionProcess = Start-Process -FilePath $companion.FilePath -ArgumentList $companionCommandLine `
+    -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+$statePath = Join-Path $sessionRoot 'session-state.json'
+$state = [ordered]@{
+    schemaVersion = 3
+    session = $safeSession
+    role = $Role.ToLowerInvariant()
+    peer = $peer
+    hostAddress = if ($Role -eq 'Host') { $BindAddress } else { $HostAddress }
+    port = $Port
+    fingerprint = $fingerprint
+    manifestPath = $manifest
+    startingSave = $startingSaveOriginal
+    pinnedStartingSave = if ($pinnedSave) { $pinnedSave.savePath } else { $null }
+    pinnedStartingSaveManifest = if ($pinnedSave) { Join-Path $sessionRoot 'starting-save-manifest.json' } else { $null }
+    stagedStartingSave = $null
+    stagedStartingSaveManifest = $null
+    bridgePath = $bridge
+    launcherConfig = $launcherConfig
+    companionPid = $companionProcess.Id
+    companionLauncherPid = $companionProcess.Id
+    companionExecutable = (Resolve-Tpf2mpFullPath $companion.FilePath)
+    gamePid = $null
+    gameExecutable = $game
+    gameStartedAtUtc = $null
+    menuCoordinatorPid = $null
+    menuCoordinatorStdout = $null
+    menuCoordinatorStderr = $null
+    recoveryWatcherPid = $null
+    recoveryWatcherStatusPath = $null
+    recoveryWatcherStdout = $null
+    recoveryWatcherStderr = $null
+    nativeStatusPath = $null
+    nativeSaveLoadReceipt = $null
+    runtimeOverlay = $null
+    menuBootstrap = $null
+    directLaunchMarker = $null
+    initialRecoveryArchive = $null
+    status = 'starting-companion'
+    error = $null
+    startedAtUtc = [DateTime]::UtcNow.ToString('o')
+    stdout = $stdout
+    stderr = $stderr
+}
+$state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+
+try {
+    if ($pinnedSave) {
+        & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $peer `
+            -SavePath $pinnedSave.savePath -BundleRoot $bundle
+        if ($LASTEXITCODE -ne 0) { throw "Initial recovery archive failed with exit code $LASTEXITCODE" }
+        $state.initialRecoveryArchive = Join-Path $sessionRoot 'latest-recovery-archive.json'
+        $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    }
+    $deadline = (Get-Date).AddSeconds(12)
+    $companionStatus = $null
+    do {
+        $companionProcess.Refresh()
+        if ($companionProcess.HasExited) {
+            $errorText = if (Test-Path -LiteralPath $stderr) { Get-Content -LiteralPath $stderr -Raw } else { '' }
+            throw "Companion exited during startup (code $($companionProcess.ExitCode)): $errorText"
+        }
+        $statusPath = Join-Path $bridge 'companion_state\companion_status.json'
+        if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
+            try { $companionStatus = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json } catch { }
+        }
+        $ready = $Role -eq 'Host' -and $companionStatus -and $companionStatus.listening -eq $true
+        if ($Role -eq 'Join') { $ready = $companionStatus -and $companionStatus.status -in @('connecting', 'connected') }
+        if ($ready) { break }
+        Start-Sleep -Milliseconds 100
+    } while ((Get-Date) -lt $deadline)
+
+    if (-not $ready) { throw 'Companion did not publish a ready status within 12 seconds.' }
+    if ($companionStatus.session -ne $safeSession -or $companionStatus.peer -ne $peer `
+        -or $companionStatus.matchFingerprint -ne $fingerprint) {
+        throw 'Companion readiness status does not match the requested session, peer, and fingerprint.'
+    }
+    if (-not $companionStatus.PSObject.Properties['pid'] -or -not $companionStatus.pid) {
+        throw 'Companion readiness status did not include its service PID.'
+    }
+    $serviceProcess = Get-Tpf2mpVerifiedCompanionProcess -ProcessId ([int]$companionStatus.pid) `
+        -Session $safeSession -Peer $peer -ExecutablePath $state.companionExecutable
+    if (-not $serviceProcess) { throw 'Companion readiness status named an invalid service process.' }
+    $state.companionPid = $serviceProcess.Id
+
+    $state.status = if ($Role -eq 'Host') { 'hosting' } else { 'joining' }
+    if (-not $NoLaunchGame) {
+        $menuBootstrap = Install-Tpf2mpMenuBootstrap -BundleRoot $bundle -GameExecutable $game
+        $runtimeOverlay = Install-Tpf2mpRuntimeOverlay -BundleRoot $bundle -GameExecutable $game
+        $directLaunch = Enable-Tpf2mpDirectLaunch -GameExecutable $game
+        $state.menuBootstrap = $menuBootstrap
+        $state.runtimeOverlay = $runtimeOverlay
+        $state.directLaunchMarker = $directLaunch
+
+        if ($StartingSave) {
+            $stagedSave = New-Tpf2mpStagedStartingSave -SourceSave $StartingSave `
+                -SaveDirectory $resolvedSaveDirectory -Session $safeSession -Peer $peer
+            $stagedManifestPath = Join-Path $sessionRoot 'staged-save-manifest.json'
+            $stagedSave | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $stagedManifestPath -Encoding UTF8
+            $state.stagedStartingSave = $stagedSave.savePath
+            $state.stagedStartingSaveManifest = $stagedManifestPath
+        }
+
+        $launch = Start-Tpf2mpDirectGame -GameExecutable $game -Session $safeSession -Peer $peer `
+            -BridgePath $bridge -SessionRoot $sessionRoot `
+            -StagedSaveBaseName $(if ($stagedSave) { $stagedSave.baseName } else { $null }) `
+            -RequireMenuEntry -StartNetwork
+        $gameProcess = $launch.process
+        $state.gamePid = $gameProcess.Id
+        $state.gameStartedAtUtc = $gameProcess.StartTime.ToUniversalTime().ToString('o')
+        $state.gameStdout = $launch.stdout
+        $state.gameStderr = $launch.stderr
+        $state.status = 'injecting-native-hook'
+        $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+
+        $nativeStatusPath = Add-Tpf2mpNativeHook -GameProcess $gameProcess -NativePaths $native
+        $state.nativeStatusPath = $nativeStatusPath
+        if ($stagedSave) {
+            $menu = Wait-Tpf2mpMainMenuEntry -GameProcess $gameProcess -BridgePath $bridge `
+                -Session $safeSession -Peer $peer -TimeoutSeconds 120
+            $state.status = 'awaiting-multiplayer-selection'
+            $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+            $loadReceipt = Invoke-Tpf2mpPinnedSaveLoad -GameProcess $gameProcess -BridgePath $bridge `
+                -Session $safeSession -Peer $peer -ExpectedSaveBaseName $stagedSave.baseName `
+                -EvidenceDirectory (Join-Path $sessionRoot 'native-save-load') -TimeoutSeconds 600
+            $state.nativeSaveLoadReceipt = Join-Path $sessionRoot 'native-save-load\native-save-load.json'
+            $state.status = 'waiting-for-network-world'
+            $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+            [void](Wait-Tpf2mpNativeWorld -GameProcess $gameProcess -NativeStatusPath $nativeStatusPath `
+                -RequireGameScriptObserver -RequireAuthorityGates)
+            Remove-Tpf2mpStagedStartingSave $stagedSave
+            $state.stagedStartingSave = $null
+            $state.status = if ($Role -eq 'Host') { 'hosting-world-ready' } else { 'joined-world-ready' }
+        }
+        else {
+            $menu = Wait-Tpf2mpMainMenuEntry -GameProcess $gameProcess -BridgePath $bridge `
+                -Session $safeSession -Peer $peer -TimeoutSeconds 120
+            $coordinatorStdout = Join-Path $sessionRoot 'main-menu-coordinator.stdout.log'
+            $coordinatorStderr = Join-Path $sessionRoot 'main-menu-coordinator.stderr.log'
+            $coordinatorArguments = @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'main_menu_coordinator.ps1'),
+                '-GameProcessId', $gameProcess.Id,
+                '-GameExecutable', $game,
+                '-GameStartedAtUtc', $state.gameStartedAtUtc,
+                '-BridgePath', $bridge,
+                '-Session', $safeSession,
+                '-Peer', $peer,
+                '-EvidenceDirectory', (Join-Path $sessionRoot 'main-menu-entry')
+            )
+            $coordinator = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+                -ArgumentList (ConvertTo-Tpf2mpCommandLine $coordinatorArguments) -PassThru -WindowStyle Hidden `
+                -RedirectStandardOutput $coordinatorStdout -RedirectStandardError $coordinatorStderr
+            $state.menuCoordinatorPid = $coordinator.Id
+            $state.menuCoordinatorStdout = $coordinatorStdout
+            $state.menuCoordinatorStderr = $coordinatorStderr
+            $state.status = 'awaiting-world-selection'
+        }
+
+        if ($Role -eq 'Host') {
+            $recoveryWatcherStdout = Join-Path $sessionRoot 'recovery-watcher.stdout.log'
+            $recoveryWatcherStderr = Join-Path $sessionRoot 'recovery-watcher.stderr.log'
+            $recoveryWatcherArguments = @(
+                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'watch_recovery_saves.ps1'),
+                '-Session', $safeSession,
+                '-Peer', $peer,
+                '-BridgePath', $bridge,
+                '-SaveDirectory', $resolvedSaveDirectory,
+                '-GameProcessId', $gameProcess.Id,
+                '-GameExecutable', $game,
+                '-GameStartedAtUtc', $state.gameStartedAtUtc,
+                '-BundleRoot', $bundle
+            )
+            $recoveryWatcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+                -ArgumentList (ConvertTo-Tpf2mpCommandLine $recoveryWatcherArguments) -PassThru -WindowStyle Hidden `
+                -RedirectStandardOutput $recoveryWatcherStdout -RedirectStandardError $recoveryWatcherStderr
+            Start-Sleep -Milliseconds 300
+            $recoveryWatcher.Refresh()
+            if ($recoveryWatcher.HasExited) {
+                $watcherError = if (Test-Path -LiteralPath $recoveryWatcherStderr -PathType Leaf) {
+                    Get-Content -LiteralPath $recoveryWatcherStderr -Raw
+                } else { '' }
+                throw "Automatic recovery watcher exited during startup: $watcherError"
+            }
+            $state.recoveryWatcherPid = $recoveryWatcher.Id
+            $state.recoveryWatcherStatusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
+            $state.recoveryWatcherStdout = $recoveryWatcherStdout
+            $state.recoveryWatcherStderr = $recoveryWatcherStderr
+        }
+    }
+    $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    Write-Host "TPF2MP $Role session ready: $safeSession ($peer), fingerprint $fingerprint"
+    Write-Host "Bridge: $bridge"
+    if ($StartingSave -and -not $NoLaunchGame) {
+        Write-Host 'The pinned starting save was selected and loaded automatically; native authority gates are active.'
+    }
+    else {
+        Write-Host 'Select a TPF2MP-enabled world; the launcher has already selected Network mode and this peer/session.'
+    }
+    $state | ConvertTo-Json -Depth 12
+}
+catch {
+    $state.status = 'failed'
+    $state.error = $_.Exception.Message
+    $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    if ($gameProcess) {
+        try {
+            $gameProcess.Refresh()
+            if (-not $gameProcess.HasExited) {
+                Stop-Process -Id $gameProcess.Id -Force -ErrorAction SilentlyContinue
+                [void]$gameProcess.WaitForExit(10000)
+            }
+        }
+        catch { }
+    }
+    if ($stagedSave) {
+        try { Remove-Tpf2mpStagedStartingSave $stagedSave }
+        catch { Write-Warning "Staged starting-save cleanup requires attention: $($_.Exception.Message)" }
+    }
+    $cleanupPids = @($state.companionLauncherPid, $state.companionPid)
+    if ($companionStatus -and $companionStatus.session -eq $safeSession `
+        -and $companionStatus.peer -eq $peer -and $companionStatus.pid) {
+        $cleanupPids += [int]$companionStatus.pid
+    }
+    foreach ($cleanupPid in @($cleanupPids | Where-Object { $_ } | Select-Object -Unique)) {
+        $cleanupProcess = Get-Tpf2mpVerifiedCompanionProcess -ProcessId ([int]$cleanupPid) `
+            -Session $safeSession -Peer $peer -ExecutablePath $state.companionExecutable
+        if ($cleanupProcess) { Stop-Process -Id $cleanupProcess.Id -Force -ErrorAction SilentlyContinue }
+    }
+    throw
+}

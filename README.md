@@ -1,0 +1,230 @@
+# TPF2MP competitive multiplayer prototype
+
+TPF2MP is an executable research prototype for competitive Transport Fever 2. It currently contains two related products:
+
+1. A playable local hot-seat mode with two native companies, separate wallets, separate logical assets, a turn-desk proxy, contested demand, fares, scoring, match rules, save state, and checkpoints.
+2. A simultaneous-networking laboratory with a TCP commit sequencer, canonical identities, an exact-build native command gate, and canonical road/track, edge-object, and construction replay.
+
+The second item is not yet finished same-world multiplayer. Prototype `0.21`, state schema `19`, checkpoint format `2`, edge proposal schema `5`, and construction proposal schema `7` converge from the same populated save, give pre-existing assets the same canonical ownership, replay bounded construction transactions, reconcile canonical finance, compare direct passenger telemetry, and establish all-peer checkpoints without putting engine-local IDs on the wire. Schema 5 adds named signals/waypoints and preserves them across track replacement. Schema 7 adds portable named construction payloads for depots, ordinary constructions, `ASSET_GROUP`-only assets, observable upgrades, modular station edits, and removal. The ordinary-UI localhost construction matrix now passes for signals/waypoints, depot placement/use, stock modular-station placement/edit/removal, bench placement/removal with rival denial, and lamp/fence placement. The staged human runs exposed six last-mile defects; all six have targeted regressions and passing reruns. Construction uses an all-peer prepare/commit barrier: geometry and named resources must resolve everywhere before either world mutates. A shared host-ordered clock synchronizes pause/speed and adaptively caps the effective speed to the slowest peer. Other consequential command categories remain fail-closed until they gain equivalent capture, authorization, replay, and postconditions. See [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md), [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md), [the facility-matrix acceptance](investigation/ORDINARY_UI_FACILITY_MATRIX_2026-08-04.md), and [the original failure investigation](investigation/FACILITY_UI_FAILURES_2026-08-04.md) for the precise boundary.
+
+## What works now
+
+- Two persistent native company players with independently audited balances and configurable starting cash.
+- A native turn desk that temporarily leases the active company’s manageable assets and mirrors only that company’s wallet.
+- Fail-atomic reconciliation: asset return is verified before money moves, and failed settlement cannot be multiplied by retrying.
+- Safe road/track handling on Build 35924. The game’s legacy `setPlayer` path asserts on direct `BASE_EDGE` transfer, so company ownership is retained logically. Native custody is normally the desk; depot/station cascades may place attached edges on their rightful company, which is now an explicitly validated state.
+- Pre-commit rejection of builder proposals that touch another company’s tracked road, track, node, edge object, or construction.
+- A broader GUI-level logical-owner veto for known line, vehicle, station, depot, and construction mutations, backed in network mode by fail-closed native visitors for 23 unsupported consequential command tags.
+- A deterministic contested-demand economy with frequency, journey time, quality, fare, capacity, outside choice, revenue, reach, wins, and model value.
+- Checksummed checkpoint format `2`, immutable digest-chained events, independent Python model replay, and canonical state that excludes machine-local numeric IDs. Checkpoint convergence includes authored state, canonical bindings, structural state, and canonical company balances/loans.
+- A dependency-free Python host/client sequencer with content fingerprints, ordered commits, reconnect replay, acknowledgements, and divergence reporting.
+- Native hook `0.12.0`, pinned to the exact Windows x64 Build 35924 executable. It validates SHA-256, PE metadata, 17 unique signatures, and the command visitor table; observes the native command pipeline; wraps `api.cmd.sendCommand`; strictly gates tag-15 `BuildProposal`; gates 23 additional consequential tags before mutation; converts suppressed vanilla pause/speed clicks into ordered shared-clock requests; and captures typed CreateLine/DeleteLine/UpdateLine plus SetName/SetColor payloads from the ordinary line manager before their suppressed commands can mutate either world.
+- Canonical proposal schema `5` for street/track and named edge objects. It uses stable output slots, canonical existing references, deterministic negative temporary IDs, repository resource names rather than machine-local indices, a bounded authoritative builder cost quote, private/public ownership, geometric postcondition matching, supported ownership replacement, and canonical result binding. Signals and waypoints are serialized by `.mdl` name, and existing edge objects can be retained and rebound when their carrier edge is upgraded. Vanilla and data-only mod resources use the same path when the complete match content is identical.
+- Canonical proposal schema `7` for construction build, upgrade, edit, and removal. The strict stock modular passenger/cargo rail-station adapter remains available for menu placement. A bounded portable adapter carries a named `.con`, full finite transform, recursive plain parameters, and named `.module` records for depots, ordinary constructions, assets, and modular edits. Engine replay inventories and binds construction/station/group/depot/asset/edge-object/graph outputs, preserves source identities across real upgrades, normalizes finance, and enters physical/checkpoint consensus. Schema 7 recognizes the real `ASSET_GROUP`-only root used by `ASSET_DEFAULT`. Opaque callbacks, local IDs, missing resources, ambiguous outputs, and native “success” calls that do not change the world fail closed. These forms pass the automated sequence and exact-build engine proof; stock depot/station/graphless-asset forms also pass the ordinary-UI two-process matrix. Mod construction variants and broader facility families remain unproven.
+- Authoritative shared-save ownership: pre-existing world assets receive the same canonical owner on both peers before peer-local player binding. A replay records the local command issuer separately from the intended native output owner, preventing either source assets or remote builds from changing company merely because local native player IDs differ.
+- Three-stage construction consensus. Every captured proposal first becomes `proposal.prepare`; all pinned peers must resolve its canonical geometry, named resources, and ownership against an unchanged core before the host emits `proposal.build`. A prepare rejection mutates neither world and does not poison the session. Successful native replay is followed by a local-ID-free completion record containing canonical outputs, physical/core digest, and the transaction's canonical cost. The host applies the signed cost only after physical agreement and then requires the normal checkpoint barrier.
+- A host-ordered shared simulation clock. Pause and speeds 1-4 are generation-numbered commits applied on both games through the gated native `SetGameSpeed` path. Engine-tick rate, game time, observed speed, heartbeat age, command backlog, and pending construction feed a slowest-peer cap with step-down, resync-pause, and hysteretic recovery. This is command/checkpoint pacing, not deterministic passenger or vehicle-position lockstep.
+- Canonical network accounts own competitive balances; native player wallets are reconciled peer-local caches. Safe periodic reconciliation removes Build 35924's recurring local loan-interest/maintenance drift without allowing those autonomous entries to change authoritative money.
+- A populated bidirectional two-live-process localhost harness. It safely starts and hooks two exact game PIDs, loads a byte-pinned save containing towns, industries, a depot, line, stations, train, and passengers, proves three checkpoints, compares mobility five times, replicates one track from each peer, charges both companies exactly 25,000, performs a paused 300-tick stability soak, restores shared settings, and independently audits the result.
+- Canonical line and railway-vehicle operation codecs with strict schemas, host/company authorization, replay/result checking, finance routing, physical consensus, and checkpoint tests. Ordinary vanilla **New Line**, stop add/remove/reorder/terminal updates, and line deletion now feed that line codec through native typed capture; this path passes native-build, Lua, Python, GUI, and consensus regressions but still needs its first two-process human proof. Vehicle operations remain panel/test driven rather than transparently captured from every vanilla control.
+- A one-window multiplayer launcher (`LAUNCH_TPF2MP.cmd`) with Host, Join, automated Localhost Test, exact fingerprinting, connection/recovery status, logs, evidence collection, and exact-session stop controls. Normal Host/Join installs a real `MULTIPLAYER` title-screen entry and waits for the player to select it before loading the pinned save.
+- A second all-peer checkpoint barrier after match start and every successful physical action. Later commands stay blocked until both peers attest the same core, structure, and finances. The host recovery watcher links a later stable native save to the latest verified boundary, hashes and archives its save triplet, and reports it in the launcher. It explicitly does not claim exact-tick capture or automatic geometry repair.
+- A distributable ZIP with a standalone companion executable, auto-detecting installer, verifier, recoverable uninstaller, match-manifest tool, and host/client/native launchers.
+
+## Install from the development tree
+
+Run PowerShell from this directory:
+
+```powershell
+.\tools\run_tests.ps1
+.\tools\install.ps1
+```
+
+`install.ps1` discovers the most recently used Transport Fever 2 Steam userdata profile, stages the copy, archives the previous mod under `runtime\install-backups`, and prepares the two bridge roots under `%TEMP%\tpf2mp_bridge`. Pass `-LocalModsPath` only when auto-detection selects the wrong Steam profile.
+
+## Build and test a distributable
+
+```powershell
+.\tools\package_release.ps1
+```
+
+This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.21.2-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
+
+An extracted package installs with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\install_release.ps1
+```
+
+Windows users can instead double-click `INSTALL_TPF2MP.cmd`; matching verify and recoverable-uninstall launchers are included beside it.
+
+After installation, double-click `LAUNCH_TPF2MP.cmd` for Host / Join / automated two-instance localhost testing. Host and Join fingerprint the selected save, game, mod, companion, and native binaries, then start Transport Fever 2 at its title screen. Click the new **MULTIPLAYER** entry in the game; only that receipted selection allows the launcher to load the pinned save. Tick **After the automated proof, leave both connected game windows open** before Localhost Test to turn the passing harness into a manual two-window lab. **Run Populated Capture Lab (Local Only)** instead opens two unrestricted independent worlds for observation and is not synchronized multiplayer. Ending either lab bundles evidence and restores temporary resources.
+
+The release installer:
+
+- verifies every bundle checksum before copying;
+- auto-discovers Steam userdata and library folders;
+- installs the support bundle under `%LOCALAPPDATA%\TPF2MP\versions`;
+- archives any previous mod instead of deleting it;
+- verifies the installed mod and standalone companion;
+- reports whether the exact native profile is compatible.
+
+Use `.\tools\verify_install.ps1` to recheck it and `.\tools\uninstall.ps1` to move the active mod to a recoverable archive.
+
+## Local hot-seat flow
+
+Create a fresh free game with **TPF2MP Competitive Prototype**, `player1`, and **Standalone / hot-seat**. Keep **Native turn proxy** and **Pause simulation on company switch** selected.
+
+1. Click **Initialise Match**. The original native player becomes the UI turn desk; Company 1 and Company 2 are separate native players with separate wallets.
+2. Build only for the active company. The desk’s balance is a mirror of that company’s real balance, so ordinary affordability checks use the right budget.
+3. Click **Reconcile Turn** after consequential building or management work. It returns supported assets, verifies custody, transfers only the signed desk balance delta, and reopens the same company.
+4. Click **Cycle Company** to settle the outgoing company and lease in the other company’s assets.
+5. Public/untracked roads remain connectable by both companies. Private tracked track and other assets are protected from rival edits. Explicit access/leasing rules can be added later without changing the ownership model.
+6. Use **Seed Demo Market**, **Register Selected Line**, the fare controls, and **Settle Epoch** to exercise the competitive economy.
+7. Use **Run Sync Probe**, **Sample Pax / Cargo**, **Export Research**, **Export Snapshot**, and **Export Checkpoint** for evidence.
+8. **Finish Match** selects the deterministic leader. Epoch and valuation rules can also finish automatically.
+
+Native borrow/repay is intentionally disabled on the turn desk. Competitive credit, insolvency, and bankruptcy are not implemented. The original player’s base-game loan can also generate month-boundary interest while the simulation runs; paused turns are the supported local-test configuration until that accounting is isolated.
+
+Road and track ownership has a special implementation because Build 35924 asserts if legacy `game.interface.setPlayer` is called on a base edge. TPF2MP therefore:
+
+- records logical company custody;
+- normally leaves local native custody on the desk, while accepting an attached depot/station edge only when the engine cascades it to that exact logical company;
+- rejects rival builder sources before commit;
+- uses the supported `SegmentAndEntity.playerOwned` proposal field for canonical private builds;
+- handles the resulting local edge-ID replacement before binding canonical output slots.
+
+The user’s manual runs already proved separate road/track debits, repeated company cycles, six tracked edges, the original cross-company electrification ownership theft, and rival depot access denial. The reported rail-depot turn lock exposed a second issue: returning its construction cascaded its attached edge to the rightful company, which the old desk-only postcondition rejected. The corrected invariant now has automated depot/station coverage and a real four-cycle live proof.
+
+## Automated live validation
+
+The full disposable-world validator is:
+
+```powershell
+.\tools\run_unattended_live_validation.ps1 -NativeHook -SkipNativeBuild -RunFacilityCustodyProbe
+```
+
+It runs the offline suite, installs the current mod, verifies a match manifest, backs up and restores `settings.lua` byte-for-byte, injects a temporary test-only game-script route, launches a fresh unsaved world, injects the exact-build native hook, runs the validator, collects evidence, renders the research report, verifies the checkpoint/event chain independently, removes temporary resources, and closes only the disposable game process.
+
+Latest enhanced exact-build proof: `runtime/live-validation/20260804-032456` passed all `39` game checks, native hook/profile validation, independent model replay, and the complete facility sequence on the compact-state fix. It built a real rail depot and modular station, passed four complete company-custody transitions for all 18 owned components, replaced all 12 station tracks with catenary tracks, built/removed an `ASSET_GROUP`-only stock asset, removed the depot and its track, and removed the station plus all edited tracks. The native empty station-group shell was accepted only after proving it referenced no live station. Signal add/remove separately passed in `runtime/supported-api-probe/20260804-021739`. See [the signal/facility live proof](investigation/SIGNAL_FACILITY_LIVE_PROOF_2026-08-04.md) and [the original custody investigation](investigation/DEPOT_STATION_EDGE_CUSTODY_2026-08-02.md).
+
+The current state-19/schema-7 build also passed a fresh real two-process gate in `runtime/localhost-live/schema7-compact-20260804-032006`: host- and client-origin physical proposals converged, checkpoint barriers 6 and 10 agreed, and both worlds finished at core `73af1552` and structure `53bb77bb`. That run caught and fixed a release-candidate regression first: richer scenery fingerprints had eagerly persisted hundreds of autonomous map objects and made Build 35924 crash at the next native proposal boundary. Scenery now remains in the shared manifest digest but binds operationally only when selected. Both failing receipts and the passing rerun are documented in [the compact-manifest regression](investigation/SCHEMA7_COMPACT_MANIFEST_LIVE_REGRESSION_2026-08-04.md).
+
+The current strongest live network proof is `runtime/localhost-live/populated-network-ownershipfix-20260803`. Two real Build 35924 processes loaded the same populated save and assigned its pre-existing train network to the same canonical company. Both peers reconstructed one private-track transaction from each company, completed three checkpoint barriers, and ended with identical core `7a1b9f9d`, model `5b59ecf2`, structure `07db112f`, and mobility `a7ae06ac`, with zero consensus or reconciliation faults. The final 300-tick validator soak was paused and autonomy-frozen; it proves populated static convergence, not running-simulation RNG lockstep. See [the populated network investigation](investigation/POPULATED_NETWORK_RECOVERY_AND_MENU_2026-08-03.md).
+
+The same harness can leave both ordinary game windows connected for manual vanilla-UI tests. Stock rail-station placement has live coverage from 80-320 m and 1-8 tracks. The completed facility matrix additionally covers named signals/waypoints, a rail depot, station module editing/removal, bench placement/removal, and lamp/fence placement through all-peer physical/checkpoint consensus. See [the ordinary-UI acceptance](investigation/ORDINARY_UI_FACILITY_MATRIX_2026-08-04.md), [the schema 5/7 implementation investigation](investigation/EDGE_OBJECT_AND_CONSTRUCTION_SCHEMA6_2026-08-04.md), [the live engine receipt](investigation/SIGNAL_FACILITY_LIVE_PROOF_2026-08-04.md), and [the station investigation](investigation/NETWORK_STATION_SCHEMA4_2026-08-03.md).
+
+The first full facility-UI attempt, `facility-ui-20260804-083528`, did not pass. Signals and waypoints exposed a processed sentinel parameter; one station edit produced four suppressed native visitors; a depot payload containing negative zero caused a permanent cross-language checksum retry; and vanilla speed clicks were suppressed without becoming shared-clock requests. Reruns then found helper-owned station-upgrade fields and a station-specific graph requirement incorrectly applied to decorative assets. Prototype 0.21 fixes all six with targeted regressions. The passing staged reruns and exact evidence boundaries are in [the ordinary-UI facility-matrix acceptance](investigation/ORDINARY_UI_FACILITY_MATRIX_2026-08-04.md); the original four failures remain in [the failure investigation](investigation/FACILITY_UI_FAILURES_2026-08-04.md).
+
+The manual-lab lifecycle itself is live-proven in `runtime/localhost-live/localhost-manual-lab-smoke2-20260802`: both windows reached `MANUAL LAB READY`, a two-peer stop was requested, automatic evidence collection found both native statuses and the game log, the host audit replayed successfully, and settings plus all temporary base-resource injections were restored.
+
+The explicitly local-only operational lab has now completed a populated human
+run. Two independent worlds sustained multiple passenger/cargo train cycles;
+screenshots show `8/30` passengers and `8/48` cargo. Both worlds retained frozen
+town/industry state, player commands used queued native tags, and Player 2
+reconciled its exact `-5,879,852` native delta while retaining 80 assets. All
+five convenience readers remained unavailable despite the visible loads. A
+later populated network run found a direct ECS path and read 413 people, 10 line
+users, 8 aboard, and 2 waiting identically on both peers. Direct cargo paths are
+also available, but still need a cargo-positive source save and an authoritative
+steering design. See [the operational capture investigation](investigation/OPERATIONAL_CAPTURE_LAB_2026-08-02.md) and [the superseding populated proof](investigation/POPULATED_NETWORK_RECOVERY_AND_MENU_2026-08-03.md).
+
+To repeat the lab or live-prove the new stale-edge recovery and rival-access
+checks:
+
+```powershell
+.\tools\start_operational_capture_lab.ps1 -Minutes 120
+```
+
+It opens two independent, unrestricted hot-seat worlds, auto-initializes two
+50,000,000-funded companies in each, and samples real speed/time, balances/journals,
+autonomy readback, intermediate model/core/structure/mobility digests, native
+command tags, bounded line/vehicle/station GUI mutation envelopes, and
+passenger/cargo APIs. It does **not** connect or synchronize the two worlds.
+Closing either window triggers evidence collection and a
+JSON/Markdown analysis. See [the operational capture design and test
+contract](investigation/OPERATIONAL_CAPTURE_LAB_2026-08-02.md).
+
+Smaller experiments remain available:
+
+```powershell
+.\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -TrackBuildTest
+.\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -BuildGateTest
+.\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -CommandGateTest
+.\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -ProposalOwnershipTest
+.\tools\run_unattended_live_validation.ps1 -RunFacilityCustodyProbe -NativeHook -SkipNativeBuild -SkipTests
+.\tools\start_native_hook_test.ps1 -NoBuild
+.\tools\get_native_hook_status.ps1
+```
+
+The native component is deliberately fail-closed. It loads only this executable:
+
+```text
+Transport Fever 2 Build 35924 (Windows x64)
+SHA-256 782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c
+```
+
+An updated, altered, or unsupported executable is rejected before hooks are enabled. Standalone Lua mode can still be installed, but network construction experiments must stop until a new profile is researched and tested.
+
+## Two-machine network experiment
+
+Both machines need the same game executable, installed mod/binaries, mod order, session name, and byte-identical starting save. Double-click `LAUNCH_TPF2MP.cmd` on each machine:
+
+1. Host selects the save, enters a fresh session name, and clicks **Host + Launch Game**.
+2. Host sends player 2 the session name, LAN/VPN address shown by the launcher, port, and exact save.
+3. Player 2 selects its identical copy, enters the same session and host address, and clicks **Join + Launch Game**.
+4. Each launcher independently fingerprints the game, mod, companion, native binaries, and save. A mismatch is rejected before gameplay traffic.
+5. In Transport Fever 2, click the new **MULTIPLAYER** title entry. The game remains idle until this click; afterward the launcher loads its byte-pinned copy of the selected save and the short-lived profile supplies the correct peer, session, bridge, and Network mode.
+
+The equivalent scriptable entry points are:
+
+```powershell
+.\tools\start_network_session.ps1 -Role Host -Session match-1 -StartingSave 'C:\saves\match.sav'
+.\tools\start_network_session.ps1 -Role Join -Session match-1 -HostAddress 192.168.1.10 -StartingSave 'C:\saves\match.sav'
+```
+
+The older manifest/companion/hook scripts remain available for debugging, but ordinary testing no longer requires coordinating three terminals and mod-option dropdowns.
+
+After any manual test, click **Collect evidence** in the launcher. It copies the local bridge traffic, research/checkpoint exports, relevant game log, native-hook status, session state, and then independently replays the host audit. The scriptable equivalent is:
+
+```powershell
+.\tools\collect_live_evidence.ps1 -Session match-1
+```
+
+The transport is designed for trusted private peers. Its checksums detect corruption and inconsistency; they are not hostile-client authentication or encryption. Do not expose TCP port `29742` directly to the Internet.
+
+Current network boundary:
+
+- Model-owned actions are ordered and replayed.
+- `proposal.prepare` is company-authorized against the pinned peer-to-company map and carries no engine-local IDs. Every peer must resolve canonical inputs and stable resource names before the host is permitted to emit `proposal.build`.
+- The native BuildProposal gate and all 23 selected consequential-command visitors are mandatory in network mode. Missing/inactive authority gates prevent both outgoing intents and incoming gameplay commits.
+- Every peer can reconstruct the supported road/track transaction and bind its own result IDs to the same canonical output identities.
+- Queue acknowledgements remain diagnostic only. A physical proposal is complete only after both pinned peers report matching canonical outputs and physical/core digest. Schemas 5 and 7 carry the bounded integer builder quote; the ordered outcome applies its signed cost to the canonical account and reconciles each peer's native wallet cache before the financial checkpoint.
+- Match initialization and each successful physical outcome immediately open a checkpoint barrier. Later network intents remain blocked until both peers report the same format-2 convergence key, including canonical company finances, and consume the ordered checkpoint outcome.
+- A prepare rejection is non-fatal because no native world has changed. A rejection/mismatch after build commit, or the default 45-second physical/checkpoint timeout, faults the session closed. In-place native geometry repair is not implemented. The host watcher verifies the audit and hashes/archives the first later stable native save candidate against the latest agreed boundary; exact-tick capture and automatic coordinated restore remain open.
+- Populated bidirectional construction and a paused 300-tick finance/structure/mobility soak pass on localhost; an unpaused two-computer usability/drift run is the next manual gate.
+- The ordinary vanilla line manager now has typed capture for New Line, complete UpdateLine stop/terminal state, Delete Line, rename, and color. Two independent two-process sessions live-prove the actual stock widgets: create/rename/color/delete and a populated line's Add Station/remove-stop actions all reached ordered physical consensus and peer checkpoints, with matching stock Line Manager displays and zero native decode errors. Reordering two populated stops and alternate-terminal changes still need a focused visual pass, while railway-vehicle operations still need transparent vanilla capture and live proof. Stock modular station placement and its 80-320 m/1-8-track matrix are human-live-proven. Signals/waypoints, a rail depot, station editing/removal, bench placement/removal, and lamp/fence placement also pass ordinary two-process UI capture, ownership, physical consensus, and checkpoints. Unadapted command families remain safely rejected where gated; complex topology, mod construction variants, and unlisted/autonomous paths remain explicit authority gaps.
+- Shared clock ordering and adaptive capping are implemented. Hook 0.12 captures the normal vanilla pause/speed controls, but fresh localhost proof of that input path and adaptive slowdown/recovery is pending. Autonomous development and native passengers/cargo are not authoritative physical replicas yet.
+
+Accordingly, network mode remains an engineering experiment rather than a promise of playable multiplayer.
+
+After a fault, stop both games and companions, then run this from the extracted host bundle:
+
+```powershell
+.\tools\new_recovery_plan.ps1 -AuditPath "$env:TEMP\tpf2mp_bridge\player1\audit\match-1.ndjson" -Session match-1
+```
+
+The plan names the exact convergence boundary and new session ID. Host sessions also create `latest-recovery-archive.json` when a later stable native save is available. That temporal association is evidence and restart authority, not proof of an exact-tick snapshot or an unsafe geometry importer.
+
+## Repository map
+
+- `tpf2_mp_1/` — installable prototype 0.21; state schema 19, checkpoint format 2, edge schema 5, and construction schema 7.
+- `companion/tpf2mp/` — dependency-free protocol, bridge, host/client sequencer, manifests, replay, and reports.
+- `native/` — pinned Build 35924 DLL/injector, signatures, MinHook pin, tests, and documentation.
+- `tests/` — Lua unit/integration/replay tests and Python protocol/TCP tests.
+- `tools/` — developer tests, live probes, release packaging, installer, verifier, launchers, and evidence tools.
+- `investigation/` — supported-API and native reverse-engineering evidence.
+- [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md) — exact implemented/proven/untested boundary.
+- [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md) — ordered critical path to the original brief.
+- [tpf2-competitive-multiplayer-concept.md](tpf2-competitive-multiplayer-concept.md) — product concept.
+- [tpf2-competitive-multiplayer-technical-plan.md](tpf2-competitive-multiplayer-technical-plan.md) — phased architecture and go/no-go criteria.
