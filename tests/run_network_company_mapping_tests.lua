@@ -1162,4 +1162,94 @@ assert(releasedIntent.kind == "intent"
   and releasedIntent.local_seq ~= firstIntent.local_seq,
   "deferred physical action was not emitted with a fresh bridge identity")
 
+-- Release the still-held latch from the rejection test above with another
+-- benign rejection: no origin token means no fault, only the FIFO release.
+writeOrdered(40, "control", "player1", {
+  type = "network.intent_rejected",
+  originPeer = "player2",
+  originLocalSeq = releasedIntent.local_seq,
+  actionType = "proposal.build",
+  errorCode = "proposal.build is host-generated; submit proposal.prepare first",
+})
+script.update()
+assert(script.save().world.operationConsensus.sessionFault == nil,
+  "a tokenless intent rejection must release the latch without faulting")
+
+-- An origin-applied vanilla capture that normalises cleanly must carry its
+-- origin token onto the wire.
+-- bridge.emitted is read as a plain number immediately: the harness save()
+-- can alias live state, so table snapshots do not freeze counter values.
+local emittedBeforeOwnCapture = tonumber(script.save().bridge.emitted)
+script.handleEvent("test", "tpf2mp", "intent", {
+  type = "operation.capture",
+  capture = {
+    kind = "entity.name",
+    targetLocalId = 301,
+    originLocalId = 301,
+    originApplied = true,
+    name = "Own Edge",
+  },
+})
+local emittedAfterOwnCapture = tonumber(script.save().bridge.emitted)
+assert(emittedAfterOwnCapture == emittedBeforeOwnCapture + 1,
+  "origin-applied own-asset capture did not reach the bridge")
+local tokenIntentFile = assert(io.open(string.format(
+  "%s/game_outbox/%012d.json", bridgeRoot, emittedAfterOwnCapture), "rb"))
+local tokenIntent = json.decode(tokenIntentFile:read("*a"))
+tokenIntentFile:close()
+assert(tokenIntent.kind == "intent"
+  and tokenIntent.payload.action.type == "operation.execute"
+  and tostring(tokenIntent.payload.action.originCaptureToken):find("^player2:operation%-origin:%d+$"),
+  "origin-applied operation intent lost its origin capture token")
+
+-- Rejecting that ordered intent leaves an un-orderable native mutation on
+-- this peer only: the session must fault closed and request the pause.
+writeOrdered(41, "control", "player1", {
+  type = "network.intent_rejected",
+  originPeer = "player2",
+  originLocalSeq = tokenIntent.local_seq,
+  actionType = "operation.execute",
+  errorCode = "test-transport-rejection",
+})
+script.update()
+local emittedAfterFault = tonumber(script.save().bridge.emitted)
+local residueFault = script.save().world.operationConsensus.sessionFault
+assert(residueFault
+  and residueFault.errorCode == "origin-applied-intent-rejected:test-transport-rejection"
+  and residueFault.detail.originCaptureToken == tokenIntent.payload.action.originCaptureToken,
+  "rejected origin-applied intent did not fault the session")
+assert(emittedAfterFault == emittedAfterOwnCapture + 1,
+  "origin residue fault did not request the ordered pause")
+local pauseIntentFile = assert(io.open(string.format(
+  "%s/game_outbox/%012d.json", bridgeRoot, emittedAfterFault), "rb"))
+local pauseIntent = json.decode(pauseIntentFile:read("*a"))
+pauseIntentFile:close()
+assert(pauseIntent.kind == "intent"
+  and pauseIntent.payload.action.type == "clock.request"
+  and tonumber(pauseIntent.payload.action.requestedSpeed) == 0,
+  "origin residue fault emitted something other than the ordered pause")
+
+-- Capture-time authorization is a superset of commit-time operationAccess:
+-- a vanilla rename of the rival's pre-existing track is rejected at the
+-- normalise boundary, and the first fault is retained unchanged.
+script.handleEvent("test", "tpf2mp", "intent", {
+  type = "operation.capture",
+  capture = {
+    kind = "entity.name",
+    targetLocalId = 92,
+    originLocalId = 92,
+    originApplied = true,
+    name = "Hostile Rename",
+  },
+})
+-- Depending on manifest-binding state the rejection is either the
+-- pre-existing-ambiguity check or the rival-ownership check; both sit
+-- before intent emission, which is the property under test.
+local rivalError = tostring(script.save().lastError)
+assert(rivalError:find("rival%-owned") or rivalError:find("ambiguous across peers"),
+  "capture-time authorization accepted a rival-owned rename")
+assert(script.save().world.operationConsensus.sessionFault.errorCode
+    == "origin-applied-intent-rejected:test-transport-rejection",
+  "a later residue did not retain the session's first fault")
+
 print("PASS network signals, depots, arbitrary constructions, station editing/removal, ownership, finance, and consensus")

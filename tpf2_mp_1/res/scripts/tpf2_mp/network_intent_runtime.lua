@@ -64,6 +64,7 @@ function M.new(deps)
       networkIntentAwaitingOrder = {
         localSeq = tonumber(messageOrError.local_seq),
         type = networkAction.type,
+        originCaptureToken = networkAction.originCaptureToken,
         emittedTick = state.tick,
       }
     else
@@ -72,12 +73,67 @@ function M.new(deps)
     publishSnapshot()
     return ok, messageOrError
   end
-  
+
+  -- An origin-applied operation is a vanilla pass-through command that has
+  -- already mutated this world. If it is rejected anywhere before commit, the
+  -- ordered history can never contain it, so the worlds have provably
+  -- diverged: fail closed exactly like a commit-time consensus fault and
+  -- request the ordered pause a faulted session is still allowed to apply.
+  local function raiseOriginResidueFault(errorCode, detail)
+    if state.networkMode ~= "network" then return false end
+    local consensus = state.world.operationConsensus
+    if consensus.sessionFault then return true end
+    local fault = {
+      success = false,
+      status = "faulted",
+      errorCode = tostring(errorCode),
+      detail = detail and util.deepCopy(detail) or nil,
+      originPeer = tostring(state.bridge.peerId or ""),
+      tick = state.tick,
+    }
+    consensus.failed = (consensus.failed or 0) + 1
+    consensus.lastOutcome = util.deepCopy(fault)
+    consensus.sessionFault = fault
+    diagnosticLog("origin-applied-residue-fault", {
+      errorCode = fault.errorCode,
+      detail = fault.detail and util.deepCopy(fault.detail) or nil,
+      tick = state.tick,
+    })
+    -- The pause request is best-effort: raising the fault must never throw,
+    -- even if the bridge is unavailable at this exact tick.
+    local called, emitOk, emitError = pcall(emitNetworkIntent, { type = "clock.request", requestedSpeed = 0 })
+    if not called or emitOk ~= true then
+      diagnosticLog("origin-residue-pause-failed", {
+        error = tostring(not called and emitOk or emitError),
+        tick = state.tick,
+      })
+    end
+    state.lastError = "network session is faulted: " .. tostring(errorCode)
+    publishSnapshot()
+    return true
+  end
+
   local function submitIntent(action)
     if type(action) ~= "table" then return false, "action must be a table" end
+    if action.type == "network.origin_residue" then
+      local raised = raiseOriginResidueFault(
+        tostring(action.errorCode or "origin-applied-residue"),
+        type(action.detail) == "table" and action.detail or nil)
+      publishSnapshot()
+      if not raised then return false, "origin residue faults exist only in network mode" end
+      return true, { faulted = true, errorCode = tostring(action.errorCode or "origin-applied-residue") }
+    end
     if action.type == "operation.capture" then
+      local capture = type(action.capture) == "table" and action.capture or action
       local normalized, normalizeError = normaliseOperationCapture(action)
       if not normalized then
+        if capture.originApplied == true then
+          raiseOriginResidueFault(
+            "origin-applied-capture-rejected:" .. tostring(normalizeError), {
+              kind = tostring(capture.kind or ""),
+              targetLocalId = tonumber(capture.targetLocalId or capture.originLocalId),
+            })
+        end
         state.lastError = tostring(normalizeError)
         publishSnapshot()
         return false, normalizeError
@@ -259,8 +315,14 @@ function M.new(deps)
         state.lastResult.queueRemaining = #deferredNetworkIntents
       end
     else
-      state.lastError = "deferred multiplayer physical action failed: "
-        .. tostring(type(result) == "table" and result.error or result)
+      local failureText = tostring(type(result) == "table" and result.error or result)
+      if pending.action and pending.action.originCaptureToken then
+        raiseOriginResidueFault("origin-applied-intent-emit-failed:" .. failureText, {
+          actionType = tostring(pending.action.type or ""),
+          originCaptureToken = tostring(pending.action.originCaptureToken),
+        })
+      end
+      state.lastError = "deferred multiplayer physical action failed: " .. failureText
     end
     publishSnapshot()
     return true
@@ -298,6 +360,7 @@ function M.new(deps)
           local matchesOrigin = tostring(action.originPeer or "") == tostring(state.bridge.peerId)
             and networkIntentAwaitingOrder
             and tonumber(action.originLocalSeq) == tonumber(networkIntentAwaitingOrder.localSeq)
+          local rejectedIntent = matchesOrigin and networkIntentAwaitingOrder or nil
           if matchesOrigin then networkIntentAwaitingOrder = nil end
           diagnosticLog("network-intent-rejected", {
             originPeer = action.originPeer,
@@ -308,7 +371,16 @@ function M.new(deps)
             tick = state.tick,
           })
           if matchesOrigin then
-            state.lastError = "network intent rejected: " .. tostring(action.errorCode or "unknown")
+            if rejectedIntent.originCaptureToken then
+              raiseOriginResidueFault(
+                "origin-applied-intent-rejected:" .. tostring(action.errorCode or "unknown"), {
+                  originLocalSeq = tonumber(action.originLocalSeq),
+                  actionType = tostring(action.actionType or rejectedIntent.type or ""),
+                  originCaptureToken = tostring(rejectedIntent.originCaptureToken),
+                })
+            else
+              state.lastError = "network intent rejected: " .. tostring(action.errorCode or "unknown")
+            end
           end
         else
           applyCommitted(action, message.origin_peer or "host", message.seq)
@@ -323,6 +395,7 @@ function M.new(deps)
     processDeferred = processDeferredNetworkIntent,
     consume = consumeBridge,
     pendingBarrierReason = networkPendingBarrierReason,
+    raiseOriginResidueFault = raiseOriginResidueFault,
     awaitingOrder = function() return util.deepCopy(networkIntentAwaitingOrder) end,
     deferredIntents = function() return util.deepCopy(deferredNetworkIntents) end,
     reset = function()

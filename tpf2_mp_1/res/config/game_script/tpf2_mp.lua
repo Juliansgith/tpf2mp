@@ -2220,6 +2220,15 @@ local function normaliseOperationCapture(action)
       and not (binding and binding.metadata and binding.metadata.manifestBound == true) then
       return nil, "selected pre-existing object is ambiguous across peers"
     end
+    -- Must stay a superset of commit-time operationAccess: with vanilla
+    -- pass-through the native world has already mutated, so anything the
+    -- ordered commit would reject must already be rejected here.
+    local owner = world.logicalOwnerOf(state.world, state.companies, localId)
+      or (binding and binding.metadata and binding.metadata.owner or nil)
+    if owner and owner ~= companyCid then
+      return nil, "operation cannot mutate rival-owned "
+        .. tostring(expectedKind) .. " " .. tostring(cid)
+    end
     return cid
   end
   if kind == "line.create" or kind == "line.update" then
@@ -2306,12 +2315,13 @@ local function normaliseOperationCapture(action)
         targetError = "vanilla Delete Line target has no canonical local binding"
       else
         local binding = state.canonical.byCanonical[targetCid]
+        local owner = world.logicalOwnerOf(state.world, state.companies, targetLocalId)
+          or (binding and binding.metadata and binding.metadata.owner or nil)
         if state.networkMode == "network" and targetCid:find(":pre:", 1, true)
           and not (binding and binding.metadata and binding.metadata.manifestBound == true) then
           targetCid = nil
           targetError = "selected pre-existing line is ambiguous across peers"
-        elseif binding and binding.metadata and binding.metadata.owner
-          and binding.metadata.owner ~= companyCid then
+        elseif owner and owner ~= companyCid then
           targetCid = nil
           targetError = "operation cannot mutate a rival-owned line"
         end

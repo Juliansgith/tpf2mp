@@ -760,6 +760,17 @@ function M.new(deps)
       elseif gui.frames >= pending.maximumFrame then
         gui.nativeLineCapture.invalid = (gui.nativeLineCapture.invalid or 0) + 1
         gui.lastError = "vanilla New Line completed without an identifiable local output"
+        -- The pass-through CreateLine already mutated this world; without an
+        -- identifiable output it can never be ordered, so this is residue.
+        queueAction({
+          type = "network.origin_residue",
+          errorCode = "origin-applied-create-unidentified",
+          detail = {
+            tag = 3,
+            capturedFrame = tonumber(pending.capturedFrame),
+            stops = #(pending.decoded and pending.decoded.stops or {}),
+          },
+        })
         table.remove(gui.pendingNativeLinePassThroughCaptures, pendingIndex)
       else pendingIndex = pendingIndex + 1 end
     end

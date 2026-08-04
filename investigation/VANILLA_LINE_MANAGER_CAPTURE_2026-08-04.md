@@ -14,13 +14,33 @@ five stock command families:
 - tag 29 `SetName` / rename;
 - tag 28 `SetColor` / color chooser.
 
-In network mode the exact native visitor still rejects the original local
-command before mutation. Hook 0.12 first copies its typed payload into bounded
-owned memory. GUI Lua consumes that record, replaces every machine-local line
-and station-group ID with a canonical identity, and submits the existing
-`operation.execute` transaction. Both worlds materialize their own native
-command only after host order, report a local-ID-free physical result, and enter
-the normal two-peer checkpoint barrier.
+These five families use a deliberately different consistency model from
+construction: **optimistic origin pass-through with ordered peer replay**.
+Returning `false` from these visitors does not merely reject the click —
+Build 35924 feeds an invalid `EntityRev` into the Line Manager callback and
+asserts, so suppression is not available. Instead, hook 0.12 decodes the typed
+payload into bounded owned memory and, only when it matches the pinned layout
+exactly, lets the original command complete on the origin machine. GUI Lua
+consumes the record, replaces every machine-local line and station-group ID
+with a canonical identity, and submits the existing `operation.execute`
+transaction with an origin token. After host order, the origin binds its
+already-applied local result instead of re-issuing, while the peer materializes
+its own native command through a normal one-shot authorization; both report a
+local-ID-free physical result and enter the two-peer checkpoint barrier.
+
+The origin's native world therefore mutates before host order. That residue is
+closed fail-closed rather than rolled back: capture-time authorization is a
+strict superset of commit-time `operationAccess` (rival ownership and
+pre-existing manifest ambiguity are rejected at the normalise boundary), and
+any rejection of an origin-applied operation after native application — a
+normalise failure, a companion transport rejection of the ordered intent, an
+emit failure of a deferred origin-applied action, or a CreateLine output that
+cannot be identified within its frame window — raises an operation-consensus
+session fault (`origin-applied-*`) and requests the ordered pause that a
+faulted session may still apply. Commit-time rejection already faulted both
+peers through the host outcome control. Lua module, game-script integration,
+and Python regressions cover the token latch, each fault path, first-fault
+retention, and the emitted pause.
 
 This is code-, automated-test-, native-boundary-, and stock-widget-live-proven
 across two independent game processes. New Line, rename, color, Delete Line,
@@ -185,12 +205,18 @@ Use the vanilla line manager on both peers, not the mod panel:
 5. Submit two stop edits in quick succession to stress the deferred FIFO.
 
 Expected latency is approximately the existing physical-consensus/checkpoint
-round trip. A newly created line may need to be selected manually after it
-appears because the locally suppressed CreateLine callback returned failure to
-the original editor before the authoritative replay completed.
+round trip. Because the origin applies its own command optimistically, the
+editor keeps its native selection; the peer sees the result after ordered
+replay.
 
 ## Still outside this slice
 
+- Origin residue is faulted, not repaired. A local inverse repair (delete the
+  passed-through line, restore the pre-edit stop vector or name/color) could
+  downgrade a rejected rival click from a session fault to a local undo;
+  Delete Line is not realistically invertible, so the fault path would remain
+  its floor. Acceptance item 4 (rival edit/delete through the vanilla widgets)
+  is the live proof that the fault path fires.
 - Vehicle purchase, consist editing, assignment, replacement, sale, and control
   commands are gated and have partial canonical codecs, but do not yet share a
   complete transparent vanilla capture layer.

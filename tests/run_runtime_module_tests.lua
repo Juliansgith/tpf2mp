@@ -118,6 +118,85 @@ do
 end
 
 do
+  -- An origin-applied capture is a native mutation that already happened.
+  -- Every rejection path must convert into an operation-consensus session
+  -- fault instead of a status-line whisper.
+  local function faultHarness(captureResult)
+    local current = {
+      networkMode = "network",
+      initialized = false,
+      tick = 9,
+      bridge = { peerId = "player1" },
+      probes = { networkAuthority = { ready = true } },
+      world = {
+        proposalConsensus = { byId = {} },
+        operationConsensus = { byId = {} },
+        checkpointConsensus = { byBoundary = {} },
+      },
+      finance = {},
+    }
+    local logged = {}
+    local controller = networkIntentRuntimeModule.new({
+      getState = function() return current end,
+      normaliseForNetwork = function(action) return action end,
+      normaliseOperationCapture = function() return captureResult, "operation cannot mutate rival-owned line" end,
+      applyCommitted = function(action) return true, { type = action.type } end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function(event, payload) logged[#logged + 1] = { event = event, payload = payload } end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+    return current, controller, logged
+  end
+
+  local current, controller, logged = faultHarness(nil)
+  local ok = controller.submit({
+    type = "operation.capture",
+    capture = { kind = "line.update", originApplied = true, targetLocalId = 7 },
+  })
+  local fault = current.world.operationConsensus.sessionFault
+  assert(ok == false and fault
+    and fault.errorCode:find("origin%-applied%-capture%-rejected:") == 1
+    and fault.status == "faulted" and fault.detail.kind == "line.update",
+    "rejected origin-applied capture did not fault the session")
+  assert(logged[1] and logged[1].event == "origin-applied-residue-fault",
+    "origin residue fault was not logged for the audit trail")
+  local blockedOk, blockedError = controller.submit({ type = "proposal.build", transaction = {} })
+  assert(blockedOk == false and tostring(blockedError):find("faulted"),
+    "faulted session accepted a further physical action")
+
+  current, controller = faultHarness(nil)
+  local plainOk = controller.submit({
+    type = "operation.capture",
+    capture = { kind = "line.update", targetLocalId = 7 },
+  })
+  assert(plainOk == false and current.world.operationConsensus.sessionFault == nil,
+    "a rejected mod-panel capture without native residue must not fault the session")
+
+  current, controller = faultHarness(nil)
+  local residueOk, residueResult = controller.submit({
+    type = "network.origin_residue",
+    errorCode = "origin-applied-create-unidentified",
+    detail = { tag = 3 },
+  })
+  fault = current.world.operationConsensus.sessionFault
+  assert(residueOk == true and residueResult.faulted == true and fault
+    and fault.errorCode == "origin-applied-create-unidentified"
+    and fault.detail.tag == 3,
+    "GUI-reported origin residue did not fault the session")
+
+  current, controller = faultHarness(nil)
+  current.networkMode = "standalone"
+  local standaloneOk = controller.submit({
+    type = "network.origin_residue",
+    errorCode = "origin-applied-create-unidentified",
+  })
+  assert(standaloneOk == false and current.world.operationConsensus.sessionFault == nil,
+    "origin residue faults must exist only in network mode")
+end
+
+do
   local current = {
     networkMode = "network",
     initialized = false,
