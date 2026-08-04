@@ -22,11 +22,14 @@ function M.new(env)
       markets[cid] = {
         cid = value.cid,
         name = value.name,
+        kind = value.kind,
         demand = value.demand,
         outsideWeight = value.outsideWeight,
         votCentsPerHour = value.votCentsPerHour,
         gcOutsideCents = value.gcOutsideCents,
         thetaCents = value.thetaCents,
+        waitWeightPm = value.waitWeightPm,
+        transferSeconds = value.transferSeconds,
         metadata = util.deepCopy(value.metadata or {}),
       }
     end

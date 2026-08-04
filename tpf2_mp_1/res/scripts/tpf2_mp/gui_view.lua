@@ -151,7 +151,10 @@ function M.render(gui, snapshot, options)
     if shownMarkets >= 8 then break end
     shownMarkets = shownMarkets + 1
     local market = results.markets[marketCid]
-    lines[#lines + 1] = string.format("Market %s: demand %d, outside %d", market.name or marketCid, market.demand or 0, market.outside or 0)
+    lines[#lines + 1] = string.format("Market %s%s: demand %d, outside %d",
+      market.name or marketCid,
+      market.kind == "cargo" and " [cargo]" or "",
+      market.demand or 0, market.outside or 0)
     for _, lineCid in ipairs(util.sortedKeys(market.services or {})) do
       local service = market.services[lineCid]
       local factors = service.factors or {}

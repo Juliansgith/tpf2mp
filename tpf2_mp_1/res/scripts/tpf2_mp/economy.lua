@@ -3,7 +3,26 @@ local hash = require "tpf2_mp/hash"
 
 local M = {}
 
-M.VERSION = 3
+M.VERSION = 4
+
+-- Market kinds share one evaluator; only the cents weighting differs. Cargo
+-- barely minds waiting (inventory, not a person on a platform), pays heavily
+-- for transshipment, values time far below passengers, and competes against
+-- trucking rather than staying home.
+M.MARKET_KINDS = {
+  passenger = {
+    waitWeightPm = 2000,
+    transferSeconds = 480,
+    votCentsPerHour = 450,
+    gcOutsideCents = 2500,
+  },
+  cargo = {
+    waitWeightPm = 1000,
+    transferSeconds = 1800,
+    votCentsPerHour = 60,
+    gcOutsideCents = 1800,
+  },
+}
 M.SHARE_SCALE = 1000000
 -- Lua 5.1 stores every number as an IEEE-754 double. Keep authored aggregate
 -- values well below 2^53 so the Python replayer cannot retain precision that
@@ -79,8 +98,23 @@ function M.migrate(state)
     state.params = state.params or M.defaultParams()
     return state
   end
-  state.version = M.VERSION
-  if previousVersion == 2 then
+  if previousVersion <= 1 then
+    state.params = M.defaultParams()
+    for _, market in pairs(state.markets or {}) do
+      market.outsideWeight = nil
+      market.votCentsPerHour = copyInteger(market.votCentsPerHour, 450, 30, 100000)
+      market.gcOutsideCents = copyInteger(market.gcOutsideCents, 2500, 1, 100000000)
+      market.thetaCents = copyInteger(market.thetaCents,
+        math.max(200, math.floor(market.gcOutsideCents * 8 / 100)), 50, 1000000)
+    end
+    for _, service in pairs(state.services or {}) do
+      service.transfers = copyInteger(service.transfers, 0, 0, 8)
+      service.sharePpm = nil
+      service.shareResid = 0
+      service.lagLoadPpm = 0
+    end
+  end
+  if previousVersion <= 2 then
     local defaults = M.defaultParams()
     state.params = state.params or {}
     for key, value in pairs(defaults) do
@@ -90,40 +124,47 @@ function M.migrate(state)
     -- Nil deliberately makes the first downward glide fail safe as a fare
     -- shock; the evaluator then records the current fare.
     for _, service in pairs(state.services or {}) do service.lastFareCents = nil end
-    return state
   end
-  state.params = M.defaultParams()
+  -- Version 4: kind-weighted markets. Passenger-equivalent values keep every
+  -- migrated market's generalized cost bit-identical to its version-3 result.
   for _, market in pairs(state.markets or {}) do
-    market.outsideWeight = nil
-    market.votCentsPerHour = copyInteger(market.votCentsPerHour, 450, 30, 100000)
-    market.gcOutsideCents = copyInteger(market.gcOutsideCents, 2500, 1, 100000000)
-    market.thetaCents = copyInteger(market.thetaCents,
-      math.max(200, math.floor(market.gcOutsideCents * 8 / 100)), 50, 1000000)
+    market.kind = M.MARKET_KINDS[market.kind] and market.kind or "passenger"
+    market.waitWeightPm = copyInteger(market.waitWeightPm, 2000, 0, 10000)
+    market.transferSeconds = copyInteger(market.transferSeconds,
+      util.integer(state.params and state.params.transferSeconds, 480), 0, 14400)
   end
-  for _, service in pairs(state.services or {}) do
-    service.transfers = copyInteger(service.transfers, 0, 0, 8)
-    service.sharePpm = nil
-    service.shareResid = 0
-    service.lagLoadPpm = 0
-    service.lastFareCents = nil
-  end
+  state.version = M.VERSION
   return state
 end
 
 function M.upsertMarket(state, market)
   assert(type(market.cid) == "string" and market.cid ~= "", "market cid required")
-  local gcOutside = copyInteger(market.gcOutsideCents, 2500, 1, 100000000)
-  state.markets[market.cid] = {
+  local v4 = util.integer(state.version, M.VERSION) >= 4
+  local kind = "passenger"
+  if v4 and type(market.kind) == "string" and M.MARKET_KINDS[market.kind] then
+    kind = market.kind
+  end
+  local kindDefaults = M.MARKET_KINDS[kind]
+  local gcOutside = copyInteger(market.gcOutsideCents,
+    v4 and kindDefaults.gcOutsideCents or 2500, 1, 100000000)
+  local record = {
     cid = market.cid,
     name = tostring(market.name or market.cid),
     demand = copyInteger(market.demand, 100, 0, 1000000000),
-    votCentsPerHour = copyInteger(market.votCentsPerHour, 450, 30, 100000),
+    votCentsPerHour = copyInteger(market.votCentsPerHour,
+      v4 and kindDefaults.votCentsPerHour or 450, 30, 100000),
     gcOutsideCents = gcOutside,
     thetaCents = copyInteger(market.thetaCents,
       math.max(200, math.floor(gcOutside * 8 / 100)), 50, 1000000),
     metadata = util.deepCopy(market.metadata or {}),
   }
-  return state.markets[market.cid]
+  if v4 then
+    record.kind = kind
+    record.waitWeightPm = copyInteger(market.waitWeightPm, kindDefaults.waitWeightPm, 0, 10000)
+    record.transferSeconds = copyInteger(market.transferSeconds, kindDefaults.transferSeconds, 0, 14400)
+  end
+  state.markets[market.cid] = record
+  return record
 end
 
 function M.upsertService(state, service)
@@ -174,15 +215,22 @@ function M.setFare(state, lineCid, fareCents)
   return true, service.fareCents
 end
 
--- Everything the passenger experiences is converted into cents so every
--- factor shares a unit the player can read. Waiting is twice as painful as
--- riding; crowding scales the in-vehicle cost from the previous epoch's load.
+-- Everything the shipper or passenger experiences is converted into cents so
+-- every factor shares a unit the player can read. The wait weight and
+-- transshipment time are market-kind data (passengers wait at double weight;
+-- cargo tolerates waiting but pays dearly per transfer); crowding scales the
+-- in-vehicle cost from the previous epoch's load. Markets recorded before
+-- version 4 carry no kind fields and keep the passenger-equivalent formula.
 function M.generalizedCost(params, market, service)
   local vot = market.votCentsPerHour
+  local waitWeightPm = market.waitWeightPm
+  if waitWeightPm == nil then waitWeightPm = 2000 end
+  local transferSeconds = market.transferSeconds
+  if transferSeconds == nil then transferSeconds = params.transferSeconds end
   local waitSeconds = math.min(math.floor(service.headwaySeconds / 2), params.maxWaitSeconds)
   local timeCostCents = math.floor(vot * service.journeySeconds / 3600)
-  local waitCostCents = math.floor(vot * waitSeconds * 2 / 3600)
-  local transferCostCents = math.floor(vot * service.transfers * params.transferSeconds / 3600)
+  local waitCostCents = math.floor(vot * waitSeconds * waitWeightPm / 3600000)
+  local transferCostCents = math.floor(vot * service.transfers * transferSeconds / 3600)
   local crowdSpan = M.SHARE_SCALE - params.crowdThresholdPpm
   local crowdExcess = util.clamp((service.lagLoadPpm or 0) - params.crowdThresholdPpm, 0, crowdSpan)
   local crowdCostCents = math.floor(timeCostCents * crowdExcess / crowdSpan)
@@ -339,6 +387,7 @@ function M.evaluateMarket(state, marketCid)
   local result = {
     marketCid = marketCid,
     name = market.name,
+    kind = market.kind,
     demand = market.demand,
     gcOutsideCents = market.gcOutsideCents,
     thetaCents = market.thetaCents,

@@ -745,6 +745,36 @@ local function seedDemo()
     quality = 100,
     transfers = 0,
   })
+  economy.upsertMarket(state.economy, {
+    cid = "market:prototype-freight",
+    name = "Prototype freight corridor",
+    kind = "cargo",
+    demand = 800,
+  })
+  economy.upsertService(state.economy, {
+    lineCid = "line:prototype-freight-1",
+    marketCid = "market:prototype-freight",
+    companyCid = first,
+    name = state.companies[first].name .. " freight",
+    headwaySeconds = 3600,
+    journeySeconds = 5400,
+    fareCents = 700,
+    capacity = 400,
+    quality = 100,
+    transfers = 0,
+  })
+  economy.upsertService(state.economy, {
+    lineCid = "line:prototype-freight-2",
+    marketCid = "market:prototype-freight",
+    companyCid = second,
+    name = state.companies[second].name .. " freight",
+    headwaySeconds = 2700,
+    journeySeconds = 4800,
+    fareCents = 800,
+    capacity = 400,
+    quality = 100,
+    transfers = 0,
+  })
   -- Seeding is a setup/preview action, not an authoritative settlement. Run
   -- the evaluator on a copy so opening the demo does not consume an epoch.
   local previewState = util.deepCopy(state.economy)

@@ -1437,9 +1437,75 @@ test("economy v2 migration arms the first-settlement fare guard", function()
   state.version = 2
   state.params.alphaDownPm = 250
   local migrated = economy.migrate(state)
-  equal(migrated.version, 3)
+  equal(migrated.version, 4)
   equal(migrated.params.alphaDownPm, 250)
   equal(migrated.services["line:a"].lastFareCents, nil)
+  -- The version-4 step must be passenger-equivalent: same wait weight and
+  -- transfer time the version-3 evaluator hardcoded.
+  local market = migrated.markets["market:a-b"]
+  equal(market.kind, "passenger")
+  equal(market.waitWeightPm, 2000)
+  equal(market.transferSeconds, 480)
+end)
+
+test("cargo markets weight waiting and transfers as freight", function()
+  local state = economy.newState()
+  economy.upsertMarket(state, { cid = "market:pax", kind = "passenger", demand = 1000,
+    votCentsPerHour = 450, gcOutsideCents = 2500, thetaCents = 250 })
+  economy.upsertMarket(state, { cid = "market:cargo", kind = "cargo", demand = 1000,
+    votCentsPerHour = 450, gcOutsideCents = 2500, thetaCents = 250 })
+  for _, item in ipairs({ { "market:pax", "line:pax" }, { "market:cargo", "line:cargo" } }) do
+    economy.upsertService(state, {
+      lineCid = item[2], marketCid = item[1], companyCid = "company:1",
+      headwaySeconds = 1600, journeySeconds = 3600, fareCents = 1000,
+      capacity = 800, quality = 100, transfers = 1,
+    })
+  end
+  local results = economy.evaluateAll(state).markets
+  local pax = results["market:pax"].services["line:pax"].factors
+  local cargo = results["market:cargo"].services["line:cargo"].factors
+  equal(cargo.waitCostCents * 2, pax.waitCostCents, "cargo must weight waiting at half the passenger rate")
+  equal(pax.transferCostCents, 60)
+  equal(cargo.transferCostCents, 225, "cargo transshipment must cost 1800 seconds per transfer")
+  equal(results["market:cargo"].kind, "cargo")
+  equal(results["market:pax"].kind, "passenger")
+end)
+
+test("cargo kind defaults value time low and compete with trucking", function()
+  local state = economy.newState()
+  local market = economy.upsertMarket(state, { cid = "market:freight", kind = "cargo", demand = 500 })
+  equal(market.votCentsPerHour, 60)
+  equal(market.gcOutsideCents, 1800)
+  equal(market.thetaCents, 200)
+  equal(market.waitWeightPm, 1000)
+  equal(market.transferSeconds, 1800)
+  local unknown = economy.upsertMarket(state, { cid = "market:odd", kind = "hyperloop", demand = 10 })
+  equal(unknown.kind, "passenger", "unknown kinds must fall back to passenger")
+end)
+
+test("cargo shares conserve demand and obey the fare-shock latch", function()
+  local state = economy.newState()
+  economy.upsertMarket(state, { cid = "market:freight", kind = "cargo", demand = 800 })
+  economy.upsertService(state, { lineCid = "line:f1", marketCid = "market:freight",
+    companyCid = "company:1", headwaySeconds = 3600, journeySeconds = 5400,
+    fareCents = 700, capacity = 400, quality = 100, transfers = 0 })
+  economy.upsertService(state, { lineCid = "line:f2", marketCid = "market:freight",
+    companyCid = "company:2", headwaySeconds = 2700, journeySeconds = 4800,
+    fareCents = 800, capacity = 400, quality = 100, transfers = 0 })
+  local result
+  for epoch = 1, 40 do
+    result = economy.evaluateAll(state).markets["market:freight"]
+    local total = result.outside
+    for _, service in pairs(result.services) do total = total + service.allocated end
+    equal(total, result.demand, "cargo conservation broke at epoch " .. epoch)
+  end
+  local settled = state.services["line:f1"].sharePpm
+  truthy(settled > 0, "freight service failed to earn share")
+  economy.setFare(state, "line:f1", 5000)
+  result = economy.evaluateAll(state).markets["market:freight"]
+  equal(state.services["line:f1"].sharePpm, result.services["line:f1"].equilibriumPpm,
+    "a cargo fare hike must adopt the lower equilibrium immediately")
+  truthy(state.services["line:f1"].sharePpm < settled, "the hiked freight service kept its share")
 end)
 
 test("integer glide converges exactly without stalling", function()

@@ -32,6 +32,9 @@ def _digest_view(economy: dict[str, Any]) -> dict[str, Any]:
         }
         if value.get("outsideWeight") is not None:
             market["outsideWeight"] = value["outsideWeight"]
+        for field in ("kind", "waitWeightPm", "transferSeconds"):
+            if value.get(field) is not None:
+                market[field] = value[field]
         markets[cid] = market
     services: dict[str, Any] = {}
     for cid in sorted(economy.get("services", {})):

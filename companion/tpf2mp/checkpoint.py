@@ -226,18 +226,58 @@ def _economy_params(economy: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+# Mirrors economy.lua's M.MARKET_KINDS exactly; kind weighting is market data
+# so the shared evaluator stays branch-free.
+_MARKET_KINDS = {
+    "passenger": {
+        "waitWeightPm": 2000,
+        "transferSeconds": 480,
+        "votCentsPerHour": 450,
+        "gcOutsideCents": 2500,
+    },
+    "cargo": {
+        "waitWeightPm": 1000,
+        "transferSeconds": 1800,
+        "votCentsPerHour": 60,
+        "gcOutsideCents": 1800,
+    },
+}
+
+
 def _upsert_market_v2(economy: dict[str, Any], market: Mapping[str, Any]) -> None:
     cid = str(market["cid"])
-    gc_outside = _integer(market.get("gcOutsideCents"), 2500, 1, 100_000_000)
-    economy.setdefault("markets", {})[cid] = {
+    v4 = _economy_version(economy) >= 4
+    kind = "passenger"
+    if v4 and isinstance(market.get("kind"), str) and market["kind"] in _MARKET_KINDS:
+        kind = market["kind"]
+    kind_defaults = _MARKET_KINDS[kind]
+    gc_outside = _integer(
+        market.get("gcOutsideCents"),
+        kind_defaults["gcOutsideCents"] if v4 else 2500,
+        1,
+        100_000_000,
+    )
+    record: dict[str, Any] = {
         "cid": cid,
         "name": str(market.get("name", cid)),
         "demand": _integer(market.get("demand"), 100, 0, 1_000_000_000),
-        "votCentsPerHour": _integer(market.get("votCentsPerHour"), 450, 30, 100_000),
+        "votCentsPerHour": _integer(
+            market.get("votCentsPerHour"),
+            kind_defaults["votCentsPerHour"] if v4 else 450,
+            30,
+            100_000,
+        ),
         "gcOutsideCents": gc_outside,
         "thetaCents": _integer(market.get("thetaCents"), max(200, gc_outside * 8 // 100), 50, 1_000_000),
         "metadata": copy.deepcopy(market.get("metadata", {})),
     }
+    if v4:
+        record["kind"] = kind
+        record["waitWeightPm"] = _integer(market.get("waitWeightPm"), kind_defaults["waitWeightPm"], 0, 10_000)
+        record["transferSeconds"] = _integer(
+            market.get("transferSeconds"), kind_defaults["transferSeconds"], 0, 14_400
+        )
+    economy.setdefault("markets", {})[cid] = record
 
 
 def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> None:
@@ -297,10 +337,18 @@ def _generalized_cost(
     params: Mapping[str, int], market: Mapping[str, Any], service: Mapping[str, Any]
 ) -> tuple[int, dict[str, int]]:
     vot = int(market["votCentsPerHour"])
+    # Markets recorded before version 4 carry no kind fields; the explicit
+    # None checks keep a legitimate zero weight distinct from absence.
+    wait_weight_pm = market.get("waitWeightPm")
+    if wait_weight_pm is None:
+        wait_weight_pm = 2000
+    transfer_seconds = market.get("transferSeconds")
+    if transfer_seconds is None:
+        transfer_seconds = int(params["transferSeconds"])
     wait_seconds = min(int(service["headwaySeconds"]) // 2, int(params["maxWaitSeconds"]))
     time_cost = vot * int(service["journeySeconds"]) // 3600
-    wait_cost = vot * wait_seconds * 2 // 3600
-    transfer_cost = vot * int(service.get("transfers", 0)) * int(params["transferSeconds"]) // 3600
+    wait_cost = vot * wait_seconds * int(wait_weight_pm) // 3_600_000
+    transfer_cost = vot * int(service.get("transfers", 0)) * int(transfer_seconds) // 3600
     crowd_span = _SHARE_SCALE - int(params["crowdThresholdPpm"])
     crowd_excess = _clamp(int(service.get("lagLoadPpm", 0)) - int(params["crowdThresholdPpm"]), 0, crowd_span)
     crowd_cost = time_cost * crowd_excess // crowd_span
@@ -431,6 +479,8 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
         "outsidePpm": outside_ppm,
         "services": {},
     }
+    if market.get("kind") is not None:
+        result["kind"] = market["kind"]
     for option in services:
         service = option["service"]
         amount = allocations.get(option["cid"], 0)
@@ -740,7 +790,48 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
             raise ProtocolError("demo replay requires two companies")
         first, second = str(order[0]), str(order[1])
         companies = _mapping(model.get("companies"), "replay companies")
-        if _economy_version(economy) >= 2:
+        if _economy_version(economy) >= 4:
+            _upsert_market_v2(
+                economy,
+                {"cid": "market:prototype-corridor", "name": "Prototype intercity corridor",
+                 "demand": 1000, "votCentsPerHour": 450, "gcOutsideCents": 2500, "thetaCents": 250},
+            )
+            _upsert_service_v2(
+                economy,
+                {"lineCid": "line:prototype-company-1", "marketCid": "market:prototype-corridor",
+                 "companyCid": first, "name": str(companies[first]["name"]) + " service",
+                 "headwaySeconds": 900, "journeySeconds": 2400, "fareCents": 1000, "capacity": 600,
+                 "quality": 100, "transfers": 0},
+            )
+            _upsert_service_v2(
+                economy,
+                {"lineCid": "line:prototype-company-2", "marketCid": "market:prototype-corridor",
+                 "companyCid": second, "name": str(companies[second]["name"]) + " service",
+                 "headwaySeconds": 1100, "journeySeconds": 2200, "fareCents": 900, "capacity": 600,
+                 "quality": 100, "transfers": 0},
+            )
+            _upsert_market_v2(
+                economy,
+                {"cid": "market:prototype-freight", "name": "Prototype freight corridor",
+                 "kind": "cargo", "demand": 800},
+            )
+            _upsert_service_v2(
+                economy,
+                {"lineCid": "line:prototype-freight-1", "marketCid": "market:prototype-freight",
+                 "companyCid": first, "name": str(companies[first]["name"]) + " freight",
+                 "headwaySeconds": 3600, "journeySeconds": 5400, "fareCents": 700, "capacity": 400,
+                 "quality": 100, "transfers": 0},
+            )
+            _upsert_service_v2(
+                economy,
+                {"lineCid": "line:prototype-freight-2", "marketCid": "market:prototype-freight",
+                 "companyCid": second, "name": str(companies[second]["name"]) + " freight",
+                 "headwaySeconds": 2700, "journeySeconds": 4800, "fareCents": 800, "capacity": 400,
+                 "quality": 100, "transfers": 0},
+            )
+            preview_state = copy.deepcopy(economy)
+            preview = _evaluate_all_v2(preview_state)
+        elif _economy_version(economy) >= 2:
             _upsert_market_v2(
                 economy,
                 {"cid": "market:prototype-corridor", "name": "Prototype intercity corridor",

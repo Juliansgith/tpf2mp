@@ -185,7 +185,11 @@ second:close()
 script.update()
 
 local demo = script.save()
-assert(demo.economy.lastResults.totalDemand == 1000, "demo market was not evaluated")
+assert(demo.economy.lastResults.totalDemand == 1800,
+  "demo passenger and freight markets were not both evaluated")
+assert(demo.economy.markets["market:prototype-freight"]
+  and demo.economy.markets["market:prototype-freight"].kind == "cargo",
+  "demo freight market lost its cargo kind")
 assert(demo.economy.lastResults.preview == true, "demo result was not marked as a preview")
 assert(demo.economy.epoch == 0, "seeding a demo must not consume an authoritative epoch")
 assert(demo.eventLog.items[2].seq == 2 and demo.eventLog.items[2].commitSeq == 2, "event ordering is wrong")

@@ -14,11 +14,14 @@ local function digestView(state)
     markets[cid] = {
       cid = value.cid,
       name = value.name,
+      kind = value.kind,
       demand = value.demand,
       outsideWeight = value.outsideWeight,
       votCentsPerHour = value.votCentsPerHour,
       gcOutsideCents = value.gcOutsideCents,
       thetaCents = value.thetaCents,
+      waitWeightPm = value.waitWeightPm,
+      transferSeconds = value.transferSeconds,
       metadata = util.deepCopy(value.metadata or {}),
     }
   end
@@ -212,6 +215,57 @@ addScenario({
     ["line:e"] = { sharePpm = 9999, shareResid = 731, lagLoadPpm = 0 },
   },
   epochs = 12,
+})
+
+addScenario({
+  id = "v4-cargo-kind-defaults-and-fare-latch",
+  markets = {
+    -- Only the kind is given: both languages must resolve the same freight
+    -- defaults (vot 60, outside 1800, wait weight 1000, transfer 1800).
+    { cid = "market:freight", name = "Freight", kind = "cargo", demand = 800 },
+  },
+  services = {
+    { lineCid = "line:f1", marketCid = "market:freight", companyCid = "company:1", name = "F1",
+      headwaySeconds = 3600, journeySeconds = 5400, fareCents = 700, capacity = 400,
+      quality = 100, transfers = 0 },
+    { lineCid = "line:f2", marketCid = "market:freight", companyCid = "company:2", name = "F2",
+      headwaySeconds = 2700, journeySeconds = 4800, fareCents = 800, capacity = 400,
+      quality = 100, transfers = 2 },
+  },
+  overrides = {
+    ["line:f1"] = { sharePpm = 480000, shareResid = 313, lagLoadPpm = 960000 },
+    ["line:f2"] = { sharePpm = 350000, shareResid = 77, lagLoadPpm = 700000 },
+  },
+  fareSchedule = {
+    { ["line:f1"] = 5000 },
+    { ["line:f1"] = 700 },
+  },
+  epochs = 12,
+})
+
+addScenario({
+  id = "v4-mixed-kinds-and-explicit-weighting",
+  markets = {
+    { cid = "market:pax", kind = "passenger", demand = 1000, votCentsPerHour = 450,
+      gcOutsideCents = 2500, thetaCents = 250 },
+    { cid = "market:bulk", kind = "cargo", demand = 600, votCentsPerHour = 90,
+      gcOutsideCents = 2200, thetaCents = 300, waitWeightPm = 500, transferSeconds = 2400 },
+  },
+  services = {
+    { lineCid = "line:p", marketCid = "market:pax", companyCid = "company:1", name = "P",
+      headwaySeconds = 900, journeySeconds = 2400, fareCents = 1000, capacity = 600,
+      quality = 100, transfers = 0 },
+    { lineCid = "line:q", marketCid = "market:bulk", companyCid = "company:1", name = "Q",
+      headwaySeconds = 7200, journeySeconds = 9000, fareCents = 900, capacity = 300,
+      quality = 50, transfers = 1 },
+    { lineCid = "line:r", marketCid = "market:bulk", companyCid = "company:2", name = "R",
+      headwaySeconds = 3600, journeySeconds = 7200, fareCents = 1100, capacity = 300,
+      quality = 150, transfers = 3 },
+  },
+  overrides = {
+    ["line:q"] = { sharePpm = 250000, shareResid = 111, lagLoadPpm = 850000 },
+  },
+  epochs = 10,
 })
 
 addScenario({
