@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-04 (Europe/Amsterdam), prototype `0.21.2`, state schema `19`, checkpoint format `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.12.0`.
+Last updated: 2026-08-04 (Europe/Amsterdam), prototype `0.21.2`, state schema `20`, checkpoint format `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.12.0`.
 
 This directory distinguishes four things that must not be blurred together:
 
@@ -10,6 +10,10 @@ This directory distinguishes four things that must not be blurred together:
 - behavior observed in a disposable running game.
 
 A function existing in the API is not proof that a particular native transition is safe, and a one-machine physical replay is not proof of two-machine equivalence.
+
+The adversarial review of demand arithmetic, fare hysteresis, optimistic line
+residue, manifest binding, and test honesty is recorded in
+[ADVERSARIAL_MODEL_AND_RESIDUE_AUDIT_2026-08-04.md](ADVERSARIAL_MODEL_AND_RESIDUE_AUDIT_2026-08-04.md).
 
 ## Pinned build
 

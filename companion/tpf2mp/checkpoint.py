@@ -193,6 +193,7 @@ def _upsert_service(economy: dict[str, Any], service: Mapping[str, Any]) -> None
 
 
 _SHARE_SCALE = 1_000_000
+_ACCUMULATOR_LIMIT = 1_000_000_000_000_000
 
 # Pinned integer exponential shared byte-for-byte with the Lua model:
 # _EXP_TABLE[k] = round(65536 * exp(-k / 10)) for k = 0..80. Both languages
@@ -245,6 +246,7 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
     if market_cid not in economy.setdefault("markets", {}):
         raise ProtocolError(f"replay service references unknown market: {market_cid}")
     existing = economy.setdefault("services", {}).get(line_cid)
+    fare_cents = _integer(service.get("fareCents"), 1000, 0, 100_000_000)
     if isinstance(existing, dict) and existing.get("sharePpm") is not None:
         share_ppm = int(existing["sharePpm"])
         share_resid = int(existing.get("shareResid", 0))
@@ -253,6 +255,12 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         share_ppm = _integer(service.get("sharePpm"), 0, 0, _SHARE_SCALE)
         share_resid = 0
         lag_load_ppm = 0
+    if isinstance(existing, dict):
+        last_fare_cents = existing.get("lastFareCents")
+    else:
+        last_fare_cents = _integer(
+            service.get("lastFareCents"), fare_cents, 0, 100_000_000
+        )
     economy["services"][line_cid] = {
         "lineCid": line_cid,
         "marketCid": market_cid,
@@ -260,7 +268,7 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         "name": str(service.get("name", line_cid)),
         "headwaySeconds": _integer(service.get("headwaySeconds"), 1800, 30, 86400),
         "journeySeconds": _integer(service.get("journeySeconds"), 3600, 30, 604800),
-        "fareCents": _integer(service.get("fareCents"), 1000, 0, 100_000_000),
+        "fareCents": fare_cents,
         "capacity": _integer(service.get("capacity"), 100, 0, 1_000_000_000),
         "quality": _integer(service.get("quality"), 100, 0, 1000),
         "transfers": _integer(service.get("transfers"), 0, 0, 8),
@@ -269,10 +277,20 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         "shareResid": share_resid,
         "lagLoadPpm": lag_load_ppm,
     }
+    if _economy_version(economy) >= 3:
+        economy["services"][line_cid]["lastFareCents"] = last_fare_cents
 
 
 def _clamp(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+def _saturating_add(left: int, right: int) -> int:
+    return min(_ACCUMULATOR_LIMIT, max(0, int(left)) + max(0, int(right)))
+
+
+def _saturating_multiply(left: int, right: int) -> int:
+    return min(_ACCUMULATOR_LIMIT, max(0, int(left)) * max(0, int(right)))
 
 
 def _generalized_cost(
@@ -299,15 +317,21 @@ def _generalized_cost(
     }
 
 
-def _logit_weight(gc_cents: int, gc_min_cents: int, theta_cents: int) -> int:
+def _logit_weight_with_cutoff(
+    gc_cents: int, gc_min_cents: int, theta_cents: int, cutoff_weight: int
+) -> int:
     centinats = (gc_cents - gc_min_cents) * 100 // theta_cents
     if centinats >= 800:
-        return 1
+        return cutoff_weight
     if centinats < 0:
         centinats = 0
     index, fraction = centinats // 10, centinats % 10
     left, right = _EXP_TABLE[index], _EXP_TABLE[index + 1]
-    return max(1, left + (right - left) * fraction // 10)
+    return max(cutoff_weight, left + (right - left) * fraction // 10)
+
+
+def _logit_weight(gc_cents: int, gc_min_cents: int, theta_cents: int) -> int:
+    return _logit_weight_with_cutoff(gc_cents, gc_min_cents, theta_cents, 0)
 
 
 def _glide_step(actual: int, equilibrium: int, alpha_pm: int, resid: int) -> tuple[int, int]:
@@ -332,9 +356,17 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
     for option in services:
         gc_min = min(gc_min, option["gcCents"])
     theta = int(market["thetaCents"])
-    weight_items = [{"cid": "~outside", "weight": _logit_weight(int(market["gcOutsideCents"]), gc_min, theta)}]
+    cutoff_weight = 0 if _economy_version(economy) >= 3 else 1
+    weight_items = [{
+        "cid": "~outside",
+        "weight": _logit_weight_with_cutoff(
+            int(market["gcOutsideCents"]), gc_min, theta, cutoff_weight
+        ),
+    }]
     for option in services:
-        option["weight"] = _logit_weight(option["gcCents"], gc_min, theta)
+        option["weight"] = _logit_weight_with_cutoff(
+            option["gcCents"], gc_min, theta, cutoff_weight
+        )
         weight_items.append({"cid": option["cid"], "weight": option["weight"]})
     equilibrium_ppm = _proportional(_SHARE_SCALE, weight_items)
 
@@ -346,12 +378,22 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
         if service.get("sharePpm") is None:
             service["sharePpm"], service["shareResid"] = equilibrium, 0
         else:
-            alpha = params["alphaUpPm"] if equilibrium >= int(service["sharePpm"]) else params["alphaDownPm"]
+            fare_shock = _economy_version(economy) >= 3 and (
+                service.get("lastFareCents") is None
+                or int(service["fareCents"]) > int(service["lastFareCents"])
+            )
+            alpha = (
+                params["alphaUpPm"]
+                if equilibrium >= int(service["sharePpm"])
+                else (1000 if fare_shock else params["alphaDownPm"])
+            )
             share, resid = _glide_step(
                 int(service["sharePpm"]), equilibrium, alpha, int(service.get("shareResid", 0))
             )
             service["sharePpm"] = _clamp(share, 0, _SHARE_SCALE)
             service["shareResid"] = resid
+        if _economy_version(economy) >= 3:
+            service["lastFareCents"] = int(service["fareCents"])
         service_share_ppm += int(service["sharePpm"])
     outside_ppm = max(0, _SHARE_SCALE - service_share_ppm)
 
@@ -403,7 +445,7 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
             "allocated": amount,
             "capacity": service["capacity"],
             "fareCents": service["fareCents"],
-            "revenueCents": amount * int(service["fareCents"]),
+            "revenueCents": _saturating_multiply(amount, int(service["fareCents"])),
             "shareBasisPoints": amount * 10000 // int(market["demand"]) if int(market["demand"]) > 0 else 0,
             "sharePpm": int(service["sharePpm"]),
             "shareResid": int(service["shareResid"]),
@@ -419,16 +461,18 @@ def _evaluate_all_v2(economy: dict[str, Any]) -> dict[str, Any]:
     for market_cid in sorted(economy.get("markets", {})):
         market = _evaluate_market_v2(economy, market_cid)
         results["markets"][market_cid] = market
-        results["totalDemand"] += market["demand"]
+        results["totalDemand"] = _saturating_add(results["totalDemand"], market["demand"])
         for line_cid in sorted(market["services"]):
             service = market["services"][line_cid]
             company_cid = service["companyCid"]
             company = results["companies"].setdefault(
                 company_cid, {"companyCid": company_cid, "demand": 0, "revenueCents": 0}
             )
-            company["demand"] += service["allocated"]
-            company["revenueCents"] += service["revenueCents"]
-            results["totalRevenueCents"] += service["revenueCents"]
+            company["demand"] = _saturating_add(company["demand"], service["allocated"])
+            company["revenueCents"] = _saturating_add(company["revenueCents"], service["revenueCents"])
+            results["totalRevenueCents"] = _saturating_add(
+                results["totalRevenueCents"], service["revenueCents"]
+            )
     economy["epoch"] = int(economy.get("epoch", 0)) + 1
     results["epoch"] = economy["epoch"]
     economy["lastResults"] = copy.deepcopy(results)
@@ -557,18 +601,30 @@ def _record_settlement(economy: dict[str, Any], results: Mapping[str, Any]) -> N
         raise ProtocolError(f"replay settlement epoch already exists: {epoch_key}")
     ledger["settledEpochs"][epoch_key] = True
     ledger["settlementCount"] = int(ledger.get("settlementCount", 0)) + 1
-    ledger["totalDemand"] = int(ledger.get("totalDemand", 0)) + int(results.get("totalDemand", 0))
-    ledger["totalRevenueCents"] = int(ledger.get("totalRevenueCents", 0)) + int(
-        results.get("totalRevenueCents", 0)
-    )
+    if _economy_version(economy) >= 2:
+        ledger["totalDemand"] = _saturating_add(ledger.get("totalDemand", 0), results.get("totalDemand", 0))
+        ledger["totalRevenueCents"] = _saturating_add(
+            ledger.get("totalRevenueCents", 0), results.get("totalRevenueCents", 0)
+        )
+    else:
+        ledger["totalDemand"] = int(ledger.get("totalDemand", 0)) + int(results.get("totalDemand", 0))
+        ledger["totalRevenueCents"] = int(ledger.get("totalRevenueCents", 0)) + int(
+            results.get("totalRevenueCents", 0)
+        )
     companies = ledger.setdefault("companies", {})
     for company_cid in sorted(results.get("companies", {})):
         item = results["companies"][company_cid]
         total = companies.setdefault(
             company_cid, {"companyCid": company_cid, "demand": 0, "revenueCents": 0, "wins": 0}
         )
-        total["demand"] += int(item.get("demand", 0))
-        total["revenueCents"] += int(item.get("revenueCents", 0))
+        if _economy_version(economy) >= 2:
+            total["demand"] = _saturating_add(total.get("demand", 0), item.get("demand", 0))
+            total["revenueCents"] = _saturating_add(
+                total.get("revenueCents", 0), item.get("revenueCents", 0)
+            )
+        else:
+            total["demand"] += int(item.get("demand", 0))
+            total["revenueCents"] += int(item.get("revenueCents", 0))
     for market in results.get("markets", {}).values():
         best_company: str | None = None
         best_demand = -1
@@ -598,6 +654,13 @@ def _scoreboard(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         lines = lines_by_company.get(company_cid, 0)
         revenue = int(totals.get("revenueCents", 0))
         demand = int(totals.get("demand", 0))
+        if _economy_version(economy) >= 2:
+            model_value = _saturating_add(
+                _saturating_add(_saturating_multiply(revenue, 10), _saturating_multiply(demand, 100)),
+                _saturating_add(_saturating_multiply(reach, 500_000), _saturating_multiply(lines, 250_000)),
+            )
+        else:
+            model_value = revenue * 10 + demand * 100 + reach * 500_000 + lines * 250_000
         result[company_cid] = {
             "companyCid": company_cid,
             "name": model["companies"][company_cid].get("name", company_cid),
@@ -606,7 +669,7 @@ def _scoreboard(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             "marketsReached": reach,
             "activeLines": lines,
             "marketWins": int(totals.get("wins", 0)),
-            "modelValueCents": revenue * 10 + demand * 100 + reach * 500_000 + lines * 250_000,
+            "modelValueCents": model_value,
         }
     return result
 

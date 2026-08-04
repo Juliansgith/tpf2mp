@@ -387,6 +387,33 @@ assert(vanillaDelete.name == "intent" and vanillaDelete.param.type == "operation
   and vanillaDelete.param.capture.originLocalId == 700
   and vanillaDelete.param.capture.targetLocalId == 700,
   "suppressed vanilla Delete Line was not converted into line.delete")
+
+-- A queue overflow means at least one pass-through line mutation was already
+-- applied and then dropped. It must become an ordered session fault, and a
+-- transient GUI-to-engine send failure must retain that action for retry.
+local workingSendScriptEvent = game.interface.sendScriptEvent
+local sentBeforeRetry = #sentEvents
+game.interface.sendScriptEvent = function() error("transient test bridge failure") end
+nativeLineCommands[#nativeLineCommands + 1] = "F1|queue-overflow|3"
+script.guiUpdate()
+assert(#sentEvents == sentBeforeRetry,
+  "failed GUI-to-engine dispatch was incorrectly reported as sent")
+game.interface.sendScriptEvent = workingSendScriptEvent
+script.guiUpdate()
+local overflowFault = sentEvents[#sentEvents]
+assert(overflowFault.name == "intent"
+  and overflowFault.param.type == "network.origin_residue"
+  and overflowFault.param.errorCode == "origin-applied-native-line-capture-overflow"
+  and overflowFault.param.detail.dropped == 3,
+  "native line queue overflow was not retained and converted into a residue fault")
+
+nativeLineCommands[#nativeLineCommands + 1] = "L1|malformed"
+script.guiUpdate()
+local decodeFault = sentEvents[#sentEvents]
+assert(decodeFault.name == "intent"
+  and decodeFault.param.type == "network.origin_residue"
+  and decodeFault.param.errorCode == "origin-applied-native-line-envelope-invalid",
+  "invalid post-apply line envelope was not converted into a residue fault")
 local lock = script.guiHandleEvent("finances.borrow", "button.click", nil)
 assert(type(lock) == "table" and tostring(lock[1]):match("disabled"), "borrow event was not vetoed in proxy mode")
 

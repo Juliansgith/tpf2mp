@@ -54,9 +54,21 @@ function M.new(deps)
   end
   
   local function emitNetworkIntent(action)
-    local networkAction, err = normaliseForNetwork(action)
+    local normalizeCalled, networkAction, err = pcall(normaliseForNetwork, action)
+    if not normalizeCalled then
+      err = "network action normalisation failed: " .. tostring(networkAction)
+      networkAction = nil
+    end
     if not networkAction then state.lastError = tostring(err); publishSnapshot(); return false, err end
-    local ok, messageOrError = bridge.emit(state.bridge, "intent", { action = networkAction }, state.tick)
+    local emitCalled, ok, messageOrError = pcall(
+      bridge.emit, state.bridge, "intent", { action = networkAction }, state.tick)
+    if not emitCalled then
+      messageOrError = "bridge emit failed: " .. tostring(ok)
+      ok = false
+    elseif ok == true and type(messageOrError) ~= "table" then
+      ok = false
+      messageOrError = "bridge emit returned success without a message envelope"
+    end
     state.lastAction = networkAction
     state.lastResult = ok and { queued = true, localSeq = messageOrError.local_seq } or messageOrError
     if ok then
@@ -113,6 +125,16 @@ function M.new(deps)
     return true
   end
 
+  local function rejectOriginApplied(action, errorCode, detail)
+    local token = type(action) == "table" and action.originCaptureToken or nil
+    if not token then return false end
+    detail = type(detail) == "table" and util.deepCopy(detail) or {}
+    detail.actionType = detail.actionType or tostring(action.type or "")
+    detail.originCaptureToken = tostring(token)
+    raiseOriginResidueFault(tostring(errorCode), detail)
+    return true
+  end
+
   local function submitIntent(action)
     if type(action) ~= "table" then return false, "action must be a table" end
     if action.type == "network.origin_residue" then
@@ -155,15 +177,23 @@ function M.new(deps)
     end
     local authority = state.probes.networkAuthority or {}
     if authority.ready ~= true then
-      state.lastError = "network authority is not ready: "
+      local errorText = "network authority is not ready: "
         .. tostring(authority.error or "native gates unavailable")
+      if rejectOriginApplied(action, "origin-applied-authority-unavailable:" .. errorText) then
+        return false, state.lastError
+      end
+      state.lastError = errorText
       publishSnapshot()
       return false, state.lastError
     end
     local networkAccounts = finance.ensureNetworkAccounts(state.finance)
     if state.initialized and networkAccounts.initialized ~= true then
-      state.lastError = tostring(networkAccounts.migrationError
+      local errorText = tostring(networkAccounts.migrationError
         or "canonical network accounts are not initialised; start a fresh match")
+      if rejectOriginApplied(action, "origin-applied-finance-unavailable:" .. errorText) then
+        return false, state.lastError
+      end
+      state.lastError = errorText
       publishSnapshot()
       return false, state.lastError
     end
@@ -236,8 +266,16 @@ function M.new(deps)
         publishSnapshot()
         return true, util.deepCopy(state.lastResult)
       elseif deferablePhysical then
-        state.lastError = "multiplayer physical-action queue is full ("
+        local errorText = "multiplayer physical-action queue is full ("
           .. tostring(MAX_DEFERRED_NETWORK_INTENTS) .. "); wait for synchronization"
+        if rejectOriginApplied(action, "origin-applied-deferred-queue-full", {
+          queueDepth = #deferredNetworkIntents,
+          queueCapacity = MAX_DEFERRED_NETWORK_INTENTS,
+          reason = pendingReason,
+        }) then
+          return false, state.lastError
+        end
+        state.lastError = errorText
         publishSnapshot()
         return false, state.lastError
       else
@@ -246,7 +284,14 @@ function M.new(deps)
         return false, state.lastError
       end
     end
-    return emitNetworkIntent(action)
+    local emitted, result = emitNetworkIntent(action)
+    if not emitted then
+      local failureText = tostring(type(result) == "table" and result.error or result)
+      if rejectOriginApplied(action, "origin-applied-intent-emit-failed:" .. failureText) then
+        return false, state.lastError
+      end
+    end
+    return emitted, result
   end
   
   local function processDeferredNetworkIntent()

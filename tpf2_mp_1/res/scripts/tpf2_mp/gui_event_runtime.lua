@@ -778,13 +778,38 @@ function M.new(deps)
       local called, raw = pcall(take)
       if not called then
         gui.lastError = "cannot read suppressed native line command: " .. tostring(raw)
-        return queued > 0
+        queueAction({
+          type = "network.origin_residue",
+          errorCode = "origin-applied-native-line-capture-read-failed",
+          detail = { error = tostring(raw) },
+        })
+        return true
       end
       if raw == nil then break end
+      local dropped = type(raw) == "string" and raw:match("^F1|queue%-overflow|(%d+)$") or nil
+      if dropped then
+        gui.nativeLineCapture.invalid = (gui.nativeLineCapture.invalid or 0) + 1
+        gui.lastError = "native optimistic-line capture queue overflowed after an applied command"
+        queueAction({
+          type = "network.origin_residue",
+          errorCode = "origin-applied-native-line-capture-overflow",
+          detail = { dropped = tonumber(dropped) },
+        })
+        return true
+      end
       local decoded, decodeError = gui.decodeSuppressedNativeLineCommand(raw)
       if not decoded then
         gui.nativeLineCapture.invalid = (gui.nativeLineCapture.invalid or 0) + 1
         gui.lastError = tostring(decodeError)
+        queueAction({
+          type = "network.origin_residue",
+          errorCode = "origin-applied-native-line-envelope-invalid",
+          detail = {
+            error = tostring(decodeError),
+            envelopePrefix = type(raw) == "string" and raw:sub(1, 64) or type(raw),
+          },
+        })
+        return true
       else
         if decoded.tag == 3 then
           local localId = takeAddedLine(decoded)
@@ -1001,6 +1026,23 @@ function M.new(deps)
       queueAction({ type = "snapshot.request", localOnly = true })
   end
   
+  local function dispatchQueuedAction()
+      local action = gui.queue[1]
+      if not action then return false end
+      local name = action.type == "snapshot.request" and "snapshot.request" or "intent"
+      local payload = name == "snapshot.request" and {} or action
+      local called, result, detail = pcall(function()
+        return sendToEngine(name, payload)
+      end)
+      if not called or result == false then
+        gui.lastError = tostring(not called and result or detail or "GUI-to-engine dispatch rejected")
+        renderGui()
+        return false
+      end
+      table.remove(gui.queue, 1)
+      return true
+  end
+
   local function guiUpdate()
       gui.frames = gui.frames + 1
       local currentConfig = config()
@@ -1063,11 +1105,7 @@ function M.new(deps)
           if not operationOk then gui.lastError = tostring(operationWork) end
         end
         if #gui.queue > 0 then
-          local action = table.remove(gui.queue, 1)
-          local name = action.type == "snapshot.request" and "snapshot.request" or "intent"
-          local payload = name == "snapshot.request" and {} or action
-          local ok, err = pcall(function() sendToEngine(name, payload) end)
-          if not ok then gui.lastError = tostring(err) end
+          dispatchQueuedAction()
         end
         return
       end
@@ -1097,13 +1135,7 @@ function M.new(deps)
         -- Canonical line/vehicle command and its callback have priority over
         -- ordinary UI intents until the operation result is returned.
       elseif #gui.queue > 0 then
-        local action = table.remove(gui.queue, 1)
-        local name = action.type == "snapshot.request" and "snapshot.request" or "intent"
-        local payload = name == "snapshot.request" and {} or action
-        local ok, err = pcall(function()
-          sendToEngine(name, payload)
-        end)
-        if not ok then gui.lastError = tostring(err); renderGui() end
+        dispatchQueuedAction()
       elseif gui.frames % 300 == 0 then
         queueAction({ type = "snapshot.request", localOnly = true })
       end

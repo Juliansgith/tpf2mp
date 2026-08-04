@@ -44,11 +44,13 @@ function M.new(env)
         quality = value.quality,
         transfers = value.transfers,
         enabled = value.enabled,
-        -- Version-2 share and crowding stocks decide future allocations, so
+        -- Version-2+ share/crowding stocks and the version-3 fare-shock latch
+        -- decide future allocations, so
         -- they are authored convergence state, not local bookkeeping.
         sharePpm = value.sharePpm,
         shareResid = value.shareResid,
         lagLoadPpm = value.lagLoadPpm,
+        lastFareCents = value.lastFareCents,
       }
     end
     return {

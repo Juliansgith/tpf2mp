@@ -559,7 +559,7 @@ end
 -- operational objects are bound eagerly; genuinely indistinguishable objects
 -- are reported as ambiguous and must not be targeted until a player-created
 -- event gives them an event-derived identity.
-function M.canonicalManifest(registry)
+function M.canonicalManifest(registry, worldState)
   local sources = {
     { kind = "town", ids = M.listTowns() },
     { kind = "industry", ids = M.listIndustries() },
@@ -572,6 +572,24 @@ function M.canonicalManifest(registry)
     { kind = "asset", ids = M.listAssets() },
     { kind = "construction", ids = M.listConstructions() },
   }
+  -- Player-built topology already present in the shared starting save is
+  -- operational, unlike autonomous town roads. Its logical ownership was
+  -- captured before peer-local company remapping, so include exactly those
+  -- edges/nodes in the cross-peer manifest. This lets a unique private
+  -- starting railway receive manifestBound on every peer without enumerating
+  -- the map's entire road graph.
+  if worldState and type(worldState.logicalOwners) == "table" then
+    local topology = { edge = {}, node = {} }
+    for rawId in pairs(worldState.logicalOwners) do
+      local localId = tonumber(rawId)
+      if localId and M.entityExists(localId) then
+        local kind = M.kindOf(localId)
+        if topology[kind] then topology[kind][#topology[kind] + 1] = localId end
+      end
+    end
+    sources[#sources + 1] = { kind = "edge", ids = sortedNumbers(topology.edge) }
+    sources[#sources + 1] = { kind = "node", ids = sortedNumbers(topology.node) }
+  end
   local groups = {}
   for _, source in ipairs(sources) do
     for _, localId in ipairs(source.ids) do

@@ -3,8 +3,13 @@ local hash = require "tpf2_mp/hash"
 
 local M = {}
 
-M.VERSION = 2
+M.VERSION = 3
 M.SHARE_SCALE = 1000000
+-- Lua 5.1 stores every number as an IEEE-754 double. Keep authored aggregate
+-- values well below 2^53 so the Python replayer cannot retain precision that
+-- the game has already lost. This is $10 trillion and unreachable in normal
+-- play, but the public input clamps permit adversarial larger products.
+M.ACCUMULATOR_LIMIT = 1000000000000000
 
 -- EXP_TABLE[k + 1] = round(65536 * exp(-k / 10)) for k = 0..80. Pinned source
 -- literals shared byte-for-byte with the companion replayer: both languages
@@ -26,6 +31,14 @@ local function copyInteger(value, fallback, low, high)
   if low then number = math.max(low, number) end
   if high then number = math.min(high, number) end
   return number
+end
+
+local function saturatingAdd(left, right)
+  return math.min(M.ACCUMULATOR_LIMIT, math.max(0, left or 0) + math.max(0, right or 0))
+end
+
+local function saturatingMultiply(left, right)
+  return math.min(M.ACCUMULATOR_LIMIT, math.max(0, left or 0) * math.max(0, right or 0))
 end
 
 function M.defaultParams()
@@ -61,11 +74,24 @@ end
 -- initialise their stocks lazily on the first evaluation.
 function M.migrate(state)
   if type(state) ~= "table" then return M.newState() end
-  if util.integer(state.version, 1) >= M.VERSION then
+  local previousVersion = util.integer(state.version, 1)
+  if previousVersion >= M.VERSION then
     state.params = state.params or M.defaultParams()
     return state
   end
   state.version = M.VERSION
+  if previousVersion == 2 then
+    local defaults = M.defaultParams()
+    state.params = state.params or {}
+    for key, value in pairs(defaults) do
+      if state.params[key] == nil then state.params[key] = value end
+    end
+    -- Version 2 did not record the fare used by the preceding settlement.
+    -- Nil deliberately makes the first downward glide fail safe as a fare
+    -- shock; the evaluator then records the current fare.
+    for _, service in pairs(state.services or {}) do service.lastFareCents = nil end
+    return state
+  end
   state.params = M.defaultParams()
   for _, market in pairs(state.markets or {}) do
     market.outsideWeight = nil
@@ -79,6 +105,7 @@ function M.migrate(state)
     service.sharePpm = nil
     service.shareResid = 0
     service.lagLoadPpm = 0
+    service.lastFareCents = nil
   end
   return state
 end
@@ -104,6 +131,13 @@ function M.upsertService(state, service)
   assert(type(service.marketCid) == "string" and state.markets[service.marketCid], "known marketCid required")
   assert(type(service.companyCid) == "string" and service.companyCid ~= "", "companyCid required")
   local existing = state.services[service.lineCid]
+  local fareCents = copyInteger(service.fareCents, 1000, 0, 100000000)
+  local lastFareCents = nil
+  if util.integer(state.version, M.VERSION) >= 3 then
+    lastFareCents = existing and existing.lastFareCents
+      or copyInteger(service.lastFareCents, fareCents, 0, 100000000)
+    if existing and existing.lastFareCents == nil then lastFareCents = nil end
+  end
   state.services[service.lineCid] = {
     lineCid = service.lineCid,
     marketCid = service.marketCid,
@@ -111,7 +145,7 @@ function M.upsertService(state, service)
     name = tostring(service.name or service.lineCid),
     headwaySeconds = copyInteger(service.headwaySeconds, 1800, 30, 86400),
     journeySeconds = copyInteger(service.journeySeconds, 3600, 30, 604800),
-    fareCents = copyInteger(service.fareCents, 1000, 0, 100000000),
+    fareCents = fareCents,
     capacity = copyInteger(service.capacity, 100, 0, 1000000000),
     quality = copyInteger(service.quality, 100, 0, 1000),
     transfers = copyInteger(service.transfers, 0, 0, 8),
@@ -121,6 +155,9 @@ function M.upsertService(state, service)
     sharePpm = existing and existing.sharePpm or copyInteger(service.sharePpm, 0, 0, M.SHARE_SCALE),
     shareResid = existing and existing.shareResid or 0,
     lagLoadPpm = existing and existing.lagLoadPpm or 0,
+    -- Fare hikes cannot monetize yesterday's retained share. Other causes of
+    -- a lower equilibrium (notably lagged crowding) keep the smooth down-glide.
+    lastFareCents = lastFareCents,
     metadata = util.deepCopy(service.metadata or {}),
   }
   return state.services[service.lineCid]
@@ -165,15 +202,21 @@ end
 
 -- Interpolated integer exp(-(gc - gcMin)/theta) scaled to 65536. Identical on
 -- every machine because only the pinned table and integer division are used.
-function M.logitWeight(gcCents, gcMinCents, thetaCents)
+-- Version 3 assigns no demand beyond the 8-theta cutoff. Version 2 used a
+-- weight floor of one; retain that path solely for archived replay parity.
+local function logitWeight(gcCents, gcMinCents, thetaCents, cutoffWeight)
   local centinats = math.floor((gcCents - gcMinCents) * 100 / thetaCents)
-  if centinats >= 800 then return 1 end
+  if centinats >= 800 then return cutoffWeight end
   if centinats < 0 then centinats = 0 end
   local index = math.floor(centinats / 10)
   local fraction = centinats % 10
   local left = EXP_TABLE[index + 1]
   local right = EXP_TABLE[index + 2]
-  return math.max(1, left + math.floor((right - left) * fraction / 10))
+  return math.max(cutoffWeight, left + math.floor((right - left) * fraction / 10))
+end
+
+function M.logitWeight(gcCents, gcMinCents, thetaCents)
+  return logitWeight(gcCents, gcMinCents, thetaCents, 0)
 end
 
 local function proportional(total, items)
@@ -231,9 +274,11 @@ function M.evaluateMarket(state, marketCid)
 
   local gcMin = market.gcOutsideCents
   for _, option in ipairs(services) do gcMin = math.min(gcMin, option.gcCents) end
-  local weightItems = { { cid = "~outside", weight = M.logitWeight(market.gcOutsideCents, gcMin, market.thetaCents) } }
+  local cutoffWeight = util.integer(state.version, M.VERSION) >= 3 and 0 or 1
+  local weightItems = { { cid = "~outside",
+    weight = logitWeight(market.gcOutsideCents, gcMin, market.thetaCents, cutoffWeight) } }
   for _, option in ipairs(services) do
-    option.weight = M.logitWeight(option.gcCents, gcMin, market.thetaCents)
+    option.weight = logitWeight(option.gcCents, gcMin, market.thetaCents, cutoffWeight)
     weightItems[#weightItems + 1] = { cid = option.cid, weight = option.weight }
   end
   local equilibriumPpm = proportional(M.SHARE_SCALE, weightItems)
@@ -249,10 +294,16 @@ function M.evaluateMarket(state, marketCid)
     if service.sharePpm == nil then
       service.sharePpm, service.shareResid = equilibrium, 0
     else
-      local alphaPm = equilibrium >= service.sharePpm and params.alphaUpPm or params.alphaDownPm
+      local fareShock = util.integer(state.version, M.VERSION) >= 3
+        and (service.lastFareCents == nil or service.fareCents > service.lastFareCents)
+      local alphaPm = equilibrium >= service.sharePpm and params.alphaUpPm
+        or (fareShock and 1000 or params.alphaDownPm)
       service.sharePpm, service.shareResid =
         glideStep(service.sharePpm, equilibrium, alphaPm, service.shareResid or 0)
       service.sharePpm = util.clamp(service.sharePpm, 0, M.SHARE_SCALE)
+    end
+    if util.integer(state.version, M.VERSION) >= 3 then
+      service.lastFareCents = service.fareCents
     end
     serviceSharePpm = serviceSharePpm + service.sharePpm
   end
@@ -311,7 +362,7 @@ function M.evaluateMarket(state, marketCid)
       allocated = amount,
       capacity = service.capacity,
       fareCents = service.fareCents,
-      revenueCents = amount * service.fareCents,
+      revenueCents = saturatingMultiply(amount, service.fareCents),
       shareBasisPoints = market.demand > 0 and math.floor(amount * 10000 / market.demand) or 0,
       sharePpm = service.sharePpm,
       shareResid = service.shareResid,
@@ -328,14 +379,14 @@ function M.evaluateAll(state)
   for _, marketCid in ipairs(util.sortedKeys(state.markets)) do
     local result = assert(M.evaluateMarket(state, marketCid))
     results.markets[marketCid] = result
-    results.totalDemand = results.totalDemand + result.demand
+    results.totalDemand = saturatingAdd(results.totalDemand, result.demand)
     for _, lineCid in ipairs(util.sortedKeys(result.services)) do
       local service = result.services[lineCid]
       local company = results.companies[service.companyCid] or { companyCid = service.companyCid, demand = 0, revenueCents = 0 }
-      company.demand = company.demand + service.allocated
-      company.revenueCents = company.revenueCents + service.revenueCents
+      company.demand = saturatingAdd(company.demand, service.allocated)
+      company.revenueCents = saturatingAdd(company.revenueCents, service.revenueCents)
       results.companies[service.companyCid] = company
-      results.totalRevenueCents = results.totalRevenueCents + service.revenueCents
+      results.totalRevenueCents = saturatingAdd(results.totalRevenueCents, service.revenueCents)
     end
   end
   state.epoch = (state.epoch or 0) + 1
@@ -382,16 +433,16 @@ function M.recordSettlement(state, results)
   if state.ledger.settledEpochs[epochKey] then return false, "epoch already settled" end
   state.ledger.settledEpochs[epochKey] = true
   state.ledger.settlementCount = (state.ledger.settlementCount or 0) + 1
-  state.ledger.totalDemand = (state.ledger.totalDemand or 0) + (results.totalDemand or 0)
-  state.ledger.totalRevenueCents = (state.ledger.totalRevenueCents or 0) + (results.totalRevenueCents or 0)
+  state.ledger.totalDemand = saturatingAdd(state.ledger.totalDemand, results.totalDemand)
+  state.ledger.totalRevenueCents = saturatingAdd(state.ledger.totalRevenueCents, results.totalRevenueCents)
   state.ledger.companies = state.ledger.companies or {}
   for _, companyCid in ipairs(util.sortedKeys(results.companies or {})) do
     local result = results.companies[companyCid]
     local total = state.ledger.companies[companyCid] or {
       companyCid = companyCid, demand = 0, revenueCents = 0, wins = 0,
     }
-    total.demand = total.demand + (result.demand or 0)
-    total.revenueCents = total.revenueCents + (result.revenueCents or 0)
+    total.demand = saturatingAdd(total.demand, result.demand)
+    total.revenueCents = saturatingAdd(total.revenueCents, result.revenueCents)
     state.ledger.companies[companyCid] = total
   end
   for _, market in pairs(results.markets or {}) do
@@ -432,7 +483,10 @@ function M.scoreboard(state, companies)
       marketsReached = reach,
       activeLines = lines,
       marketWins = totals.wins or 0,
-      modelValueCents = revenue * 10 + demand * 100 + reach * 500000 + lines * 250000,
+      modelValueCents = saturatingAdd(
+        saturatingAdd(saturatingMultiply(revenue, 10), saturatingMultiply(demand, 100)),
+        saturatingAdd(saturatingMultiply(reach, 500000), saturatingMultiply(lines, 250000))
+      ),
     }
   end
   return result

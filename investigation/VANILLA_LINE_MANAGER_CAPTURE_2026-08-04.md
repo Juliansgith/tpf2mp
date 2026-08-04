@@ -1,7 +1,7 @@
 # Vanilla line-manager capture on Build 35924
 
 Date: 2026-08-04 (Europe/Amsterdam)  
-Implementation: prototype `0.21.2-alpha`, state schema `19`, operation schema `1`, native hook `0.12.0`
+Implementation: prototype `0.21.2-alpha`, state schema `20`, operation schema `1`, native hook `0.12.0`
 
 ## Result
 
@@ -32,15 +32,19 @@ The origin's native world therefore mutates before host order. That residue is
 closed fail-closed rather than rolled back: capture-time authorization is a
 strict superset of commit-time `operationAccess` (rival ownership and
 pre-existing manifest ambiguity are rejected at the normalise boundary), and
-any rejection of an origin-applied operation after native application — a
-normalise failure, a companion transport rejection of the ordered intent, an
-emit failure of a deferred origin-applied action, or a CreateLine output that
-cannot be identified within its frame window — raises an operation-consensus
-session fault (`origin-applied-*`) and requests the ordered pause that a
-faulted session may still apply. Commit-time rejection already faulted both
-peers through the host outcome control. Lua module, game-script integration,
-and Python regressions cover the token latch, each fault path, first-fault
-retention, and the emitted pause.
+any rejection or loss of an origin-applied operation after native application
+raises an operation-consensus session fault (`origin-applied-*`) and requests
+the ordered pause that a faulted session may still apply. Covered loss sites
+now include normalisation, missing native authority or canonical finance,
+immediate and deferred bridge failure (including thrown failures), deferred
+FIFO overflow, companion transport rejection, native capture-queue overflow,
+native read/envelope decode failure, and a CreateLine output that cannot be
+identified within its frame window. GUI-to-engine dispatch peeks and retries
+rather than popping before send, and match mode cannot change after
+initialisation. Commit-time rejection already faults both peers through the
+host outcome control. Lua module, game-script integration, and Python
+regressions cover the token latch, each fault family, first-fault retention,
+and the emitted pause.
 
 This is code-, automated-test-, native-boundary-, and stock-widget-live-proven
 across two independent game processes. New Line, rename, color, Delete Line,
@@ -111,6 +115,12 @@ pending. The local deferred queue therefore holds 32 physical actions, including
 physical/checkpoint barrier. Overflow fails visibly instead of dropping or
 reordering clicks.
 
+The separate native post-visitor queue is also bounded at 32. If it must drop
+an already-applied oldest record, its Lua consumer now receives a sticky
+`F1|queue-overflow|N` sentinel before further records and raises an origin
+residue fault. This closes the prior gap where only a diagnostic drop counter
+proved that an unorderable mutation had escaped.
+
 A transport-level validation rejection must also release the origin queue. The
 companion now emits a signed, ordered, non-mutating `network.intent_rejected`
 control containing the origin peer/sequence and error code. Lua clears only the
@@ -137,9 +147,11 @@ The current suite verifies:
 - existing peer/company authorization, physical operation consensus, and
   checkpoint sequencing.
 
-On 2026-08-04, `tools/run_tests.ps1` passed 31/31 Lua tests, all game-script,
-network, hot-seat, replay, GUI, launcher, syntax, and 40 Python tests. The native
-Release build passed both CTest targets and exact Build 35924 validation.
+On 2026-08-04, the post-audit `tools/run_tests.ps1` passed 40/40 Lua tests,
+71 Lua/Python economy differential scenarios, all game-script, network,
+hot-seat, replay, GUI, launcher, and syntax checks, plus 43 Python tests and the
+104-event independent replay. The native Release build passed both CTest
+targets and exact Build 35924 validation.
 
 The focused localhost session
 `runtime/localhost-live/line-manager-replay-20260804-1428` then exercised the

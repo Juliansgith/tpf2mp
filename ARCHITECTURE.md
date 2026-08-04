@@ -115,8 +115,11 @@ executable profile verification in the same commit.
    the game-script entry point.
 2. GUI capture may retain native IDs only in machine-local queues. A codec must
    translate them before an intent becomes portable.
-3. Network input never mutates a native world before host ordering and the
-   required prepare barrier.
+3. Construction and suppressible operations never mutate a native world before
+   host ordering and the required prepare barrier. The five Build-35924 line
+   visitors are the documented exception because rejection asserts the stock
+   widget: they use optimistic origin pass-through, an origin token, bounded
+   capture, and fail-closed residue handling for every post-apply loss path.
 4. A native success callback is insufficient. Physical output/postconditions
    and then a checkpoint must agree on all required peers.
 5. Canonical finance is authoritative. Native wallets are display/execution

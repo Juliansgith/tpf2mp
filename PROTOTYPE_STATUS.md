@@ -94,7 +94,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   stations/groups, depots, lines, and railway vehicles.
 - Machine-local numeric IDs remain in per-peer binding maps and do not enter the
   portable transaction/checkpoint digest.
-- State schema 19 makes shared-save ownership authoritative, persists the
+- State schema 20 makes shared-save ownership authoritative, persists the
   generation-numbered shared clock, and includes constructions, assets, and
   edge objects in the stable world manifest. The same
   pre-existing network no longer becomes Company 1 on one peer and Company 2 on
@@ -102,6 +102,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 - Autonomous construction/asset scenery contributes to that manifest digest
   without bloating operational state; a player-selected root receives the same
   stable pre-existing identity through lazy binding.
+- Private edges and terminal nodes already present in the pinned starting save
+  are included from the canonical ownership seed and receive `manifestBound`
+  deterministically; this strict path now passes under PowerShell and Git Bash.
 - Output identities derive from ordered event/slot identities and are bound by
   normalized geometry or bounded operation postconditions.
 - Rival edits are rejected against logical ownership in standalone and network
@@ -234,12 +237,33 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   same-state Lua consumer; invalid values and overflow remain suppressed and
   visible in native status.
 - The pinned tags 3-5 and 28-29 layouts supply a bounded typed line-command queue.
-  It copies pointer-free line name/color/owner/target and ordered stop tuples
-  before returning failure to the original vanilla command. Lua consumes an
-  `L1` envelope and submits the canonical operation; malformed layouts remain
-  suppressed and visible instead of being replayed.
+  It copies pointer-free line name/color/owner/target and ordered stop tuples,
+  then lets the original command complete because rejecting these visitors
+  asserts the stock widget. Lua consumes an `L1` envelope and submits the
+  canonical operation. Native queue overflow emits a sticky `F1` residue
+  sentinel; read/decode loss, GUI dispatch failure, authority/finance rejection,
+  FIFO overflow, and bridge failure now retry or fault the session instead of
+  continuing with a one-sided mutation.
 - Unsupported categories fail closed in network mode. A gate is not a codec and
   therefore is not claimed as playable synchronization.
+
+### Competitive economy
+
+- Demand model 3 retains integer generalized cost, the pinned logit table,
+  carried share residuals, lagged crowding, induced demand, and deterministic
+  capacity allocation.
+- An upward fare shock uses the authored `lastFareCents` latch and immediately
+  adopts a lower equilibrium, while non-price deterioration keeps the smoother
+  250-per-thousand down-glide. Options at least eight theta above the best
+  choice now receive zero weight. Together these close both retained-rider
+  harvesting and the one-passenger max-fare rounding exploit without reviving
+  the crowding relay oscillation.
+- Lua aggregates saturate at `10^15` cents so every authored integer remains
+  exact in Lua 5.1 and Python. Model-v2 cutoff behavior remains available for
+  archived replay; new and migrated matches use v3.
+- The current gate is 71 cross-language differential scenarios, an authored-
+  digest field mutation test, 40 Lua invariants, and a reusable repeating-fare
+  adversary. Human cadence and balance remain live-test questions.
 
 ### Passenger/cargo observation
 

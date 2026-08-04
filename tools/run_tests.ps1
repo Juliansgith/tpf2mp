@@ -33,6 +33,12 @@ try {
     & $lua (Join-Path $projectRoot 'tests\run_lua_tests.lua') $projectRoot $temporary
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed with exit code $LASTEXITCODE" }
 
+    $economyParity = Join-Path $temporary 'economy-v2-v3-parity.json'
+    & $lua (Join-Path $projectRoot 'tests\run_economy_parity_vectors.lua') $projectRoot $economyParity
+    if ($LASTEXITCODE -ne 0) { throw "Lua economy parity vector generation failed with exit code $LASTEXITCODE" }
+    & $python (Join-Path $projectRoot 'tests\check_economy_parity.py') $projectRoot $economyParity
+    if ($LASTEXITCODE -ne 0) { throw "Cross-language economy parity failed with exit code $LASTEXITCODE" }
+
     & $lua (Join-Path $projectRoot 'tests\run_runtime_module_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Runtime module tests failed with exit code $LASTEXITCODE" }
 

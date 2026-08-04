@@ -1149,6 +1149,62 @@ test("pre-existing world manifest ignores local ids and fails closed on ambiguit
   end
 end)
 
+test("world manifest binds private starting topology across divergent local ids", function()
+  local previousApi, previousGame = api, game
+  local function sample(node0, node1, edgeId)
+    local entities = {
+      [node0] = { type = "BASE_NODE", position = { 10, 20 } },
+      [node1] = { type = "BASE_NODE", position = { 30, 40 } },
+      [edgeId] = { type = "BASE_EDGE" },
+    }
+    local components = {
+      BASE_NODE = { [node0] = { position = { x = 10, y = 20 } },
+        [node1] = { position = { x = 30, y = 40 } } },
+      BASE_EDGE = { [edgeId] = { node0 = node0, node1 = node1 } },
+    }
+    game = { interface = {
+      getEntity = function(id) return entities[id] end,
+      getTowns = function() return {} end,
+      getLines = function() return {} end,
+      getVehicles = function() return {} end,
+      getDepots = function() return {} end,
+    } }
+    api = {
+      type = { ComponentType = {
+        BASE_NODE = "BASE_NODE", BASE_EDGE = "BASE_EDGE",
+        STATION_GROUP = "STATION_GROUP", STATION = "STATION",
+        SIM_BUILDING = "SIM_BUILDING",
+      } },
+      engine = {
+        getComponent = function(id, kind)
+          return components[kind] and components[kind][id] or nil
+        end,
+        forEachEntityWithComponent = function() end,
+        system = { lineSystem = { getLines = function() return {} end } },
+      },
+    }
+    local registry = canonical.newState()
+    local manifest = world.canonicalManifest(registry, { logicalOwners = {
+      [tostring(node0)] = "company:1",
+      [tostring(node1)] = "company:1",
+      [tostring(edgeId)] = "company:1",
+    } })
+    return manifest, registry
+  end
+  local first, firstRegistry = sample(10, 11, 12)
+  local second, secondRegistry = sample(110, 111, 112)
+  api, game = previousApi, previousGame
+  equal(first.digest, second.digest)
+  equal(first.uniqueBound, 3)
+  equal(second.uniqueBound, 3)
+  for _, binding in ipairs(canonical.snapshot(firstRegistry)) do
+    truthy(binding.metadata.manifestBound == true)
+  end
+  for _, binding in ipairs(canonical.snapshot(secondRegistry)) do
+    truthy(binding.metadata.manifestBound == true)
+  end
+end)
+
 test("world manifest defers decorative assets and constructions until selected", function()
   local previousApi, previousGame = api, game
   local entities = {
@@ -1344,10 +1400,12 @@ test("asymmetric glide punishes fare milking", function()
   local settled = state.services["line:b"].sharePpm
 
   economy.setFare(state, "line:b", 5000)
-  economy.evaluateAll(state)
+  local hikeResult = economy.evaluateAll(state)
   local afterHike = state.services["line:b"].sharePpm
   local hikeLoss = settled - afterHike
   truthy(hikeLoss > 0, "a fare hike must bleed share")
+  equal(afterHike, hikeResult.markets["market:a-b"].services["line:b"].equilibriumPpm,
+    "a deteriorating service must adopt its lower equilibrium immediately")
 
   economy.setFare(state, "line:b", 1000)
   economy.evaluateAll(state)
@@ -1356,6 +1414,32 @@ test("asymmetric glide punishes fare milking", function()
   truthy(revertGain >= 0, "reverting the fare must start recovery")
   truthy(hikeLoss > revertGain * 2,
     "losing share must be materially faster than regaining it (milking defense)")
+end)
+
+test("extreme fares cannot harvest retained or cutoff demand", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", { capacity = 600 })
+  corridorService(state, "b", "company:2", { fareCents = 900, capacity = 600 })
+  for _ = 1, 600 do economy.evaluateAll(state) end
+  truthy(state.services["line:a"].sharePpm > 0, "audit service never established share")
+
+  economy.setFare(state, "line:a", 100000000)
+  local result = economy.evaluateAll(state).markets["market:a-b"].services["line:a"]
+  equal(result.equilibriumPpm, 0, "8-theta cutoff retained a dominated service weight")
+  equal(result.sharePpm, 0, "fare hike retained harvestable share for one epoch")
+  equal(result.allocated, 0, "dominated max-fare service received rounding demand")
+  equal(result.revenueCents, 0, "dominated max-fare service earned revenue")
+end)
+
+test("economy v2 migration arms the first-settlement fare guard", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", {})
+  state.version = 2
+  state.params.alphaDownPm = 250
+  local migrated = economy.migrate(state)
+  equal(migrated.version, 3)
+  equal(migrated.params.alphaDownPm, 250)
+  equal(migrated.services["line:a"].lastFareCents, nil)
 end)
 
 test("integer glide converges exactly without stalling", function()

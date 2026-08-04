@@ -646,7 +646,8 @@ local function initialiseMatch(rules)
   else
     refreshOwnershipProbe()
   end
-  local worldManifest = world.canonicalManifest(state.canonical)
+  local worldManifest = world.canonicalManifest(
+    state.canonical, state.networkMode == "network" and state.world or nil)
   -- The ordered checkpoint needs the portable digest and summary, not the
   -- complete row inventory.  Keeping hundreds of generated construction and
   -- asset rows in persistent game-script state causes Build 35924 to copy a
@@ -1950,8 +1951,8 @@ end
 
 handlers["network.set_mode"] = function(action)
   local mode = action.mode == "network" and "network" or "standalone"
-  if mode == "network" and state.networkMode ~= "network" and state.initialized then
-    return false, "network mode must be selected before match initialisation"
+  if state.initialized and mode ~= state.networkMode then
+    return false, "network mode cannot change after match initialisation"
   end
   local ready, authorityError = configureNativeAuthority(mode)
   if not ready then return false, authorityError end

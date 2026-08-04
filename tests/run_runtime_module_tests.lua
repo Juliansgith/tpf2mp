@@ -11,6 +11,10 @@ local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
+local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local economyModule = require "tpf2_mp/economy"
+local financeModule = require "tpf2_mp/finance"
+local util = require "tpf2_mp/util"
 
 local function baseConfig(overrides)
   local result = {
@@ -121,7 +125,8 @@ do
   -- An origin-applied capture is a native mutation that already happened.
   -- Every rejection path must convert into an operation-consensus session
   -- fault instead of a status-line whisper.
-  local function faultHarness(captureResult)
+  local function faultHarness(captureResult, options)
+    options = options or {}
     local current = {
       networkMode = "network",
       initialized = false,
@@ -146,6 +151,7 @@ do
       diagnosticLog = function(event, payload) logged[#logged + 1] = { event = event, payload = payload } end,
       coreDigest = function() return "00000000" end,
       proposalPreparation = { pending = {} },
+      maxDeferredIntents = options.maxDeferredIntents,
     })
     return current, controller, logged
   end
@@ -194,6 +200,63 @@ do
   })
   assert(standaloneOk == false and current.world.operationConsensus.sessionFault == nil,
     "origin residue faults must exist only in network mode")
+
+  local normalizedCapture = {
+    type = "operation.execute",
+    kind = "line.update",
+    companyCid = "company:1",
+    originCaptureToken = "player1:operation-origin:1",
+  }
+
+  current, controller = faultHarness(normalizedCapture)
+  local emitOk = controller.submit({
+    type = "operation.capture",
+    capture = { kind = "line.update", originApplied = true, targetLocalId = 7 },
+  })
+  fault = current.world.operationConsensus.sessionFault
+  assert(emitOk == false and fault
+    and fault.errorCode:find("origin%-applied%-intent%-emit%-failed:") == 1,
+    "an immediate bridge failure left an origin-applied capture unfaulted")
+
+  current, controller = faultHarness(normalizedCapture)
+  current.probes.networkAuthority.ready = false
+  local authorityOk = controller.submit({
+    type = "operation.capture",
+    capture = { kind = "line.update", originApplied = true, targetLocalId = 7 },
+  })
+  fault = current.world.operationConsensus.sessionFault
+  assert(authorityOk == false and fault
+    and fault.errorCode:find("origin%-applied%-authority%-unavailable:") == 1,
+    "authority bootstrap rejection left an origin-applied capture unfaulted")
+
+  current, controller = faultHarness(normalizedCapture)
+  current.initialized = true
+  local financeOk = controller.submit({
+    type = "operation.capture",
+    capture = { kind = "line.update", originApplied = true, targetLocalId = 7 },
+  })
+  fault = current.world.operationConsensus.sessionFault
+  assert(financeOk == false and fault
+    and fault.errorCode:find("origin%-applied%-finance%-unavailable:") == 1,
+    "canonical-account rejection left an origin-applied capture unfaulted")
+
+  current, controller = faultHarness(normalizedCapture, { maxDeferredIntents = 1 })
+  current.world.checkpointConsensus.byBoundary[3] = { status = "pending" }
+  local queuedOk, queuedResult = controller.submit({
+    type = "operation.capture",
+    capture = { kind = "line.update", originApplied = true, targetLocalId = 7 },
+  })
+  assert(queuedOk == true and queuedResult.deferred == true,
+    "origin-applied capture was not queued behind a consensus barrier")
+  local overflowOk = controller.submit({
+    type = "operation.capture",
+    capture = { kind = "line.update", originApplied = true, targetLocalId = 8 },
+  })
+  fault = current.world.operationConsensus.sessionFault
+  assert(overflowOk == false and fault
+    and fault.errorCode == "origin-applied-deferred-queue-full"
+    and fault.detail.queueDepth == 1 and fault.detail.queueCapacity == 1,
+    "deferred FIFO overflow left an origin-applied capture unfaulted")
 end
 
 do
@@ -349,6 +412,71 @@ do
   assert(status.value:find("Peer: player1", 1, true), "GUI status formatter lost peer identity")
   assert(details.value:find("Session: runtime-module-test", 1, true),
     "GUI detail formatter lost session identity")
+end
+
+do
+  local model = economyModule.newState()
+  economyModule.upsertMarket(model, {
+    cid = "market:digest", name = "Digest market", demand = 1000,
+    votCentsPerHour = 450, gcOutsideCents = 2500, thetaCents = 250,
+  })
+  economyModule.upsertService(model, {
+    lineCid = "line:digest", marketCid = "market:digest", companyCid = "company:1",
+    name = "Digest service", headwaySeconds = 900, journeySeconds = 2400,
+    fareCents = 1000, capacity = 600, quality = 100, transfers = 0,
+  })
+  economyModule.evaluateAll(model)
+  local current = {
+    initialized = true,
+    match = { status = "running", rules = {} },
+    companies = { ["company:1"] = { cid = "company:1", name = "Company 1" } },
+    companyOrder = { "company:1" },
+    economy = model,
+    finance = financeModule.newState(),
+    world = { autonomyFrozen = true },
+  }
+  local runtime = checkpointRuntimeModule.new({
+    getState = function() return current end,
+    maxEvents = function() return 100 end,
+    stateVersion = 20,
+    checkpointVersion = 2,
+    eventRecordVersion = 1,
+  })
+  local original = util.deepCopy(model)
+  local baseline = runtime.authoredDigest()
+  local mutations = {
+    { "params.alphaUpPm", function(value) value.params.alphaUpPm = value.params.alphaUpPm + 1 end },
+    { "params.alphaDownPm", function(value) value.params.alphaDownPm = value.params.alphaDownPm + 1 end },
+    { "params.maxWaitSeconds", function(value) value.params.maxWaitSeconds = value.params.maxWaitSeconds + 1 end },
+    { "params.transferSeconds", function(value) value.params.transferSeconds = value.params.transferSeconds + 1 end },
+    { "params.crowdThresholdPpm", function(value) value.params.crowdThresholdPpm = value.params.crowdThresholdPpm + 1 end },
+    { "market.name", function(value) value.markets["market:digest"].name = "Other" end },
+    { "market.demand", function(value) value.markets["market:digest"].demand = 1001 end },
+    { "market.votCentsPerHour", function(value) value.markets["market:digest"].votCentsPerHour = 451 end },
+    { "market.gcOutsideCents", function(value) value.markets["market:digest"].gcOutsideCents = 2501 end },
+    { "market.thetaCents", function(value) value.markets["market:digest"].thetaCents = 251 end },
+    { "service.marketCid", function(value) value.services["line:digest"].marketCid = "market:other" end },
+    { "service.companyCid", function(value) value.services["line:digest"].companyCid = "company:2" end },
+    { "service.name", function(value) value.services["line:digest"].name = "Other" end },
+    { "service.headwaySeconds", function(value) value.services["line:digest"].headwaySeconds = 901 end },
+    { "service.journeySeconds", function(value) value.services["line:digest"].journeySeconds = 2401 end },
+    { "service.fareCents", function(value) value.services["line:digest"].fareCents = 1001 end },
+    { "service.capacity", function(value) value.services["line:digest"].capacity = 601 end },
+    { "service.quality", function(value) value.services["line:digest"].quality = 101 end },
+    { "service.transfers", function(value) value.services["line:digest"].transfers = 1 end },
+    { "service.enabled", function(value) value.services["line:digest"].enabled = false end },
+    { "service.sharePpm", function(value) value.services["line:digest"].sharePpm = value.services["line:digest"].sharePpm + 1 end },
+    { "service.shareResid", function(value) value.services["line:digest"].shareResid = value.services["line:digest"].shareResid + 1 end },
+    { "service.lagLoadPpm", function(value) value.services["line:digest"].lagLoadPpm = value.services["line:digest"].lagLoadPpm + 1 end },
+    { "service.lastFareCents", function(value) value.services["line:digest"].lastFareCents = value.services["line:digest"].lastFareCents + 1 end },
+  }
+  for _, mutation in ipairs(mutations) do
+    current.economy = util.deepCopy(original)
+    mutation[2](current.economy)
+    assert(runtime.authoredDigest() ~= baseline,
+      "authored digest hides evaluator input " .. mutation[1])
+  end
+  current.economy = model
 end
 
 print("PASS runtime config/state, proposal, intent, clock, validation, native authority, and GUI module boundaries")

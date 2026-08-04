@@ -159,6 +159,7 @@ std::uint64_t g_suppressed_line_command_captured = 0;
 std::uint64_t g_suppressed_line_command_consumed = 0;
 std::uint64_t g_suppressed_line_command_invalid = 0;
 std::uint64_t g_suppressed_line_command_dropped = 0;
+std::uint64_t g_suppressed_line_command_drops_reported = 0;
 int g_suppressed_line_command_last_tag = -1;
 std::int32_t g_suppressed_line_command_last_target = -1;
 std::size_t g_suppressed_line_command_last_stop_count = 0;
@@ -475,10 +476,15 @@ int NativeTakeSuppressedLineCommand(lua_State* state) {
   std::string encoded;
   {
     StateLock lock;
-    if (g_suppressed_line_commands.empty()) return 0;
-    encoded = EncodeSuppressedLineCommand(g_suppressed_line_commands.front());
-    g_suppressed_line_commands.pop_front();
-    ++g_suppressed_line_command_consumed;
+    if (g_suppressed_line_command_drops_reported < g_suppressed_line_command_dropped) {
+      g_suppressed_line_command_drops_reported = g_suppressed_line_command_dropped;
+      encoded = "F1|queue-overflow|" + std::to_string(g_suppressed_line_command_dropped);
+    } else {
+      if (g_suppressed_line_commands.empty()) return 0;
+      encoded = EncodeSuppressedLineCommand(g_suppressed_line_commands.front());
+      g_suppressed_line_commands.pop_front();
+      ++g_suppressed_line_command_consumed;
+    }
   }
   g_lua_pushlstring(state, encoded.data(), encoded.size());
   RequestStatusWrite();

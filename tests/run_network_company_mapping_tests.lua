@@ -327,6 +327,9 @@ for _, object in ipairs(initialized.probes.structural.objects or {}) do
 end
 assert(initialTrack and initialTrack.owner == "company:1",
   "structural consensus view used player2's machine-local owner for the starting track")
+local initialTrackBinding = assert(initialized.canonical.byCanonical[initialTrack.cid])
+assert(initialTrackBinding.metadata and initialTrackBinding.metadata.manifestBound == true,
+  "private starting track was not bound by the cross-peer world manifest")
 assert(players[100].balance == 5000000 and players[101].balance == 5000000,
   "network starting cash did not normalize both native representatives exactly")
 assert(players[100].loan == 30000000 and players[101].loan == 0,
@@ -1242,12 +1245,9 @@ script.handleEvent("test", "tpf2mp", "intent", {
     name = "Hostile Rename",
   },
 })
--- Depending on manifest-binding state the rejection is either the
--- pre-existing-ambiguity check or the rival-ownership check; both sit
--- before intent emission, which is the property under test.
 local rivalError = tostring(script.save().lastError)
-assert(rivalError:find("rival%-owned") or rivalError:find("ambiguous across peers"),
-  "capture-time authorization accepted a rival-owned rename")
+assert(rivalError:find("rival%-owned"),
+  "capture-time authorization did not reject the manifest-bound rival rename")
 assert(script.save().world.operationConsensus.sessionFault.errorCode
     == "origin-applied-intent-rejected:test-transport-rejection",
   "a later residue did not retain the session's first fault")
