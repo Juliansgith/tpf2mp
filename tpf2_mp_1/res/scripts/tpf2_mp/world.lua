@@ -1333,8 +1333,12 @@ end
 
 local corridorBindingModule = require "tpf2_mp/corridor_binding"
 M.SERVICE_FACTS = corridorBindingModule.SERVICE_FACTS
+M.TOWN_GROWTH = corridorBindingModule.TOWN_GROWTH
 M.consistTransportFacts = corridorBindingModule.consistTransportFacts
 M.gravityDemand = corridorBindingModule.gravityDemand
+M.carriedByTown = corridorBindingModule.carriedByTown
+M.townGrowthTargets = corridorBindingModule.townGrowthTargets
+M.departureSlots = corridorBindingModule.departureSlots
 M.stationBoards = corridorBindingModule.stationBoards
 local corridorBinding = corridorBindingModule.new({
   bindExisting = function(...) return M.bindExisting(...) end,
@@ -1345,9 +1349,11 @@ local corridorBinding = corridorBindingModule.new({
   nameOf = nameOf,
   safeEntity = safeEntity,
   positionOfEntity = positionOfEntity,
+  resolveLocal = function(registry, cid) return canonical.resolveLocal(registry, cid) end,
 })
 M.computedServiceFacts = corridorBinding.computedServiceFacts
 M.makeLineService = corridorBinding.makeLineService
+M.applyTownGrowth = corridorBinding.applyTownGrowth
 
 function M.freezeAutonomy(worldState, freeze)
   local result = { freeze = freeze and true or false, towns = 0, industries = 0, errors = {} }

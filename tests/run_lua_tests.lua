@@ -1749,6 +1749,87 @@ test("station boards aggregate model allocations per station group", function()
   equal(boards["sg:alpha"].waiting, boards["sg:beta"].waiting, "same service, same board contribution")
 end)
 
+test("town growth targets are deterministic, split, capped, and quiet when idle", function()
+  local carried = { ["town:a"] = 400, ["town:b"] = 400 }
+  local capacities = { ["town:a"] = { 100, 100, 100 }, ["town:b"] = { 99980, 99990, 99999 } }
+  local targets = world.townGrowthTargets(carried, capacities)
+  -- 400 carried * 5% = 20 growth points: 12 residential, 5 commercial,
+  -- 3 industrial.
+  equal(targets["town:a"][1], 112)
+  equal(targets["town:a"][2], 105)
+  equal(targets["town:a"][3], 103)
+  equal(targets["town:b"][1], 99992, "growth must respect the capacity cap headroom")
+  equal(targets["town:b"][3], 100000, "growth must clamp at the capacity cap")
+  equal(world.townGrowthTargets({}, capacities)["town:a"], nil, "no carried demand, no growth")
+  local unchanged = world.townGrowthTargets({ ["town:a"] = 0 }, capacities)
+  equal(unchanged["town:a"], nil, "zero carried passengers must not emit a target")
+  local big = world.townGrowthTargets({ ["town:a"] = 1000000 }, capacities)
+  equal(big["town:a"][1], 150, "per-settle growth is step-limited")
+end)
+
+test("carried-by-town splits corridor allocations between digested endpoints", function()
+  local results = { markets = { ["market:x"] = { services = {
+    ["line:1"] = { allocated = 301 }, ["line:2"] = { allocated = 100 },
+  } } } }
+  local markets = { ["market:x"] = { metadata = { townA = "town:a", townB = "town:b" } } }
+  local carried = world.carriedByTown(results, markets)
+  equal(carried["town:a"], 200)
+  equal(carried["town:b"], 201, "odd totals keep every passenger somewhere")
+  equal(next(world.carriedByTown(results, {})), nil, "markets without town metadata grow nothing")
+end)
+
+test("departure slots are periodic, phased, and future-dated", function()
+  local service = { lineCid = "line:slot-test", headwaySeconds = 600 }
+  local slot = world.departureSlots(service, 5000)
+  equal(slot.periodSeconds, 600)
+  truthy(slot.phaseSeconds >= 0 and slot.phaseSeconds < 600, "phase must sit inside the period")
+  truthy(slot.nextDepartureAt > 5000, "the next departure is in the future")
+  truthy(slot.holdSeconds > 0 and slot.holdSeconds <= 600, "hold time is bounded by one period")
+  local later = world.departureSlots(service, slot.nextDepartureAt)
+  equal(later.nextDepartureAt, slot.nextDepartureAt + 600, "slots advance by exactly one period")
+  local repeated = world.departureSlots(service, 5000)
+  equal(repeated.phaseSeconds, slot.phaseSeconds, "phase must be a pure function of the line")
+end)
+
+test("applying town growth issues one deterministic setTownInfo per grown town", function()
+  local previousApi, previousGame = api, game
+  local sent = {}
+  api = { cmd = {
+    make = { setTownInfo = function(townId, capacities)
+      return { kind = "setTownInfo", townId = townId, capacities = capacities }
+    end },
+    sendCommand = function(command, callback)
+      sent[#sent + 1] = command
+      if callback then callback(command, true) end
+    end,
+  }, engine = { system = { townBuildingSystem = {
+    getLandUsePersonCapacities = function() return { 100, 100, 100 } end,
+  } } } }
+  game = { interface = {} }
+  local registry = canonical.newState()
+  local economyState = economy.newState()
+  economy.upsertMarket(economyState, { cid = "market:grow", demand = 1000,
+    votCentsPerHour = 450, gcOutsideCents = 2500, thetaCents = 250,
+    metadata = { townA = "town:pre:alpha", townB = "town:pre:beta" } })
+  registry.byCanonical["town:pre:alpha"] = { localId = 71, kind = "town" }
+  registry.byCanonical["town:pre:beta"] = { localId = 72, kind = "town" }
+  registry.byLocal["71"] = "town:pre:alpha"
+  registry.byLocal["72"] = "town:pre:beta"
+  local results = { markets = { ["market:grow"] = { services = {
+    ["line:g"] = { allocated = 400 },
+  } } } }
+  local outcome = world.applyTownGrowth(registry, economyState, results)
+  api, game = previousApi, previousGame
+  equal(outcome.towns, 2, "both endpoint towns must grow")
+  equal(#outcome.errors, 0)
+  equal(#sent, 2)
+  table.sort(sent, function(a, b) return a.townId < b.townId end)
+  equal(sent[1].townId, 71)
+  equal(sent[1].capacities[1], 106, "200 carried at 5% -> 10 points -> 6 residential")
+  equal(sent[1].capacities[2], 102)
+  equal(sent[1].capacities[3], 101)
+end)
+
 test("crowd icons bucket by magnitude", function()
   equal(guiView.crowdIcons(0), "")
   equal(guiView.crowdIcons(15), "·")

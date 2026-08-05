@@ -81,6 +81,91 @@ function M.gravityDemand(capacityA, capacityB, distanceMeters)
   return util.clamp(demand, constants.minDemand, constants.maxDemand)
 end
 
+-- Town growth version 1: capacities respond to carried demand. Growth is a
+-- deterministic pure function of the ordered settlement results, so every
+-- peer computes identical targets from the same committed action and issues
+-- identical native commands; the structural probe then verifies convergence.
+-- No new protocol, no authored-model state, no replay change.
+M.TOWN_GROWTH = {
+  carriedPct = 5,          -- share of carried passengers becoming capacity
+  residentialPct = 60,     -- split of growth across land uses
+  commercialPct = 25,
+  industrialPct = 15,
+  maxStepPerSettle = 50,   -- per town per settlement, per land use ceiling
+  capacityCap = 100000,
+}
+
+-- Settlement results plus the digested market metadata (which names each
+-- corridor's endpoint towns) -> carried passengers per town. Both inputs are
+-- identical on every peer by the time an ordered settlement applies.
+function M.carriedByTown(results, markets)
+  local carriedByTown = {}
+  for _, marketCid in ipairs(util.sortedKeys((results and results.markets) or {})) do
+    local market = results.markets[marketCid]
+    local metadata = (markets and markets[marketCid] and markets[marketCid].metadata) or {}
+    local townA, townB = metadata.townA, metadata.townB
+    if townA and townB then
+      local carried = 0
+      for _, lineCid in ipairs(util.sortedKeys(market.services or {})) do
+        carried = carried + (tonumber(market.services[lineCid].allocated) or 0)
+      end
+      local half = math.floor(carried / 2)
+      carriedByTown[townA] = (carriedByTown[townA] or 0) + half
+      carriedByTown[townB] = (carriedByTown[townB] or 0) + (carried - half)
+    end
+  end
+  return carriedByTown
+end
+
+-- Pure policy: carried passengers per town -> per-town land-use capacity
+-- targets. currentCapacities maps townCid -> {res, com, ind}. Deterministic
+-- integer arithmetic over digested values only.
+function M.townGrowthTargets(carriedByTown, currentCapacities)
+  local constants = M.TOWN_GROWTH
+  local targets = {}
+  for _, townCid in ipairs(util.sortedKeys(carriedByTown)) do
+    local current = currentCapacities[townCid]
+    if current then
+      local points = math.floor(carriedByTown[townCid] * constants.carriedPct / 100)
+      local function grow(base, sharePct)
+        local step = math.min(constants.maxStepPerSettle,
+          math.floor(points * sharePct / 100))
+        return math.min(constants.capacityCap, (tonumber(base) or 0) + step)
+      end
+      local target = {
+        grow(current[1], constants.residentialPct),
+        grow(current[2], constants.commercialPct),
+        grow(current[3], constants.industrialPct),
+      }
+      if target[1] ~= current[1] or target[2] ~= current[2] or target[3] ~= current[3] then
+        targets[townCid] = target
+      end
+    end
+  end
+  return targets
+end
+
+-- Deterministic departure slots per service. Pure computation only: the
+-- enforcement mode (host-ordered holds versus locally issued holds) is
+-- gated on the agents-off pivot, because vehicle userStopped state is
+-- currently lifecycle-digest material and per-departure ordered operations
+-- would serialize through consensus barriers.
+function M.departureSlots(service, gameTimeSeconds)
+  local period = math.max(1, tonumber(service.headwaySeconds) or 1)
+  local phase = hash.adler32 and (hash.adler32(tostring(service.lineCid)) % period)
+    or 0
+  local now = math.max(0, math.floor(tonumber(gameTimeSeconds) or 0))
+  local sincePhase = now - phase
+  local index = math.floor(sincePhase / period) + 1
+  local nextDeparture = phase + index * period
+  return {
+    periodSeconds = period,
+    phaseSeconds = phase,
+    nextDepartureAt = nextDeparture,
+    holdSeconds = nextDeparture - now,
+  }
+end
+
 function M.new(deps)
   assert(type(deps) == "table", "corridor binding dependencies are required")
   local bindExisting = assert(deps.bindExisting, "bindExisting dependency is required")
@@ -91,8 +176,44 @@ function M.new(deps)
   local nameOf = assert(deps.nameOf, "nameOf dependency is required")
   local safeEntity = assert(deps.safeEntity, "safeEntity dependency is required")
   local positionOfEntity = assert(deps.positionOfEntity, "positionOfEntity dependency is required")
+  local resolveLocal = assert(deps.resolveLocal, "resolveLocal dependency is required")
 
   local binding = {}
+
+  -- Applies deterministic town growth after an ordered settlement. Every
+  -- peer runs this with identical results/state, issues identical native
+  -- setTownInfo commands, and the structural probe verifies convergence.
+  -- Fail-soft: an unavailable factory or unmapped town skips with a record.
+  function binding.applyTownGrowth(registry, economyState, results)
+    local outcome = { towns = 0, skipped = 0, errors = {} }
+    local carriedByTown = M.carriedByTown(results, economyState.markets)
+    local currentCapacities, localIds = {}, {}
+    for _, townCid in ipairs(util.sortedKeys(carriedByTown)) do
+      local localId = resolveLocal(registry, townCid)
+      if localId then
+        local _, capacities = townCapacity(localId)
+        currentCapacities[townCid] = capacities
+        localIds[townCid] = localId
+      else
+        outcome.skipped = outcome.skipped + 1
+      end
+    end
+    local targets = M.townGrowthTargets(carriedByTown, currentCapacities)
+    if next(targets) == nil then return outcome end
+    local factory = util.commandFactory("setTownInfo")
+    if not factory then
+      outcome.errors[#outcome.errors + 1] = "setTownInfo command factory is unavailable"
+      return outcome
+    end
+    for _, townCid in ipairs(util.sortedKeys(targets)) do
+      local made, commandOrError = pcall(factory, localIds[townCid], targets[townCid])
+      local ok, err = false, commandOrError
+      if made then ok, err = util.sendCommand(commandOrError, nil, "mod.world.town-growth") end
+      if ok then outcome.towns = outcome.towns + 1
+      else outcome.errors[#outcome.errors + 1] = tostring(err) end
+    end
+    return outcome
+  end
 
   local function corridorDistanceDm(groups)
     local total = 0

@@ -1481,6 +1481,11 @@ handlers["economy.settle"] = function(action, eventId)
   end
   local recorded, recordError = economy.recordSettlement(state.economy, results)
   if not recorded then return false, recordError end
+  -- Deterministic town growth: identical ordered results on every peer
+  -- produce identical native capacity commands; the structural probe
+  -- verifies convergence. Fail-soft and recorded, never digest material.
+  local grew, growth = pcall(world.applyTownGrowth, state.canonical, state.economy, results)
+  state.probes.townGrowth = grew and growth or { errors = { tostring(growth) } }
   local ok, errors = true, {}
   local nativeReconciliation
   if state.networkMode == "network" then
