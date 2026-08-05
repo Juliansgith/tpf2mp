@@ -13,6 +13,21 @@ local function compactResult(value)
   return "table"
 end
 
+-- Log-scale crowd glyphs: one large block is five hundred people, one medium
+-- is one hundred, one small is twenty. Reading magnitude beats counting.
+function M.crowdIcons(count)
+  local remaining = math.max(0, tonumber(count) or 0)
+  local text = ""
+  for _, bucket in ipairs({ { 500, "█" }, { 100, "◼" }, { 20, "▪" } }) do
+    while remaining >= bucket[1] and #text < 48 do
+      text = text .. bucket[2]
+      remaining = remaining - bucket[1]
+    end
+  end
+  if text == "" and (tonumber(count) or 0) > 0 then text = "·" end
+  return text
+end
+
 function M.render(gui, snapshot, options)
   if not gui.status then return end
   options = options or {}
@@ -177,6 +192,26 @@ function M.render(gui, snapshot, options)
         math.floor((service.equilibriumPpm or 0) % 10000 / 1000)
       )
     end
+  end
+  local boards = snapshot.stationBoards or {}
+  local boardOrder = {}
+  for groupCid in pairs(boards) do boardOrder[#boardOrder + 1] = groupCid end
+  table.sort(boardOrder, function(left, right)
+    local a, b = boards[left], boards[right]
+    if a.waiting ~= b.waiting then return a.waiting > b.waiting end
+    return left < right
+  end)
+  local shownBoards = 0
+  for _, groupCid in ipairs(boardOrder) do
+    if shownBoards >= 8 then break end
+    shownBoards = shownBoards + 1
+    local board = boards[groupCid]
+    lines[#lines + 1] = string.format("Station %s: waiting ~%d %s | %d pax/epoch over %d line(s)",
+      board.name or groupCid,
+      board.waiting or 0,
+      M.crowdIcons(board.waiting or 0),
+      board.throughput or 0,
+      #(board.lines or {}))
   end
   local capture = snapshot.probes and snapshot.probes.capture or {}
   lines[#lines + 1] = string.format(

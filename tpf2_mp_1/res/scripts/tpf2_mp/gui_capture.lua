@@ -544,6 +544,23 @@ function M.install(gui, env)
       frame = gui.frames,
     }
   end
+
+  -- A matching station/depot/asset ghost can be emitted every rendered frame.
+  -- Keep only the immutable projected template reference and latest small
+  -- placement sample here; the runtime copies and rebases the full graph once
+  -- a native suppression proves that the player actually clicked.
+  gui.lightweightConstructionPending = function(snapshot, placement, companyCid, sourceId)
+    if type(snapshot) ~= "table" or type(placement) ~= "table" then return nil end
+    return {
+      companyCid = companyCid,
+      sourceId = tostring(sourceId or "constructionBuilder"),
+      frame = gui.frames,
+      proposalSnapshot = snapshot,
+      constructionPlacement = util.deepCopy(placement),
+      deferredConstructionRebase = true,
+      exact = false,
+    }
+  end
   
   gui.projectedFirst = function(value)
     if type(value) ~= "table" then return nil end

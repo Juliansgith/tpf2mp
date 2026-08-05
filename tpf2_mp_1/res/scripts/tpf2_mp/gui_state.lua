@@ -40,6 +40,7 @@ function M.new()
     previewFallbacks = 0,
     constructionPreviewsProjected = 0,
     constructionPreviewsSkipped = 0,
+    constructionPreviewsArmed = 0,
     coalescedConstructionSuppressions = 0,
   },
   nativeClockCapture = {
@@ -66,6 +67,21 @@ function M.new()
     lastTag = nil,
     lastTarget = nil,
     lastStopCount = 0,
+  },
+  -- BuyVehicle is rejected at the exact native visitor, so neither half of a
+  -- capture can mutate the world alone. The stock GUI supplies the consist;
+  -- the pinned visitor supplies the actual player/depot scalar identities.
+  pendingNativeVehicleGuiCaptures = {},
+  pendingNativeVehicleCommands = {},
+  nativeVehicleCapture = {
+    captured = 0,
+    invalid = 0,
+    dropped = 0,
+    buys = 0,
+    assignments = 0,
+    lastTag = nil,
+    lastTarget = nil,
+    lastSecondary = nil,
   },
   lastNetworkProposalDigest = nil,
   lastNetworkProposalFrame = -1000,

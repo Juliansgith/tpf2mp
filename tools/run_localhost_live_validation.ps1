@@ -97,6 +97,7 @@ $startingSaveCopy = $null
 $startingSaveManifest = $null
 $stagedStartingSave = $null
 $stagedStartingFiles = @()
+$startingCompanyPlayerIds = ''
 
 function Set-LocalhostValidationSettings([string]$Path) {
     $content = [IO.File]::ReadAllText($Path)
@@ -184,6 +185,7 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
     $env:TPF2MP_STAGED_SAVE_NAME = if ($script:stagedStartingSave) {
         [IO.Path]::GetFileNameWithoutExtension([string]$script:stagedStartingSave)
     } else { '' }
+    $env:TPF2MP_STARTING_COMPANY_PLAYER_IDS = [string]$script:startingCompanyPlayerIds
     # Build 35924's Vulkan/UI startup can enter its Internal error path when
     # created minimized, while a hidden window has no targetable main handle.
     # Use an ordinary window; the exact-PID helper may foreground it briefly.
@@ -238,7 +240,10 @@ function Wait-MenuBootstrap([Diagnostics.Process]$GameProcess, [string]$Peer, [s
 function Invoke-GameInput(
     [Diagnostics.Process]$GameProcess,
     [string]$Action,
-    [string]$SavePath
+    [string]$SavePath,
+    [string]$Command,
+    [switch]$SkipConsoleClick,
+    [switch]$PhysicalPixels
 ) {
     $helper = Join-Path $PSScriptRoot 'send_game_console.ps1'
     $result = Join-Path $runRoot ("ui-{0}-{1}-{2}.json" -f $GameProcess.Id, $Action, [DateTime]::UtcNow.Ticks)
@@ -255,6 +260,14 @@ function Invoke-GameInput(
         # PowerShell; preserve a path under "Program Files (x86)" explicitly.
         $childArguments += @('-SavePath', ('"' + $SavePath + '"'))
     }
+    if ($Command) {
+        if ($Command.Contains('"')) { throw 'Console command contains an unsupported quote.' }
+        # Launcher-issued bootstrap commands deliberately contain no spaces,
+        # so Windows PowerShell's ArgumentList flattening cannot split them.
+        $childArguments += @('-Command', $Command)
+    }
+    if ($SkipConsoleClick) { $childArguments += '-SkipConsoleClick' }
+    if ($PhysicalPixels) { $childArguments += '-PhysicalPixels' }
     $child = Start-Process -FilePath 'powershell.exe' -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $helperStdout -RedirectStandardError $helperStderr `
         -ArgumentList $childArguments
@@ -410,6 +423,24 @@ function Copy-StartingSaveTriplet([string]$Source, [string]$DestinationDirectory
     return [pscustomobject]@{ Save = $destinationSave; Manifest = $manifest }
 }
 
+function Read-StartingCompanyPlayerIds([string]$SavePath) {
+    $metadataPath = $SavePath + '.lua'
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { return '' }
+    $content = [IO.File]::ReadAllText($metadataPath)
+    $marker = $content.IndexOf('["tpf2_mp.lua"]', [StringComparison]::Ordinal)
+    if ($marker -lt 0) { return '' }
+    $tail = $content.Substring($marker)
+    $ids = [Collections.Generic.List[string]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($match in [regex]::Matches($tail, '(?m)^\s*playerId\s*=\s*(\d+)\s*,')) {
+        $value = $match.Groups[1].Value
+        if ($seen.Add($value)) { $ids.Add($value) }
+        if ($ids.Count -ge 2) { break }
+    }
+    if ($ids.Count -ne 2) { return '' }
+    return [string]::Join(',', $ids)
+}
+
 function Stage-StartingSaveForConsole([string]$SourceSave, [string]$DestinationDirectory) {
     if (-not (Test-Path -LiteralPath $DestinationDirectory -PathType Container)) {
         throw "Game save directory is missing: $DestinationDirectory"
@@ -518,6 +549,7 @@ try {
     if ($StartingSave) {
         $startingCopy = Copy-StartingSaveTriplet $StartingSave (Join-Path $runRoot 'starting-save')
         $startingSaveCopy = $startingCopy.Save
+        $startingCompanyPlayerIds = Read-StartingCompanyPlayerIds $startingSaveCopy
         $startingSaveManifest = $startingCopy.Manifest
         $startingSaveManifest | ConvertTo-Json -Depth 8 | Set-Content `
             -LiteralPath (Join-Path $runRoot 'starting-save-manifest.json') -Encoding UTF8
@@ -554,6 +586,14 @@ try {
     foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
         foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit', 'launcher')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $peerBridge $folder) | Out-Null
+        }
+        if ($ManualOnly) {
+            # Build 35924's Lua file cache can reopen an existing launcher
+            # file, but a file first created after the world transition may be
+            # invisible to the sandbox. Seed the path before either process
+            # starts and change only its contents after both worlds load.
+            [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\manual-bootstrap-ready'),
+                'waiting', [Text.UTF8Encoding]::new($false))
         }
     }
 
@@ -774,6 +814,20 @@ try {
     else { Write-Host 'Both exact processes are running disposable app.startGame worlds with native authority active.' }
 
     if ($ManualOnly) {
+        # The game script exists in a transient pre-load world as well as the
+        # pinned save. Arm the host bootstrap only after both processes crossed
+        # the native save-loader boundary, otherwise a checkpoint can belong to
+        # a world that app.loadGame immediately replaces.
+        foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
+            [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\manual-bootstrap-ready'),
+                'ready', [Text.UTF8Encoding]::new($false))
+        }
+        # The native hook reads this barrier outside Build 35924's stale Lua
+        # file cache. Its persistent menu state then issues one authorized
+        # speed wake and bounded readiness events without focus-sensitive
+        # console automation. Match initialisation and every operation still
+        # travel through host ordering and two-peer checkpoint consensus.
+        Write-Host 'Armed the native paused-world bootstrap barrier for both exact processes.'
         Write-Host 'Waiting for the host-only ordered match bootstrap and its two-peer checkpoint.'
         $bootstrapDeadline = (Get-Date).AddSeconds([Math]::Min($TimeoutSeconds, 240))
         $bootstrapReady = $false
@@ -798,7 +852,7 @@ try {
                 throw "Native status is missing for PID $($gameProcess.Id)"
             }
             $native = Get-Content -LiteralPath $nativePath -Raw | ConvertFrom-Json
-            if ($native.hookVersion -ne '0.12.0' `
+            if ($native.hookVersion -ne '0.13.0' `
                 -or $native.active -ne $true -or $native.hooks.enabled -ne $true `
                 -or $native.gates.buildProposal.enabled -ne $true `
                 -or $native.gates.commandVisitors.enabled -ne $true `

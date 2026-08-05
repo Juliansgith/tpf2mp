@@ -23,6 +23,7 @@ target_link_libraries(tpf2mp_native_common PUBLIC bcrypt)
 add_library(tpf2mp_hook_support STATIC
   src/native_command_codec.cpp
   src/native_hook_status.cpp
+  src/native_launcher_barrier.cpp
 )
 target_link_libraries(tpf2mp_hook_support PUBLIC tpf2mp_native_common)
 target_include_directories(tpf2mp_hook_support PUBLIC include)

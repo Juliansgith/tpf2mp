@@ -1072,16 +1072,17 @@ def _operation_vehicle_config(value: Any) -> None:
         if not isinstance(part, dict) or set(part) != {"model", "reversed", "loadConfig", "color", "logo"}:
             raise ProtocolError("operation vehicle part has unknown or missing fields")
         model = part["model"]
-        if not isinstance(model, str) or not model.startswith("vehicle/train/") or not model.endswith(".mdl") \
+        if not isinstance(model, str) or not model.startswith(("vehicle/train/", "vehicle/waggon/")) \
+                or not model.endswith(".mdl") \
                 or len(model) > 240 or any(ord(c) < 32 for c in model):
             raise ProtocolError("operation vehicle part is not a canonical railway model")
         if not isinstance(part["reversed"], bool) or not _operation_color(part["color"]):
             raise ProtocolError("operation vehicle part settings are invalid")
         if not isinstance(part["logo"], str) or len(part["logo"]) > 240 or any(ord(c) < 32 for c in part["logo"]):
             raise ProtocolError("operation vehicle logo is invalid")
-        load_config = _lua_array(part["loadConfig"], empty=True)
-        if len(load_config) > 64 or any(
-            not isinstance(item, int) or isinstance(item, bool) or not -1 <= item <= 255
+        load_config = _lua_array(part["loadConfig"])
+        if not load_config or len(load_config) > 64 or any(
+            not isinstance(item, int) or isinstance(item, bool) or not 0 <= item <= 255
             for item in load_config
         ):
             raise ProtocolError("operation vehicle load config is invalid")
@@ -1130,7 +1131,7 @@ def validate_operation_transaction(value: Any) -> dict[str, Any]:
                 or not _operation_cid(data["targetCid"], "vehicle") \
                 or not _operation_cid(data["lineCid"], "line") \
                 or not isinstance(data["stopIndex"], int) or isinstance(data["stopIndex"], bool) \
-                or not 0 <= data["stopIndex"] < MAX_OPERATION_STOPS:
+                or not -1 <= data["stopIndex"] < MAX_OPERATION_STOPS:
             raise ProtocolError("vehicle.assign data is invalid")
     elif kind == "vehicle.stop":
         if set(data) != {"targetCid", "stopped"} or not _operation_cid(data["targetCid"], "vehicle") \

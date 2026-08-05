@@ -29,6 +29,10 @@ function M.compactStatus(payload)
   local commandGate = type(gates.commandVisitors) == "table" and gates.commandVisitors or {}
   local commandList = type(payload.commandList) == "table" and payload.commandList or {}
   local applyCommand = type(payload.applyCommand) == "table" and payload.applyCommand or {}
+  local suppressedVehicleCommands = type(commandGate.suppressedVehicleCommands) == "table"
+    and commandGate.suppressedVehicleCommands
+    or type(payload.suppressedVehicleCommands) == "table" and payload.suppressedVehicleCommands
+    or {}
   local rawCommandEvents = type(payload.commandEvents) == "table" and payload.commandEvents or {}
   local function compactTagCounts(value)
     local result = {}
@@ -118,6 +122,16 @@ function M.compactStatus(payload)
     },
     commandEvents = commandEvents,
     commandEventFilter = tostring(payload.commandEventFilter or "unknown"),
+    suppressedVehicleCommands = {
+      queued = math.max(0, tonumber(suppressedVehicleCommands.queued) or 0),
+      captured = math.max(0, tonumber(suppressedVehicleCommands.captured) or 0),
+      consumed = math.max(0, tonumber(suppressedVehicleCommands.consumed) or 0),
+      invalid = math.max(0, tonumber(suppressedVehicleCommands.invalid) or 0),
+      dropped = math.max(0, tonumber(suppressedVehicleCommands.dropped) or 0),
+      lastTag = tonumber(suppressedVehicleCommands.lastTag),
+      lastTarget = tonumber(suppressedVehicleCommands.lastTarget),
+      lastSecondary = tonumber(suppressedVehicleCommands.lastSecondary),
+    },
     gates = {
       buildProposal = {
         enabled = buildGate.enabled == true,

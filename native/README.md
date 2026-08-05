@@ -42,8 +42,9 @@ mod prefers `api.cmd.make.*` and uses the mirror only as a same-state fallback.
 
 The native command observers decode the `Command`/variant discriminator,
 classify all 37 tags, pair queued commands with their `ApplyCommand` result, and
-record direct applies which bypass `CommandList::Swap`. Hook 0.12.0 retains this
-accounting path. Reference run `runtime/live-validation/20260802-075533` passed
+record direct applies which bypass `CommandList::Swap`. Hook 0.13.0 retains this
+accounting path and adds pinned scalar capture for suppressed SetLine and
+BuyVehicle before mutation. Reference run `runtime/live-validation/20260802-075533` passed
 all 39 checks, registered one
 GUI pre-issue observer state, and closed the queue/apply/direct conservation
 equation with zero unknown tags/applies, invalid layouts, pending overwrites,
@@ -54,6 +55,9 @@ global table, bypassing Transport Fever 2's guard against ordinary creation of
 globals:
 
 - `tpf2mp_native_status()` returns the current JSON status string;
+- `tpf2mp_native_launcher_bootstrap_ready()` returns `ready` only when the
+  process-specific launcher barrier contains that exact value, using native
+  filesystem I/O so Build 35924's Lua file cache cannot stale the handoff;
 - `tpf2mp_native_mark_context(name)` labels that Lua state for diagnostics.
 - `tpf2mp_native_enable_build_gate()` suppresses BuildProposal visitors by default;
 - `tpf2mp_native_authorize_build()` authorizes exactly one visitor while gated;
@@ -67,6 +71,11 @@ globals:
   CreateLine/DeleteLine/UpdateLine/SetColor/SetName payload captured while tags
   3-5/28-29 are suppressed. The returned `L1` envelope contains no native
   pointers;
+- `tpf2mp_native_take_suppressed_vehicle_command()` consumes the oldest
+  pre-mutation `V1` envelope. Tag 6 contains vehicle/line/stop-index; tag 13
+  contains native-player/depot. No `TransportVehicleConfig` pointer or native
+  model ID crosses this boundary: Lua correlates BuyVehicle with the bounded
+  stock GUI consist by FIFO and treats the visitor's depot as authoritative;
 - `tpf2mp_native_set_command_observer(callback)` roots an opt-in no-throw Lua
   callback in that exact state and invokes it with the original command before
   `api.cmd.sendCommand` calls through.

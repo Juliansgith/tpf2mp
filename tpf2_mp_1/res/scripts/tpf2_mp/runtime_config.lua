@@ -32,6 +32,30 @@ local function bridgeMarkerExists(root, name)
   return true
 end
 
+local function bridgeMarkerValue(root, name)
+  if not (io and io.open) then return nil end
+  if type(root) ~= "string" or root == "" or type(name) ~= "string"
+    or not name:match("^[%w_.%-]+$") then return nil end
+  local file = io.open(root .. "/launcher/" .. name, "rb")
+  if not file then return nil end
+  local value = file:read("*a")
+  file:close()
+  return tostring(value or ""):match("^%s*(.-)%s*$")
+end
+
+local function playerIdList(value)
+  local result, seen = {}, {}
+  for raw in tostring(value or ""):gmatch("%d+") do
+    local playerId = tonumber(raw)
+    if playerId and playerId >= 0 and playerId == math.floor(playerId)
+      and not seen[playerId] and #result < 8 then
+      seen[playerId] = true
+      result[#result + 1] = playerId
+    end
+  end
+  return result
+end
+
 function M.writeBridgeMarker(root, name, content)
   if not (io and io.open) then return false, "Lua file IO is unavailable" end
   if type(root) ~= "string" or root == "" or type(name) ~= "string"
@@ -61,6 +85,8 @@ function M.read(options)
   end
   local markerExists = injected and (options.bridgeMarkerExists or function() return false end)
     or bridgeMarkerExists
+  local markerValue = injected and (options.bridgeMarkerValue or function() return nil end)
+    or bridgeMarkerValue
   local forced = injected and options.forcedValidation or oneShotValidationConfig()
   -- app.startGame() creates a default test world without necessarily running
   -- an installed mod's runFn. Read the same explicit process overrides here so
@@ -70,6 +96,11 @@ function M.read(options)
     or source.bridgeDir or ".")
   local manualNetwork = source.manualNetwork == true
     or environmentEnabled("TPF2MP_MANUAL_NETWORK")
+  -- A launcher-managed manual session must not emit match.initialise from the
+  -- transient menu/pre-load world. PowerShell writes this marker only after
+  -- both exact processes have loaded the pinned save and activated authority.
+  local manualBootstrapReady = not manualNetwork
+    or markerValue(root, "manual-bootstrap-ready") == "ready"
   local networkValidationRequested = source.networkAutoValidate == true
     or environmentEnabled("TPF2MP_NETWORK_AUTOTEST")
   local networkRuntimeRequested = networkValidationRequested or manualNetwork
@@ -109,6 +140,7 @@ function M.read(options)
     networkAutoValidate = networkAutoValidate,
     networkManualHandoff = networkManualHandoff,
     manualNetwork = manualNetwork,
+    manualBootstrapReady = manualBootstrapReady,
     operationalCapture = operationalCapture,
     operationalSampleTicks = math.max(30, util.integer(
       readEnvironment("TPF2MP_OPERATIONAL_SAMPLE_TICKS")
@@ -117,6 +149,9 @@ function M.read(options)
       readEnvironment("TPF2MP_NETWORK_SOAK_TICKS") or source.networkSoakTicks, 300)),
     startingCash = math.max(0, util.integer(
       readEnvironment("TPF2MP_STARTING_CASH") or source.startingCash, 5000000)),
+    startingCompanyPlayerIds = playerIdList(
+      readEnvironment("TPF2MP_STARTING_COMPANY_PLAYER_IDS")
+        or source.startingCompanyPlayerIds),
     maxEpochs = math.max(0, util.integer(source.maxEpochs, 24)),
     valuationTargetCents = math.max(0, util.integer(source.valuationTargetCents, 50000000)),
   }

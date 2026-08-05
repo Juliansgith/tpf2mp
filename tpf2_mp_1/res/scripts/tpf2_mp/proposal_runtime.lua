@@ -9,6 +9,14 @@ local edgeOwnership = require "tpf2_mp/edge_ownership"
 
 local M = {}
 
+-- buildConstruction returns its root before every generated station child and
+-- topology component is visible to the engine component iterators.  A busy
+-- two-instance Build 35924 session has now been observed taking longer than
+-- 120 script updates even though both peers ultimately produced byte-for-byte
+-- equivalent worlds.  Keep the wait bounded, but allow enough headroom for
+-- large stations and post-bulldoze entity retirement to settle.
+local CONSTRUCTION_SETTLE_TIMEOUT_TICKS = 600
+
 function M.new(deps)
   assert(type(deps) == "table", "proposal runtime dependencies are required")
   local getState = assert(deps.getState, "getState dependency is required")
@@ -1012,7 +1020,7 @@ function M.new(deps)
       before = before,
       beforeFingerprints = beforeFingerprints,
       startedTick = state.tick,
-      deadlineTick = state.tick + 120,
+      deadlineTick = state.tick + CONSTRUCTION_SETTLE_TIMEOUT_TICKS,
       stableSinceTick = nil,
       lastSignature = nil,
     }
@@ -1055,6 +1063,19 @@ function M.new(deps)
       end
     end
     return nil
+  end
+
+  function proposalPreparation.construction.pendingRemovalInputs(record, after)
+    local counts, total = {}, 0
+    for _, input in ipairs(record.localInputs or {}) do
+      local kind = tostring(input.kind or "")
+      local localId = tonumber(input.localId)
+      if localId and after[kind] and after[kind][localId] then
+        counts[kind] = (counts[kind] or 0) + 1
+        total = total + 1
+      end
+    end
+    return total, counts
   end
   
   function proposalPreparation.construction.reconcileChangedOutputs(record, bound, added, removed, pending)
@@ -1156,6 +1177,7 @@ function M.new(deps)
     local candidateEdges = proposalPreparation.construction.topologyCandidates("edge", record, added, after)
     local ready = #candidateNodes == expectedNodes and #candidateEdges == expectedEdges
     local upgradeChanged = true
+    local pendingRemovalInputs, pendingRemovalKinds = 0, {}
     if mode == "build" then
       ready = ready and rootSet[pending.rootEntity] == true
         and beforeRootSet[pending.rootEntity] ~= true
@@ -1182,8 +1204,11 @@ function M.new(deps)
       -- Build 35924). Never acknowledge such a no-op on the wire.
       ready = ready and upgradeChanged
     else
+      pendingRemovalInputs, pendingRemovalKinds =
+        proposalPreparation.construction.pendingRemovalInputs(record, after)
       ready = rootSet[pending.rootEntity] ~= true
         and expectedNodes == 0 and expectedEdges == 0
+        and pendingRemovalInputs == 0
       for _, kind in ipairs(proposalPreparation.construction.componentKinds) do
         if #(added[kind] or {}) > 0 then ready = false end
       end
@@ -1210,6 +1235,8 @@ function M.new(deps)
         expected = {
           node = expectedNodes, edge = expectedEdges, kind = pending.spec.kind,
           upgradeChanged = mode == "upgrade" and upgradeChanged or nil,
+          pendingRemovalInputs = mode == "remove" and pendingRemovalInputs or nil,
+          pendingRemovalKinds = mode == "remove" and pendingRemovalKinds or nil,
         },
       })
     end

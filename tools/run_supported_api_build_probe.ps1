@@ -12,6 +12,7 @@ param(
     [switch]$OwnershipTransferTest,
     [switch]$ProposalOwnershipTest,
     [switch]$StationUpgradeCodecTest,
+    [switch]$VehiclePurchaseTest,
     [switch]$NativeHook,
     [switch]$SkipNativeBuild,
     [int]$NativeWaitMilliseconds = 45000
@@ -162,9 +163,9 @@ function Invoke-ProbeLogicalClick($Payload, [string]$Label) {
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 
 try {
-    $exclusiveModeCount = @($CapabilityOnly, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest).Where({ $_ }).Count
+    $exclusiveModeCount = @($CapabilityOnly, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest, $VehiclePurchaseTest).Where({ $_ }).Count
     if ($exclusiveModeCount -gt 1) {
-        throw '-CapabilityOnly, -BuildGateTest, -CommandGateTest, -TrackBuildTest, -SignalTest, -SignalGuiCaptureTest, -OwnershipTransferTest, -ProposalOwnershipTest, and -StationUpgradeCodecTest are mutually exclusive.'
+        throw '-CapabilityOnly, -BuildGateTest, -CommandGateTest, -TrackBuildTest, -SignalTest, -SignalGuiCaptureTest, -OwnershipTransferTest, -ProposalOwnershipTest, -StationUpgradeCodecTest, and -VehiclePurchaseTest are mutually exclusive.'
     }
     if (($BuildGateTest -or $CommandGateTest) -and -not $NativeHook) {
         throw '-BuildGateTest and -CommandGateTest require -NativeHook.'
@@ -202,6 +203,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\hash.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\canonical.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Destination $libraryTarget
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'investigation\live_console_probe.lua') -Destination $libraryTarget
     Write-Host "Minimal probe resources injected; evidence directory: $runDirectory"
 
@@ -256,6 +258,8 @@ try {
             "require('tpf2_mp_probe/live_console_probe').runProposalOwnershipTest()"
         } elseif ($StationUpgradeCodecTest) {
             "require('tpf2_mp_probe/live_console_probe').runStationUpgradeCodecTest()"
+        } elseif ($VehiclePurchaseTest) {
+            "require('tpf2_mp_probe/live_console_probe').runVehiclePurchaseTest()"
         } else {
             "require('tpf2_mp_probe/live_console_probe').run({followup=false})"
         }) -SkipConsoleClick
@@ -284,6 +288,8 @@ try {
         'Issued the proposal-based road ownership round-trip in the isolated disposable world.'
     } elseif ($StationUpgradeCodecTest) {
         'Issued the canonical station-upgrade materialization test in the isolated disposable world.'
+    } elseif ($VehiclePurchaseTest) {
+        'Issued the exact NOHAB plus two BC4 canonical purchase test in the isolated disposable world.'
     } else {
         'Issued one supported-API road proposal in the isolated disposable world.'
     })
@@ -350,6 +356,8 @@ try {
             'proposal-ownership-test-complete'
         } elseif ($StationUpgradeCodecTest) {
             'station-upgrade-codec-complete'
+        } elseif ($VehiclePurchaseTest) {
+            'vehicle-purchase-codec-complete'
         } else {
             'build-complete'
         })
@@ -394,7 +402,7 @@ try {
             Start-Sleep -Milliseconds 100
         } while ((Get-Date) -lt $nativeEvidenceDeadline)
         Copy-Item -LiteralPath $nativeStatusSource -Destination (Join-Path $runDirectory 'native-hook-status.json') -Force
-        $nativeHookPassed = $nativeHookStatus.hookVersion -eq '0.12.0' -and
+        $nativeHookPassed = $nativeHookStatus.hookVersion -eq '0.13.0' -and
             $nativeHookStatus.active -eq $true -and
             $nativeHookStatus.hooks.enabled -eq $true -and
             $nativeHookStatus.hooks.commandListSwap -eq $true -and
@@ -491,6 +499,8 @@ finally {
             'proposal-ownership'
         } elseif ($StationUpgradeCodecTest) {
             'station-upgrade-codec'
+        } elseif ($VehiclePurchaseTest) {
+            'vehicle-purchase-codec'
         } else {
             'build-proposal'
         }

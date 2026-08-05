@@ -26,6 +26,9 @@ function data()
   local lastError = nil
   local treeDumped = false
   local loadTreeDumped = false
+  local networkPumpCount = 0
+  local networkPumpError = nil
+  local networkWakeIssued = false
   local publish
 
   local function quote(value)
@@ -39,6 +42,14 @@ function data()
     if not file then return false end
     file:close()
     return true
+  end
+
+  local function markerValue(path)
+    local file = io.open(path, "rb")
+    if not file then return nil end
+    local value = file:read("*a")
+    file:close()
+    return tostring(value or ""):match("^%s*(.-)%s*$")
   end
 
   local function directItem(id)
@@ -387,6 +398,68 @@ function data()
     publish(true)
   end
 
+  -- This console-state bootstrap keeps receiving render updates after the
+  -- selected world has loaded, including while that world is paused.  Wake the
+  -- game script through its harmless snapshot event once the external
+  -- launcher has confirmed that both exact processes crossed the save-loader
+  -- boundary.  The game script uses that event to emit/consume ordered network
+  -- traffic without requiring a simulation tick.
+  local function pumpPausedNetwork()
+    local nativeReady = rawget(_G, "tpf2mp_native_launcher_bootstrap_ready")
+    -- The hook is injected after this Console State is already running. A
+    -- single print crosses the pinned luaB_print hook and installs the native
+    -- API into this exact Lua global table; without it, registration would be
+    -- deferred until unrelated console output happened to occur.
+    if type(nativeReady) ~= "function" and frames % 120 == 0 then
+      print("[TPF2MP] registering native launcher bootstrap API")
+      nativeReady = rawget(_G, "tpf2mp_native_launcher_bootstrap_ready")
+    end
+    local ready = false
+    if type(nativeReady) == "function" then
+      local called, value = pcall(nativeReady)
+      ready = called and value == "ready"
+    else
+      ready = markerValue(root .. "/launcher/manual-bootstrap-ready") == "ready"
+    end
+    if not startClicked or not ready or networkPumpCount >= 30 then return end
+    if frames % 120 ~= 0 then return end
+    local ok, result = pcall(function()
+      local make = api and api.cmd and api.cmd.make
+      local factory = make and make.sendScriptEvent
+      if type(factory) ~= "function" or not (api.cmd and type(api.cmd.sendCommand) == "function") then
+        error("no console-state script-event dispatch API")
+      end
+      if not networkWakeIssued then
+        local setGameSpeed = make.setGameSpeed
+        local authorize = rawget(_G, "tpf2mp_native_authorize_command")
+        if type(setGameSpeed) ~= "function" or type(authorize) ~= "function" then
+          error("no native-authorized console-state speed wake")
+        end
+        authorize("0")
+        api.cmd.sendCommand(setGameSpeed(1))
+        networkWakeIssued = true
+      end
+      local command = factory("tpf2_mp.lua", "tpf2mp", "snapshot.request", {
+        launcherReady = true,
+      })
+      api.cmd.sendCommand(command)
+      return true
+    end)
+    if ok and result ~= false then
+      networkPumpCount = networkPumpCount + 1
+      networkPumpError = nil
+      if networkPumpCount == 1 then
+        local receipt = io.open(root .. "/launcher/paused-network-pump", "wb")
+        if receipt then
+          receipt:write(tostring(frames) .. "\n")
+          receipt:close()
+        end
+      end
+    else
+      networkPumpError = tostring(ok and result or result)
+    end
+  end
+
   local function installEntry()
     if entryInstalled then return true end
     if item("tpf2mp.mainMenuEntry") then
@@ -500,6 +573,7 @@ function data()
         advanceLoadFlow()
       elseif startClicked then
         stage = "world-transition"
+        pumpPausedNetwork()
       end
       publish(false)
     end,

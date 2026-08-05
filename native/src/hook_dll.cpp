@@ -1,6 +1,7 @@
 #include "tpf2mp/native_common.hpp"
 #include "tpf2mp/native_command_codec.hpp"
 #include "tpf2mp/native_hook_status.hpp"
+#include "tpf2mp/native_launcher_barrier.hpp"
 
 #include <MinHook.h>
 
@@ -16,7 +17,6 @@
 #include <cwchar>
 #include <deque>
 #include <filesystem>
-#include <fstream>
 #include <map>
 #include <set>
 #include <sstream>
@@ -26,8 +26,6 @@
 #include <vector>
 
 namespace {
-
-struct lua_State;
 using LuaCFunction = int (*)(lua_State*);
 using LuaPrint = int (*)(lua_State*);
 using LuaSetField = void (*)(lua_State*, int, const char*);
@@ -75,7 +73,9 @@ static_assert(kInterestingBindings.size() <= 64);
 
 using tpf2mp::native_command::CommandTypeName;
 using tpf2mp::native_command::DecodeSuppressedLineCommand;
+using tpf2mp::native_command::DecodeSuppressedVehicleCommand;
 using tpf2mp::native_command::EncodeSuppressedLineCommand;
+using tpf2mp::native_command::EncodeSuppressedVehicleCommand;
 using tpf2mp::native_command::IsReadableRange;
 using tpf2mp::native_command::NativeCommandDataTag;
 using tpf2mp::native_command::NativeCommandTag;
@@ -163,7 +163,13 @@ std::uint64_t g_suppressed_line_command_drops_reported = 0;
 int g_suppressed_line_command_last_tag = -1;
 std::int32_t g_suppressed_line_command_last_target = -1;
 std::size_t g_suppressed_line_command_last_stop_count = 0;
-
+constexpr std::size_t kSuppressedVehicleCommandQueueLimit = 32;
+std::deque<tpf2mp::native_command::SuppressedVehicleCommand> g_suppressed_vehicle_commands;
+std::uint64_t g_suppressed_vehicle_command_captured = 0, g_suppressed_vehicle_command_consumed = 0;
+std::uint64_t g_suppressed_vehicle_command_invalid = 0, g_suppressed_vehicle_command_dropped = 0,
+              g_suppressed_vehicle_command_drops_reported = 0;
+int g_suppressed_vehicle_command_last_tag = -1;
+std::int32_t g_suppressed_vehicle_command_last_target = -1, g_suppressed_vehicle_command_last_secondary = -1;
 LuaPrint g_original_print = nullptr;
 LuaSetField g_original_setfield = nullptr;
 SetupCommandInterface g_original_setup_command = nullptr;
@@ -235,14 +241,12 @@ void RequestStatusWrite() {
   }
 }
 
-
 bool IsAuthorityCommandTag(const int tag) {
   return std::any_of(
       tpf2mp::profile::kAuthorityCommandVisitors.begin(),
       tpf2mp::profile::kAuthorityCommandVisitors.end(),
       [tag](const tpf2mp::profile::CommandVisitor& visitor) { return visitor.tag == tag; });
 }
-
 
 std::string StatusJson() {
   StateLock lock;
@@ -309,6 +313,14 @@ std::string StatusJson() {
       .suppressed_line_command_last_tag = g_suppressed_line_command_last_tag,
       .suppressed_line_command_last_target = g_suppressed_line_command_last_target,
       .suppressed_line_command_last_stop_count = g_suppressed_line_command_last_stop_count,
+      .suppressed_vehicle_command_queued = g_suppressed_vehicle_commands.size(),
+      .suppressed_vehicle_command_captured = g_suppressed_vehicle_command_captured,
+      .suppressed_vehicle_command_consumed = g_suppressed_vehicle_command_consumed,
+      .suppressed_vehicle_command_invalid = g_suppressed_vehicle_command_invalid,
+      .suppressed_vehicle_command_dropped = g_suppressed_vehicle_command_dropped,
+      .suppressed_vehicle_command_last_tag = g_suppressed_vehicle_command_last_tag,
+      .suppressed_vehicle_command_last_target = g_suppressed_vehicle_command_last_target,
+      .suppressed_vehicle_command_last_secondary = g_suppressed_vehicle_command_last_secondary,
       .states = g_states,
   });
 }
@@ -403,6 +415,7 @@ int NativeEnableCommandGate(lua_State*) {
     g_command_gate_authorizations.fill(0);
     g_suppressed_game_speeds.clear();
     g_suppressed_line_commands.clear();
+    g_suppressed_vehicle_commands.clear();
   }
   RequestStatusWrite();
   return 0;
@@ -415,6 +428,7 @@ int NativeDisableCommandGate(lua_State*) {
     g_command_gate_authorizations.fill(0);
     g_suppressed_game_speeds.clear();
     g_suppressed_line_commands.clear();
+    g_suppressed_vehicle_commands.clear();
   }
   RequestStatusWrite();
   return 0;
@@ -491,6 +505,27 @@ int NativeTakeSuppressedLineCommand(lua_State* state) {
   return 1;
 }
 
+int NativeTakeSuppressedVehicleCommand(lua_State* state) {
+  std::string encoded;
+  {
+    StateLock lock;
+    if (g_suppressed_vehicle_command_drops_reported < g_suppressed_vehicle_command_dropped) {
+      g_suppressed_vehicle_command_drops_reported =
+          g_suppressed_vehicle_command_dropped;
+      encoded = "F1|queue-overflow|" +
+                std::to_string(g_suppressed_vehicle_command_dropped);
+    } else {
+      if (g_suppressed_vehicle_commands.empty()) return 0;
+      encoded = EncodeSuppressedVehicleCommand(
+          g_suppressed_vehicle_commands.front());
+      g_suppressed_vehicle_commands.pop_front();
+      ++g_suppressed_vehicle_command_consumed;
+    }
+  }
+  g_lua_pushlstring(state, encoded.data(), encoded.size());
+  RequestStatusWrite();
+  return 1;
+}
 void RegisterNativeApi(lua_State* state) {
   {
     StateLock lock;
@@ -503,6 +538,7 @@ void RegisterNativeApi(lua_State* state) {
   g_lua_pushlstring(state, "tpf2mp_native_status", std::strlen("tpf2mp_native_status"));
   g_lua_pushcclosure(state, NativeStatus, 0);
   g_lua_rawset(state, -3);
+  tpf2mp::launcher::RegisterBootstrapApi(state, g_lua_pushlstring, g_lua_pushcclosure, g_lua_rawset);
   g_lua_pushlstring(state, "tpf2mp_native_mark_context",
                     std::strlen("tpf2mp_native_mark_context"));
   g_lua_pushcclosure(state, NativeMarkContext, 0);
@@ -542,6 +578,10 @@ void RegisterNativeApi(lua_State* state) {
   g_lua_pushlstring(state, "tpf2mp_native_take_suppressed_line_command",
                     std::strlen("tpf2mp_native_take_suppressed_line_command"));
   g_lua_pushcclosure(state, NativeTakeSuppressedLineCommand, 0);
+  g_lua_rawset(state, -3);
+  constexpr auto kTakeVehicleCommand = "tpf2mp_native_take_suppressed_vehicle_command";
+  g_lua_pushlstring(state, kTakeVehicleCommand, std::strlen(kTakeVehicleCommand));
+  g_lua_pushcclosure(state, NativeTakeSuppressedVehicleCommand, 0);
   g_lua_rawset(state, -3);
   // 0.11 names the actual contract: an unauthorised vanilla line command is
   // decoded, allowed to complete locally so its stock UI callback remains
@@ -953,6 +993,28 @@ bool DetourAuthorityCommandVisitor(void* visitor_context, void* command_data) {
             }
           } else {
             ++g_suppressed_game_speed_invalid;
+          }
+        }
+      }
+      if constexpr (Tag == 6 || Tag == 13) {
+        if (suppress && !tag_mismatch) {
+          tpf2mp::native_command::SuppressedVehicleCommand command;
+          if (DecodeSuppressedVehicleCommand(static_cast<int>(Tag), command_data, command)) {
+            if (g_suppressed_vehicle_commands.size() >=
+                kSuppressedVehicleCommandQueueLimit) {
+              g_suppressed_vehicle_commands.pop_front();
+              ++g_suppressed_vehicle_command_dropped;
+            }
+            g_suppressed_vehicle_command_last_tag = command.tag;
+            g_suppressed_vehicle_command_last_target = command.target;
+            g_suppressed_vehicle_command_last_secondary = command.secondary;
+            g_suppressed_vehicle_commands.push_back(command);
+            ++g_suppressed_vehicle_command_captured;
+          } else {
+            ++g_suppressed_vehicle_command_invalid;
+            g_last_error = "suppressed " +
+                           std::string(CommandTypeName(static_cast<int>(Tag))) +
+                           " payload did not match the pinned Build 35924 layout";
           }
         }
       }

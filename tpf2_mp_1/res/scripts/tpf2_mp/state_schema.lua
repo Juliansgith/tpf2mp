@@ -6,11 +6,83 @@ local finance = require "tpf2_mp/finance"
 
 local M = {}
 
+local function startingOwnershipHints(saved)
+  if type(saved) ~= "table" or type(saved.companyOrder) ~= "table"
+    or type(saved.companies) ~= "table" then return nil end
+
+  local result = {
+    schemaVersion = 1,
+    companyPlayerIds = {},
+    logicalOwners = {},
+  }
+  local validCompanies = {}
+  local seenPlayers = {}
+  for _, companyCid in ipairs(saved.companyOrder) do
+    local company = saved.companies[companyCid]
+    local playerId = type(company) == "table" and tonumber(company.playerId) or nil
+    if type(companyCid) ~= "string" or not companyCid:match("^company:%d+$")
+      or not playerId or playerId < 0 or playerId ~= math.floor(playerId)
+      or seenPlayers[playerId] then
+      return nil
+    end
+    seenPlayers[playerId] = true
+    validCompanies[companyCid] = true
+    result.companyPlayerIds[#result.companyPlayerIds + 1] = playerId
+  end
+  if #result.companyPlayerIds == 0 then return nil end
+
+  local function remember(localId, companyCid)
+    local numericId = tonumber(localId)
+    if numericId and numericId >= 0 and numericId == math.floor(numericId)
+      and validCompanies[companyCid] then
+      result.logicalOwners[tostring(numericId)] = companyCid
+    end
+  end
+  for localId, companyCid in pairs(saved.world and saved.world.logicalOwners or {}) do
+    remember(localId, companyCid)
+  end
+  -- Older hot-seat saves did not always mirror every logical owner into the
+  -- world table, but canonical bindings created by the same match retain the
+  -- owner metadata. Preserve those hints too; the fresh network bootstrap
+  -- validates every referenced entity against the newly loaded physical map.
+  for _, binding in pairs(saved.canonical and saved.canonical.byCanonical or {}) do
+    if type(binding) == "table" then
+      remember(binding.localId, binding.metadata and binding.metadata.owner)
+    end
+  end
+  return result
+end
+
+-- A fresh network session deliberately discards the prior match model while
+-- retaining the loaded native map.  Autonomy is part of that native map: once
+-- every town/industry freeze command has completed successfully, replaying the
+-- same command burst during promotion is unnecessary and can race Build
+-- 35924's just-loaded simulation thread.  Carry only a fully verified freeze;
+-- partial/failed attempts remain false and are retried by match initialisation.
+local function startingAutonomyFreeze(saved)
+  local world = type(saved) == "table" and saved.world or nil
+  local result = type(world) == "table" and world.lastFreezeResult or nil
+  if not (type(world) == "table" and world.autonomyFrozen == true
+      and type(result) == "table" and result.freeze == true
+      and type(result.errors) == "table" and next(result.errors) == nil) then
+    return nil
+  end
+  local towns = tonumber(result.towns)
+  local industries = tonumber(result.industries)
+  if not towns or towns < 0 or towns ~= math.floor(towns)
+    or not industries or industries < 0 or industries ~= math.floor(industries)
+    or towns + industries == 0 then
+    return nil
+  end
+  return util.deepCopy(result)
+end
+
 function M.new(cfg, versions)
   local STATE_VERSION = assert(versions and versions.stateVersion, "stateVersion is required")
   local CHECKPOINT_VERSION = assert(versions and versions.checkpointVersion, "checkpointVersion is required")
   local validationEnabled = cfg.autoValidate or cfg.networkAutoValidate
   local validationKind = cfg.networkAutoValidate and "localhost-network" or "standalone"
+  local configuredPlayerIds = util.deepCopy(cfg.startingCompanyPlayerIds or {})
   local result = {
     version = STATE_VERSION,
     tick = 0,
@@ -44,6 +116,12 @@ function M.new(cfg, versions)
       logicalOwners = {},
       logicalOwnershipAuthoritative = false,
       initialNetworkOwnership = nil,
+      startingOwnershipHints = #configuredPlayerIds > 0 and {
+        schemaVersion = 1,
+        companyPlayerIds = configuredPlayerIds,
+        logicalOwners = {},
+        source = "launcher-save-metadata",
+      } or nil,
       pinnedCustody = {},
       proposals = {
         byId = {},
@@ -227,8 +305,10 @@ function M.migrate(saved, context)
   -- canonical state and merely rebinds the machine-local bridge/peer below.
   local priorSessionId = saved.bridge and saved.bridge.sessionId or nil
   local networkSessionChanged = tostring(priorSessionId or "") ~= tostring(cfg.sessionId)
-  if cfg.startNetwork and saved.initialized == true
+  if cfg.startNetwork
     and (saved.networkMode ~= "network" or networkSessionChanged) then
+    local ownershipHints = startingOwnershipHints(saved)
+    local autonomyFreeze = startingAutonomyFreeze(saved)
     local previous = {
       version = saved.version,
       networkMode = saved.networkMode,
@@ -237,6 +317,14 @@ function M.migrate(saved, context)
       priorPeerId = saved.bridge and saved.bridge.peerId or nil,
     }
     local fresh = newState()
+    if not ownershipHints then
+      ownershipHints = util.deepCopy(fresh.world.startingOwnershipHints)
+    end
+    fresh.world.startingOwnershipHints = ownershipHints
+    if autonomyFreeze then
+      fresh.world.autonomyFrozen = true
+      fresh.world.lastFreezeResult = autonomyFreeze
+    end
     fresh.recovery.freshNetworkBootstrap = {
       reason = saved.networkMode ~= "network"
         and "launcher-network-over-local-save"
@@ -244,6 +332,10 @@ function M.migrate(saved, context)
       previous = previous,
       sessionId = fresh.bridge.sessionId,
       peerId = fresh.bridge.peerId,
+      ownershipHintCompanies = ownershipHints and #ownershipHints.companyPlayerIds or 0,
+      ownershipHintEntities = ownershipHints
+        and util.tableCount(ownershipHints.logicalOwners) or 0,
+      autonomyFreezePreserved = autonomyFreeze ~= nil,
     }
     return fresh
   end

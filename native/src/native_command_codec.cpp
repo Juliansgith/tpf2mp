@@ -233,6 +233,37 @@ std::string EncodeSuppressedLineCommand(const SuppressedLineCommand& command) {
   return output.str();
 }
 
+bool DecodeSuppressedVehicleCommand(const int tag, const void* command_data,
+                                    SuppressedVehicleCommand& output) {
+  const auto* data = static_cast<const std::uint8_t*>(command_data);
+  output = SuppressedVehicleCommand{};
+  output.tag = tag;
+  if (tag == 6) {
+    return IsReadableRange(data, tpf2mp::profile::kSetLineMinimumSize) &&
+           ReadNativeValue(data, tpf2mp::profile::kSetLineVehicleOffset, output.target) &&
+           ReadNativeValue(data, tpf2mp::profile::kSetLineLineOffset, output.secondary) &&
+           ReadNativeValue(data, tpf2mp::profile::kSetLineStopIndexOffset, output.value) &&
+           output.target >= 0 && output.secondary >= 0 &&
+           output.value >= tpf2mp::profile::kAutomaticLineStopIndex &&
+           output.value < static_cast<std::int32_t>(tpf2mp::profile::kMaximumLineStops);
+  }
+  if (tag == 13) {
+    return IsReadableRange(data, tpf2mp::profile::kBuyVehicleMinimumSize) &&
+           ReadNativeValue(data, tpf2mp::profile::kBuyVehiclePlayerOffset, output.target) &&
+           ReadNativeValue(data, tpf2mp::profile::kBuyVehicleDepotOffset, output.secondary) &&
+           output.target >= 0 && output.secondary >= 0;
+  }
+  return false;
+}
+
+std::string EncodeSuppressedVehicleCommand(const SuppressedVehicleCommand& command) {
+  // V1 contains no pointers or native object bytes, only bounded integers.
+  std::ostringstream output;
+  output << "V1|" << command.tag << '|' << command.target << '|'
+         << command.secondary << '|' << command.value;
+  return output.str();
+}
+
 int NativeCommandDataTag(const void* data) {
   if (data == nullptr) return -1;
   const auto tag_pointer = static_cast<const std::uint8_t*>(data) + kCommandTagOffset;

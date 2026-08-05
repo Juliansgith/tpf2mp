@@ -15,6 +15,7 @@ package.preload["tpf2_mp/json"] = function() return require "tpf2_mp_probe/json"
 package.preload["tpf2_mp/hash"] = function() return require "tpf2_mp_probe/hash" end
 package.preload["tpf2_mp/canonical"] = function() return require "tpf2_mp_probe/canonical" end
 local proposalCodec = require "tpf2_mp_probe/proposal_codec"
+local operationCodec = require "tpf2_mp_probe/operation_codec"
 local tick = 0
 local emitted = false
 local baselineEdges = {}
@@ -749,6 +750,206 @@ local function stationUpgradeCodecTest()
   })
 end
 
+local vehiclePurchaseProbeStage = "idle"
+
+local function vehiclePurchaseCodecTest()
+  vehiclePurchaseProbeStage = "capabilities"
+  local interface = game and game.interface or {}
+  local types = api and api.type and api.type.ComponentType or {}
+  local function callable(value)
+    local valueType = type(value)
+    return valueType == "function" or valueType == "table" or valueType == "userdata"
+  end
+  if not callable(interface.buildConstruction)
+    or not callable(interface.getHeight)
+    or not callable(interface.getPlayer)
+    or not api or not api.engine or not callable(api.engine.forEachEntityWithComponent)
+    or not types.VEHICLE_DEPOT or not types.TRANSPORT_VEHICLE then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "capabilities", error = "vehicle purchase probe API is unavailable",
+      buildConstructionType = type(interface.buildConstruction),
+      getHeightType = type(interface.getHeight),
+      getPlayerType = type(interface.getPlayer),
+      forEachType = type(api and api.engine and api.engine.forEachEntityWithComponent),
+      vehicleDepotComponent = types.VEHICLE_DEPOT,
+      transportVehicleComponent = types.TRANSPORT_VEHICLE,
+    })
+    return
+  end
+
+  vehiclePurchaseProbeStage = "baseline"
+  local baselineDepots, baselineVehicles = {}, {}
+  pcall(function()
+    api.engine.forEachEntityWithComponent(function(entity)
+      baselineDepots[tonumber(entity)] = true
+    end, types.VEHICLE_DEPOT)
+    api.engine.forEachEntityWithComponent(function(entity)
+      baselineVehicles[tonumber(entity)] = true
+    end, types.TRANSPORT_VEHICLE)
+  end)
+
+  vehiclePurchaseProbeStage = "build-depot"
+  local candidates = {
+    { -1500, -1500 }, { 1500, -1500 }, { -1500, 1500 }, { 1500, 1500 },
+    { -1100, -1300 }, { 1100, -1300 }, { -1100, 1300 }, { 1100, 1300 },
+  }
+  local construction, buildError
+  for _, candidate in ipairs(candidates) do
+    local x, y = candidate[1], candidate[2]
+    local heightOk, height = pcall(interface.getHeight, { x = x, y = y })
+    if not heightOk or tonumber(height) == nil then
+      heightOk, height = pcall(interface.getHeight, { x, y })
+    end
+    if heightOk and tonumber(height) then
+      local transform = {
+        1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,
+        x, y, tonumber(height), 1,
+      }
+      local buildOk, value = pcall(interface.buildConstruction,
+        "depot/train_depot_era_a.con", { trackType = 0, catenary = 0 }, transform)
+      construction = buildOk and tonumber(value) or nil
+      if construction and construction >= 0 then break end
+      buildError = tostring(value)
+      construction = nil
+    end
+  end
+  if not construction then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "build-depot", error = buildError or "no depot site succeeded",
+    })
+    return
+  end
+
+  vehiclePurchaseProbeStage = "bind-depot"
+  local depotEntity
+  api.engine.forEachEntityWithComponent(function(entity)
+    entity = tonumber(entity)
+    if entity and not baselineDepots[entity] and not depotEntity then depotEntity = entity end
+  end, types.VEHICLE_DEPOT)
+  if not depotEntity then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "bind-depot", construction = construction,
+      error = "built construction exposed no new VEHICLE_DEPOT entity",
+    })
+    return
+  end
+
+  -- The disposable probe is about the command shape, not financing. Keep its
+  -- result independent of the difficulty preset used by the fresh map.
+  vehiclePurchaseProbeStage = "funding"
+  local fundingGranted = callable(interface.book)
+    and pcall(interface.book, 50000000) or false
+  vehiclePurchaseProbeStage = "player"
+  local player = tonumber(interface.getPlayer())
+  if not player or player < 0 then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "player", depotEntity = depotEntity,
+      error = "current native player is unavailable",
+    })
+    return
+  end
+
+  vehiclePurchaseProbeStage = "default-config"
+  local names = {
+    "vehicle/train/nohab_m1_v2.mdl",
+    "vehicle/waggon/bc4_v2.mdl",
+    "vehicle/waggon/bc4_v2.mdl",
+  }
+  local config, configError = operationCodec.defaultVehicleConfig(names, api)
+  if not config then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "default-config", error = tostring(configError),
+    })
+    return
+  end
+  vehiclePurchaseProbeStage = "canonicalise"
+  local transaction, transactionError = operationCodec.make("vehicle.buy", "company:1", {
+    depotCid = "depot:probe:vehicle-purchase", config = config,
+  })
+  if not transaction then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "canonicalise", error = tostring(transactionError),
+    })
+    return
+  end
+  vehiclePurchaseProbeStage = "materialise"
+  local materialised, materialiseError = operationCodec.materialise(transaction, {
+    api = api,
+    nativePlayerId = player,
+    resolveLocal = function(cid)
+      if cid == "depot:probe:vehicle-purchase" then return depotEntity end
+    end,
+    factory = function(name)
+      return api and api.cmd and api.cmd.make and api.cmd.make[name]
+    end,
+  })
+  if not materialised then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "materialise", error = tostring(materialiseError),
+    })
+    return
+  end
+  vehiclePurchaseProbeStage = "command"
+  local commandOk, command = pcall(materialised.factory,
+    materialised.args[1], materialised.args[2], materialised.args[3])
+  if not commandOk then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "command", error = tostring(command),
+    })
+    return
+  end
+
+  vehiclePurchaseProbeStage = "send"
+  api.cmd.sendCommand(command, function(result, success)
+    vehiclePurchaseProbeStage = "callback"
+    local vehicleEntity = tonumber(safeField(result, "resultVehicleEntity"))
+    if not vehicleEntity or vehicleEntity < 0 then
+      api.engine.forEachEntityWithComponent(function(entity)
+        entity = tonumber(entity)
+        if entity and not baselineVehicles[entity] and not vehicleEntity then vehicleEntity = entity end
+      end, types.TRANSPORT_VEHICLE)
+    end
+    local projection = {}
+    if vehicleEntity and vehicleEntity >= 0 then
+      local component = api.engine.getComponent(vehicleEntity, types.TRANSPORT_VEHICLE)
+      local nativeConfig = safeField(component, "transportVehicleConfig")
+      for index, wrapped in ipairs(vectorValues(safeField(nativeConfig, "vehicles"), 16)) do
+        local part = safeField(wrapped, "part")
+        local modelId = tonumber(safeField(part, "modelId"))
+        local modelName
+        pcall(function() modelName = api.res.modelRep.getName(modelId) end)
+        projection[index] = {
+          model = modelName,
+          loadConfig = vectorValues(safeField(part, "loadConfig"), 64),
+          autoLoadConfig = vectorValues(safeField(wrapped, "autoLoadConfig"), 64),
+        }
+      end
+    end
+    local exactConsist = #projection == #names
+    for index, name in ipairs(names) do
+      exactConsist = exactConsist and projection[index]
+        and projection[index].model == name
+        and #projection[index].loadConfig == 1
+        and projection[index].loadConfig[1] == 0
+        and #projection[index].autoLoadConfig == 1
+        and projection[index].autoLoadConfig[1] == 1
+    end
+    marker("vehicle-purchase-codec-complete", {
+      success = success == true and vehicleEntity ~= nil and exactConsist,
+      stage = success == true and "complete" or "apply",
+      commandSuccess = success == true,
+      transactionDigest = transaction.digest,
+      player = player,
+      depotEntity = depotEntity,
+      construction = construction,
+      vehicleEntity = vehicleEntity,
+      fundingGranted = fundingGranted,
+      canonicalConfig = config,
+      nativeConfig = projection,
+    })
+  end)
+end
+
 local script = {
   init = function()
     tick = 0
@@ -782,6 +983,21 @@ local script = {
     if id == "tpf2mp-probe" and name == "ownership-test" then ownershipTest(param or {}) end
     if id == "tpf2mp-probe" and name == "proposal-ownership-test" then proposalOwnershipTest(param or {}) end
     if id == "tpf2mp-probe" and name == "station-upgrade-codec-test" then stationUpgradeCodecTest() end
+    if id == "tpf2mp-probe" and name == "vehicle-purchase-codec-test" then
+      local function traceback(err)
+        local text = tostring(err)
+        if debug and debug.traceback then return debug.traceback(text, 2) end
+        return text
+      end
+      local ok, err = xpcall(vehiclePurchaseCodecTest, traceback)
+      if not ok then
+        marker("vehicle-purchase-codec-complete", {
+          success = false,
+          stage = "lua-error:" .. tostring(vehiclePurchaseProbeStage),
+          error = tostring(err),
+        })
+      end
+    end
   end,
 
   guiHandleEvent = function(id, name, param)

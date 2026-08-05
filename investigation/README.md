@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-04 (Europe/Amsterdam), prototype `0.21.2`, state schema `20`, checkpoint format `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.12.0`.
+Last updated: 2026-08-05 (Europe/Amsterdam), prototype `0.21.2`, state schema `20`, checkpoint format `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
 
 This directory distinguishes four things that must not be blurred together:
 
@@ -14,6 +14,10 @@ A function existing in the API is not proof that a particular native transition 
 The adversarial review of demand arithmetic, fare hysteresis, optimistic line
 residue, manifest binding, and test honesty is recorded in
 [ADVERSARIAL_MODEL_AND_RESIDUE_AUDIT_2026-08-04.md](ADVERSARIAL_MODEL_AND_RESIDUE_AUDIT_2026-08-04.md).
+
+The railway purchase codec, exact Build 35924 `loadConfig` contract, successful
+NOHAB + two BC4 native receipt, and route-phase policy are recorded in
+[VEHICLE_PURCHASE_AND_ROUTE_PHASE_2026-08-05.md](VEHICLE_PURCHASE_AND_ROUTE_PHASE_2026-08-05.md).
 
 ## Pinned build
 
@@ -221,6 +225,9 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [PROPOSAL_PREPARE_IDENTITY_PURITY_2026-08-05.md](PROPOSAL_PREPARE_IDENTITY_PURITY_2026-08-05.md) - origin-only station-throat canonical mutation, read-only pre-consensus identity resolver, automated purity checks, and passing two-station track receipt.
+- [STATION_CONSTRUCTION_SETTLE_TIMEOUT_2026-08-05.md](STATION_CONSTRUCTION_SETTLE_TIMEOUT_2026-08-05.md) - false native-result timeout after visibly successful station construction, bounded 600-update fix, delayed-result regression, and clean six-operation two-process checkpoint proof.
+- [VEHICLE_PURCHASE_AND_ROUTE_PHASE_2026-08-05.md](VEHICLE_PURCHASE_AND_ROUTE_PHASE_2026-08-05.md) - typed stock railway purchase/assignment capture, consist namespace fix, canonical vehicle identity, route-phase policy, and the focused live-test boundary.
 - [VANILLA_LINE_MANAGER_CAPTURE_2026-08-04.md](VANILLA_LINE_MANAGER_CAPTURE_2026-08-04.md) - exact Build 35924 tags 3-5 payload layouts, stop stride/fields, typed native queue, canonical replay path, automated evidence, fresh two-process create/update/delete proof, and the remaining human widget/stop visual test.
 - [ORDINARY_UI_FACILITY_MATRIX_2026-08-04.md](ORDINARY_UI_FACILITY_MATRIX_2026-08-04.md) - passing staged two-process signals/depot/station/graphless-asset matrix, two last-mile fixes, audit receipts, and the new boundary.
 - [FACILITY_UI_FAILURES_2026-08-04.md](FACILITY_UI_FAILURES_2026-08-04.md) - first broad two-process facility-UI failure evidence; sentinel edge-object recovery, four-visitor station-edit coalescing, signed-zero bridge repair, and native vanilla-speed capture.

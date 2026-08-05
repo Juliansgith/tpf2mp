@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import time
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from .protocol import ProtocolError, canonical_json, decode_line, validate_envelope
+
+
+_ATOMIC_REPLACE_ATTEMPTS = 50
+_ATOMIC_REPLACE_DELAY_SECONDS = 0.02
+_RETRYABLE_REPLACE_ERRNOS = {errno.EACCES, errno.EBUSY, errno.EPERM}
+_RETRYABLE_REPLACE_WINERRORS = {5, 32, 33}
 
 
 def _sequence(path: Path) -> int:
@@ -23,7 +30,23 @@ def atomic_write(path: Path, data: bytes) -> None:
         handle.write(data)
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    # Build 35924 polls companion_status.json from Lua. On Windows that reader
+    # can briefly open the old file without FILE_SHARE_DELETE, making an
+    # otherwise atomic os.replace fail with access denied/sharing violation.
+    # Keep the write atomic, but tolerate that bounded transient window instead
+    # of terminating the host companion and stranding every connected client.
+    for attempt in range(_ATOMIC_REPLACE_ATTEMPTS):
+        try:
+            os.replace(temporary, path)
+            return
+        except OSError as exc:
+            retryable = (
+                exc.errno in _RETRYABLE_REPLACE_ERRNOS
+                or getattr(exc, "winerror", None) in _RETRYABLE_REPLACE_WINERRORS
+            )
+            if not retryable or attempt + 1 >= _ATOMIC_REPLACE_ATTEMPTS:
+                raise
+            time.sleep(_ATOMIC_REPLACE_DELAY_SECONDS)
 
 
 class GameBridge:

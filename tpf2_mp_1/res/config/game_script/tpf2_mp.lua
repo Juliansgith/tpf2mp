@@ -892,20 +892,12 @@ end
 
 local function proposalResolveCanonical(kind, localId)
   local cid = canonical.resolveCanonical(state.canonical, kind, localId)
-  local ownerCid = state.world.logicalOwners
-    and state.world.logicalOwners[tostring(localId)] or nil
-  if cid then
-    local binding = state.canonical.byCanonical[cid]
-    if ownerCid and binding then
-      binding.metadata = binding.metadata or {}
-      binding.metadata.owner = ownerCid
-    end
-    return cid
-  end
-  if ownerCid then
-    return world.bindExisting(state.canonical, localId, kind, { owner = ownerCid })
-  end
-  return world.bindExisting(state.canonical, localId, kind)
+  if cid then return cid end
+  -- Proposal capture is pre-consensus. It may derive a stable identity, but it
+  -- must not bind that identity or enrich metadata on the origin alone. The
+  -- ordered proposal commit resolves and binds every missing pre-existing
+  -- reference identically on all peers.
+  return world.identifyExisting(state.canonical, localId, kind)
 end
 
 local function componentOf(entity, componentType)
@@ -1785,6 +1777,8 @@ handlers["probe.mobility"] = function(_, eventId)
     state.probes.mobilityHistory[#state.probes.mobilityHistory + 1] = {
       sampleKey = payload.sampleKey,
       mobilityDigest = payload.digest,
+      vehicleLifecycleDigest = payload.vehicleLifecycleDigest,
+      vehiclePhaseDigest = payload.vehiclePhaseDigest,
       totalPersons = payload.totalPersons,
       lineCount = #(payload.lines or {}),
       totals = util.deepCopy(payload.totals),
@@ -1796,6 +1790,8 @@ handlers["probe.mobility"] = function(_, eventId)
   return true, {
     sampleKey = payload.sampleKey,
     mobilityDigest = payload.digest,
+    vehicleLifecycleDigest = payload.vehicleLifecycleDigest,
+    vehiclePhaseDigest = payload.vehiclePhaseDigest,
     totalPersons = payload.totalPersons,
     lineCount = #(payload.lines or {}),
     totals = util.deepCopy(payload.totals),
@@ -2220,7 +2216,9 @@ local function operationModelNames(value, output, seen)
   output, seen = output or {}, seen or {}
   if type(value) == "string" then
     local normalized = value:gsub("\\", "/")
-    if normalized:sub(1, 14) == "vehicle/train/" and normalized:sub(-4) == ".mdl" then
+    local railwayModel = normalized:sub(1, 14) == "vehicle/train/"
+      or normalized:sub(1, 15) == "vehicle/waggon/"
+    if railwayModel and normalized:sub(-4) == ".mdl" then
       output[#output + 1] = normalized
     end
   elseif type(value) == "table" and not seen[value] then
@@ -2325,15 +2323,24 @@ local function normaliseOperationCapture(action)
       data = { targetCid = targetCid, line = line }
     end
   elseif kind == "vehicle.buy" then
+    local expectedNativePlayer = proxyTargetPlayer(companyCid) or company.playerId
+    if capture.nativePlayerId ~= nil
+      and tonumber(capture.nativePlayerId) ~= tonumber(expectedNativePlayer) then
+      return nil, "native BuyVehicle player does not match this peer's assigned company"
+    end
     local depotCid, depotError = bindLocal(capture.depotLocalId, "depot")
     if not depotCid then return nil, depotError end
     local names = operationModelNames(capture.modelNames or capture.vehicleConfig)
-    data = { depotCid = depotCid, config = operationCodec.defaultVehicleConfig(names) }
+    local config, configError = operationCodec.defaultVehicleConfig(names, api)
+    if not config then return nil, configError end
+    data = { depotCid = depotCid, config = config }
   elseif kind == "vehicle.replace" then
     local targetCid, targetError = bindLocal(capture.targetLocalId, "vehicle")
     if not targetCid then return nil, targetError end
     local names = operationModelNames(capture.modelNames or capture.vehicleConfig)
-    data = { targetCid = targetCid, config = operationCodec.defaultVehicleConfig(names) }
+    local config, configError = operationCodec.defaultVehicleConfig(names, api)
+    if not config then return nil, configError end
+    data = { targetCid = targetCid, config = config }
   elseif kind == "vehicle.assign" then
     local targetCid, targetError = bindLocal(capture.targetLocalId, "vehicle")
     if not targetCid then return nil, targetError end
@@ -2671,6 +2678,30 @@ networkClock = networkClockRuntimeModule.new({
   pendingBarrierReason = networkPendingBarrierReason,
 })
 freezeNetworkCalendar = networkClock.freezeCalendar
+
+-- Game-script update ticks stop while a loaded world is paused, but GUI
+-- frames and script events continue.  Keep ordered ingress in one helper so
+-- the periodic GUI snapshot request can pump the bridge as well as the normal
+-- simulation update.  Without this boundary a launcher-managed paused save
+-- deadlocks: the launcher arms match bootstrap after load, then no engine tick
+-- remains on which to emit or consume the first ordered action.
+local function pumpNetworkBridge(includeHealth)
+  if state.networkMode ~= "network" then return true end
+  local consumeOk, consumeError = pcall(consumeBridge)
+  if not consumeOk then state.bridge.lastError = tostring(consumeError) end
+  local deferredOk, deferredError = xpcall(processDeferredNetworkIntent, debug.traceback)
+  if not deferredOk then
+    state.lastError = "deferred multiplayer physical-action processing failed: "
+      .. tostring(deferredError)
+  end
+  local healthOk = true
+  if includeHealth ~= false then
+    local healthError
+    healthOk, healthError = xpcall(networkClock.emitHealth, debug.traceback)
+    if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
+  end
+  return consumeOk and deferredOk and healthOk
+end
 
 local validationRuntime = validationRuntimeModule.new({
   getState = function() return state end,
@@ -3055,14 +3086,18 @@ end
 -- Only the host emits it; the companion orders the resulting match.initialise
 -- for both peers and the usual checkpoint barrier proves that they agreed.
 
+local function resetTransientRuntime()
+  networkIntentController.reset()
+  networkClock.reset()
+  proposalPreparation.originAppliedOperations = {}
+  proposalPreparation.nextOriginToken = 1
+  proposalPreparation.pending = {}
+end
+
 local script = {
   init = function()
     if not isEngineThread() then return end
-    networkIntentController.reset()
-    networkClock.reset()
-    proposalPreparation.originAppliedOperations = {}
-    proposalPreparation.nextOriginToken = 1
-    proposalPreparation.pending = {}
+    resetTransientRuntime()
     state = migrate(state)
     state.probes.capabilities = world.capabilityProbe()
     diagnosticLog("engine-init", {
@@ -3154,15 +3189,7 @@ local script = {
     -- and completion retry remain on the conservative housekeeping stride.
     if state.networkMode == "network"
       and state.tick % cfg.networkBridgeStride == 0 then
-      local ok, err = pcall(consumeBridge)
-      if not ok then state.bridge.lastError = tostring(err) end
-      local deferredOk, deferredError = xpcall(processDeferredNetworkIntent, debug.traceback)
-      if not deferredOk then
-        state.lastError = "deferred multiplayer physical-action processing failed: "
-          .. tostring(deferredError)
-      end
-      local healthOk, healthError = xpcall(networkClock.emitHealth, debug.traceback)
-      if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
+      pumpNetworkBridge(true)
     end
   end,
 
@@ -3172,6 +3199,7 @@ local script = {
 
   load = function(saved)
     state = migrate(saved)
+    if isEngineThread() then resetTransientRuntime() end
     if not isEngineThread() then
       -- The disposable two-process validator has no human-facing controls.
       -- Mutating the UI tree from this high-frequency load callback can enter
@@ -3234,6 +3262,47 @@ local script = {
       })
       publishSnapshot()
     elseif name == "snapshot.request" then
+      -- GUI snapshot requests continue while the simulation is paused.  They
+      -- are therefore the wake-up path for post-load manual bootstrap and for
+      -- ordered controls/checkpoints that arrive while both players are at
+      -- speed zero.
+      if state.networkMode == "network" then
+        -- The persistent launcher/UI Lua state can observe files created after
+        -- load even when the engine sandbox cannot. Its explicit readiness bit
+        -- is only a wake signal; native authority, host ordering, and the
+        -- two-peer checkpoint remain mandatory.
+        local launcherReady = type(param) == "table" and param.launcherReady == true
+        if launcherReady and not networkClock.manualBootstrap.launcherDiagnosticEmitted then
+          networkClock.manualBootstrap.launcherDiagnosticEmitted = true
+          local proposalFault = state.world.proposalConsensus.sessionFault
+          local operationFault = state.world.operationConsensus.sessionFault
+          local diagnostic = {
+            event = "launcher-bootstrap-state",
+            initialized = state.initialized == true,
+            networkMode = state.networkMode,
+            sessionId = state.bridge.sessionId,
+            peerId = state.bridge.peerId,
+            nextOutSeq = state.bridge.nextOutSeq,
+            freshReason = state.recovery and state.recovery.freshNetworkBootstrap
+              and state.recovery.freshNetworkBootstrap.reason or nil,
+            proposalFault = proposalFault and proposalFault.errorCode or nil,
+            operationFault = operationFault and operationFault.errorCode or nil,
+          }
+          diagnosticLog("launcher-bootstrap-state", diagnostic)
+          pcall(bridge.emit, state.bridge, "telemetry", diagnostic, state.tick)
+        end
+        local bootstrapOk, bootstrapError = xpcall(
+          function() return networkClock.maintainManualBootstrap(launcherReady) end,
+          debug.traceback)
+        if not bootstrapOk then state.probes.lastError = tostring(bootstrapError) end
+        -- A paused engine tick is not a new clock-health sample.  Suppressing
+        -- it here also prevents repeated GUI frames at a tick divisible by 15
+        -- from flooding the telemetry outbox.
+        local pumpOk, pumpError = xpcall(function()
+          return pumpNetworkBridge(false)
+        end, debug.traceback)
+        if not pumpOk then state.bridge.lastError = tostring(pumpError) end
+      end
       publishSnapshot()
     end
   end,

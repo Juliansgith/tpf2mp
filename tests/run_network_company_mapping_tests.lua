@@ -104,6 +104,10 @@ game = {
       if fixture.construction then
         components.CONSTRUCTION[fixture.construction] = { fileName = fileName, transf = transform }
       end
+      -- Build 35924 exposes a construction root before the generated station
+      -- graph on a busy live pair. Tests can hold back those child components
+      -- to prove the bounded settle window survives the old 120-tick cutoff.
+      if fixture.delayTopology then return fixture.root or fixture.construction end
       if fixture.station then components.STATION[fixture.station] = { cargo = false } end
       if fixture.stationGroup then
         components.STATION_GROUP[fixture.stationGroup] = { stations = { fixture.station } }
@@ -144,6 +148,10 @@ game = {
         "unexpected construction bulldoze")
       local fixture = bulldozeFixture
       if fixture.construction then components.CONSTRUCTION[fixture.construction] = nil end
+      -- A live station root can disappear before its generated topology.  Keep
+      -- that intermediate state available to assert that canonical completion
+      -- waits for every explicitly removed child rather than merely the root.
+      if fixture.delayRemoval then return end
       if fixture.station then components.STATION[fixture.station] = nil end
       if fixture.stationGroup then components.STATION_GROUP[fixture.stationGroup] = nil end
       if fixture.depot then components.VEHICLE_DEPOT[fixture.depot] = nil end
@@ -164,7 +172,9 @@ game = {
           and entity == (assetBuildFixture.root or assetBuildFixture.construction) and assetBuildFixture)
       if fixture then
         for _, edge in ipairs(fixture.edges or {}) do
-          components.PLAYER_OWNED[edge.id] = { player = player }
+          if components.BASE_EDGE[edge.id] then
+            components.PLAYER_OWNED[edge.id] = { player = player }
+          end
         end
       end
     end,
@@ -236,6 +246,65 @@ api = {
     end,
   },
 }
+
+-- A populated save can retain an old hot-seat/control player that owns no
+-- assets while its two real companies still own infrastructure. Do not count
+-- that selected desk as a third asset owner and reject a valid two-player map.
+components.BASE_NODE[93] = { position = { x = 10, y = 0, z = 0 } }
+components.BASE_NODE[94] = { position = { x = 60, y = 0, z = 0 } }
+components.BASE_EDGE[95] = { node0 = 93, node1 = 94 }
+components.BASE_EDGE_TRACK[95] = { trackType = 0, catenary = false }
+components.PLAYER_OWNED[95] = { player = 101 }
+local worldModule = require "tpf2_mp/world"
+local deskSeedState = {}
+local deskSeeded, deskSeedSummary = worldModule.seedInitialNetworkOwnership(
+  deskSeedState, 2, 999
+)
+assert(deskSeeded and deskSeedSummary.sourceOwnerCount == 2
+    and deskSeedSummary.selectedPlayerOwnsAssets == false
+    and deskSeedState.logicalOwners["92"] == "company:1"
+    and deskSeedState.logicalOwners["95"] == "company:2",
+  "an unowned selected desk was miscounted as a third starting asset owner")
+components.BASE_NODE[93], components.BASE_NODE[94] = nil, nil
+components.BASE_EDGE[95], components.BASE_EDGE_TRACK[95], components.PLAYER_OWNED[95] = nil, nil, nil
+
+-- A legacy hot-seat save can have two actual company owners plus a selected
+-- turn desk that still holds physical residue. Persisted company-player hints
+-- define the two companies; an explicit logical hint recovers desk-held
+-- private property while unrelated desk residue stays public/unassigned.
+components.BASE_NODE[93] = { position = { x = 10, y = 0, z = 0 } }
+components.BASE_NODE[94] = { position = { x = 60, y = 0, z = 0 } }
+components.BASE_EDGE[95] = { node0 = 93, node1 = 94 }
+components.BASE_EDGE_TRACK[95] = { trackType = 0, catenary = false }
+components.PLAYER_OWNED[95] = { player = 101 }
+components.ASSET_GROUP[98] = { assets = {} }
+components.ASSET_GROUP[99] = { assets = {} }
+components.PLAYER_OWNED[98] = { player = 999 }
+components.PLAYER_OWNED[99] = { player = 999 }
+local hintedSeedState = {
+  startingOwnershipHints = {
+    schemaVersion = 1,
+    companyPlayerIds = { 100, 101 },
+    logicalOwners = { ["98"] = "company:1" },
+  },
+}
+local hintedSeeded, hintedSummary = worldModule.seedInitialNetworkOwnership(
+  hintedSeedState, 2, 999
+)
+assert(hintedSeeded and hintedSummary.seedSource == "saved-company-hints"
+    and hintedSummary.sourceOwnerCount == 2
+    and hintedSummary.selectedPlayerOwnsAssets == true
+    and hintedSummary.unmappedSourceOwnerCount == 1
+    and hintedSummary.mappedLegacyEntities == 1
+    and hintedSeedState.logicalOwners["92"] == "company:1"
+    and hintedSeedState.logicalOwners["95"] == "company:2"
+    and hintedSeedState.logicalOwners["98"] == "company:1"
+    and hintedSeedState.logicalOwners["99"] == nil,
+  "saved company hints did not separate real owners from legacy desk residue")
+components.BASE_NODE[93], components.BASE_NODE[94] = nil, nil
+components.BASE_EDGE[95], components.BASE_EDGE_TRACK[95], components.PLAYER_OWNED[95] = nil, nil, nil
+components.ASSET_GROUP[98], components.ASSET_GROUP[99] = nil, nil
+components.PLAYER_OWNED[98], components.PLAYER_OWNED[99] = nil, nil
 
 local function writeOrdered(seq, kind, originPeer, action, originLocalSeq)
   local envelope = {
@@ -787,6 +856,7 @@ stationTransaction.transactionId = "proposal:" .. stationTransaction.digest
 stationBuildFixture = {
   fileName = stationPrefix .. "modular_station.con", year = 1992,
   construction = 600, station = 601, stationGroup = 602,
+  delayTopology = true,
   nodes = {}, edges = {},
 }
 for index, node in ipairs(stationNodes) do
@@ -802,7 +872,29 @@ end
 local stationBalanceBefore = players[100].balance
 writeCommit(15, "player2", { type = "proposal.build", transaction = stationTransaction })
 script.update() -- ordered commit queues the transaction
-for _ = 1, 6 do script.update() end -- engine build plus three-tick graph stabilization
+for _ = 1, 150 do script.update() end
+local delayedStationState = script.save()
+local delayedStationRecord = delayedStationState.world.proposals.byId["network-company-map:player2:15"]
+assert(delayedStationRecord and delayedStationRecord.status == "building-construction"
+    and delayedStationState.world.proposals.failed == 0,
+  "valid delayed station graph was failed at the legacy 120-tick cutoff")
+stationBuildFixture.delayTopology = false
+components.STATION[stationBuildFixture.station] = { cargo = false }
+components.STATION_GROUP[stationBuildFixture.stationGroup] = {
+  stations = { stationBuildFixture.station },
+}
+for _, node in ipairs(stationBuildFixture.nodes) do
+  components.BASE_NODE[node.id] = { position = node.position }
+end
+for _, edge in ipairs(stationBuildFixture.edges) do
+  components.BASE_EDGE[edge.id] = { node0 = edge.node0, node1 = edge.node1 }
+  components.BASE_EDGE_TRACK[edge.id] = {
+    trackType = edge.trackType or 1,
+    catenary = edge.catenary == nil and true or edge.catenary,
+  }
+  components.PLAYER_OWNED[edge.id] = { player = 100 }
+end
+for _ = 1, 6 do script.update() end -- delayed graph plus three-tick stabilization
 local stationState = script.save()
 local stationRecord = stationState.world.proposals.byId["network-company-map:player2:15"]
 assert(stationRecord and stationRecord.status == "applied" and stationRecord.completionEmitted == true,
@@ -1102,10 +1194,26 @@ local stationRemoveTransaction = {
 stationRemoveTransaction.digest = proposalCodec.digest(stationRemoveTransaction)
 stationRemoveTransaction.transactionId = "proposal:" .. stationRemoveTransaction.digest
 bulldozeFixture = stationBuildFixture
+stationBuildFixture.delayRemoval = true
 writeCommit(36, "player2", { type = "proposal.build", transaction = stationRemoveTransaction })
 script.update()
 for _ = 1, 6 do script.update() end
 local stationRemoveRecord = assert(script.save().world.proposals.byId["network-company-map:player2:36"])
+assert(stationRemoveRecord.status == "building-construction"
+  and canonical.resolveLocal(script.save().canonical, stationConstructionCid) == 600,
+  "station bulldoze completed while generated topology was still retiring")
+stationBuildFixture.delayRemoval = nil
+if stationBuildFixture.station then components.STATION[stationBuildFixture.station] = nil end
+if stationBuildFixture.stationGroup then components.STATION_GROUP[stationBuildFixture.stationGroup] = nil end
+for _, node in ipairs(stationBuildFixture.nodes or {}) do components.BASE_NODE[node.id] = nil end
+for _, edge in ipairs(stationBuildFixture.edges or {}) do
+  components.BASE_EDGE[edge.id] = nil
+  components.BASE_EDGE_TRACK[edge.id] = nil
+  components.BASE_EDGE_STREET[edge.id] = nil
+  components.PLAYER_OWNED[edge.id] = nil
+end
+for _ = 1, 6 do script.update() end
+stationRemoveRecord = assert(script.save().world.proposals.byId["network-company-map:player2:36"])
 local removedStationState = script.save()
 assert(stationRemoveRecord.status == "applied" and #stationRemoveRecord.result.outputs == 0
   and canonical.resolveLocal(removedStationState.canonical, stationConstructionCid) == nil

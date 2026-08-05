@@ -136,10 +136,13 @@ commit.checksum = hash.value(commit)
 local inbound = assert(io.open(bridgeRoot .. "/game_inbox/000000000001.json", "wb"))
 inbound:write(json.encode(commit) .. "\n")
 inbound:close()
-script.update()
+-- A paused world has no simulation update tick.  The periodic GUI snapshot
+-- request must still consume ordered ingress, otherwise the initial match
+-- commit (and later pause-time controls) deadlock in the inbox.
+script.handleEvent("test", "tpf2mp", "snapshot.request", { launcherReady = true })
 
 local initialized = script.save()
-assert(initialized.initialized == true, "committed match was not applied")
+assert(initialized.initialized == true, "paused snapshot pump did not apply the committed match")
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
@@ -147,9 +150,15 @@ assert(initialized.version == 20,
   "state schema was not migrated to the asset-root construction version")
 assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
 
-local checkpointFile = assert(io.open(bridgeRoot .. "/game_outbox/000000000003.json", "rb"))
-local checkpointMessage = json.decode(checkpointFile:read("*a"))
-checkpointFile:close()
+local checkpointMessage
+for localSeq = 1, initialized.bridge.nextOutSeq - 1 do
+  local checkpointFile = assert(io.open(string.format(
+    "%s/game_outbox/%012d.json", bridgeRoot, localSeq), "rb"))
+  local message = json.decode(checkpointFile:read("*a"))
+  checkpointFile:close()
+  if message.kind == "checkpoint" then checkpointMessage = message; break end
+end
+assert(checkpointMessage, "baseline checkpoint was not emitted")
 assert(bridgeModule.verify(checkpointMessage), "baseline checkpoint envelope failed verification")
 assert(checkpointMessage.kind == "checkpoint", "baseline checkpoint used the wrong message kind")
 local checkpoint = checkpointMessage.payload
@@ -247,9 +256,18 @@ assert(automaticallyFinished.match.winnerCid == "company:1" or automaticallyFini
   "automatic match finish did not select a canonical winner")
 
 script.handleEvent("test", "tpf2mp", "intent", { type = "checkpoint.export", reason = "integration-test" })
-local manualFile = assert(io.open(bridgeRoot .. "/game_outbox/000000000011.json", "rb"))
-local manualMessage = json.decode(manualFile:read("*a"))
-manualFile:close()
+local manualMessage
+for localSeq = 1, script.save().bridge.nextOutSeq - 1 do
+  local manualFile = assert(io.open(string.format(
+    "%s/game_outbox/%012d.json", bridgeRoot, localSeq), "rb"))
+  local message = json.decode(manualFile:read("*a"))
+  manualFile:close()
+  if message.kind == "checkpoint" and message.payload.reason == "integration-test" then
+    manualMessage = message
+    break
+  end
+end
+assert(manualMessage, "manual checkpoint was not emitted")
 assert(bridgeModule.verify(manualMessage), "manual checkpoint envelope failed verification")
 assert(manualMessage.kind == "checkpoint", "manual checkpoint used the wrong message kind")
 assert(manualMessage.payload.reason == "integration-test", "manual checkpoint reason was not preserved")

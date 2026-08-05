@@ -30,6 +30,14 @@ int main(int argc, char** argv) {
   static_assert(tpf2mp::profile::kLineStopStationOffset == 0x04);
   static_assert(tpf2mp::profile::kLineStopTerminalOffset == 0x08);
   static_assert(tpf2mp::profile::kMaximumLineStops == 256);
+  static_assert(tpf2mp::profile::kSetLineVehicleOffset == 0x00);
+  static_assert(tpf2mp::profile::kSetLineLineOffset == 0x04);
+  static_assert(tpf2mp::profile::kSetLineStopIndexOffset == 0x08);
+  static_assert(tpf2mp::profile::kAutomaticLineStopIndex == -1);
+  static_assert(tpf2mp::profile::kBuyVehiclePlayerOffset == 0x00);
+  static_assert(tpf2mp::profile::kBuyVehicleDepotOffset == 0x04);
+  static_assert(tpf2mp::profile::kBuyVehicleConfigOffset == 0x08);
+  static_assert(tpf2mp::profile::kBuyVehicleResultOffset == 0x38);
   if (tpf2mp::profile::kSha256.size() != 64 || tpf2mp::profile::kImageSize == 0 ||
       tpf2mp::profile::kPeTimestamp == 0 ||
       tpf2mp::profile::kCommandVisitorTableRva == 0) {
@@ -61,6 +69,69 @@ int main(int argc, char** argv) {
   if (tpf2mp::native_command::EncodeSuppressedLineCommand(encoded_line) !=
       "L1|29|42|-1|0|0|0|41|0|") {
     std::cerr << "pointer-free line command encoder is invalid\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kSetLineMinimumSize> set_line_command{};
+  const std::int32_t expected_vehicle = 71;
+  const std::int32_t expected_stop = tpf2mp::profile::kAutomaticLineStopIndex;
+  std::memcpy(set_line_command.data() + tpf2mp::profile::kSetLineVehicleOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  std::memcpy(set_line_command.data() + tpf2mp::profile::kSetLineLineOffset,
+              &expected_line, sizeof(expected_line));
+  std::memcpy(set_line_command.data() + tpf2mp::profile::kSetLineStopIndexOffset,
+              &expected_stop, sizeof(expected_stop));
+  tpf2mp::native_command::SuppressedVehicleCommand decoded_set_line;
+  if (!tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          6, set_line_command.data(), decoded_set_line) ||
+      decoded_set_line.target != expected_vehicle ||
+      decoded_set_line.secondary != expected_line ||
+      decoded_set_line.value != expected_stop ||
+      tpf2mp::native_command::EncodeSuppressedVehicleCommand(decoded_set_line) !=
+          "V1|6|71|42|-1") {
+    std::cerr << "pointer-free automatic-stop SetLine vehicle codec is invalid\n";
+    return 1;
+  }
+  const std::int32_t explicit_stop = 3;
+  std::memcpy(set_line_command.data() + tpf2mp::profile::kSetLineStopIndexOffset,
+              &explicit_stop, sizeof(explicit_stop));
+  if (!tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          6, set_line_command.data(), decoded_set_line) ||
+      decoded_set_line.value != explicit_stop ||
+      tpf2mp::native_command::EncodeSuppressedVehicleCommand(decoded_set_line) !=
+          "V1|6|71|42|3") {
+    std::cerr << "pointer-free explicit-stop SetLine vehicle codec is invalid\n";
+    return 1;
+  }
+  const std::int32_t invalid_stop = -2;
+  std::memcpy(set_line_command.data() + tpf2mp::profile::kSetLineStopIndexOffset,
+              &invalid_stop, sizeof(invalid_stop));
+  if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          6, set_line_command.data(), decoded_set_line)) {
+    std::cerr << "SetLine vehicle codec admitted an invalid negative stop index\n";
+    return 1;
+  }
+  const std::int32_t excessive_stop =
+      static_cast<std::int32_t>(tpf2mp::profile::kMaximumLineStops);
+  std::memcpy(set_line_command.data() + tpf2mp::profile::kSetLineStopIndexOffset,
+              &excessive_stop, sizeof(excessive_stop));
+  if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          6, set_line_command.data(), decoded_set_line)) {
+    std::cerr << "SetLine vehicle codec admitted an out-of-range stop index\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kBuyVehicleMinimumSize> buy_command{};
+  const std::int32_t expected_player = 9;
+  const std::int32_t expected_depot = 88;
+  std::memcpy(buy_command.data() + tpf2mp::profile::kBuyVehiclePlayerOffset,
+              &expected_player, sizeof(expected_player));
+  std::memcpy(buy_command.data() + tpf2mp::profile::kBuyVehicleDepotOffset,
+              &expected_depot, sizeof(expected_depot));
+  tpf2mp::native_command::SuppressedVehicleCommand decoded_buy;
+  if (!tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          13, buy_command.data(), decoded_buy) ||
+      tpf2mp::native_command::EncodeSuppressedVehicleCommand(decoded_buy) !=
+          "V1|13|9|88|0") {
+    std::cerr << "pointer-free BuyVehicle scalar codec is invalid\n";
     return 1;
   }
   const std::string status_stage = "test";

@@ -133,6 +133,12 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"{_tag_summary(native_hook.get('applyCommand', {}).get('tagCounts') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('applyCommand'), Mapping) else None)}",
             f"- Retained native command timeline entries: "
             f"{_value(len(native_hook.get('commandEvents', [])) if isinstance(native_hook, Mapping) and isinstance(native_hook.get('commandEvents'), list) else None)}",
+            f"- Vehicle capture queued / captured / consumed / invalid / dropped: "
+            f"{_value(native_hook.get('suppressedVehicleCommands', {}).get('queued') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('suppressedVehicleCommands'), Mapping) else None)} / "
+            f"{_value(native_hook.get('suppressedVehicleCommands', {}).get('captured') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('suppressedVehicleCommands'), Mapping) else None)} / "
+            f"{_value(native_hook.get('suppressedVehicleCommands', {}).get('consumed') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('suppressedVehicleCommands'), Mapping) else None)} / "
+            f"{_value(native_hook.get('suppressedVehicleCommands', {}).get('invalid') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('suppressedVehicleCommands'), Mapping) else None)} / "
+            f"{_value(native_hook.get('suppressedVehicleCommands', {}).get('dropped') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('suppressedVehicleCommands'), Mapping) else None)}",
             f"- BuildProposal gate enabled / suppressed / authorized-through: "
             f"{_value(native_hook.get('gates', {}).get('buildProposal', {}).get('enabled') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('gates'), Mapping) and isinstance(native_hook.get('gates', {}).get('buildProposal'), Mapping) else None)} / "
             f"{_value(native_hook.get('gates', {}).get('buildProposal', {}).get('suppressed') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('gates'), Mapping) and isinstance(native_hook.get('gates', {}).get('buildProposal'), Mapping) else None)} / "
@@ -145,6 +151,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"{_value(native_hook.get('gates', {}).get('commandVisitors', {}).get('tagMismatches') if isinstance(native_hook, Mapping) and isinstance(native_hook.get('gates'), Mapping) and isinstance(native_hook.get('gates', {}).get('commandVisitors'), Mapping) else None)}",
             f"- Hook scope: {_value(native_hook.get('scope') if isinstance(native_hook, Mapping) else None)}",
             f"- Mobility digest: `{_value(mobility.get('digest') if isinstance(mobility, Mapping) else None)}`",
+            f"- Vehicle lifecycle / route-phase digests: "
+            f"`{_value(mobility.get('vehicleLifecycleDigest') if isinstance(mobility, Mapping) else None)}` / "
+            f"`{_value(mobility.get('vehiclePhaseDigest') if isinstance(mobility, Mapping) else None)}`",
             f"- Native total persons: {_value(mobility.get('totalPersons') if isinstance(mobility, Mapping) else None)}",
             f"- Passenger/cargo line uses: "
             f"{_value(mobility.get('totals', {}).get('passengerLineUses') if isinstance(mobility, Mapping) and isinstance(mobility.get('totals'), Mapping) else None)} / "

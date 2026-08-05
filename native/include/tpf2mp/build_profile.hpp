@@ -75,6 +75,26 @@ inline constexpr std::size_t kLineStopStationOffset = 0x04;
 inline constexpr std::size_t kLineStopTerminalOffset = 0x08;
 inline constexpr std::size_t kMaximumLineStops = 256;
 
+// Build 35924 vehicle-command payloads recovered from the exact visitor
+// implementations pinned below. SetLine's implementation at 0x009D9B10 reads
+// vehicle/line/stop-index from +0/+4/+8. BuyVehicle's implementation at
+// 0x009D6280 reads player/depot from +0/+4, passes the TransportVehicleConfig
+// beginning at +8, and writes the created entity at +0x38. The native hook
+// deliberately serializes only the scalar identity fields; the bounded
+// consist is correlated with the stock vehicle-manager event in Lua. Stock
+// SetLine uses -1 for "choose the initial stop automatically"; non-negative
+// values select an explicit zero-based stop.
+inline constexpr std::size_t kSetLineVehicleOffset = 0x00;
+inline constexpr std::size_t kSetLineLineOffset = 0x04;
+inline constexpr std::size_t kSetLineStopIndexOffset = 0x08;
+inline constexpr std::size_t kSetLineMinimumSize = 0x0C;
+inline constexpr std::int32_t kAutomaticLineStopIndex = -1;
+inline constexpr std::size_t kBuyVehiclePlayerOffset = 0x00;
+inline constexpr std::size_t kBuyVehicleDepotOffset = 0x04;
+inline constexpr std::size_t kBuyVehicleConfigOffset = 0x08;
+inline constexpr std::size_t kBuyVehicleResultOffset = 0x38;
+inline constexpr std::size_t kBuyVehicleMinimumSize = 0x3C;
+
 // These categories are consequential but do not yet have canonical payload
 // codecs. Network mode therefore rejects them at their exact pre-mutation
 // visitors unless a future authoritative replay consumes a one-shot token.

@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-04 for prototype `0.21.2-alpha`, state schema `20`,
 checkpoint format `2`, edge proposal schema `5`, construction proposal schema
-`7`, and native hook `0.12.0`.
+`7`, and native hook `0.13.0`.
 
 ## Executive status
 
@@ -21,8 +21,10 @@ TPF2MP contains two usable but differently mature modes:
   placement/removal, and lamp/fence placement are live-proven through ordinary two-process
   UI actions. The facility slice includes rival denial, owner use/removal,
   physical consensus, and post-action checkpoints. This is still not arbitrary
-  vanilla play: the line lifecycle has just reached typed ordinary-UI capture
-  but still needs its first human two-process proof; vehicle lifecycle, complex topology, scripted callbacks,
+  vanilla play: the line lifecycle has typed ordinary-UI capture and stock
+  BuyVehicle/SetLine now have pre-mutation typed capture plus offline proof, but
+  the new vehicle path still needs its first human two-process proof; the rest
+  of the vehicle lifecycle, complex topology, scripted callbacks,
   autonomous drift, and a two-computer session remain open.
 
 The network architecture has crossed the populated-world convergence gate. It
@@ -195,7 +197,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   also pass ordinary-UI two-process capture and checkpoint consensus.
 - Canonical line and railway-vehicle operation codecs with strict validation,
   peer/company authorization, materialization, result validation, finance
-  routing, physical consensus, and checkpoint sequencing. Hook 0.12 decodes the
+  routing, physical consensus, and checkpoint sequencing. Hook 0.13 decodes the
   exact Build 35924 CreateLine/DeleteLine/UpdateLine native payloads after the
   ordinary command is suppressed, including the full ordered station-group,
   station, and terminal tuple. Vanilla zero-stop creation and one-stop editor
@@ -205,8 +207,14 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   matching physical results, and checkpoints. Follow-up stock-widget sessions
   prove New Line, rename, color, Delete Line, Add Station, and per-stop removal
   visually on two independent processes. Reorder and alternate-terminal visual
-  proof remain.
-  Vehicle capture remains incomplete.
+  proof remain. Hook 0.13 also captures BuyVehicle's pinned native
+  player/depot scalars and correlates them with the stock GUI's ordered
+  `vehicle/train/` + `vehicle/waggon/` consist; SetLine carries canonical
+  vehicle/line/stop identities. The exact NOHAB + two BC4 purchase now passes
+  a disposable Build 35924 engine run with concrete model-derived load configs,
+  and a stock human NOHAB + two BC4 purchase now reaches matching physical and
+  checkpoint consensus on two processes. SetLine remains the next live gate.
+  Other vehicle controls remain incomplete.
 - Later commits remain blocked until both peers agree on physical output and
   then on core/model/canonical-structure/canonical-finance checkpoint state.
 - Canonical accounts are authoritative. Native wallets are reconciled
@@ -216,7 +224,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   rejected, mismatched, or timed-out result after build commit faults the
   session closed.
 - Pause and speeds 1-4 are host-ordered `clock.set` generations applied through
-  native tag-0 authorization on both peers. Hook 0.12 captures suppressed normal
+  native tag-0 authorization on both peers. Hook 0.13 captures suppressed normal
   game speed controls and converts them into `clock.request` intents. Peer engine rate, game time,
   observed speed, heartbeat age and command backlog drive a slowest-peer cap,
   resync pause and hysteretic recovery. This pacing is not native-agent lockstep
@@ -224,7 +232,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Native authority layer
 
-- Hook `0.12.0` accepts only the exact Build 35924 executable SHA-256 and PE
+- Hook `0.13.0` accepts only the exact Build 35924 executable SHA-256 and PE
   profile.
 - It validates 17 unique code signatures/RVAs and 23 selected entries in the
   complete 37-tag command visitor table before enabling hooks.
@@ -244,6 +252,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   sentinel; read/decode loss, GUI dispatch failure, authority/finance rejection,
   FIFO overflow, and bridge failure now retry or fault the session instead of
   continuing with a one-sided mutation.
+- The pinned tag-6/tag-13 layouts supply a separate pre-mutation `V1` vehicle
+  queue. SetLine carries vehicle/line/stop index. BuyVehicle carries only native
+  player/depot and is FIFO-correlated with the stock GUI's bounded consist;
+  native config pointers and repository IDs never cross the boundary.
 - Unsupported categories fail closed in network mode. A gate is not a codec and
   therefore is not claimed as playable synchronization.
 
@@ -327,8 +339,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   has automated, exact-build, and ordinary two-process UI proof. Stock
   `ASSET_DEFAULT` replacement is a measured native no-op and intentionally
   fails closed; build/removal work.
-- Populated line reorder/alternate-terminal visual proof and the train
-  buy/assign/sell flow. The rest of the stock line lifecycle is live-proven.
+- Populated line reorder/alternate-terminal visual proof and live train
+  buy/assign proof, followed by typed replace/sell/control capture. Lifecycle
+  and route-phase digests exist, but automatic moving-train correction does not.
 - Safe synchronized commands for every one of the 23 currently rejected command
   categories or proof that no consequential route bypasses the authority layer.
 - Cargo-positive cross-peer telemetry and host control of native

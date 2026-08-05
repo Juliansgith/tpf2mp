@@ -34,6 +34,10 @@ Domain modules under `res/scripts/tpf2_mp`:
 - `economy.lua` owns deterministic demand, settlement, and scoring.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, autonomy, and telemetry.
+- `corridor_binding.lua` derives line.register market/service facts (gravity
+  demand, geometry/consist journey-headway-capacity) and the per-peer station
+  boards; origin-computed, carried on the ordered action, re-exported through
+  `world.lua`.
 - `edge_ownership.lua` owns private/public edge custody rules.
 - `proposal_codec.lua` validates and materializes portable construction/edge
   transactions.

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tpf2mp.bridge import AuditLog, GameBridge, atomic_write
@@ -881,6 +882,96 @@ class ProtocolTests(unittest.TestCase):
         accepted = validate_action({"type": "operation.execute", "transaction": transaction})
         self.assertEqual(accepted["transaction"]["data"]["line"]["stops"][0]["terminal"], 4)
 
+    def test_canonical_train_purchase_accepts_vanilla_waggons_only(self) -> None:
+        content = {
+            "schemaVersion": 1,
+            "kind": "vehicle.buy",
+            "companyCid": "company:2",
+            "data": {
+                "depotCid": "depot:pre:abc",
+                "config": {
+                    "vehicles": [
+                        {
+                            "model": "vehicle/train/db_v100_v2.mdl",
+                            "reversed": False,
+                            "loadConfig": [0],
+                            "color": {"r": 1000, "g": 1000, "b": 1000},
+                            "logo": "",
+                        },
+                        {
+                            "model": "vehicle/waggon/open_1910.mdl",
+                            "reversed": False,
+                            "loadConfig": [0],
+                            "color": {"r": 1000, "g": 1000, "b": 1000},
+                            "logo": "",
+                        },
+                    ],
+                    "vehicleGroups": [1, 1],
+                },
+            },
+        }
+        digest = checksum(content)
+        transaction = {
+            **content,
+            "digest": digest,
+            "transactionId": f"operation:{digest}",
+        }
+        accepted = validate_action({"type": "operation.execute", "transaction": transaction})
+        self.assertEqual(
+            accepted["transaction"]["data"]["config"]["vehicles"][1]["model"],
+            "vehicle/waggon/open_1910.mdl",
+        )
+        invalid = json.loads(json.dumps(transaction))
+        invalid["data"]["config"]["vehicles"][1]["model"] = "vehicle/bus/benz.mdl"
+        invalid_content = {
+            key: invalid[key] for key in ("schemaVersion", "kind", "companyCid", "data")
+        }
+        invalid["digest"] = checksum(invalid_content)
+        invalid["transactionId"] = f"operation:{invalid['digest']}"
+        with self.assertRaisesRegex(ProtocolError, "railway model"):
+            validate_action({"type": "operation.execute", "transaction": invalid})
+
+        invalid_load = json.loads(json.dumps(transaction))
+        invalid_load["data"]["config"]["vehicles"][0]["loadConfig"] = [-1]
+        invalid_load_content = {
+            key: invalid_load[key]
+            for key in ("schemaVersion", "kind", "companyCid", "data")
+        }
+        invalid_load["digest"] = checksum(invalid_load_content)
+        invalid_load["transactionId"] = f"operation:{invalid_load['digest']}"
+        with self.assertRaisesRegex(ProtocolError, "load config"):
+            validate_action({"type": "operation.execute", "transaction": invalid_load})
+
+    def test_canonical_vehicle_assignment_accepts_automatic_stop_sentinel_only(self) -> None:
+        content = {
+            "schemaVersion": 1,
+            "kind": "vehicle.assign",
+            "companyCid": "company:1",
+            "data": {
+                "targetCid": "vehicle:pre:abc",
+                "lineCid": "line:pre:def",
+                "stopIndex": -1,
+            },
+        }
+        digest = checksum(content)
+        transaction = {
+            **content,
+            "digest": digest,
+            "transactionId": f"operation:{digest}",
+        }
+        accepted = validate_action({"type": "operation.execute", "transaction": transaction})
+        self.assertEqual(accepted["transaction"]["data"]["stopIndex"], -1)
+
+        invalid = json.loads(json.dumps(transaction))
+        invalid["data"]["stopIndex"] = -2
+        invalid_content = {
+            key: invalid[key] for key in ("schemaVersion", "kind", "companyCid", "data")
+        }
+        invalid["digest"] = checksum(invalid_content)
+        invalid["transactionId"] = f"operation:{invalid['digest']}"
+        with self.assertRaisesRegex(ProtocolError, "vehicle.assign"):
+            validate_action({"type": "operation.execute", "transaction": invalid})
+
     def test_proposal_accepts_lua_empty_table_removal_lists_only_when_empty(self) -> None:
         transaction = proposal_transaction()
         transaction["remove"] = {"edges": {}, "nodes": {}}
@@ -931,6 +1022,31 @@ class ProtocolTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_atomic_write_retries_transient_replace_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "companion_status.json"
+            destination.write_bytes(b"old\n")
+            real_replace = os.replace
+            attempts = 0
+
+            def flaky_replace(source: Path | str, target: Path | str) -> None:
+                nonlocal attempts
+                attempts += 1
+                if attempts < 3:
+                    error = PermissionError(13, "transient sharing violation", str(target))
+                    error.winerror = 5
+                    raise error
+                real_replace(source, target)
+
+            with mock.patch("tpf2mp.bridge.os.replace", side_effect=flaky_replace), mock.patch(
+                "tpf2mp.bridge.time.sleep"
+            ) as pause:
+                atomic_write(destination, b"new\n")
+
+            self.assertEqual(destination.read_bytes(), b"new\n")
+            self.assertEqual(attempts, 3)
+            self.assertEqual(pause.call_count, 2)
+
     def test_outbound_cursor_and_idempotent_inbound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bridge = GameBridge(directory, "session", "player1")
@@ -1286,6 +1402,13 @@ class ResearchReportTests(unittest.TestCase):
                     "commandEvents": [
                         {"localSequence": 1, "tag": 15, "name": "BuildProposal", "success": True}
                     ],
+                    "suppressedVehicleCommands": {
+                        "queued": 0,
+                        "captured": 2,
+                        "consumed": 2,
+                        "invalid": 0,
+                        "dropped": 0,
+                    },
                     "gates": {
                         "buildProposal": {"enabled": False, "suppressed": 1, "allowed": 2},
                         "commandVisitors": {
@@ -1352,6 +1475,10 @@ class ResearchReportTests(unittest.TestCase):
             self.assertIn("Direct engine-state applies (queue bypass): 19", markdown)
             self.assertIn("Queued command tags: BuildProposal=2", markdown)
             self.assertIn("Retained native command timeline entries: 1", markdown)
+            self.assertIn(
+                "Vehicle capture queued / captured / consumed / invalid / dropped: 0 / 2 / 2 / 0 / 0",
+                markdown,
+            )
             self.assertIn("BuildProposal gate enabled / suppressed / authorized-through: no / 1 / 2", markdown)
             self.assertIn(
                 "Consequential command visitors enabled / hooked / suppressed / authorized-through / mismatches: no / 23 / 1 / 1 / 0",
@@ -1953,11 +2080,19 @@ class NetworkIntegrationTests(unittest.TestCase):
                         "kind": "mobility",
                         "peer": peer,
                         "local_seq": 1,
-                        "payload": {"sampleKey": "mobility:player1:7", "digest": digest},
+                        "payload": {
+                            "sampleKey": "mobility:player1:7",
+                            "digest": digest,
+                            "vehicleLifecycleDigest": "life",
+                            "vehiclePhaseDigest": "phase",
+                        },
                     }
                 )
             self.assertEqual(host.mobility_digests["mobility:player1:7"], {"player1": "abc", "player2": "abc"})
             self.assertEqual(host.mobility_outcomes["mobility:player1:7"], "converged")
+            self.assertEqual(host.vehicle_lifecycle_outcomes["mobility:player1:7"], "converged")
+            self.assertEqual(host.vehicle_phase_outcomes["mobility:player1:7"], "converged")
+            self.assertEqual(host.vehicle_phase_state, "converged")
 
             host._record_non_intent(
                 {
@@ -1976,6 +2111,27 @@ class NetworkIntegrationTests(unittest.TestCase):
                 }
             )
             self.assertEqual(host.mobility_outcomes["mobility:player1:8"], "diverged")
+
+            for sample in range(9, 12):
+                for peer, phase in (("player1", "at-stop-a"), ("player2", "at-stop-b")):
+                    host._record_non_intent(
+                        {
+                            "kind": "mobility",
+                            "peer": peer,
+                            "local_seq": sample,
+                            "payload": {
+                                "sampleKey": f"mobility:player1:{sample}",
+                                "digest": f"full-{peer}-{sample}",
+                                "vehicleLifecycleDigest": "same-lifecycle",
+                                "vehiclePhaseDigest": phase,
+                            },
+                        }
+                    )
+            self.assertEqual(host.vehicle_phase_divergence_streak, 3)
+            self.assertEqual(host.vehicle_phase_state, "warning")
+            self.assertEqual(
+                host.vehicle_lifecycle_outcomes["mobility:player1:11"], "converged"
+            )
 
     def test_client_intent_is_committed_to_both_game_inboxes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

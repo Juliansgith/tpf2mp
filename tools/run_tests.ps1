@@ -213,6 +213,16 @@ try {
         -or @($overlayUpgrade | Where-Object { $_.updated -eq $true }).Count -ne 2) {
         throw 'Managed native runtime overlay upgrade test failed.'
     }
+    $overlayLibrary = Join-Path $fakeGameRoot 'res\scripts\tpf2_mp'
+    Remove-Item -LiteralPath (Join-Path $overlayLibrary 'gui_vehicle_capture_runtime.lua') -Force
+    [IO.File]::WriteAllText((Join-Path $overlayLibrary 'obsolete-managed-module.lua'), '-- obsolete`n')
+    $overlayFileSetUpgrade = @(Install-Tpf2mpRuntimeOverlay -BundleRoot $projectRoot -GameExecutable $fakeGame)
+    $libraryUpgrade = $overlayFileSetUpgrade | Where-Object { $_.directory -eq $true } | Select-Object -First 1
+    if (-not $libraryUpgrade.updated `
+        -or -not (Test-Path -LiteralPath (Join-Path $overlayLibrary 'gui_vehicle_capture_runtime.lua') -PathType Leaf) `
+        -or (Test-Path -LiteralPath (Join-Path $overlayLibrary 'obsolete-managed-module.lua'))) {
+        throw 'Managed native runtime overlay file-set synchronization test failed.'
+    }
     $marker = Enable-Tpf2mpDirectLaunch -GameExecutable $fakeGame
     if (-not $marker.created -or (Get-Content -LiteralPath $marker.path -Raw) -ne '1066780') {
         throw 'Native direct-launch marker test failed.'

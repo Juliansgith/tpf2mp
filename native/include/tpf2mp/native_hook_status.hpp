@@ -131,6 +131,15 @@ struct HookStatusView {
   std::int32_t suppressed_line_command_last_target{-1};
   std::size_t suppressed_line_command_last_stop_count{};
 
+  std::size_t suppressed_vehicle_command_queued{};
+  std::uint64_t suppressed_vehicle_command_captured{};
+  std::uint64_t suppressed_vehicle_command_consumed{};
+  std::uint64_t suppressed_vehicle_command_invalid{};
+  std::uint64_t suppressed_vehicle_command_dropped{};
+  int suppressed_vehicle_command_last_tag{-1};
+  std::int32_t suppressed_vehicle_command_last_target{-1};
+  std::int32_t suppressed_vehicle_command_last_secondary{-1};
+
   const std::map<void*, LuaStateObservation>& states;
 };
 

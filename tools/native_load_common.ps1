@@ -317,28 +317,49 @@ function Install-Tpf2mpRuntimeOverlay {
                     if (-not (Test-Path -LiteralPath $target -PathType Container)) {
                         throw "Runtime overlay target is not a directory: $target"
                     }
-                    $sourceFiles = @(Get-ChildItem -LiteralPath $source -Recurse -File | ForEach-Object {
-                        $_.FullName.Substring($source.TrimEnd('\').Length + 1)
-                    } | Sort-Object)
-                    $targetFiles = @(Get-ChildItem -LiteralPath $target -Recurse -File | ForEach-Object {
-                        $_.FullName.Substring($target.TrimEnd('\').Length + 1)
-                    } | Sort-Object)
-                    if (($sourceFiles -join "`n") -ne ($targetFiles -join "`n")) {
-                        throw "Existing runtime overlay has a different file set: $target"
-                    }
                     $managedMarker = Join-Path $target 'world.lua'
                     if (-not (Test-Path -LiteralPath $managedMarker -PathType Leaf) `
                         -or -not (Select-String -LiteralPath $managedMarker -SimpleMatch `
                             'local canonical = require "tpf2_mp/canonical"' -Quiet)) {
                         throw "Existing runtime library is not a managed TPF2MP overlay: $target"
                     }
+                    $sourceFiles = @(Get-ChildItem -LiteralPath $source -Recurse -File | ForEach-Object {
+                        $_.FullName.Substring($source.TrimEnd('\').Length + 1)
+                    } | Sort-Object)
+                    $targetFiles = @(Get-ChildItem -LiteralPath $target -Recurse -File | ForEach-Object {
+                        $_.FullName.Substring($target.TrimEnd('\').Length + 1)
+                    } | Sort-Object)
+                    $sourceFileSet = @{}
                     foreach ($relative in $sourceFiles) {
-                        if ((Get-FileHash -LiteralPath (Join-Path $source $relative) -Algorithm SHA256).Hash -ne `
-                            (Get-FileHash -LiteralPath (Join-Path $target $relative) -Algorithm SHA256).Hash) {
-                            Copy-Item -LiteralPath (Join-Path $source $relative) `
-                                -Destination (Join-Path $target $relative) -Force
+                        $sourceFileSet[$relative] = $true
+                        $sourceFile = Join-Path $source $relative
+                        $targetFile = Join-Path $target $relative
+                        if (-not (Test-Path -LiteralPath $targetFile -PathType Leaf) `
+                            -or (Get-FileHash -LiteralPath $sourceFile -Algorithm SHA256).Hash -ne `
+                                (Get-FileHash -LiteralPath $targetFile -Algorithm SHA256).Hash) {
+                            $targetParent = Split-Path -Parent $targetFile
+                            if (-not (Test-Path -LiteralPath $targetParent -PathType Container)) {
+                                New-Item -ItemType Directory -Force -Path $targetParent | Out-Null
+                            }
+                            Copy-Item -LiteralPath $sourceFile -Destination $targetFile -Force
                             $wasUpdated = $true
                         }
+                    }
+                    $targetPrefix = $target.TrimEnd('\') + '\'
+                    foreach ($relative in $targetFiles) {
+                        if ($sourceFileSet.ContainsKey($relative)) { continue }
+                        $obsolete = [IO.Path]::GetFullPath((Join-Path $target $relative))
+                        if (-not $obsolete.StartsWith($targetPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                            throw "Refusing obsolete overlay cleanup outside managed target: $obsolete"
+                        }
+                        Remove-Item -LiteralPath $obsolete -Force
+                        $wasUpdated = $true
+                    }
+                    $verifiedFiles = @(Get-ChildItem -LiteralPath $target -Recurse -File | ForEach-Object {
+                        $_.FullName.Substring($target.TrimEnd('\').Length + 1)
+                    } | Sort-Object)
+                    if (($sourceFiles -join "`n") -ne ($verifiedFiles -join "`n")) {
+                        throw "Managed runtime overlay file-set synchronization failed: $target"
                     }
                 }
                 else {

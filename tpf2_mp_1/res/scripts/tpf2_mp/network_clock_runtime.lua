@@ -144,11 +144,20 @@ function M.new(deps)
   end
   
   
-  function networkClock.maintainManualBootstrap()
+  function networkClock.maintainManualBootstrap(launcherReady)
     local cfg = config()
-    if not cfg.manualNetwork or state.networkMode ~= "network" or state.initialized then return end
-    if state.bridge.peerId ~= "player1" then return end
     local bootstrap = networkClock.manualBootstrap
+    -- The launcher can deliver its readiness event as soon as the paused
+    -- world has been woken, before this script reaches the conservative tick
+    -- 240 authority boundary.  Latch that one-shot handoff: losing it here
+    -- would leave later update ticks dependent on Transport Fever 2's stale
+    -- sandbox file cache and deadlock an otherwise healthy manual session.
+    if launcherReady == true then bootstrap.launcherReady = true end
+    local bootstrapReady = cfg.manualBootstrapReady == true
+      or bootstrap.launcherReady == true
+    if not cfg.manualNetwork or not bootstrapReady
+      or state.networkMode ~= "network" or state.initialized then return end
+    if state.bridge.peerId ~= "player1" then return end
     if state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
     if awaitingOrder() or networkPendingBarrierReason() then return end
     local authority = state.probes.networkAuthority or {}
@@ -175,6 +184,7 @@ function M.new(deps)
       nextAttemptTick = 240,
       attempts = 0,
       submitted = false,
+      launcherReady = false,
     }
   end
   return networkClock

@@ -12,6 +12,7 @@ local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local economyModule = require "tpf2_mp/economy"
 local financeModule = require "tpf2_mp/finance"
 local util = require "tpf2_mp/util"
@@ -35,6 +36,43 @@ local function baseConfig(overrides)
   }
   for key, value in pairs(overrides or {}) do result[key] = value end
   return result
+end
+
+do
+  local firstStop = {
+    stationGroupCid = "station_group:test:1", station = 0, terminal = 0,
+  }
+  local secondStop = {
+    stationGroupCid = "station_group:test:2", station = 0, terminal = 0,
+  }
+  local transaction = {
+    kind = "line.update",
+    data = { line = { stops = { util.deepCopy(firstStop) } } },
+  }
+  local exact = {
+    kind = "line.update", targetCid = "line:test", exists = true,
+    stops = { util.deepCopy(firstStop) },
+  }
+  local canonical, canonicalError = operationRuntimeModule.reconcileLinePostcondition(
+    transaction, "line:test", exact, false)
+  assert(canonical and canonicalError == nil and #canonical.stops == 1,
+    "exact replay line state did not satisfy the canonical postcondition")
+
+  local advanced = util.deepCopy(exact)
+  advanced.stops[2] = util.deepCopy(secondStop)
+  local rejected, replayError = operationRuntimeModule.reconcileLinePostcondition(
+    transaction, "line:test", advanced, false)
+  assert(rejected == nil
+      and replayError == "native line postcondition does not match the ordered transaction",
+    "a replay peer accepted a line state beyond the ordered intermediate state")
+
+  local optimistic, optimisticError = operationRuntimeModule.reconcileLinePostcondition(
+    transaction, "line:test", advanced, true)
+  assert(optimistic and optimisticError == nil and #optimistic.stops == 1
+      and optimistic.stops[1].stationGroupCid == firstStop.stationGroupCid,
+    "an optimistic origin could not certify its captured intermediate line state")
+  assert(#advanced.stops == 2,
+    "line postcondition reconciliation mutated the observed physical state")
 end
 
 do
@@ -268,9 +306,12 @@ do
     probes = { networkAuthority = { ready = true } },
   }
   local submissions = 0
+  local bootstrapReady = false
   local clock = networkClockRuntimeModule.new({
     getState = function() return current end,
-    config = function() return { manualNetwork = true } end,
+    config = function()
+      return { manualNetwork = true, manualBootstrapReady = bootstrapReady }
+    end,
     diagnosticLog = function() end,
     submitIntent = function(action)
       submissions = submissions + 1
@@ -280,10 +321,24 @@ do
     pendingBarrierReason = function() return nil end,
   })
   clock.maintainManualBootstrap()
+  assert(submissions == 0,
+    "manual clock bootstrap ran before the launcher confirmed both worlds")
+  current.tick = 120
+  clock.maintainManualBootstrap(true)
+  assert(submissions == 0 and clock.manualBootstrap.launcherReady == true,
+    "manual clock bootstrap did not latch an early launcher/UI readiness handoff")
+  current.tick = 240
+  clock.maintainManualBootstrap()
   assert(submissions == 1 and clock.manualBootstrap.submitted == true,
-    "manual clock bootstrap did not submit the host match intent")
+    "manual clock bootstrap lost its latched launcher/UI readiness handoff")
   clock.reset()
-  assert(clock.manualBootstrap.attempts == 0 and clock.manualBootstrap.nextAttemptTick == 240,
+  bootstrapReady = true
+  clock.maintainManualBootstrap()
+  assert(submissions == 2,
+    "manual clock bootstrap ignored a directly visible readiness marker")
+  clock.reset()
+  assert(clock.manualBootstrap.attempts == 0 and clock.manualBootstrap.nextAttemptTick == 240
+      and clock.manualBootstrap.launcherReady == false,
     "network clock reset did not restore bootstrap defaults")
 end
 
@@ -317,6 +372,7 @@ do
     TPF2MP_SESSION_ID = "injected-session",
     TPF2MP_BRIDGE_DIR = "C:/bridge/injected",
     TPF2MP_STARTING_CASH = "75000000",
+    TPF2MP_STARTING_COMPANY_PLAYER_IDS = "9478,9479,9478",
   }
   local cfg = runtimeConfig.read({
     source = {
@@ -325,13 +381,30 @@ do
       maxEpochs = 12,
     },
     environment = function(name) return environment[name] end,
+    bridgeMarkerExists = function() return false end,
+    bridgeMarkerValue = function() return "waiting" end,
   })
   assert(cfg.protocol == 3 and cfg.startNetwork == true, "injected network configuration was lost")
   assert(cfg.peerId == "player2" and cfg.sessionId == "injected-session",
     "injected peer/session identity was lost")
   assert(cfg.root == "C:/bridge/injected" and cfg.startingCash == 75000000,
     "injected bridge/economy configuration was lost")
+  assert(#cfg.startingCompanyPlayerIds == 2
+      and cfg.startingCompanyPlayerIds[1] == 9478
+      and cfg.startingCompanyPlayerIds[2] == 9479,
+    "launcher save-owner identities were not parsed deterministically")
   assert(cfg.localProxy == false, "network mode must disable the local proxy")
+  assert(cfg.manualBootstrapReady == false,
+    "manual network bootstrap ignored the launcher world-ready boundary")
+  local armed = runtimeConfig.read({
+    source = {},
+    environment = function(name) return environment[name] end,
+    bridgeMarkerValue = function(_, name)
+      return name == "manual-bootstrap-ready" and "ready" or nil
+    end,
+  })
+  assert(armed.manualBootstrapReady == true,
+    "manual network bootstrap did not arm after the launcher marker")
 end
 
 do
@@ -359,6 +432,65 @@ do
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
+
+  local prior = stateSchema.new(baseConfig({ startNetwork = false }), versions)
+  prior.initialized = true
+  prior.networkMode = "standalone"
+  prior.companyOrder = { "company:1", "company:2" }
+  prior.companies = {
+    ["company:1"] = { cid = "company:1", playerId = 9478 },
+    ["company:2"] = { cid = "company:2", playerId = 9479 },
+  }
+  prior.world.logicalOwners["4184"] = "company:1"
+  prior.world.autonomyFrozen = true
+  prior.world.lastFreezeResult = {
+    freeze = true,
+    towns = 2,
+    industries = 5,
+    errors = {},
+  }
+  prior.canonical.byCanonical["construction:test"] = {
+    canonicalId = "construction:test",
+    kind = "construction",
+    localId = 9500,
+    metadata = { owner = "company:2" },
+  }
+  local fresh = stateSchema.migrate(prior, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 20,
+    checkpointVersion = 2,
+  })
+  local hints = fresh.world.startingOwnershipHints
+  assert(fresh.initialized == false and hints
+      and hints.companyPlayerIds[1] == 9478 and hints.companyPlayerIds[2] == 9479
+      and hints.logicalOwners["4184"] == "company:1"
+      and hints.logicalOwners["9500"] == "company:2"
+      and fresh.world.autonomyFrozen == true
+      and fresh.world.lastFreezeResult.towns == 2
+      and fresh.world.lastFreezeResult.industries == 5
+      and fresh.recovery.freshNetworkBootstrap.autonomyFreezePreserved == true
+      and fresh.recovery.freshNetworkBootstrap.ownershipHintCompanies == 2
+      and fresh.recovery.freshNetworkBootstrap.ownershipHintEntities == 2,
+    "fresh network migration discarded validated ownership provenance")
+
+  prior.initialized = false
+  prior.world.lastFreezeResult.errors = { "incomplete freeze" }
+  prior.world.proposalConsensus.sessionFault = {
+    errorCode = "checkpoint-consensus-timeout:player1,player2",
+  }
+  local cleanRetry = stateSchema.migrate(prior, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 20,
+    checkpointVersion = 2,
+  })
+  assert(cleanRetry.initialized == false
+      and cleanRetry.world.autonomyFrozen == false
+      and cleanRetry.recovery.freshNetworkBootstrap.autonomyFreezePreserved == false
+      and cleanRetry.world.proposalConsensus.sessionFault == nil
+      and cleanRetry.recovery.freshNetworkBootstrap ~= nil,
+    "a faulted uninitialised state leaked across a new network session")
 end
 
 do

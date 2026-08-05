@@ -33,6 +33,80 @@ local function commandFactory(name)
   return nil, "unavailable"
 end
 
+local function probeVector(value, limit)
+  local result = { valueType = type(value), length = nil, entries = {} }
+  if type(value) ~= "table" and type(value) ~= "userdata" then return result end
+  local lengthOk, length = pcall(function() return #value end)
+  if lengthOk and type(length) == "number" then result.length = length end
+  for index = 1, math.min(tonumber(result.length) or 0, limit or 8) do
+    local readOk, entry = pcall(function() return value[index] end)
+    result.entries[index] = readOk and {
+      valueType = type(entry),
+      scalar = (type(entry) == "string" or type(entry) == "number"
+        or type(entry) == "boolean") and entry or nil,
+    } or { error = tostring(entry) }
+  end
+  return result
+end
+
+local function probeVehicleModel(name)
+  local result = { name = name }
+  local repository = api and api.res and api.res.modelRep
+  if not repository or not available(repository.find) or not available(repository.get) then
+    result.error = "model repository unavailable"
+    return result
+  end
+  local idOk, id = pcall(repository.find, name)
+  result.modelId = idOk and tonumber(id) or nil
+  if not result.modelId or result.modelId < 0 then
+    result.error = idOk and "model not found" or tostring(id)
+    return result
+  end
+  local modelOk, model = pcall(repository.get, result.modelId)
+  if not modelOk or model == nil then
+    result.error = tostring(model)
+    return result
+  end
+  local function field(value, key)
+    local ok, nested = pcall(function() return value and value[key] end)
+    return ok and nested or nil
+  end
+  local metadata = field(model, "metadata")
+  local transportVehicle = field(metadata, "transportVehicle")
+  result.modelType = type(model)
+  result.metadataType = type(metadata)
+  result.transportVehicleType = type(transportVehicle)
+  for _, key in ipairs({ "compartments", "compartmentsList" }) do
+    local compartments = field(transportVehicle, key)
+    result[key] = probeVector(compartments, 4)
+    local first = field(compartments, 1)
+    if first ~= nil then
+      result[key].firstType = type(first)
+      result[key].firstLoadConfigs = probeVector(field(first, "loadConfigs"), 4)
+    end
+  end
+  return result
+end
+
+local function probeVehicleTypeDefaults()
+  local result = {}
+  for _, name in ipairs({ "VehiclePart", "TransportVehiclePart", "TransportVehicleConfig" }) do
+    local constructor = api and api.type and api.type[name] and api.type[name].new
+    local ok, value = available(constructor) and pcall(constructor) or false, nil
+    if available(constructor) then ok, value = pcall(constructor) end
+    result[name] = { constructed = ok == true, valueType = type(value) }
+    if ok and value ~= nil then
+      for _, field in ipairs({ "loadConfig", "autoLoadConfig", "vehicles", "vehicleGroups" }) do
+        local readOk, nested = pcall(function() return value[field] end)
+        if readOk and nested ~= nil then result[name][field] = probeVector(nested, 4) end
+      end
+    elseif value ~= nil then
+      result[name].error = tostring(value)
+    end
+  end
+  return result
+end
+
 local function edgeObjectFactories()
   local candidates = {}
   local function add(label, factory)
@@ -282,6 +356,12 @@ function M.capabilities()
     saveGameSource = saveGameSource,
     saveGameError = saveGameError,
     sendCommandNilRejected = sendCommandNilRejected,
+    vehicleConfigProbe = {
+      typeDefaults = probeVehicleTypeDefaults(),
+      nohab = probeVehicleModel("vehicle/train/nohab_m1_v2.mdl"),
+      bc4 = probeVehicleModel("vehicle/waggon/bc4_v2.mdl"),
+      open1910 = probeVehicleModel("vehicle/waggon/open_1910.mdl"),
+    },
   })
 end
 
@@ -1861,6 +1941,40 @@ function M.runStationUpgradeCodecTest()
   api.cmd.sendCommand(commandOrError, function(_, success)
     if success ~= true then
       marker("station-upgrade-codec-complete", {
+        success = false, stage = "dispatch-apply", error = "script-event command failed",
+      })
+    end
+  end)
+  return true
+end
+
+function M.runVehiclePurchaseTest()
+  M.capabilities()
+  local sendScriptEvent = commandFactory("sendScriptEvent")
+  if not (sendScriptEvent and api and api.cmd and available(api.cmd.sendCommand)) then
+    marker("vehicle-purchase-codec-complete", {
+      success = false,
+      stage = "dispatch-capabilities",
+      error = "supported script-event dispatch API unavailable",
+    })
+    return false
+  end
+  local commandOk, commandOrError = pcall(
+    sendScriptEvent,
+    "tpf2_mp_probe.lua",
+    "tpf2mp-probe",
+    "vehicle-purchase-codec-test",
+    {}
+  )
+  if not commandOk then
+    marker("vehicle-purchase-codec-complete", {
+      success = false, stage = "dispatch-command", error = tostring(commandOrError),
+    })
+    return false
+  end
+  api.cmd.sendCommand(commandOrError, function(_, success)
+    if success ~= true then
+      marker("vehicle-purchase-codec-complete", {
         success = false, stage = "dispatch-apply", error = "script-event command failed",
       })
     end

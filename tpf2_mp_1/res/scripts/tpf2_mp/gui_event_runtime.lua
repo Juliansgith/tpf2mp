@@ -7,6 +7,7 @@ local operationCodec = require "tpf2_mp/operation_codec"
 local runtimeConfig = require "tpf2_mp/runtime_config"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
+local guiVehicleCaptureRuntimeModule = require "tpf2_mp/gui_vehicle_capture_runtime"
 
 local M = {}
 
@@ -38,6 +39,10 @@ function M.new(deps)
   local state = setmetatable({}, {
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
+  })
+  guiVehicleCaptureRuntimeModule.install(gui, {
+    queueAction = queueAction,
+    maxStops = operationCodec.MAX_STOPS,
   })
 
   local proposalCost
@@ -265,9 +270,23 @@ function M.new(deps)
     return math.max(0, tonumber(gate.suppressed) or 0), nil, gate
   end
   
+  local nativeBuildCaptureFailure
+
   local function queueNetworkProposalCapture(pending)
     local snapshot = pending and pending.proposalSnapshot
     if not snapshot then return false, "native build capture had no proposal snapshot" end
+    if pending.deferredConstructionRebase == true then
+      local rebased, rebaseError = gui.rebaseConstructionPreviewSnapshot(
+        util.deepCopy(snapshot), pending.constructionPlacement
+      )
+      if not rebased then
+        return nativeBuildCaptureFailure(
+          "suppressed construction click could not rebase its lightweight preview",
+          { error = tostring(rebaseError) }
+        )
+      end
+      snapshot = rebased
+    end
     local accessDecision = world.checkProposalAccess(state.world, snapshot, pending.companyCid)
     if not accessDecision.allowed then
       gui.nativeBuildCapture.orphaned = (gui.nativeBuildCapture.orphaned or 0) + 1
@@ -309,6 +328,7 @@ function M.new(deps)
         captureFrame = gui.frames,
         captureDigest = captureDigest,
         exactApply = pending.exact == true,
+        deferredConstructionRebase = pending.deferredConstructionRebase == true,
         suppressedCalls = pending.suppressedCalls or 1,
         previewAgeFrames = math.max(0, gui.frames - (pending.frame or gui.frames)),
         suppressionWaitFrames = math.max(0,
@@ -328,7 +348,7 @@ function M.new(deps)
     return true
   end
   
-  local function nativeBuildCaptureFailure(message, details)
+  nativeBuildCaptureFailure = function(message, details)
     gui.nativeBuildCapture.orphaned = (gui.nativeBuildCapture.orphaned or 0) + 1
     gui.pendingNetworkBuildPreview = nil
     gui.pendingNetworkBuildExact = nil
@@ -494,6 +514,25 @@ function M.new(deps)
     else
       gui.pendingNetworkBuildPreview = pending
     end
+    return true
+  end
+
+  local function armLightweightConstructionPreview(snapshot, placement, companyCid, sourceId)
+    local snapshotState = gui.snapshot or {}
+    if snapshotState.networkMode ~= "network" or type(placement) ~= "table"
+      or not gui.proposalSnapshotHasConstructionChange(snapshot) then return false end
+    if gui.buildGateSuppressedSeen == nil then
+      local suppressed, statusError = currentBuildGateSuppressed()
+      if suppressed == nil then
+        gui.lastError = "cannot arm vanilla construction capture: " .. tostring(statusError)
+        renderGui()
+        return false
+      end
+      gui.buildGateSuppressedSeen = suppressed
+    end
+    gui.pendingNetworkBuildPreview = gui.lightweightConstructionPending(
+      snapshot, placement, companyCid, sourceId)
+    gui.nativeBuildCapture.constructionPreviewsArmed = (gui.nativeBuildCapture.constructionPreviewsArmed or 0) + 1
     return true
   end
   
@@ -847,7 +886,7 @@ function M.new(deps)
     gui.nativeLineKnownIds = util.deepCopy(currentLines)
     return queued > 0
   end
-  
+
   local function attemptGuiNetworkAuthorityBootstrap()
     installNativeCommandObserver()
     markNativeContext("gui")
@@ -976,6 +1015,8 @@ function M.new(deps)
       nativeLineCommandCaptureApi =
         type(rawget(_G, "tpf2mp_native_take_line_command")) == "function"
         or type(rawget(_G, "tpf2mp_native_take_suppressed_line_command")) == "function",
+      nativeVehicleCommandCaptureApi =
+        type(rawget(_G, "tpf2mp_native_take_suppressed_vehicle_command")) == "function",
       interfaceSendScriptEvent = type(interface.sendScriptEvent) == "function",
       simPersonCount = systems.simPersonSystem and type(systems.simPersonSystem.getCount) == "function" or false,
       simPersonsForLine = systems.simPersonSystem and type(systems.simPersonSystem.getSimPersonsForLine) == "function" or false,
@@ -1059,6 +1100,8 @@ function M.new(deps)
         if handoffLines then gui.nativeLineKnownIds = handoffLines end
         gui.nativeLineRecentAdded = {}
         gui.pendingNativeLinePassThroughCaptures = {}
+        gui.pendingNativeVehicleGuiCaptures = {}
+        gui.pendingNativeVehicleCommands = {}
         gui.awaitingManualHandoff = false
         local windowOk, windowError = pcall(ensureWindow)
         if not windowOk then gui.lastError = tostring(windowError) end
@@ -1096,6 +1139,8 @@ function M.new(deps)
         if not speedOk then gui.lastError = tostring(speedError) end
         local lineOk, lineError = pcall(gui.processSuppressedNativeLineCommandCapture)
         if not lineOk then gui.lastError = tostring(lineError) end
+        local vehicleOk, vehicleError = pcall(gui.processSuppressedNativeVehicleCommandCapture)
+        if not vehicleOk then gui.lastError = tostring(vehicleError) end
         local captureOk, captureWork = pcall(processSuppressedNativeBuildCapture, false)
         if not captureOk then gui.lastError = tostring(captureWork) end
         local proposalOk, proposalWork = pcall(processGuiProposalQueue)
@@ -1119,6 +1164,9 @@ function M.new(deps)
       if not speedOk then gui.lastError = tostring(speedError) end
       local lineOk, lineError = pcall(gui.processSuppressedNativeLineCommandCapture)
       if not lineOk then gui.lastError = tostring(lineError) end
+      local nativeVehicleOk, nativeVehicleError =
+        pcall(gui.processSuppressedNativeVehicleCommandCapture)
+      if not nativeVehicleOk then gui.lastError = tostring(nativeVehicleError) end
       local buildCaptureOk, buildCaptureError = pcall(processSuppressedNativeBuildCapture, false)
       if not buildCaptureOk then gui.lastError = tostring(buildCaptureError) end
       local proposalOk, proposalWork = pcall(processGuiProposalQueue)
@@ -1242,6 +1290,10 @@ function M.new(deps)
               balanceBefore = gui.builderContext and gui.builderContext.balanceBefore or nil,
               proposalSnapshot = gui.lastConstructionPreviewSnapshot,
             }
+            armLightweightConstructionPreview(
+              gui.lastConstructionPreviewSnapshot, constructionPlacement,
+              activeCompanyCid, tostring(id)
+            )
             return nil
           end
           if networkConstructionPreview then
@@ -1367,16 +1419,25 @@ function M.new(deps)
                 vehicleConfig = type(param) == "table" and param.vehicleConfig or nil,
               } })
             else
-              local depotId = gui.selectedDepotId
-              if not depotId then
-                gui.lastError = "select your railway depot before opening the vehicle manager"
-                renderGui()
+              local capture = {
+                kind = "vehicle.buy",
+                depotLocalId = gui.selectedDepotId,
+                vehicleConfig = type(param) == "table" and util.deepCopy(param.vehicleConfig) or nil,
+              }
+              if type(rawget(_G, "tpf2mp_native_take_suppressed_vehicle_command")) == "function" then
+                gui.pendingNativeVehicleGuiCaptures[#gui.pendingNativeVehicleGuiCaptures + 1] = {
+                  capture = capture,
+                  capturedFrame = gui.frames,
+                  maximumFrame = gui.frames + 240,
+                }
+              elseif capture.depotLocalId then
+                -- Compatibility fallback for an older hook. It remains useful
+                -- for development, but the capability report makes clear that
+                -- the real visitor correlation is absent.
+                queueAction({ type = "operation.capture", capture = capture })
               else
-                queueAction({ type = "operation.capture", capture = {
-                  kind = "vehicle.buy",
-                  depotLocalId = depotId,
-                  vehicleConfig = type(param) == "table" and param.vehicleConfig or nil,
-                } })
+                gui.lastError = "vehicle purchase requires native hook 0.13 or a selected railway depot"
+                renderGui()
               end
             end
           else scheduleVehicleCapture(id, param) end

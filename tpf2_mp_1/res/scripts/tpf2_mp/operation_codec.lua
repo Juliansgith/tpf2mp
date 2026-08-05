@@ -99,18 +99,25 @@ local function validateVehicleConfig(value)
     if not exactFields(part, { "model", "reversed", "loadConfig", "color", "logo" }) then
       return false, "vehicle part " .. index .. " has unknown or missing fields"
     end
+    local railwayModel = type(part.model) == "string"
+      and (part.model:sub(1, 14) == "vehicle/train/"
+        or part.model:sub(1, 15) == "vehicle/waggon/")
     if not boundedString(part.model, 240, false)
-      or part.model:sub(1, 14) ~= "vehicle/train/" or part.model:sub(-4) ~= ".mdl" then
+      or not railwayModel or part.model:sub(-4) ~= ".mdl" then
       return false, "vehicle part " .. index .. " is not a canonical railway model resource"
     end
     if type(part.reversed) ~= "boolean" or not validateColor(part.color)
       or not boundedString(part.logo, 240, true) then
       return false, "vehicle part " .. index .. " has invalid settings"
     end
-    local loadArray, loadCount = array(part.loadConfig, true)
-    if not loadArray or loadCount > 64 then return false, "vehicle part loadConfig is invalid" end
-    for _, cargo in ipairs(part.loadConfig) do
-      if not boundedInteger(cargo, -1, 255) then return false, "vehicle loadConfig value is invalid" end
+    local loadArray, loadCount = array(part.loadConfig, false)
+    if not loadArray or loadCount < 1 or loadCount > 64 then
+      return false, "vehicle part loadConfig must contain one entry per model compartment"
+    end
+    for _, selection in ipairs(part.loadConfig) do
+      if not boundedInteger(selection, 0, 255) then
+        return false, "vehicle loadConfig selection is invalid"
+      end
     end
   end
   local groupsArray, groupCount = array(value.vehicleGroups, false)
@@ -164,7 +171,7 @@ function M.validate(transaction)
   elseif kind == "vehicle.assign" then
     ok = exactFields(data, { "targetCid", "lineCid", "stopIndex" })
       and canonicalId(data.targetCid, "vehicle") and canonicalId(data.lineCid, "line")
-      and boundedInteger(data.stopIndex, 0, M.MAX_STOPS - 1)
+      and boundedInteger(data.stopIndex, -1, M.MAX_STOPS - 1)
   elseif kind == "vehicle.stop" then
     ok = exactFields(data, { "targetCid", "stopped" })
       and canonicalId(data.targetCid, "vehicle") and type(data.stopped) == "boolean"
@@ -225,13 +232,86 @@ function M.defaultLine(stationGroupCids)
   return { stops = stops }
 end
 
-function M.defaultVehicleConfig(modelNames)
+local function safeField(value, key)
+  local valueType = type(value)
+  if valueType ~= "table" and valueType ~= "userdata" then return nil end
+  local ok, nested = pcall(function() return value[key] end)
+  return ok and nested or nil
+end
+
+local function vectorLength(value)
+  local valueType = type(value)
+  if valueType ~= "table" and valueType ~= "userdata" then return nil end
+  local ok, length = pcall(function() return #value end)
+  length = ok and tonumber(length) or nil
+  if not length or length < 0 or length ~= math.floor(length) then return nil end
+  return length
+end
+
+local function repositoryModelId(gameApi, name)
+  local rep = gameApi and gameApi.res and gameApi.res.modelRep
+  if not rep then return nil, "model repository is unavailable" end
+  for _, method in ipairs({ "find", "getIndex" }) do
+    if util.isCallable(rep[method]) then
+      local ok, value = pcall(rep[method], name)
+      value = ok and tonumber(value) or nil
+      if value and value >= 0 then return value end
+    end
+  end
+  return nil, "railway model is unavailable locally: " .. tostring(name)
+end
+
+local function modelCompartmentLayout(gameApi, name, knownModelId)
+  local rep = gameApi and gameApi.res and gameApi.res.modelRep
+  if not rep or not util.isCallable(rep.get) then
+    return nil, "model metadata repository is unavailable"
+  end
+  local id, idError = knownModelId, nil
+  if id == nil then id, idError = repositoryModelId(gameApi, name) end
+  if id == nil then return nil, idError end
+  local modelOk, model = pcall(rep.get, id)
+  if not modelOk or model == nil then
+    return nil, "cannot read railway model metadata: " .. tostring(name)
+  end
+  local metadata = safeField(model, "metadata")
+  local transportVehicle = safeField(metadata, "transportVehicle")
+  local compartments = safeField(transportVehicle, "compartments")
+  local count = vectorLength(compartments)
+  if not count or count < 1 or count > 64 then
+    return nil, "railway model has no valid transport compartments: " .. tostring(name)
+  end
+  local layout = {}
+  for index = 1, count do
+    local compartment = safeField(compartments, index)
+    local loadConfigs = safeField(compartment, "loadConfigs")
+    local loadConfigCount = vectorLength(loadConfigs)
+    if not loadConfigCount or loadConfigCount < 1 or loadConfigCount > 256 then
+      return nil, "railway model compartment has no valid load configurations: "
+        .. tostring(name) .. "#" .. tostring(index)
+    end
+    layout[index] = loadConfigCount
+  end
+  return layout, nil, id
+end
+
+function M.defaultVehicleConfig(modelNames, gameApi)
   local vehicles, groups = {}, {}
   for _, name in ipairs(modelNames or {}) do
+    name = tostring(name)
+    local layout, layoutError = modelCompartmentLayout(gameApi, name)
+    if not layout then return nil, layoutError end
+    local loadConfig = {}
+    for compartment = 1, #layout do
+      -- BuyVehicle on Build 35924 requires a concrete zero-based selection;
+      -- passing the API-documented automatic sentinel (-1) reaches native
+      -- assertions before the command can commit.  Keep automatic cargo
+      -- switching enabled on TransportVehiclePart.autoLoadConfig instead.
+      loadConfig[compartment] = 0
+    end
     vehicles[#vehicles + 1] = {
-      model = tostring(name),
+      model = name,
       reversed = false,
-      loadConfig = {},
+      loadConfig = loadConfig,
       color = { r = 1000, g = 1000, b = 1000 },
       logo = "",
     }
@@ -292,16 +372,7 @@ local function materialiseLine(transaction, options)
 end
 
 local function modelId(options, name)
-  local rep = options.api and options.api.res and options.api.res.modelRep
-  if not rep then return nil, "model repository is unavailable" end
-  for _, method in ipairs({ "find", "getIndex" }) do
-    if util.isCallable(rep[method]) then
-      local ok, value = pcall(rep[method], name)
-      value = ok and tonumber(value) or nil
-      if value and value >= 0 then return value end
-    end
-  end
-  return nil, "railway model is unavailable locally: " .. tostring(name)
+  return repositoryModelId(options.api, name)
 end
 
 local function materialiseVehicleConfig(encoded, options)
@@ -310,9 +381,24 @@ local function materialiseVehicleConfig(encoded, options)
   for index, source in ipairs(encoded.vehicles) do
     local id, err = modelId(options, source.model)
     if not id then return nil, err end
+    local layout; layout, err = modelCompartmentLayout(options.api, source.model, id)
+    if not layout then return nil, err end
+    if #source.loadConfig ~= #layout then
+      return nil, "vehicle loadConfig/model compartment mismatch: " .. tostring(source.model)
+    end
+    for compartment, selection in ipairs(source.loadConfig) do
+      if selection < 0 or selection >= layout[compartment] then
+        return nil, "vehicle loadConfig selection is unavailable in model compartment: "
+          .. tostring(source.model) .. "#" .. tostring(compartment)
+      end
+    end
     local part = newType(options.api, "VehiclePart")
     part.modelId = id
     part.reversed = source.reversed
+    -- A newly constructed VehiclePart owns an empty generated vector. Build
+    -- 35924 only marshals it into BuyVehicle correctly when the complete Lua
+    -- array is assigned; indexed writes are suitable for an existing,
+    -- pre-sized config but leave a fresh command value unusable.
     part.loadConfig = util.deepCopy(source.loadConfig)
     part.color = vec3(options.api, source.color)
     part.logo = source.logo
@@ -327,7 +413,14 @@ local function materialiseVehicleConfig(encoded, options)
     vehicle.purchaseTime = 0
     vehicle.maintenanceState = 1
     vehicle.targetMaintenanceState = 1
-    vehicle.autoLoadConfig = util.deepCopy(source.loadConfig)
+    local autoLoadConfig = {}
+    for compartment = 1, #source.loadConfig do
+      -- Build 35924's generated type stores an automatic-selection flag per
+      -- compartment separately from VehiclePart.loadConfig. Stock purchases
+      -- are automatic; the public API's replacement example uses the same 1.
+      autoLoadConfig[compartment] = 1
+    end
+    vehicle.autoLoadConfig = autoLoadConfig
     config.vehicles[index] = vehicle
   end
   return config

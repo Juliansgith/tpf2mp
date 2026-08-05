@@ -63,6 +63,12 @@ class CommitHost:
         self.ack_digests: dict[int, dict[str, str]] = {}
         self.mobility_digests: dict[str, dict[str, str]] = {}
         self.mobility_outcomes: dict[str, str] = {}
+        self.vehicle_lifecycle_digests: dict[str, dict[str, str]] = {}
+        self.vehicle_lifecycle_outcomes: dict[str, str] = {}
+        self.vehicle_phase_digests: dict[str, dict[str, str]] = {}
+        self.vehicle_phase_outcomes: dict[str, str] = {}
+        self.vehicle_phase_divergence_streak = 0
+        self.vehicle_phase_state = "unknown"
         self.clock_requested_speed = 0
         self.clock_effective_speed = 0
         self.clock_generation = 0
@@ -130,6 +136,10 @@ class CommitHost:
                 "lastError": self.last_error,
                 "matchFingerprint": self.match_fingerprint,
                 "mobilityOutcomes": dict(self.mobility_outcomes),
+                "vehicleLifecycleOutcomes": dict(self.vehicle_lifecycle_outcomes),
+                "vehiclePhaseOutcomes": dict(self.vehicle_phase_outcomes),
+                "vehiclePhaseDivergenceStreak": self.vehicle_phase_divergence_streak,
+                "vehiclePhaseState": self.vehicle_phase_state,
                 "clock": {
                     "requestedSpeed": self.clock_requested_speed,
                     "effectiveSpeed": self.clock_effective_speed,
@@ -1237,6 +1247,51 @@ class CommitHost:
                                 print(f"mobility sample {sample_key} converged at {digest}")
                             else:
                                 print(f"MOBILITY DIVERGENCE at {sample_key}: {peer_digests}")
+                    digest_groups = (
+                        (
+                            "vehicle lifecycle",
+                            payload.get("vehicleLifecycleDigest"),
+                            self.vehicle_lifecycle_digests,
+                            self.vehicle_lifecycle_outcomes,
+                        ),
+                        (
+                            "vehicle route phase",
+                            payload.get("vehiclePhaseDigest"),
+                            self.vehicle_phase_digests,
+                            self.vehicle_phase_outcomes,
+                        ),
+                    )
+                    for label, scoped_digest, digest_store, outcome_store in digest_groups:
+                        if not isinstance(scoped_digest, str) or not scoped_digest:
+                            continue
+                        scoped_peer_digests = digest_store.setdefault(sample_key, {})
+                        scoped_peer_digests[peer] = scoped_digest
+                        if len(scoped_peer_digests) < len(self.required_peers):
+                            continue
+                        scoped_outcome = (
+                            "converged" if len(set(scoped_peer_digests.values())) == 1
+                            else "diverged"
+                        )
+                        if outcome_store.get(sample_key) == scoped_outcome:
+                            continue
+                        outcome_store[sample_key] = scoped_outcome
+                        if label == "vehicle route phase":
+                            if scoped_outcome == "diverged":
+                                self.vehicle_phase_divergence_streak += 1
+                                self.vehicle_phase_state = (
+                                    "warning" if self.vehicle_phase_divergence_streak >= 3
+                                    else "observing"
+                                )
+                            else:
+                                self.vehicle_phase_divergence_streak = 0
+                                self.vehicle_phase_state = "converged"
+                        if scoped_outcome == "converged":
+                            print(f"{label} sample {sample_key} converged at {scoped_digest}")
+                        else:
+                            print(
+                                f"{label.upper()} DIVERGENCE at {sample_key}: "
+                                f"{scoped_peer_digests}"
+                            )
 
     def _broadcast(self, message: Mapping[str, Any]) -> None:
         failed: list[str] = []

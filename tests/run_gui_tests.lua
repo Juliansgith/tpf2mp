@@ -8,6 +8,7 @@ local nativeCommandObserver = nil
 local nativeBuildGate = { enabled = true, authorizations = 0, allowed = 0, suppressed = 0 }
 local nativeSpeedRequests = {}
 local nativeLineCommands = {}
+local nativeVehicleCommands = {}
 local authorizedCommandTags = {}
 local issuedCanonicalCommands = {}
 local lineEntities = {}
@@ -44,6 +45,11 @@ end
 tpf2mp_native_take_suppressed_line_command = function()
   if #nativeLineCommands == 0 then return nil end
   return table.remove(nativeLineCommands, 1)
+end
+
+tpf2mp_native_take_suppressed_vehicle_command = function()
+  if #nativeVehicleCommands == 0 then return nil end
+  return table.remove(nativeVehicleCommands, 1)
 end
 
 tpf2mp_native_authorize_command = function(tag)
@@ -131,6 +137,24 @@ game = {
 }
 
 api = {
+  res = {
+    modelRep = {
+      find = function(name)
+        return ({
+          ["vehicle/train/db_v100_v2.mdl"] = 17,
+          ["vehicle/waggon/open_1910.mdl"] = 18,
+        })[name] or -1
+      end,
+      get = function(id)
+        local loadConfigCount = id == 18 and 4 or 1
+        local loadConfigs = {}
+        for index = 1, loadConfigCount do loadConfigs[index] = {} end
+        return { metadata = { transportVehicle = {
+          compartments = { { loadConfigs = loadConfigs } },
+        } } }
+      end,
+    },
+  },
   gui = {
     comp = { TextView = TextView, Button = Button, Component = Component, Window = Window },
     layout = { BoxLayout = BoxLayout },
@@ -211,6 +235,8 @@ assert(sentEvents[1].param.capabilities.nativeGameSpeedCaptureApi == true,
   "native game-speed capture API was not reported")
 assert(sentEvents[1].param.capabilities.nativeLineCommandCaptureApi == true,
   "native line-command capture API was not reported")
+assert(sentEvents[1].param.capabilities.nativeVehicleCommandCaptureApi == true,
+  "native vehicle-command capture API was not reported")
 assert(sentEvents[2].id == "tpf2mp" and sentEvents[2].name == "snapshot.request", "GUI used the wrong snapshot envelope")
 
 nativeCommandObserver({
@@ -632,7 +658,37 @@ assert(exactCapture.__observedCost == 7654
     .. tostring(exactCapture.__observedCost) .. " track="
     .. tostring(exactCapture.__builderData and exactCapture.__builderData.trackType)
     .. " catenary="
-    .. tostring(exactCapture.__builderData and exactCapture.__builderData.catenary))
+     .. tostring(exactCapture.__builderData and exactCapture.__builderData.catenary))
+
+-- After one successful placement, Build 35924 reuses the same construction
+-- template and can report the next native suppression before builder.apply.
+-- The lightweight repeated-preview path must therefore keep a cheap pending
+-- latch; otherwise every second station produces dust but no replicated build.
+local repeatedStationCaptureCount = #proposalCaptureEvents()
+exactPreview.proposal.constructionsToAdd[1].transf[13] = 888
+exactPreview.proposal.streetProposal.nodesToAdd[1].comp.position.x = 888
+exactPreview.proposal.streetProposal.nodesToAdd[2].comp.position.x = 948
+assert(script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", exactPreview) == nil,
+  "same-template station preview was unexpectedly vetoed")
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+for _ = 1, 3 do script.guiUpdate() end
+assert(#proposalCaptureEvents() == repeatedStationCaptureCount,
+  "suppression-first station capture settled before its exact apply grace period")
+script.guiHandleEvent("constructionBuilder", "builder.apply", {
+  data = { costs = 0 },
+  proposal = { streetProposal = {
+    edgesToAdd = {}, nodesToAdd = {}, edgesToRemove = {}, nodesToRemove = {},
+  }},
+  result = {},
+})
+for _ = 1, 3 do script.guiUpdate() end
+captures = proposalCaptureEvents()
+assert(#captures == repeatedStationCaptureCount + 1,
+  "suppression-first repeated station click was not captured")
+local repeatedStationCapture = captures[#captures].param.proposalSnapshot
+assert(repeatedStationCapture.__constructionAdditions["1"].transf["13"] == 888
+    and repeatedStationCapture.streetProposal.nodesToAdd["1"].comp.position.x == 888,
+  "repeated station capture did not rebase the cached template onto the clicked placement")
 
 -- The stock 8-track/160 m graph has 200 nodes and 192 edges. Verify that the
 -- construction-only projector budget keeps its tail intact; the old generic
@@ -707,7 +763,7 @@ script.guiHandleEvent("constructionBuilder", "builder.apply", {
 nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
 for _ = 1, 4 do script.guiUpdate() end
 captures = proposalCaptureEvents()
-assert(#captures == captureCount + 3, "large station click was not captured")
+assert(#captures == captureCount + 4, "large station click was not captured")
 local largeCapture = captures[#captures].param.proposalSnapshot
 assert(largeCapture.streetProposal.edgesToAdd["192"].entity == -5192
     and largeCapture.streetProposal.nodesToAdd["200"].entity == -1200,
@@ -721,13 +777,13 @@ assert(largeCapture.__constructionAdditions["1"].transf["13"] == 1120
 
 nativeCommandObserver({ proposal = networkPreview.proposal })
 for _ = 1, 2 do script.guiUpdate() end
-assert(#proposalCaptureEvents() == captureCount + 3,
+assert(#proposalCaptureEvents() == captureCount + 4,
   "Lua issuing-path observation bypassed native suppression confirmation")
 nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
 for _ = 1, 65 do script.guiUpdate() end
-assert(#proposalCaptureEvents() == captureCount + 4,
+assert(#proposalCaptureEvents() == captureCount + 5,
   "Lua issuing-path build was not correlated with its native suppression: got "
-    .. tostring(#proposalCaptureEvents()) .. " expected " .. tostring(captureCount + 4))
+    .. tostring(#proposalCaptureEvents()) .. " expected " .. tostring(captureCount + 5))
 
 -- Build 35924's modular station editor issues several native BuildProposal
 -- visitors for one logical module edit. A single bounded construction snapshot
@@ -758,13 +814,13 @@ assert(script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", mu
   "station module edit preview was unexpectedly vetoed")
 nativeBuildGate.suppressed = nativeBuildGate.suppressed + 4
 for _ = 1, 65 do script.guiUpdate() end
-assert(#proposalCaptureEvents() == captureCount + 5,
+assert(#proposalCaptureEvents() == captureCount + 6,
   "four native station-editor suppressions were not coalesced into one logical capture")
 
 assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", networkPreview) == nil)
 nativeBuildGate.suppressed = nativeBuildGate.suppressed + 2
 for _ = 1, 4 do script.guiUpdate() end
-assert(#proposalCaptureEvents() == captureCount + 5,
+assert(#proposalCaptureEvents() == captureCount + 6,
   "ambiguous multi-command track input was incorrectly coalesced")
 
 for _ = 1, 29 do script.guiUpdate() end
@@ -865,6 +921,38 @@ assert(originAck.name == "operation.result"
     and originAck.param.outputLocalId == 799
     and originAck.param.originApplied == true,
   "optimistic vanilla line result was not returned to canonical finalisation")
+
+-- Buying is pre-mutation: the stock GUI contributes the consist while the
+-- pinned visitor contributes the actual player/depot identity. Retain the
+-- live train+waggon resource namespaces, then exercise direct SetLine capture.
+script.guiHandleEvent("vehicleManager", "accept", {
+  entity = -1,
+  vehicleConfig = {
+    "vehicle/train/db_v100_v2.mdl",
+    "vehicle/waggon/open_1910.mdl",
+    "vehicle/waggon/open_1910.mdl",
+  },
+})
+nativeVehicleCommands[#nativeVehicleCommands + 1] = "V1|13|100|750|0"
+script.guiUpdate()
+local vanillaBuy = sentEvents[#sentEvents]
+assert(vanillaBuy.name == "intent" and vanillaBuy.param.type == "operation.capture"
+  and vanillaBuy.param.capture.kind == "vehicle.buy"
+  and vanillaBuy.param.capture.depotLocalId == 750
+  and vanillaBuy.param.capture.nativePlayerId == 100
+  and vanillaBuy.param.capture.vehicleConfig[1] == "vehicle/train/db_v100_v2.mdl"
+  and vanillaBuy.param.capture.vehicleConfig[2] == "vehicle/waggon/open_1910.mdl",
+  "suppressed stock train purchase was not correlated into vehicle.buy")
+
+nativeVehicleCommands[#nativeVehicleCommands + 1] = "V1|6|760|700|-1"
+script.guiUpdate()
+local vanillaAssign = sentEvents[#sentEvents]
+assert(vanillaAssign.name == "intent" and vanillaAssign.param.type == "operation.capture"
+  and vanillaAssign.param.capture.kind == "vehicle.assign"
+  and vanillaAssign.param.capture.targetLocalId == 760
+  and vanillaAssign.param.capture.lineLocalId == 700
+  and vanillaAssign.param.capture.stopIndex == -1,
+  "suppressed stock automatic-stop SetLine was not converted into vehicle.assign")
 
 assert(enabled["finances.borrow"] == false and enabled["finances.repay"] == false, "finance controls were not disabled")
 

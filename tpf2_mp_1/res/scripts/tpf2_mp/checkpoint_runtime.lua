@@ -168,6 +168,27 @@ function M.new(env)
     local firstRetainedSeq = #items > 0 and items[1].seq or nextEventSeq
     local lastEventSeq = nextEventSeq - 1
     local structuralDigest = currentState().probes.structural and currentState().probes.structural.digest or nil
+    -- Keep a compact decomposition beside the aggregate probe.  It is not
+    -- convergence material; it lets a failed cross-peer comparison identify
+    -- whether topology, vehicles, towns, or a native aggregate was unstable
+    -- without exporting the potentially very large structural inventory.
+    local structuralParts
+    if currentState().probes.structural then
+      local structural = currentState().probes.structural
+      structuralParts = {
+        towns = hash.value(structural.towns or {}),
+        lines = hash.value(structural.lines or {}),
+        vehicles = hash.value(structural.vehicles or {}),
+        depots = hash.value(structural.depots or {}),
+        objects = hash.value(structural.objects or {}),
+        counts = hash.value({
+          industryCount = structural.industryCount,
+          vehicleCount = structural.vehicleCount,
+          depotCount = structural.depotCount,
+          constructionCount = structural.constructionCount,
+        }),
+      }
+    end
     local worldManifestDigest = currentState().probes.worldManifest and currentState().probes.worldManifest.digest or nil
     local lastCommitSeq = tonumber(boundarySeq)
     if lastCommitSeq then
@@ -199,6 +220,7 @@ function M.new(env)
       financial = financial,
       financialDigest = hash.value(financial),
       structuralDigest = structuralDigest,
+      structuralParts = structuralParts,
       worldManifestDigest = worldManifestDigest,
       eventCursor = eventCursor,
     }

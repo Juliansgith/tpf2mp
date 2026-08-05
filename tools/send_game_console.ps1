@@ -259,7 +259,11 @@ elseif ($Action -in @('custom', 'custom-active', 'custom-stay', 'custom-active-s
         [Tpf2ConsoleInput]::ScanCodeUp(0x1C)
         Start-Sleep -Milliseconds 1000
         if ($Action -notin @('custom-stay', 'custom-active-stay')) {
-            [Tpf2ConsoleInput]::PressScanCode(0x29)
+            # Once the developer console owns text focus, Build 35924 treats
+            # another grave scan code as input on some keyboard layouts. Escape
+            # is the reliable close action and returns focus to the game, which
+            # matters for a following launcher-driven pause hotkey.
+            [Tpf2ConsoleInput]::PressScanCode(0x01)
         }
     }
 }

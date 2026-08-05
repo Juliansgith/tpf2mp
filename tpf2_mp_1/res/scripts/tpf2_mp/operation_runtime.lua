@@ -7,6 +7,41 @@ local operationCodec = require "tpf2_mp/operation_codec"
 
 local M = {}
 
+-- Line-manager commands are the one intentional optimistic pass-through in
+-- network mode.  Build 35924 asserts if its stock callback receives a rejected
+-- CreateLine/UpdateLine result, so the origin may already have applied later
+-- captured edits while an earlier edit is crossing the consensus barrier.
+--
+-- Each transaction still describes the complete line state produced by that
+-- native command.  A replaying peer must physically match that intermediate
+-- state exactly.  The optimistic origin instead attests the captured command's
+-- state: a later captured edit is allowed to have advanced its live component,
+-- and will itself be ordered next.  Capture/decode/transport loss faults the
+-- session elsewhere, so this does not turn an unrecorded mutation into success.
+function M.reconcileLinePostcondition(transaction, targetCid, observed, originApplied)
+  if type(transaction) ~= "table"
+    or (transaction.kind ~= "line.create" and transaction.kind ~= "line.update")
+    or type(transaction.data) ~= "table"
+    or type(transaction.data.line) ~= "table"
+    or type(transaction.data.line.stops) ~= "table" then
+    return nil, "line postcondition requires a valid line transaction"
+  end
+  if type(observed) ~= "table" or observed.exists ~= true then
+    return nil, "native line target does not exist after operation"
+  end
+  local expected = {
+    kind = transaction.kind,
+    targetCid = targetCid,
+    exists = true,
+    stops = util.deepCopy(transaction.data.line.stops),
+  }
+  if originApplied == true then return expected end
+  if hash.value(observed) ~= hash.value(expected) then
+    return nil, "native line postcondition does not match the ordered transaction"
+  end
+  return expected
+end
+
 function M.new(env)
   assert(type(env) == "table", "operation runtime environment is required")
   assert(type(env.getState) == "function", "operation runtime state provider is required")
@@ -231,6 +266,8 @@ function M.new(env)
           terminal = util.integer(stop.terminal, 0),
         }
       end
+      return M.reconcileLinePostcondition(
+        transaction, targetCid, result, type(record.originApplied) == "table")
     elseif kind:sub(1, 8) == "vehicle." then
       local vehicle = safeOperationComponent(localId, types.TRANSPORT_VEHICLE)
       if not vehicle then return nil, "native vehicle component is unavailable after operation" end

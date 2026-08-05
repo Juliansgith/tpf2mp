@@ -77,8 +77,11 @@ end
 -- Company 1 on player1 and Company 2 on player2.
 --
 -- Capture the starting save's ownership before addPlayer changes the native
--- company set.  The player selected in the shared save is canonical Company 1;
--- any additional pre-existing owners are assigned deterministically after it.
+-- company set. A prior TPF2MP save can name its real company players while an
+-- old hot-seat turn desk still physically holds some objects. Those persisted
+-- hints take precedence, so the desk is a legacy holder rather than an invented
+-- third company. For an ordinary save without hints, the selected asset owner
+-- is Company 1 and additional owners follow deterministically.
 -- This rule is peer-independent because network launch pins and verifies the
 -- same save on every machine.  Machine-local native IDs never enter a digest.
 function M.seedInitialNetworkOwnership(worldState, desiredCount, sourcePlayerId)
@@ -88,8 +91,9 @@ function M.seedInitialNetworkOwnership(worldState, desiredCount, sourcePlayerId)
 
   local entities, enumerationError = M.listAllPlayerOwned()
   if enumerationError then return false, enumerationError end
-  local byOwner, otherOwners = {}, {}
+  local byOwner, otherOwners, entitySet = {}, {}, {}
   for _, entity in ipairs(entities) do
+    entitySet[entity] = true
     local owner = M.ownerOf(entity)
     if owner and owner >= 0 then
       if not byOwner[owner] then
@@ -101,9 +105,32 @@ function M.seedInitialNetworkOwnership(worldState, desiredCount, sourcePlayerId)
   end
   table.sort(otherOwners)
 
-  local ownerOrder = {}
-  if sourcePlayerId then ownerOrder[#ownerOrder + 1] = sourcePlayerId end
-  for _, owner in ipairs(otherOwners) do ownerOrder[#ownerOrder + 1] = owner end
+  local ownerOrder, seedSource = {}, "native-owner-enumeration"
+  local sourceOwnsAssets = sourcePlayerId ~= nil and byOwner[sourcePlayerId] ~= nil
+  local hints = type(worldState.startingOwnershipHints) == "table"
+    and worldState.startingOwnershipHints or nil
+  local hintedPlayers = hints and hints.companyPlayerIds or nil
+  local hintedValid, hintedSeen = type(hintedPlayers) == "table"
+    and #hintedPlayers == desiredCount, {}
+  if hintedValid then
+    for index = 1, desiredCount do
+      local playerId = tonumber(hintedPlayers[index])
+      if not playerId or playerId < 0 or playerId ~= math.floor(playerId)
+        or hintedSeen[playerId] then
+        hintedValid = false
+        break
+      end
+      hintedSeen[playerId] = true
+      ownerOrder[index] = playerId
+    end
+  end
+  if hintedValid then
+    seedSource = "saved-company-hints"
+  else
+    ownerOrder = {}
+    if sourceOwnsAssets then ownerOrder[#ownerOrder + 1] = sourcePlayerId end
+    for _, owner in ipairs(otherOwners) do ownerOrder[#ownerOrder + 1] = owner end
+  end
   if #ownerOrder > desiredCount then
     return false, string.format(
       "starting save has %d native asset owners but this match supports %d companies",
@@ -113,19 +140,51 @@ function M.seedInitialNetworkOwnership(worldState, desiredCount, sourcePlayerId)
   local summary = {
     schemaVersion = 1,
     sourceOwnerCount = #ownerOrder,
+    selectedPlayerOwnsAssets = sourceOwnsAssets,
+    seedSource = seedSource,
+    unmappedSourceOwnerCount = 0,
+    mappedLegacyEntities = 0,
     trackedEntities = 0,
     trackedNodes = 0,
     contestedNodes = 0,
     companies = {},
   }
-  local nodeClaims = {}
+  local selectedOwners, assignments, nodeClaims = {}, {}, {}
   for index, owner in ipairs(ownerOrder) do
     local companyCid = "company:" .. tostring(index)
     local owned = byOwner[owner] or {}
-    summary.companies[companyCid] = { total = #owned }
+    selectedOwners[owner] = true
+    summary.companies[companyCid] = { total = 0 }
     for _, entity in ipairs(owned) do
+      assignments[entity] = companyCid
+    end
+  end
+  for owner in pairs(byOwner) do
+    if not selectedOwners[owner] then
+      summary.unmappedSourceOwnerCount = summary.unmappedSourceOwnerCount + 1
+    end
+  end
+  if hintedValid and type(hints.logicalOwners) == "table" then
+    for rawEntity, companyCid in pairs(hints.logicalOwners) do
+      local entity = tonumber(rawEntity)
+      local companyIndex = type(companyCid) == "string"
+        and tonumber(companyCid:match("^company:(%d+)$")) or nil
+      if entity and entity >= 0 and entity == math.floor(entity) and entitySet[entity]
+        and companyIndex and companyIndex >= 1 and companyIndex <= desiredCount then
+        local nativeOwner = M.ownerOf(entity)
+        if nativeOwner ~= nil and not selectedOwners[nativeOwner] then
+          summary.mappedLegacyEntities = summary.mappedLegacyEntities + 1
+        end
+        assignments[entity] = companyCid
+      end
+    end
+  end
+  for _, entity in ipairs(entities) do
+    local companyCid = assignments[entity]
+    if companyCid then
       worldState.logicalOwners[tostring(entity)] = companyCid
       summary.trackedEntities = summary.trackedEntities + 1
+      summary.companies[companyCid].total = summary.companies[companyCid].total + 1
       -- BASE_NODE itself has no PLAYER_OWNED component. Derive terminal-node
       -- custody from private starting edges so expanding a rival pre-existing
       -- railway is guarded just like expanding a player-created one.
@@ -521,6 +580,33 @@ function M.findPreExistingLocal(registry, cid, expectedKind)
     return nil, "matching local " .. kind .. " is already bound to " .. occupied
   end
   return matches[1]
+end
+
+-- Produce the portable identity for a local existing object without changing
+-- the canonical registry. GUI proposal capture runs before the host orders a
+-- PREPARE, so binding here would mutate only the origin peer and make the
+-- prepare-core digests disagree. The later committed proposal binds the
+-- identity on every peer through resolvePreExisting().
+function M.identifyExisting(registry, id, kind)
+  id = tonumber(id)
+  if id == nil or id < 0 or id ~= math.floor(id) then
+    return nil, "existing entity id is invalid"
+  end
+  kind = kind or M.kindOf(id)
+  if type(kind) ~= "string" or kind == "unknown" or kind == "entity" then
+    return nil, "existing entity kind is not canonically identifiable"
+  end
+  local existing = canonical.resolveCanonical(registry, kind, id)
+  if existing then return existing end
+
+  local fingerprint = M.fingerprint(id, kind)
+  local cid = canonical.preExistingId(kind, fingerprint)
+  local resolved, resolveError = M.findPreExistingLocal(registry, cid, kind)
+  if resolved == nil then return nil, resolveError end
+  if tonumber(resolved) ~= id then
+    return nil, "canonical identity resolves to a different local " .. tostring(kind)
+  end
+  return cid
 end
 
 function M.resolvePreExisting(registry, cid, expectedKind, metadata)
@@ -1245,51 +1331,23 @@ local function lineVehicleCount(lineId)
   return 0
 end
 
-function M.makeLineService(registry, economyModule, economyState, lineId, companyCid)
-  local lineCid, err = M.bindExisting(registry, lineId, "line", { name = nameOf(lineId) })
-  if not lineCid then return false, err end
-  local groups = lineStopGroups(lineId)
-  if #groups < 2 then return false, "line needs at least two station groups" end
-  local townA, townB = stationGroupTown(groups[1]), stationGroupTown(groups[#groups])
-  if not townA or not townB or townA == townB then return false, "line endpoints do not map to two distinct towns" end
-  local townCidA = M.bindExisting(registry, townA, "town", { name = nameOf(townA) })
-  local townCidB = M.bindExisting(registry, townB, "town", { name = nameOf(townB) })
-  local first, second = townCidA, townCidB
-  if second < first then first, second = second, first end
-  local marketCid = "market:" .. hash.value({ first, second })
-  local capacityA = townCapacity(townA)
-  local capacityB = townCapacity(townB)
-  local demand = math.max(100, math.floor((capacityA + capacityB) / 12))
-  economyModule.upsertMarket(economyState, {
-    cid = marketCid,
-    name = nameOf(townA) .. " ↔ " .. nameOf(townB),
-    demand = demand,
-    outsideWeight = 2500,
-    metadata = { townA = townCidA, townB = townCidB },
-  })
-  local vehicles = lineVehicleCount(lineId)
-  local lineEntity = safeEntity(lineId) or {}
-  local nativeFrequency = tonumber(lineEntity.frequency) or 0
-  local nativeRate = tonumber(lineEntity.rate) or 0
-  local headway = nativeFrequency > 0 and math.max(30, util.integer(1 / nativeFrequency, 1800))
-    or math.max(300, math.floor(3600 / math.max(1, vehicles)))
-  local estimatedCycle = headway * math.max(1, vehicles)
-  local journey = math.max(300, util.integer(estimatedCycle / 2, #groups * 900))
-  local previous = economyState.services[lineCid]
-  economyModule.upsertService(economyState, {
-    lineCid = lineCid,
-    marketCid = marketCid,
-    companyCid = companyCid,
-    name = nameOf(lineId),
-    headwaySeconds = headway,
-    journeySeconds = journey,
-    fareCents = previous and previous.fareCents or 1000,
-    capacity = math.max(50, nativeRate > 0 and util.integer(nativeRate) or vehicles * 100),
-    quality = math.max(20, 120 - math.max(0, #groups - 2) * 10),
-    metadata = { vehicleCount = vehicles, nativeFrequency = util.integer(nativeFrequency * 1000000), nativeRate = util.integer(nativeRate) },
-  })
-  return true, { lineCid = lineCid, marketCid = marketCid, townA = townCidA, townB = townCidB, vehicleCount = vehicles }
-end
+local corridorBindingModule = require "tpf2_mp/corridor_binding"
+M.SERVICE_FACTS = corridorBindingModule.SERVICE_FACTS
+M.consistTransportFacts = corridorBindingModule.consistTransportFacts
+M.gravityDemand = corridorBindingModule.gravityDemand
+M.stationBoards = corridorBindingModule.stationBoards
+local corridorBinding = corridorBindingModule.new({
+  bindExisting = function(...) return M.bindExisting(...) end,
+  lineStopGroups = lineStopGroups,
+  stationGroupTown = stationGroupTown,
+  townCapacity = townCapacity,
+  lineVehicleCount = lineVehicleCount,
+  nameOf = nameOf,
+  safeEntity = safeEntity,
+  positionOfEntity = positionOfEntity,
+})
+M.computedServiceFacts = corridorBinding.computedServiceFacts
+M.makeLineService = corridorBinding.makeLineService
 
 function M.freezeAutonomy(worldState, freeze)
   local result = { freeze = freeze and true or false, towns = 0, industries = 0, errors = {} }
@@ -1437,6 +1495,41 @@ local function safeComponentField(value, key)
   return nested
 end
 
+local function vehicleConsistNames(transportVehicle)
+  local config = safeComponentField(transportVehicle, "transportVehicleConfig")
+  local values = safeComponentField(config, "vehicles")
+  local repository = api and api.res and api.res.modelRep
+  local getName = repository and repository.getName
+  local wrappers = {}
+  if type(values) == "table" then
+    for index, value in ipairs(values) do
+      if index > 128 then break end
+      wrappers[#wrappers + 1] = value
+    end
+  elseif type(values) == "userdata" then
+    local lengthOk, length = pcall(function() return #values end)
+    if lengthOk and tonumber(length) then
+      for index = 1, math.min(128, math.max(0, math.floor(tonumber(length)))) do
+        local itemOk, value = pcall(function() return values[index] end)
+        if itemOk then wrappers[#wrappers + 1] = value end
+      end
+    end
+  end
+  local names, known = {}, util.isCallable(getName) and config ~= nil
+  for _, wrapper in ipairs(wrappers) do
+    local part = safeComponentField(wrapper, "part") or wrapper
+    local modelId = tonumber(safeComponentField(part, "modelId"))
+    local name
+    if known and modelId then
+      local nameOk, value = pcall(getName, modelId)
+      if nameOk and value ~= nil and tostring(value) ~= "" then name = tostring(value) end
+    end
+    if not name then known = false end
+    names[#names + 1] = name or "<unavailable>"
+  end
+  return names, known, #wrappers
+end
+
 local function enumerateComponent(componentType, label, errors, visitor)
   if not (componentType and api and api.engine
       and util.isCallable(api.engine.forEachEntityWithComponent)) then
@@ -1457,9 +1550,9 @@ local function enumerateComponent(componentType, label, errors, visitor)
 end
 
 -- Read-only native-simulation telemetry. Entity IDs deliberately never leave
--- this function: only counts keyed by canonical line identity are digested or
--- sent over the bridge. A person changing local entity ID therefore cannot by
--- itself create a false network mismatch.
+-- this function: counts and vehicle state are keyed by canonical identity. A
+-- person, cargo item, line, or vehicle changing local entity ID therefore
+-- cannot by itself create a false network mismatch.
 function M.mobilitySnapshot(registry)
   local systems = api and api.engine and api.engine.system or {}
   local types = api and api.type and api.type.ComponentType or {}
@@ -1481,6 +1574,7 @@ function M.mobilitySnapshot(registry)
       and util.isCallable(api and api.engine and api.engine.forEachEntityWithComponent) or false,
     directEntitiesAtTerminal = types.SIM_ENTITY_AT_TERMINAL ~= nil
       and util.isCallable(api and api.engine and api.engine.forEachEntityWithComponent) or false,
+    vehicleLifecycle = types.TRANSPORT_VEHICLE ~= nil,
   }
   local totalPersons
   if availability.totalPersons then
@@ -1597,6 +1691,46 @@ function M.mobilitySnapshot(registry)
   end
   table.sort(lines, function(a, b) return tostring(a.lineCid) < tostring(b.lineCid) end)
 
+  -- Separate authored/lifecycle state from route phase. The former must agree
+  -- after every canonical operation; the latter can differ for a few frames
+  -- while independently simulated peers execute the same ordered command.
+  -- stopIndex is still important: a persistent mismatch means the trains are
+  -- serving different stations, not merely rendering at different metres.
+  local vehicleLifecycle, vehiclePhases = {}, {}
+  for _, vehicleId in ipairs(M.listVehicles()) do
+    local vehicleCid = M.bindExisting(registry, vehicleId, "vehicle", { name = nameOf(vehicleId) })
+    local transportVehicle = component(vehicleId, types.TRANSPORT_VEHICLE)
+    local lineId = tonumber(safeComponentField(transportVehicle, "line"))
+    local lineCid
+    if lineId and lineId >= 0 and M.entityExists(lineId) then
+      lineCid = M.bindExisting(registry, lineId, "line", { name = nameOf(lineId) })
+    end
+    local models, consistKnown, vehicleParts = vehicleConsistNames(transportVehicle)
+    local binding = registry.byCanonical and registry.byCanonical[vehicleCid] or nil
+    vehicleLifecycle[#vehicleLifecycle + 1] = {
+      vehicleCid = vehicleCid,
+      ownerCid = binding and binding.metadata and binding.metadata.owner or nil,
+      lineCid = lineCid,
+      userStopped = safeComponentField(transportVehicle, "userStopped") == true,
+      sellOnArrival = safeComponentField(transportVehicle, "sellOnArrival") == true,
+      vehicleParts = vehicleParts,
+      consistKnown = consistKnown,
+      consistModels = models,
+    }
+    local stopIndex = tonumber(safeComponentField(transportVehicle, "stopIndex"))
+    vehiclePhases[#vehiclePhases + 1] = {
+      vehicleCid = vehicleCid,
+      lineCid = lineCid,
+      stopIndex = stopIndex and math.floor(stopIndex) or nil,
+    }
+  end
+  table.sort(vehicleLifecycle,
+    function(a, b) return tostring(a.vehicleCid) < tostring(b.vehicleCid) end)
+  table.sort(vehiclePhases,
+    function(a, b) return tostring(a.vehicleCid) < tostring(b.vehicleCid) end)
+  local vehicleLifecycleView = { schemaVersion = 1, vehicles = vehicleLifecycle }
+  local vehiclePhaseView = { schemaVersion = 1, vehicles = vehiclePhases }
+
   -- TerminalInfo is intentionally opaque in the published API. We count its
   -- entries and use the documented getNumFreePlaces accessor, without relying
   -- on undocumented userdata layout or transmitting EdgeIds.
@@ -1622,12 +1756,14 @@ function M.mobilitySnapshot(registry)
   end
 
   local digestView = {
-    schemaVersion = 2,
+    schemaVersion = 3,
     availability = availability,
     totalPersons = totalPersons,
     terminalEdges = terminalEdges,
     terminalFreePlaces = terminalFreePlaces,
     lines = lines,
+    vehicleLifecycle = vehicleLifecycle,
+    vehiclePhases = vehiclePhases,
     totals = {
       passengerLineUses = passengerLineUses,
       cargoLineUses = cargoLineUses,
@@ -1645,6 +1781,8 @@ function M.mobilitySnapshot(registry)
   local snapshot = util.deepCopy(digestView)
   snapshot.scope = "native-read-only-aggregate"
   snapshot.errors = errors
+  snapshot.vehicleLifecycleDigest = hash.value(vehicleLifecycleView)
+  snapshot.vehiclePhaseDigest = hash.value(vehiclePhaseView)
   snapshot.digest = hash.value(digestView)
   return snapshot
 end

@@ -15,7 +15,7 @@ std::string SerializeHookStatus(const HookStatusView& status) {
   std::ostringstream output;
   output << "{\"schemaVersion\":1"
          << ",\"component\":\"tpf2mp-native-hook\""
-         << ",\"hookVersion\":\"0.12.0\""
+         << ",\"hookVersion\":\"0.13.0\""
          << ",\"profile\":\"" << tpf2mp::JsonEscape(std::string(tpf2mp::profile::kProfileName)) << "\""
          << ",\"processId\":" << status.process_id
          << ",\"stage\":\"" << tpf2mp::JsonEscape(status.stage) << "\""
@@ -182,6 +182,15 @@ std::string SerializeHookStatus(const HookStatusView& status) {
          << ",\"lastTag\":" << status.suppressed_line_command_last_tag
          << ",\"lastTarget\":" << status.suppressed_line_command_last_target
          << ",\"lastStopCount\":" << status.suppressed_line_command_last_stop_count
+         << "},\"suppressedVehicleCommands\":{"
+         << "\"queued\":" << status.suppressed_vehicle_command_queued
+         << ",\"captured\":" << status.suppressed_vehicle_command_captured
+         << ",\"consumed\":" << status.suppressed_vehicle_command_consumed
+         << ",\"invalid\":" << status.suppressed_vehicle_command_invalid
+         << ",\"dropped\":" << status.suppressed_vehicle_command_dropped
+         << ",\"lastTag\":" << status.suppressed_vehicle_command_last_tag
+         << ",\"lastTarget\":" << status.suppressed_vehicle_command_last_target
+         << ",\"lastSecondary\":" << status.suppressed_vehicle_command_last_secondary
          << "}}}"
          << ",\"luaStates\":[";
   bool first_state = true;
@@ -219,7 +228,7 @@ std::string SerializeHookStatus(const HookStatusView& status) {
     output << "]}";
   }
   output << "]"
-         << ",\"scope\":\"Lua command-binding mirrors, sendCommand call-through with an opt-in pre-issue Lua observer, native command observers, a BuildProposal visitor gate, 23 fail-closed consequential-command visitors, suppressed game-speed capture, and exact-build typed Create/Delete/Update Line capture\""
+         << ",\"scope\":\"Lua command-binding mirrors, sendCommand call-through with an opt-in pre-issue Lua observer, native command observers, a BuildProposal visitor gate, 23 fail-closed consequential-command visitors, suppressed game-speed capture, exact-build typed line capture, and pre-mutation SetLine/BuyVehicle scalar capture\""
          << ",\"lastError\":\"" << tpf2mp::JsonEscape(status.last_error) << "\"}";
   return output.str();
 }

@@ -1,6 +1,7 @@
 local util = require "tpf2_mp/util"
 local economy = require "tpf2_mp/economy"
 local finance = require "tpf2_mp/finance"
+local world = require "tpf2_mp/world"
 
 local M = {}
 
@@ -104,6 +105,8 @@ function M.new(env)
       lastResults = util.deepCopy(currentState().economy.lastResults),
       ledger = util.deepCopy(currentState().economy.ledger),
       scoreboard = economy.scoreboard(currentState().economy, currentState().companies),
+      -- Per-peer display only; never digest material.
+      stationBoards = world.stationBoards(currentState().economy, currentState().canonical),
       autonomyFrozen = currentState().world.autonomyFrozen,
       neutralizer = util.deepCopy(currentState().finance.neutralizer),
       transfers = util.deepCopy(currentState().finance.transfers),

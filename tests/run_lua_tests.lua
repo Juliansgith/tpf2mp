@@ -12,6 +12,8 @@ local economy = require "tpf2_mp/economy"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
+local guiView = require "tpf2_mp/gui_view"
+local nativeHook = require "tpf2_mp/native_hook"
 
 local tests, passed = {}, 0
 
@@ -60,6 +62,24 @@ test("mod command origins are synchronous and always restored", function()
   equal(failed, false, "throwing sendCommand was not reported")
   equal(util.currentCommandOrigin(), nil, "command origin leaked after failure")
   api = previousApi
+end)
+
+test("native hook status retains vehicle capture diagnostics", function()
+  local compact = nativeHook.compactStatus({
+    gates = {
+      commandVisitors = {
+        suppressedVehicleCommands = {
+          queued = 1, captured = 3, consumed = 2, invalid = 0, dropped = 0,
+          lastTag = 13, lastTarget = 100, lastSecondary = 750,
+        },
+      },
+    },
+  })
+  equal(compact.suppressedVehicleCommands.queued, 1)
+  equal(compact.suppressedVehicleCommands.captured, 3)
+  equal(compact.suppressedVehicleCommands.consumed, 2)
+  equal(compact.suppressedVehicleCommands.lastTag, 13)
+  equal(compact.suppressedVehicleCommands.lastSecondary, 750)
 end)
 
 test("canonical registry detects identity conflicts", function()
@@ -335,10 +355,32 @@ test("canonical entity naming preserves vanilla empty names", function()
   equal(capturedArgs[2], "")
 end)
 
+local function railwayModelRepository()
+  local ids = {
+    ["vehicle/train/db_v100.mdl"] = 17,
+    ["vehicle/waggon/open_1910.mdl"] = 18,
+  }
+  local loadConfigCounts = { [17] = { 1 }, [18] = { 4 } }
+  return {
+    find = function(name) return ids[name] end,
+    get = function(id)
+      local compartments = {}
+      for compartment, count in ipairs(loadConfigCounts[id] or {}) do
+        local configs = {}
+        for index = 1, count do configs[index] = {} end
+        compartments[compartment] = { loadConfigs = configs }
+      end
+      return { metadata = { transportVehicle = { compartments = compartments } } }
+    end,
+  }
+end
+
 test("railway vehicle operations reject local ids and non-train resources", function()
   local config = operationCodec.defaultVehicleConfig({
-    "vehicle/train/db_v100.mdl", "vehicle/train/open_1910.mdl",
-  })
+    "vehicle/train/db_v100.mdl", "vehicle/waggon/open_1910.mdl",
+  }, { res = { modelRep = railwayModelRepository() } })
+  equal(config.vehicles[1].loadConfig[1], 0)
+  equal(config.vehicles[2].loadConfig[1], 0)
   local transaction = assert(operationCodec.make("vehicle.buy", "company:2", {
     depotCid = "depot:pre:abc",
     config = config,
@@ -352,20 +394,48 @@ test("railway vehicle operations reject local ids and non-train resources", func
   })
   equal(rejected, nil)
   truthy(tostring(err):match("railway model"))
+  local emptyLoadConfig = util.deepCopy(config)
+  emptyLoadConfig.vehicles[1].loadConfig = {}
+  local emptyRejected, emptyError = operationCodec.make("vehicle.buy", "company:2", {
+    depotCid = "depot:pre:abc",
+    config = emptyLoadConfig,
+  })
+  equal(emptyRejected, nil)
+  truthy(tostring(emptyError):match("one entry per model compartment"))
+  local automaticSentinel = util.deepCopy(config)
+  automaticSentinel.vehicles[1].loadConfig = { -1 }
+  local sentinelRejected, sentinelError = operationCodec.make("vehicle.buy", "company:2", {
+    depotCid = "depot:pre:abc",
+    config = automaticSentinel,
+  })
+  equal(sentinelRejected, nil)
+  truthy(tostring(sentinelError):match("selection is invalid"))
   local localTarget = operationCodec.make("vehicle.assign", "company:2", {
     targetCid = 42,
     lineCid = "line:pre:def",
     stopIndex = 0,
   })
   equal(localTarget, nil)
+  local automaticStop = assert(operationCodec.make("vehicle.assign", "company:2", {
+    targetCid = "vehicle:pre:abc",
+    lineCid = "line:pre:def",
+    stopIndex = -1,
+  }))
+  truthy(operationCodec.validate(automaticStop))
+  local invalidNegativeStop = operationCodec.make("vehicle.assign", "company:2", {
+    targetCid = "vehicle:pre:abc",
+    lineCid = "line:pre:def",
+    stopIndex = -2,
+  })
+  equal(invalidNegativeStop, nil)
 end)
 
 test("railway vehicle materialisation uses the documented nested consist shape", function()
   local transaction = assert(operationCodec.make("vehicle.buy", "company:2", {
     depotCid = "depot:pre:abc",
     config = operationCodec.defaultVehicleConfig({
-      "vehicle/train/db_v100.mdl", "vehicle/train/open_1910.mdl",
-    }),
+      "vehicle/train/db_v100.mdl", "vehicle/waggon/open_1910.mdl",
+    }, { res = { modelRep = railwayModelRepository() } }),
   }))
   local madeArgs
   local command = assert(operationCodec.materialise(transaction, {
@@ -377,12 +447,7 @@ test("railway vehicle materialisation uses the documented nested consist shape",
         Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
       },
       res = {
-        modelRep = {
-          find = function(name)
-            return ({ ["vehicle/train/db_v100.mdl"] = 17,
-              ["vehicle/train/open_1910.mdl"] = 18 })[name]
-          end,
-        },
+        modelRep = railwayModelRepository(),
       },
     },
     nativePlayerId = 88,
@@ -402,6 +467,10 @@ test("railway vehicle materialisation uses the documented nested consist shape",
   equal(madeArgs[3].vehicles[2].part.modelId, 18)
   equal(madeArgs[3].vehicles[1].purchaseTime, 0)
   equal(madeArgs[3].vehicles[1].maintenanceState, 1)
+  equal(madeArgs[3].vehicles[1].part.loadConfig[1], 0)
+  equal(madeArgs[3].vehicles[1].autoLoadConfig[1], 1)
+  equal(madeArgs[3].vehicles[2].part.loadConfig[1], 0)
+  equal(madeArgs[3].vehicles[2].autoLoadConfig[1], 1)
   equal(madeArgs[3].vehicleGroups[1], 1)
   equal(madeArgs[3].vehicleGroups[2], 1)
 end)
@@ -1079,7 +1148,7 @@ test("mobility telemetry falls back to direct populated-world components", funct
   }
   local snapshot = world.mobilitySnapshot(canonical.newState())
   api, game = previousApi, previousGame
-  equal(snapshot.schemaVersion, 2)
+  equal(snapshot.schemaVersion, 3)
   equal(snapshot.totalPersons, 4)
   equal(snapshot.totals.directCargoEntities, 3)
   equal(snapshot.totals.passengersOnVehicle, 2)
@@ -1092,6 +1161,67 @@ test("mobility telemetry falls back to direct populated-world components", funct
   truthy(snapshot.availability.directEntitiesAtTerminal)
   truthy(not json.encode(snapshot):match("1001"), "mobility payload leaked a person entity ID")
   truthy(not json.encode(snapshot):match("2001"), "mobility payload leaked a cargo entity ID")
+end)
+
+test("vehicle lifecycle and route phase have separate canonical mobility digests", function()
+  local previousApi, previousGame = api, game
+  local stopIndex = 1
+  game = {
+    interface = {
+      getEntity = function(id)
+        if id == 10 then return { id = id, type = "LINE", name = "Main" } end
+        return { id = id, type = "TRANSPORT_VEHICLE", name = "Train" }
+      end,
+      getLines = function() return { 10 } end,
+      getVehicles = function() return { 101 } end,
+    },
+  }
+  api = {
+    type = { ComponentType = {
+      NAME = "NAME", LINE = "LINE", TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
+    } },
+    res = { modelRep = {
+      getName = function(modelId)
+        return modelId == 17 and "vehicle/train/db_v100_v2.mdl"
+          or "vehicle/waggon/open_1910.mdl"
+      end,
+    } },
+    engine = {
+      entityExists = function(id) return id == 10 or id == 101 end,
+      getComponent = function(id, kind)
+        if kind == "NAME" then return { name = id == 10 and "Main" or "Train" } end
+        if kind == "TRANSPORT_VEHICLE" and id == 101 then
+          return {
+            line = 10,
+            stopIndex = stopIndex,
+            userStopped = false,
+            sellOnArrival = false,
+            transportVehicleConfig = { vehicles = {
+              { part = { modelId = 17 } },
+              { part = { modelId = 18 } },
+            } },
+          }
+        end
+      end,
+      system = {
+        lineSystem = { getLines = function() return { 10 } end },
+        transportVehicleSystem = { getLineVehicles = function() return { 101 } end },
+      },
+    },
+  }
+  local registry = canonical.newState()
+  local first = world.mobilitySnapshot(registry)
+  stopIndex = 2
+  local second = world.mobilitySnapshot(registry)
+  api, game = previousApi, previousGame
+  equal(#first.vehicleLifecycle, 1)
+  equal(first.vehicleLifecycle[1].vehicleParts, 2)
+  equal(first.vehicleLifecycle[1].consistModels[2], "vehicle/waggon/open_1910.mdl")
+  equal(first.vehicleLifecycleDigest, second.vehicleLifecycleDigest)
+  truthy(first.vehiclePhaseDigest ~= second.vehiclePhaseDigest,
+    "moving to another route stop did not change the vehicle phase digest")
+  truthy(not json.encode(first):match('"vehicleCid":101'),
+    "vehicle mobility payload leaked a machine-local vehicle id")
 end)
 
 test("pre-existing world manifest ignores local ids and fails closed on ambiguity", function()
@@ -1303,6 +1433,58 @@ test("pre-existing road nodes resolve lazily by geometry across divergent local 
     "stacked public nodes were not rejected as an ambiguous locator")
 end)
 
+test("pre-consensus existing identity lookup never mutates the origin registry", function()
+  local previousApi, previousGame = api, game
+  local nodes = {
+    [10] = { position = { x = 123.4, y = -55.6, z = 7.8 } },
+    [20] = { position = { x = 700.1, y = 800.2, z = 9.3 } },
+  }
+  game = { interface = {
+    getEntity = function(id) return nodes[id] and { id = id, type = "BASE_NODE" } or nil end,
+    getTowns = function() return {} end,
+    getLines = function() return {} end,
+    getVehicles = function() return {} end,
+    getDepots = function() return {} end,
+  } }
+  api = {
+    type = { ComponentType = { NAME = "NAME", BASE_NODE = "BASE_NODE", BASE_EDGE = "BASE_EDGE" } },
+    engine = {
+      getComponent = function(id, kind) return kind == "BASE_NODE" and nodes[id] or nil end,
+      forEachEntityWithComponent = function(callback, kind)
+        if kind == "BASE_NODE" then for id in pairs(nodes) do callback(id) end end
+      end,
+      system = { lineSystem = { getLines = function() return {} end } },
+    },
+  }
+
+  local registry = canonical.newState()
+  local boundCid = assert(world.bindExisting(registry, 10, "node", {
+    fingerprint = world.fingerprint(10, "node"), manifestBound = true,
+  }))
+  local beforeBound = hash.value(canonical.digestView(registry))
+  equal(world.identifyExisting(registry, 10, "node"), boundCid)
+  equal(hash.value(canonical.digestView(registry)), beforeBound)
+  truthy(registry.byCanonical[boundCid].metadata.owner == nil,
+    "read-only identity lookup enriched existing metadata on the origin")
+
+  local beforeLazy = hash.value(canonical.digestView(registry))
+  local lazyCid, lazyError = world.identifyExisting(registry, 20, "node")
+  truthy(lazyCid and lazyCid:match("^node:pre:"), lazyError)
+  equal(hash.value(canonical.digestView(registry)), beforeLazy)
+  truthy(canonical.resolveLocal(registry, lazyCid) == nil,
+    "read-only identity lookup bound a lazy node before consensus")
+  equal(world.resolvePreExisting(registry, lazyCid, "node", {
+    owner = "company:1", resolvedForProposal = "event:test",
+  }), 20)
+  equal(registry.byCanonical[lazyCid].metadata.owner, "company:1")
+
+  nodes[21] = { position = { x = 700.1, y = 800.2, z = 9.3 } }
+  local ambiguous, ambiguity = world.identifyExisting(canonical.newState(), 20, "node")
+  api, game = previousApi, previousGame
+  truthy(ambiguous == nil and tostring(ambiguity):find("ambiguous") ~= nil,
+    "pre-consensus identity lookup admitted an ambiguous local node")
+end)
+
 local function marketState(demand)
   local state = economy.newState()
   economy.upsertMarket(state, {
@@ -1481,6 +1663,98 @@ test("cargo kind defaults value time low and compete with trucking", function()
   equal(market.transferSeconds, 1800)
   local unknown = economy.upsertMarket(state, { cid = "market:odd", kind = "hyperloop", demand = 10 })
   equal(unknown.kind, "passenger", "unknown kinds must fall back to passenger")
+end)
+
+test("gravity demand scales with town capacities over distance and clamps", function()
+  local near = world.gravityDemand(300, 300, 2000)
+  local far = world.gravityDemand(300, 300, 20000)
+  truthy(near > far, "closer towns must generate more corridor demand")
+  equal(world.gravityDemand(10, 10, 1000000), world.SERVICE_FACTS.minDemand)
+  equal(world.gravityDemand(1000000, 1000000, 1000), world.SERVICE_FACTS.maxDemand)
+end)
+
+test("computed service facts derive journey, headway, and capacity from geometry", function()
+  local previousGame = game
+  local positions = {
+    [11] = { x = 0, y = 0 },
+    [12] = { x = 10000, y = 0 },
+  }
+  game = { interface = { getEntity = function(id)
+    local p = positions[id]
+    return p and { id = id, position = { p.x, p.y } } or nil
+  end } }
+  local facts = world.computedServiceFacts({ 11, 12 }, 2, { seats = 200, limitSpeedMs = 40 })
+  game = previousGame
+  truthy(facts, "computed facts require only positions and a consist")
+  -- 10 km euclidean * 1.25 route factor = 12.5 km at 28 m/s sustained plus
+  -- two 45 s dwells: journey 536 s; cycle 1312 s over two vehicles: 656 s.
+  equal(facts.distanceMeters, 12500)
+  equal(facts.journeySeconds, 536)
+  equal(facts.headwaySeconds, 656)
+  -- 5 departures per authored hour, two consists of 200 seats.
+  equal(facts.capacity, 200 * 2 * 5)
+  local repeatFacts
+  game = { interface = { getEntity = function(id)
+    local p = positions[id]
+    return p and { id = id, position = { p.x, p.y } } or nil
+  end } }
+  repeatFacts = world.computedServiceFacts({ 11, 12 }, 2, { seats = 200, limitSpeedMs = 40 })
+  game = previousGame
+  equal(hash.value(facts), hash.value(repeatFacts), "computed facts must be repeatable")
+end)
+
+test("consist transport facts read repository metadata fail-soft", function()
+  local previousApi = api
+  local models = {
+    ["loco.mdl"] = { metadata = { transportVehicle = { topSpeed = 44,
+      compartmentsList = { { loadConfigs = { { cargoEntries = { { capacity = 0 } } } } } } } } },
+    ["coach.mdl"] = { metadata = { transportVehicle = { topSpeed = 50,
+      compartmentsList = {
+        { loadConfigs = { { cargoEntries = { { capacity = 40 }, { capacity = 40 } } } } },
+        { loadConfigs = { { cargoEntries = { { capacity = 24 } } },
+                          { cargoEntries = { { capacity = 80 } } } } },
+      } } } },
+  }
+  local names = { "loco.mdl", "coach.mdl" }
+  local indexByName = { ["loco.mdl"] = 1, ["coach.mdl"] = 2 }
+  local byIndex = { models["loco.mdl"], models["coach.mdl"] }
+  api = { res = { modelRep = {
+    find = function(name) return indexByName[name] or -1 end,
+    get = function(index) return byIndex[index] end,
+  } } }
+  local facts = world.consistTransportFacts(names)
+  api = previousApi
+  truthy(facts, "metadata-backed consist facts were not produced")
+  -- coach: compartment one 80 seats, compartment two best config 80 seats.
+  equal(facts.seats, 160)
+  equal(facts.limitSpeedMs, 44, "the slowest part limits the consist")
+  api = { res = {} }
+  equal(world.consistTransportFacts(names), nil, "missing repository must fail soft")
+  api = previousApi
+end)
+
+test("station boards aggregate model allocations per station group", function()
+  local state = marketState(1000)
+  corridorService(state, "a", "company:1", {})
+  state.services["line:a"].metadata = { stationGroupCids = { "sg:alpha", "sg:beta" } }
+  for _ = 1, 30 do economy.evaluateAll(state) end
+  local registry = { byCanonical = { ["sg:alpha"] = { metadata = { name = "Alpha Central" } } } }
+  local boards = world.stationBoards(state, registry)
+  truthy(boards["sg:alpha"] and boards["sg:beta"], "both stops must have boards")
+  equal(boards["sg:alpha"].name, "Alpha Central")
+  equal(boards["sg:beta"].name, "sg:beta", "unnamed stops fall back to the cid")
+  local allocated = state.lastResults.markets["market:a-b"].services["line:a"].allocated
+  equal(boards["sg:alpha"].throughput, allocated)
+  truthy(boards["sg:alpha"].waiting <= allocated, "momentary waiting cannot exceed epoch throughput")
+  equal(boards["sg:alpha"].waiting, boards["sg:beta"].waiting, "same service, same board contribution")
+end)
+
+test("crowd icons bucket by magnitude", function()
+  equal(guiView.crowdIcons(0), "")
+  equal(guiView.crowdIcons(15), "·")
+  equal(guiView.crowdIcons(45), "▪▪")
+  equal(guiView.crowdIcons(120), "◼▪")
+  equal(guiView.crowdIcons(1240), "██◼◼▪▪")
 end)
 
 test("cargo shares conserve demand and obey the fare-shock latch", function()
