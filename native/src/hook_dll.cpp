@@ -408,12 +408,16 @@ int NativeAuthorizeBuild(lua_State*) {
   return 0;
 }
 
-int NativeEnableCommandGate(lua_State*) {
+// Line records are captured only after their visitor applied, so clearing the
+// queue discards mutations this world already has. Counting them as drops
+// makes the sticky F1 sentinel report the loss to Lua, which faults closed.
+int SetCommandGate(bool enabled) {
   {
     StateLock lock;
-    g_command_gate_enabled = true;
+    g_command_gate_enabled = enabled;
     g_command_gate_authorizations.fill(0);
     g_suppressed_game_speeds.clear();
+    g_suppressed_line_command_dropped += g_suppressed_line_commands.size();
     g_suppressed_line_commands.clear();
     g_suppressed_vehicle_commands.clear();
   }
@@ -421,18 +425,8 @@ int NativeEnableCommandGate(lua_State*) {
   return 0;
 }
 
-int NativeDisableCommandGate(lua_State*) {
-  {
-    StateLock lock;
-    g_command_gate_enabled = false;
-    g_command_gate_authorizations.fill(0);
-    g_suppressed_game_speeds.clear();
-    g_suppressed_line_commands.clear();
-    g_suppressed_vehicle_commands.clear();
-  }
-  RequestStatusWrite();
-  return 0;
-}
+int NativeEnableCommandGate(lua_State*) { return SetCommandGate(true); }
+int NativeDisableCommandGate(lua_State*) { return SetCommandGate(false); }
 
 int NativeAuthorizeCommand(lua_State* state) {
   if (g_lua_gettop(state) < 1) return 0;

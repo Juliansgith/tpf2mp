@@ -233,7 +233,9 @@ local function stableNameOf(id)
   return entity and entity.name and tostring(entity.name) or ""
 end
 
-local function positionOfEntity(entity)
+-- Returns nil when no source resolves, so callers that must not fabricate
+-- geometry can tell "unknown" from a legitimate position at the origin.
+local function resolvedPositionOfEntity(entity)
   local e = safeEntity(entity)
   if e and e.position then
     return { util.integer((e.position[1] or e.position.x or 0) * 10), util.integer((e.position[2] or e.position.y or 0) * 10) }
@@ -252,7 +254,11 @@ local function positionOfEntity(entity)
       util.integer((nodePosition[3] or nodePosition.z or 0) * 10),
     }
   end
-  return { 0, 0 }
+  return nil
+end
+
+local function positionOfEntity(entity)
+  return resolvedPositionOfEntity(entity) or { 0, 0 }
 end
 
 local function boundedComponentValues(values, maximum)
@@ -1348,7 +1354,7 @@ local corridorBinding = corridorBindingModule.new({
   lineVehicleCount = lineVehicleCount,
   nameOf = nameOf,
   safeEntity = safeEntity,
-  positionOfEntity = positionOfEntity,
+  positionOfEntity = resolvedPositionOfEntity,
   resolveLocal = function(registry, cid) return canonical.resolveLocal(registry, cid) end,
 })
 M.computedServiceFacts = corridorBinding.computedServiceFacts

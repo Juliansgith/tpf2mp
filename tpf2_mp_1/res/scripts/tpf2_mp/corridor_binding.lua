@@ -215,6 +215,10 @@ function M.new(deps)
     return outcome
   end
 
+  -- positionOfEntity here is world's strict resolver: it answers nil rather
+  -- than a {0,0} sentinel, so an unresolvable stop fails the computed path
+  -- honestly instead of fabricating geometry, and a legitimate station at
+  -- the world origin still measures correctly.
   local function corridorDistanceDm(groups)
     local total = 0
     for index = 2, #groups do
@@ -272,24 +276,34 @@ function M.new(deps)
     local distanceDm = corridorDistanceDm(groups)
     if not distanceDm then return nil end
     local routeMeters = math.floor(distanceDm * constants.routeFactorPct / 1000)
+    -- Each fallback is reported, so factsSource names what actually ran
+    -- rather than implying repository metadata that never resolved.
     local speedMs = consistFacts and consistFacts.limitSpeedMs
-      or (constants.defaultTopSpeedKmh * 1000 / 3600)
+    local defaultedSpeed = not (speedMs and speedMs > 0)
+    if defaultedSpeed then speedMs = constants.defaultTopSpeedKmh * 1000 / 3600 end
     local cruiseMs = speedMs * constants.speedUtilisationPct / 100
     if cruiseMs <= 0 then return nil end
     local journey = math.max(60, math.floor(routeMeters / cruiseMs)
       + constants.dwellSecondsPerStop * #groups)
     local cycle = journey * 2 + constants.turnaroundSeconds
+    -- A line with no rolling stock runs no service: it gets a nominal
+    -- headway for display and zero capacity, so it can never be allocated
+    -- passengers or earn revenue.
+    local runs = math.max(0, util.integer(vehicles, 0))
     local headway = math.max(constants.minHeadwaySeconds,
-      math.floor(cycle / math.max(1, vehicles)))
-    local seats = consistFacts and consistFacts.seats and consistFacts.seats > 0
-      and consistFacts.seats or constants.fallbackSeatsPerVehicle
+      math.floor(cycle / math.max(1, runs)))
+    local seats = consistFacts and consistFacts.seats or 0
+    local defaultedSeats = not (seats > 0)
+    if defaultedSeats then seats = constants.fallbackSeatsPerVehicle end
     local departures = math.max(1, math.floor(constants.epochSeconds / headway))
     return {
       distanceMeters = routeMeters,
       journeySeconds = journey,
       headwaySeconds = headway,
-      capacity = seats * math.max(1, vehicles) * departures,
+      capacity = runs > 0 and (seats * runs * departures) or 0,
       seatsPerVehicle = seats,
+      defaultedSpeed = defaultedSpeed,
+      defaultedSeats = defaultedSeats,
     }
   end
 
@@ -324,21 +338,41 @@ function M.new(deps)
 
     local capacityA = townCapacity(townA)
     local capacityB = townCapacity(townB)
-    local demand = computed
-      and M.gravityDemand(capacityA, capacityB, computed.distanceMeters)
-      or math.max(100, math.floor((capacityA + capacityB) / 12))
+    -- The market belongs to the town pair, not to the registering line. A
+    -- rival's detour must never deflate a shared corridor, so the pool is
+    -- sized by the shortest route anyone has found between these towns and
+    -- an existing market's demand is only ever revised upward.
+    local existingMarket = economyState.markets[marketCid]
+    local existingDistance = existingMarket and existingMarket.metadata
+      and tonumber(existingMarket.metadata.corridorMeters) or nil
+    local corridorMeters = computed and computed.distanceMeters or existingDistance
+    if computed and existingDistance then
+      corridorMeters = math.min(existingDistance, computed.distanceMeters)
+    end
+    local demand = corridorMeters
+      and M.gravityDemand(capacityA, capacityB, corridorMeters)
+      or util.clamp(math.max(100, math.floor((capacityA + capacityB) / 12)),
+        M.SERVICE_FACTS.minDemand, M.SERVICE_FACTS.maxDemand)
+    if existingMarket then demand = math.max(util.integer(existingMarket.demand, 0), demand) end
     economyModule.upsertMarket(economyState, {
       cid = marketCid,
       name = nameOf(townA) .. " ↔ " .. nameOf(townB),
-      kind = "passenger",
+      kind = existingMarket and existingMarket.kind or "passenger",
       demand = demand,
-      metadata = { townA = townCidA, townB = townCidB },
+      metadata = {
+        townA = townCidA, townB = townCidB,
+        corridorMeters = corridorMeters,
+      },
     })
 
     local headway, journey, capacity, factsSource
     if computed then
       headway, journey, capacity = computed.headwaySeconds, computed.journeySeconds, computed.capacity
-      factsSource = consistFacts and "computed-consist" or "computed-default-speed"
+      factsSource = "computed-consist"
+      if computed.defaultedSpeed then factsSource = "computed-default-speed" end
+      if computed.defaultedSeats then
+        factsSource = computed.defaultedSpeed and "computed-defaults" or "computed-default-seats"
+      end
     else
       local lineEntity = safeEntity(lineId) or {}
       local nativeFrequency = tonumber(lineEntity.frequency) or 0
@@ -392,19 +426,26 @@ function M.stationBoards(economyState, registry)
     local row = marketResults and marketResults.services and marketResults.services[lineCid] or nil
     local allocated = row and row.allocated or 0
     local headway = math.min(service.headwaySeconds or constants.epochSeconds, constants.epochSeconds)
-    local waiting = math.floor(allocated * headway / constants.epochSeconds)
-    for _, groupCid in ipairs((service.metadata and service.metadata.stationGroupCids) or {}) do
+    -- A corridor's passengers board once and alight once, so a line's load
+    -- distributes across its stops rather than appearing whole at each one.
+    -- Summing the raw allocation per stop would report a 5-stop line as
+    -- five times its real traffic and rank halts like termini.
+    local stops = service.metadata and service.metadata.stationGroupCids or {}
+    local perStop = #stops > 0 and math.floor(allocated / #stops) or 0
+    local waiting = math.floor(perStop * headway / constants.epochSeconds)
+    for _, groupCid in ipairs(stops) do
       local bindingRecord = registry and registry.byCanonical and registry.byCanonical[groupCid] or nil
       local stationName = bindingRecord and bindingRecord.metadata and bindingRecord.metadata.name or groupCid
       local board = boards[groupCid]
         or { stationGroupCid = groupCid, name = stationName, waiting = 0, throughput = 0, lines = {} }
       board.waiting = board.waiting + waiting
-      board.throughput = board.throughput + allocated
+      board.throughput = board.throughput + perStop
       board.lines[#board.lines + 1] = {
         lineCid = lineCid,
         name = service.name,
         companyCid = service.companyCid,
-        allocated = allocated,
+        allocated = perStop,
+        lineAllocated = allocated,
         waiting = waiting,
       }
       boards[groupCid] = board

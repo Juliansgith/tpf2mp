@@ -2414,21 +2414,21 @@ local function normaliseOperationCapture(action)
   if originApplied then
     local localId = tonumber(capture.originLocalId or capture.targetLocalId)
     if not localId then return nil, "optimistic vanilla operation is missing its local entity" end
-    -- Keep the table bounded even if authority rejects an intent before it is
-    -- ordered. Tokens are monotonic, so stale entries can never attach to a
-    -- later operation accidentally.
+    -- Evicting an entry would discard custody of a mutation this world has
+    -- already applied. Refuse instead: the caller converts an origin-applied
+    -- rejection into the fail-closed residue fault.
     if util.tableCount(proposalPreparation.originAppliedOperations) >= 64 then
-      local oldestToken, oldestSequence
-      for token, pending in pairs(proposalPreparation.originAppliedOperations) do
-        local sequence = tonumber(pending.sequence) or math.huge
-        if oldestSequence == nil or sequence < oldestSequence then
-          oldestToken, oldestSequence = token, sequence
-        end
-      end
-      if oldestToken then proposalPreparation.originAppliedOperations[oldestToken] = nil end
+      return nil, "optimistic origin custody table is full"
     end
-    local sequence = proposalPreparation.nextOriginToken
-    proposalPreparation.nextOriginToken = proposalPreparation.nextOriginToken + 1
+    -- The token counter and a custody marker live in saved state so they
+    -- survive script.load; the full record stays machine-local. Monotonic
+    -- tokens across reloads keep a stale ordered commit from consuming a
+    -- fresh capture's registry entry.
+    state.world.originResidueNextToken = math.max(1,
+      util.integer(state.world.originResidueNextToken, 1))
+    local sequence = state.world.originResidueNextToken
+    state.world.originResidueNextToken = sequence + 1
+    proposalPreparation.nextOriginToken = state.world.originResidueNextToken
     originCaptureToken = tostring(state.bridge.peerId) .. ":operation-origin:" .. tostring(sequence)
     proposalPreparation.originAppliedOperations[originCaptureToken] = {
       sequence = sequence,
@@ -2436,6 +2436,11 @@ local function normaliseOperationCapture(action)
       kind = kind,
       companyCid = companyCid,
       transactionId = transaction.transactionId,
+      capturedTick = state.tick,
+    }
+    state.world.originResidueCustody = state.world.originResidueCustody or {}
+    state.world.originResidueCustody[originCaptureToken] = {
+      kind = kind,
       capturedTick = state.tick,
     }
   end
@@ -3094,9 +3099,27 @@ end
 local function resetTransientRuntime()
   networkIntentController.reset()
   networkClock.reset()
+  -- Custody of an origin-applied (already natively mutated) operation lives
+  -- in module-locals: the deferred queue, the awaiting-order latch, and the
+  -- token registry all die with a script reload while the native mutation
+  -- sits inside the saved world. The persisted marker outlives them, so a
+  -- non-empty marker after load means custody was lost with the mutation
+  -- applied. Fault closed rather than continue with divergent worlds.
+  local custody = state.world and state.world.originResidueCustody or nil
+  local lost = custody and util.tableCount(custody) or 0
   proposalPreparation.originAppliedOperations = {}
-  proposalPreparation.nextOriginToken = 1
   proposalPreparation.pending = {}
+  if state.world then
+    state.world.originResidueCustody = {}
+    proposalPreparation.nextOriginToken = math.max(1,
+      util.integer(state.world.originResidueNextToken, 1))
+  else
+    proposalPreparation.nextOriginToken = 1
+  end
+  if lost > 0 and networkIntentController.raiseOriginResidueFault then
+    networkIntentController.raiseOriginResidueFault(
+      "origin-applied-custody-lost-on-reload", { pending = lost })
+  end
 end
 
 local script = {

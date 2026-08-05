@@ -1193,6 +1193,23 @@ def validate_action(action: Any) -> dict[str, Any]:
             raise ProtocolError("line.register requires companyCid")
         if not isinstance(action.get("market"), dict) or not isinstance(action.get("service"), dict):
             raise ProtocolError("line.register requires host-normalized market and service facts")
+        # Lua and Python round non-integers differently (Lua's util.integer
+        # adds an epsilon before flooring). Numeric facts therefore have to
+        # arrive as exact integers or a fractional value would replay to
+        # different models on the two sides.
+        for payload, fields in (
+            (action["market"], ("demand", "votCentsPerHour", "gcOutsideCents", "thetaCents",
+                                "waitWeightPm", "transferSeconds")),
+            (action["service"], ("headwaySeconds", "journeySeconds", "fareCents", "capacity",
+                                 "quality", "transfers", "sharePpm", "shareResid",
+                                 "lagLoadPpm", "lastFareCents")),
+        ):
+            for field in fields:
+                value = payload.get(field)
+                if value is None:
+                    continue
+                if isinstance(value, bool) or not isinstance(value, int):
+                    raise ProtocolError(f"line.register {field} must be an integer")
     if action_type == "fare.adjust" and not isinstance(action.get("deltaCents"), int):
         raise ProtocolError("fare.adjust requires integer deltaCents")
     if action_type == "economy.settle" and not isinstance(action.get("results"), dict):

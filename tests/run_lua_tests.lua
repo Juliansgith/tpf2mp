@@ -1674,7 +1674,7 @@ test("gravity demand scales with town capacities over distance and clamps", func
 end)
 
 test("computed service facts derive journey, headway, and capacity from geometry", function()
-  local previousGame = game
+  local previousGame, previousApi = game, api
   local positions = {
     [11] = { x = 0, y = 0 },
     [12] = { x = 10000, y = 0 },
@@ -1683,9 +1683,15 @@ test("computed service facts derive journey, headway, and capacity from geometry
     local p = positions[id]
     return p and { id = id, position = { p.x, p.y } } or nil
   end } }
+  api = { type = { ComponentType = { CONSTRUCTION = "CONSTRUCTION", BASE_NODE = "BASE_NODE" } },
+    engine = { getComponent = function() return nil end } }
   local facts = world.computedServiceFacts({ 11, 12 }, 2, { seats = 200, limitSpeedMs = 40 })
-  game = previousGame
+  local noStock = world.computedServiceFacts({ 11, 12 }, 0, { seats = 200, limitSpeedMs = 40 })
+  local unresolved = world.computedServiceFacts({ 11, 13 }, 2, { seats = 200, limitSpeedMs = 40 })
+  game, api = previousGame, previousApi
   truthy(facts, "computed facts require only positions and a consist")
+  equal(noStock.capacity, 0, "a line with no rolling stock must carry nobody")
+  equal(unresolved, nil, "an unresolvable stop must fail the computed path, not fabricate geometry")
   -- 10 km euclidean * 1.25 route factor = 12.5 km at 28 m/s sustained plus
   -- two 45 s dwells: journey 536 s; cycle 1312 s over two vehicles: 656 s.
   equal(facts.distanceMeters, 12500)
@@ -1744,9 +1750,14 @@ test("station boards aggregate model allocations per station group", function()
   equal(boards["sg:alpha"].name, "Alpha Central")
   equal(boards["sg:beta"].name, "sg:beta", "unnamed stops fall back to the cid")
   local allocated = state.lastResults.markets["market:a-b"].services["line:a"].allocated
-  equal(boards["sg:alpha"].throughput, allocated)
+  -- Boards distribute a line's load across its stops: summing every board of
+  -- a single service must reproduce that service's load, never multiply it.
+  equal(boards["sg:alpha"].throughput + boards["sg:beta"].throughput, allocated - allocated % 2,
+    "per-stop throughput must sum back to the line's own allocation")
   truthy(boards["sg:alpha"].waiting <= allocated, "momentary waiting cannot exceed epoch throughput")
   equal(boards["sg:alpha"].waiting, boards["sg:beta"].waiting, "same service, same board contribution")
+  equal(boards["sg:alpha"].lines[1].lineAllocated, allocated,
+    "the per-line row still reports the whole service load")
 end)
 
 test("town growth targets are deterministic, split, capped, and quiet when idle", function()

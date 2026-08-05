@@ -123,6 +123,12 @@ function M.new(cfg, versions)
         source = "launcher-save-metadata",
       } or nil,
       pinnedCustody = {},
+      -- Persisted custody markers for origin-applied (already natively
+      -- mutated) operations. Machine-local and outside every digest; their
+      -- presence after a reload means custody was lost and the session must
+      -- fault closed.
+      originResidueCustody = {},
+      originResidueNextToken = 1,
       proposals = {
         byId = {},
         queued = 0,
@@ -382,6 +388,9 @@ function M.migrate(saved, context)
     saved.world.logicalOwnershipAuthoritative = saved.networkMode == "network"
   end
   saved.world.pinnedCustody = saved.world.pinnedCustody or {}
+  saved.world.originResidueCustody = saved.world.originResidueCustody or {}
+  saved.world.originResidueNextToken = math.max(1,
+    util.integer(saved.world.originResidueNextToken, 1))
   saved.world.proposals = saved.world.proposals or util.deepCopy(defaults.world.proposals)
   saved.world.proposals.byId = saved.world.proposals.byId or {}
   saved.world.proposals.queued = math.max(0, util.integer(saved.world.proposals.queued, 0))

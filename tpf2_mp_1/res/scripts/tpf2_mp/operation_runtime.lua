@@ -3,6 +3,7 @@ local hash = require "tpf2_mp/hash"
 local canonical = require "tpf2_mp/canonical"
 local bridge = require "tpf2_mp/bridge"
 local world = require "tpf2_mp/world"
+local economy = require "tpf2_mp/economy"
 local operationCodec = require "tpf2_mp/operation_codec"
 
 local M = {}
@@ -166,6 +167,10 @@ function M.new(env)
     if originPeer == currentState().bridge.peerId and originCaptureToken then
       originApplied = env.proposalPreparation.originAppliedOperations[originCaptureToken]
       env.proposalPreparation.originAppliedOperations[originCaptureToken] = nil
+      -- Custody ends when the ordered commit takes the record; release the
+      -- persisted marker so a later save/load does not re-report this loss.
+      local custody = currentState().world and currentState().world.originResidueCustody or nil
+      if custody then custody[originCaptureToken] = nil end
       if not originApplied then
         return false, "optimistic local operation result is unavailable for "
           .. tostring(originCaptureToken)
@@ -340,6 +345,12 @@ function M.new(env)
       local localId = binding and binding.localId or record.localRefs[data.targetCid]
       canonical.unbindCanonical(currentState().canonical, data.targetCid)
       if localId then currentState().world.logicalOwners[tostring(localId)] = nil end
+      -- A deleted line must stop earning. Without this the registered service
+      -- keeps its capacity and settles revenue every epoch forever, on every
+      -- peer identically, so no digest would ever catch it.
+      if transaction.kind == "line.delete" then
+        economy.removeService(currentState().economy, data.targetCid)
+      end
     end
   end
   

@@ -147,7 +147,12 @@ function M.new(deps)
     end
     if action.type == "operation.capture" then
       local capture = type(action.capture) == "table" and action.capture or action
-      local normalized, normalizeError = normaliseOperationCapture(action)
+      -- A throwing normalizer must not lose an already-applied mutation to
+      -- handleEvent's outer pcall: convert it into the same rejection path.
+      local called, normalized, normalizeError = pcall(normaliseOperationCapture, action)
+      if not called then
+        normalized, normalizeError = nil, "operation capture normalization failed: " .. tostring(normalized)
+      end
       if not normalized then
         if capture.originApplied == true then
           raiseOriginResidueFault(

@@ -151,6 +151,11 @@ def verify_event_record(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _integer(value: Any, fallback: int, low: int | None = None, high: int | None = None) -> int:
+    # Lua's util.integer treats a boolean as absent; Python's int(True) is 1.
+    # Match Lua so a malformed payload cannot replay to different numbers on
+    # the two sides and turn a validation problem into a replay divergence.
+    if isinstance(value, bool):
+        value = None
     try:
         number = int(value)
     except (TypeError, ValueError, OverflowError):

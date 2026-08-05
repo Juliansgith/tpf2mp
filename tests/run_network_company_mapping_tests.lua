@@ -1360,4 +1360,33 @@ assert(script.save().world.operationConsensus.sessionFault.errorCode
     == "origin-applied-intent-rejected:test-transport-rejection",
   "a later residue did not retain the session's first fault")
 
+-- Custody of an origin-applied mutation lives in module-locals that die with
+-- a script reload, while the native mutation is inside the saved world. The
+-- persisted marker must outlive them and fault the reloaded session.
+do
+  local savedState = script.save()
+  savedState.world.operationConsensus.sessionFault = nil
+  savedState.world.originResidueCustody = {
+    ["player2:operation-origin:99"] = { kind = "line.update", capturedTick = 5 },
+  }
+  savedState.world.originResidueNextToken = 100
+  script.load(savedState)
+  local reloaded = script.save()
+  local reloadFault = reloaded.world.operationConsensus.sessionFault
+  assert(reloadFault and reloadFault.errorCode == "origin-applied-custody-lost-on-reload"
+    and reloadFault.detail.pending == 1,
+    "a reload holding origin-applied custody did not fault the session closed")
+  assert(next(reloaded.world.originResidueCustody) == nil,
+    "the reload did not clear the reported custody markers")
+  assert(reloaded.world.originResidueNextToken == 100,
+    "origin token monotonicity did not survive the reload")
+
+  savedState = script.save()
+  savedState.world.operationConsensus.sessionFault = nil
+  savedState.world.originResidueCustody = {}
+  script.load(savedState)
+  assert(script.save().world.operationConsensus.sessionFault == nil,
+    "a reload with no outstanding custody must not fault")
+end
+
 print("PASS network signals, depots, arbitrary constructions, station editing/removal, ownership, finance, and consensus")

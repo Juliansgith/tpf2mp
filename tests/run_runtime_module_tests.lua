@@ -295,6 +295,80 @@ do
     and fault.errorCode == "origin-applied-deferred-queue-full"
     and fault.detail.queueDepth == 1 and fault.detail.queueCapacity == 1,
     "deferred FIFO overflow left an origin-applied capture unfaulted")
+
+  -- A normalizer that throws must not lose an already-applied mutation to
+  -- the outer handleEvent pcall.
+  do
+    local thrown = {
+      networkMode = "network", initialized = false, tick = 9,
+      bridge = { peerId = "player1" },
+      probes = { networkAuthority = { ready = true } },
+      world = {
+        proposalConsensus = { byId = {} },
+        operationConsensus = { byId = {} },
+        checkpointConsensus = { byBoundary = {} },
+      },
+      finance = {},
+    }
+    local thrownController = networkIntentRuntimeModule.new({
+      getState = function() return thrown end,
+      normaliseForNetwork = function(action) return action end,
+      normaliseOperationCapture = function() error("station group lookup exploded") end,
+      applyCommitted = function(action) return true, { type = action.type } end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function() end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+    local throwOk = thrownController.submit({
+      type = "operation.capture",
+      capture = { kind = "line.update", originApplied = true, targetLocalId = 7 },
+    })
+    local throwFault = thrown.world.operationConsensus.sessionFault
+    assert(throwOk == false and throwFault
+      and throwFault.errorCode:find("origin%-applied%-capture%-rejected:") == 1
+      and throwFault.errorCode:find("exploded", 1, true),
+      "a throwing normalization left an origin-applied capture unfaulted")
+  end
+
+  -- The deferred-emit failure variant: a token-bearing action that reaches
+  -- the front of the FIFO and then fails to emit.
+  do
+    local deferred = {
+      networkMode = "network", initialized = false, tick = 9,
+      bridge = { peerId = "player1" },
+      probes = { networkAuthority = { ready = true } },
+      world = {
+        proposalConsensus = { byId = {} },
+        operationConsensus = { byId = {} },
+        checkpointConsensus = { byBoundary = { [3] = { status = "pending" } } },
+      },
+      finance = {},
+    }
+    local deferredController = networkIntentRuntimeModule.new({
+      getState = function() return deferred end,
+      normaliseForNetwork = function(action) return action end,
+      normaliseOperationCapture = function() return normalizedCapture end,
+      applyCommitted = function(action) return true, { type = action.type } end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function() end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+    local queued = deferredController.submit({
+      type = "operation.capture",
+      capture = { kind = "line.update", originApplied = true, targetLocalId = 7 },
+    })
+    assert(queued == true, "token-bearing capture did not defer behind the barrier")
+    deferred.world.checkpointConsensus.byBoundary[3] = nil
+    deferredController.processDeferred()
+    local deferredFault = deferred.world.operationConsensus.sessionFault
+    assert(deferredFault
+      and deferredFault.errorCode:find("origin%-applied%-intent%-emit%-failed:") == 1,
+      "a deferred token-bearing emit failure left the mutation unfaulted")
+  end
 end
 
 do
