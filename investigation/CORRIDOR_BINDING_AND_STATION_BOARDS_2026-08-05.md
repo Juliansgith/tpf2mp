@@ -1,6 +1,16 @@
 # Corridor binding: computed service facts, gravity markets, station boards
 
-Date: 2026-08-05 (Europe/Amsterdam)  
+Date: 2026-08-05 (Europe/Amsterdam)
+
+> Commit-scope correction for `db643e7`: that commit also carries the
+> concurrent vehicle-phase work-in-progress from the parallel Codex session
+> (vehicle purchase/assignment protocol tests, bridge atomic-write retry,
+> runtime-config/state-schema/native changes) which was present in the
+> working tree when this slice was staged with `git add -A`. The combined
+> tree passed the full offline suite (46 Python tests, 51/51 Lua, replay
+> verified) before the commit; only the commit message's scope is narrower
+> than its contents. This document describes the corridor-binding slice
+> alone.  
 Scope: `line.register` now derives its market and service facts from
 canonical geometry, town capacities, and consist metadata instead of legacy
 line-entity estimates, and the model drives a per-station display layer.
