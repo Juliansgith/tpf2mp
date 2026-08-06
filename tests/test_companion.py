@@ -407,6 +407,7 @@ def consensus_checkpoint(
     payload["modelDigest"] = checksum(payload["model"])
     core = json.loads(json.dumps(payload["model"]))
     core["canonical"] = payload["canonical"]
+    core["vehicleSynchronization"] = payload["vehicleSynchronization"]
     payload["coreDigest"] = checksum(core)
     payload["financial"]["companies"]["company:2"]["balance"] += financial_delta
     payload["financialDigest"] = checksum(payload["financial"])
@@ -420,6 +421,7 @@ def consensus_checkpoint(
             "lastCommitSeq": boundary_seq,
             "modelDigest": payload["modelDigest"],
             "canonicalDigest": payload["canonicalDigest"],
+            "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
             "coreDigest": payload["coreDigest"],
             "financialDigest": payload["financialDigest"],
         }
@@ -431,6 +433,34 @@ def consensus_checkpoint(
         "peer": peer,
         "local_seq": local_seq,
         "payload": payload,
+    }
+
+
+def vehicle_sync_record(
+    peer: str,
+    local_seq: int,
+    state: str,
+    *,
+    round_number: int = 1,
+    stop_index: int = 0,
+    game_time: float = 100.0,
+    detail: str = "",
+) -> dict:
+    return {
+        "kind": "vehicle_sync",
+        "peer": peer,
+        "local_seq": local_seq,
+        "payload": {
+            "schemaVersion": 1,
+            "vehicleCid": "vehicle:event:station-sync:1",
+            "lineCid": "line:event:station-sync:1",
+            "round": round_number,
+            "stopIndex": stop_index,
+            "state": state,
+            "gameTime": game_time,
+            "engineTick": local_seq,
+            "detail": detail,
+        },
     }
 
 
@@ -507,6 +537,26 @@ class ProtocolTests(unittest.TestCase):
             "reason": "adaptive-slowest-peer-cap",
         })
         self.assertEqual(accepted["effectiveSpeed"], 2)
+        rendezvous = validate_action({
+            "type": "clock.rendezvous",
+            "requestedSpeed": 3,
+            "approachSpeed": 2,
+            "releaseSpeed": 3,
+            "generation": 8,
+            "targetGameTime": 123.5,
+            "reason": "player-request:player1",
+        })
+        self.assertEqual(rendezvous["targetGameTime"], 123.5)
+        release = validate_action({
+            "type": "vehicle.sync_release",
+            "vehicleCid": "vehicle:event:test:1",
+            "lineCid": "line:event:test:1",
+            "round": 1,
+            "stopIndex": 0,
+            "releaseAtGameTime": 130.0,
+            "releaseWhilePaused": False,
+        })
+        self.assertEqual(release["round"], 1)
         with self.assertRaisesRegex(ProtocolError, "0 through 4"):
             validate_action({"type": "clock.request", "requestedSpeed": 5})
         with self.assertRaisesRegex(ProtocolError, "invalid requested/effective"):
@@ -514,6 +564,8 @@ class ProtocolTests(unittest.TestCase):
                 "type": "clock.set", "requestedSpeed": 1, "effectiveSpeed": 2,
                 "generation": 1, "reason": "invalid",
             })
+        with self.assertRaisesRegex(ProtocolError, "release time"):
+            validate_action({**release, "releaseAtGameTime": float("nan")})
 
     def test_canonical_proposal_transaction_is_strict_and_tamper_evident(self) -> None:
         transaction = proposal_transaction()
@@ -1111,8 +1163,10 @@ class CheckpointTests(unittest.TestCase):
             "autonomyFrozen": False,
         }
         canonical: list[dict] = []
+        vehicle_sync = {"schemaVersion": 1, "enabled": True, "vehicles": []}
         core = dict(model)
         core["canonical"] = canonical
+        core["vehicleSynchronization"] = vehicle_sync
         cursor = {
             "firstRetainedSeq": 1,
             "lastEventSeq": 1,
@@ -1127,7 +1181,7 @@ class CheckpointTests(unittest.TestCase):
             }
         }
         payload = {
-            "checkpointVersion": 2,
+            "checkpointVersion": 3,
             "stateVersion": 11,
             "protocol": 1,
             "sessionId": "checkpoint-test",
@@ -1139,6 +1193,8 @@ class CheckpointTests(unittest.TestCase):
             "modelDigest": checksum(model),
             "canonical": canonical,
             "canonicalDigest": checksum(canonical),
+            "vehicleSynchronization": vehicle_sync,
+            "vehicleSynchronizationDigest": checksum(vehicle_sync),
             "coreDigest": checksum(core),
             "financial": financial,
             "financialDigest": checksum(financial),
@@ -1146,13 +1202,14 @@ class CheckpointTests(unittest.TestCase):
         }
         payload["convergenceKey"] = checksum(
             {
-                "checkpointVersion": 2,
+                "checkpointVersion": 3,
                 "stateVersion": 11,
                 "protocol": 1,
                 "sessionId": "checkpoint-test",
                 "lastCommitSeq": 1,
                 "modelDigest": payload["modelDigest"],
                 "canonicalDigest": payload["canonicalDigest"],
+                "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
                 "coreDigest": payload["coreDigest"],
                 "financialDigest": payload["financialDigest"],
             }
@@ -1184,6 +1241,7 @@ class CheckpointTests(unittest.TestCase):
             after_model["autonomyFrozen"] = True
             after_core = dict(after_model)
             after_core["canonical"] = checkpoint["canonical"]
+            after_core["vehicleSynchronization"] = checkpoint["vehicleSynchronization"]
             event = {
                 "recordVersion": 1,
                 "stateVersion": 3,
@@ -1255,6 +1313,11 @@ class CheckpointTests(unittest.TestCase):
         payload["checkpointVersion"] = 1
         payload.pop("financial")
         payload.pop("financialDigest")
+        payload.pop("vehicleSynchronization")
+        payload.pop("vehicleSynchronizationDigest")
+        legacy_core = dict(payload["model"])
+        legacy_core["canonical"] = payload["canonical"]
+        payload["coreDigest"] = checksum(legacy_core)
         payload["convergenceKey"] = checksum(
             {
                 "checkpointVersion": 1,
@@ -1270,6 +1333,41 @@ class CheckpointTests(unittest.TestCase):
         payload.pop("checkpointDigest", None)
         payload["checkpointDigest"] = checksum(payload)
         self.assertEqual(verify_checkpoint(payload)["checkpointVersion"], 1)
+
+    def test_checkpoint_v2_remains_readable_for_recovery_archives(self) -> None:
+        payload = self.checkpoint_payload()
+        payload["checkpointVersion"] = 2
+        payload.pop("vehicleSynchronization")
+        payload.pop("vehicleSynchronizationDigest")
+        legacy_core = dict(payload["model"])
+        legacy_core["canonical"] = payload["canonical"]
+        payload["coreDigest"] = checksum(legacy_core)
+        payload["convergenceKey"] = checksum({
+            "checkpointVersion": 2,
+            "stateVersion": payload["stateVersion"],
+            "protocol": payload["protocol"],
+            "sessionId": payload["sessionId"],
+            "lastCommitSeq": payload["eventCursor"]["lastCommitSeq"],
+            "modelDigest": payload["modelDigest"],
+            "canonicalDigest": payload["canonicalDigest"],
+            "coreDigest": payload["coreDigest"],
+            "financialDigest": payload["financialDigest"],
+        })
+        payload.pop("checkpointDigest", None)
+        payload["checkpointDigest"] = checksum(payload)
+        self.assertEqual(verify_checkpoint(payload)["checkpointVersion"], 2)
+
+    def test_authorized_vehicle_checkpoint_requires_a_complete_stop_anchor(self) -> None:
+        payload = self.checkpoint_payload()
+        payload["vehicleSynchronization"]["vehicles"] = [{
+            "vehicleCid": "vehicle:event:test:1",
+            "lineCid": "line:event:test:1",
+            "companyCid": "company:1",
+            "lastAuthorizedRound": 1,
+            "releaseWhilePaused": False,
+        }]
+        with self.assertRaisesRegex(ProtocolError, "missing its stop/release anchor"):
+            verify_checkpoint(payload)
 
     def test_audit_replay_chains_checkpoint_event_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1647,6 +1745,17 @@ class NetworkIntegrationTests(unittest.TestCase):
                 bridge, "127.0.0.1", 0, root / "audit.ndjson",
                 require_connected_peers=False,
             )
+            sampled_at = time.monotonic()
+            host.clock_health = {
+                peer: {
+                    "receivedAt": sampled_at,
+                    "engineTick": 100,
+                    "lastCommitSeq": 0,
+                    "gameTime": 100.0,
+                    "observedSpeed": 0,
+                }
+                for peer in ("player1", "player2")
+            }
             intent = sign({
                 "protocol": 1,
                 "session": session,
@@ -1657,29 +1766,362 @@ class NetworkIntegrationTests(unittest.TestCase):
                 "payload": {"action": {"type": "clock.request", "requestedSpeed": 4}},
             })
             commit = host._commit(intent)
-            self.assertEqual(commit["payload"]["action"]["type"], "clock.set")
-            self.assertEqual(commit["payload"]["action"]["effectiveSpeed"], 4)
+            self.assertEqual(commit["payload"]["action"]["type"], "clock.rendezvous")
+            self.assertEqual(commit["payload"]["action"]["releaseSpeed"], 4)
             host._record_non_intent(proposal_prepare_ack("player1", 2, 1))
             host._record_non_intent(proposal_prepare_ack("player2", 3, 1))
             self.assertEqual(host.clock_controls[1]["status"], "complete")
+            for peer, local_seq in (("player1", 4), ("player2", 5)):
+                host._record_non_intent({
+                    "kind": "clock_reached",
+                    "peer": peer,
+                    "local_seq": local_seq,
+                    "payload": {
+                        "schemaVersion": 1,
+                        "generation": 1,
+                        "targetGameTime": 100.0,
+                        "actualGameTime": 100.0,
+                        "engineTick": 101,
+                        "success": True,
+                        "error": "",
+                    },
+                })
+            release = host.commits[2]["payload"]["action"]
+            self.assertEqual(release["type"], "clock.set")
+            self.assertEqual(release["effectiveSpeed"], 4)
+            host._record_non_intent(proposal_prepare_ack("player1", 6, 2))
+            host._record_non_intent(proposal_prepare_ack("player2", 7, 2))
 
-            host.clock_last_adjustment = 90.0
+            adjustment_at = time.monotonic()
+            host.clock_last_adjustment = adjustment_at - 10.0
             host.clock_health = {
                 "player1": {
-                    "receivedAt": 99.0, "engineTick": 100, "lastCommitSeq": 1,
-                    "tickRate": 5.0, "observedSpeed": 4,
+                    "receivedAt": adjustment_at - 1.0, "engineTick": 100, "lastCommitSeq": 2,
+                    "tickRate": 5.0, "observedSpeed": 4, "gameTime": 200.0,
+                    "gameRate": 12.0,
                 },
                 "player2": {
-                    "receivedAt": 99.0, "engineTick": 100, "lastCommitSeq": 1,
-                    "tickRate": 1.0, "observedSpeed": 4,
+                    "receivedAt": adjustment_at - 1.0, "engineTick": 100, "lastCommitSeq": 2,
+                    "tickRate": 1.0, "observedSpeed": 4, "gameTime": 200.0,
+                    "gameRate": 12.0,
                 },
             }
-            host._maybe_adjust_clock_locked(100.0)
-            adjustment = host.commits[2]["payload"]["action"]
-            self.assertEqual(adjustment["type"], "clock.set")
+            host._maybe_adjust_clock_locked(adjustment_at)
+            adjustment = host.commits[3]["payload"]["action"]
+            self.assertEqual(adjustment["type"], "clock.rendezvous")
             self.assertEqual(adjustment["requestedSpeed"], 4)
-            self.assertEqual(adjustment["effectiveSpeed"], 3)
+            self.assertEqual(adjustment["releaseSpeed"], 3)
             self.assertEqual(adjustment["reason"], "adaptive-slowest-peer-cap")
+
+    def test_clock_skew_compares_heartbeats_at_one_host_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "clock-projection", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host.clock_last_adjustment = sampled_at - 10.0
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
+                    "gameTime": 100.0, "observedSpeed": 1,
+                    "tickRate": 60.0, "gameRate": 12.0,
+                },
+                "player2": {
+                    "receivedAt": sampled_at - 0.25, "engineTick": 85,
+                    "lastCommitSeq": 0, "gameTime": 97.0, "observedSpeed": 1,
+                    "tickRate": 60.0, "gameRate": 12.0,
+                },
+            }
+            host._maybe_adjust_clock_locked(sampled_at)
+            self.assertAlmostEqual(host.clock_game_time_skew, 0.0, places=6)
+            self.assertEqual(host.commits, {},
+                "staggered healthy heartbeats caused a false resync")
+            host.clock_health["player2"]["gameTime"] = 94.0
+            host._maybe_adjust_clock_locked(sampled_at)
+            self.assertAlmostEqual(host.clock_game_time_skew, 3.0, places=6)
+            self.assertEqual(host.commits[1]["payload"]["action"]["type"], "clock.rendezvous")
+
+    def test_authoritative_pause_corrects_a_native_running_world(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "clock-initial-pause", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_last_adjustment = sampled_at - 10.0
+            host.clock_health = {
+                peer: {
+                    "receivedAt": sampled_at, "engineTick": 100,
+                    "lastCommitSeq": 0, "gameTime": 100.0,
+                    "observedSpeed": 1, "tickRate": 60.0, "gameRate": 12.0,
+                }
+                for peer in ("player1", "player2")
+            }
+            host._maybe_adjust_clock_locked(sampled_at)
+            action = host.commits[1]["payload"]["action"]
+            self.assertEqual(action["type"], "clock.set")
+            self.assertEqual(action["requestedSpeed"], 0)
+            self.assertEqual(action["effectiveSpeed"], 0)
+            self.assertEqual(action["reason"], "authoritative-pause-enforcement")
+
+    def test_pause_is_a_future_rendezvous_and_absolute_skew_gets_a_catchup_round(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "clock-rendezvous"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
+                    "gameTime": 100.0, "observedSpeed": 1, "tickRate": 60.0,
+                    "gameRate": 12.0,
+                },
+                "player2": {
+                    "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
+                    "gameTime": 103.0, "observedSpeed": 1, "tickRate": 60.0,
+                    "gameRate": 12.0,
+                },
+            }
+            intent = sign({
+                "protocol": 1,
+                "session": session,
+                "peer": "player1",
+                "local_seq": 1,
+                "tick": 100,
+                "kind": "intent",
+                "payload": {"action": {"type": "clock.request", "requestedSpeed": 0}},
+            })
+            rendezvous = host._commit(intent)
+            action = rendezvous["payload"]["action"]
+            self.assertEqual(action["type"], "clock.rendezvous")
+            self.assertEqual(action["approachSpeed"], 1)
+            self.assertEqual(action["releaseSpeed"], 0)
+            self.assertGreater(action["targetGameTime"], 103.0)
+            self.assertEqual(host.clock_effective_speed, 1)
+            host._record_non_intent(proposal_prepare_ack("player1", 2, 1))
+            host._record_non_intent(proposal_prepare_ack("player2", 3, 1))
+
+            target = float(action["targetGameTime"])
+            for peer, seq, actual in (
+                ("player1", 4, target),
+                ("player2", 5, target + 1.0),
+            ):
+                host._record_non_intent({
+                    "kind": "clock_reached", "peer": peer, "local_seq": seq,
+                    "payload": {
+                        "schemaVersion": 1, "generation": 1,
+                        "targetGameTime": target, "actualGameTime": actual,
+                        "engineTick": 110, "success": True, "error": "",
+                    },
+                })
+            correction = host.commits[2]["payload"]["action"]
+            self.assertEqual(correction["type"], "clock.rendezvous")
+            self.assertEqual(correction["approachSpeed"], 1)
+            self.assertEqual(correction["releaseSpeed"], 0)
+            self.assertEqual(correction["targetGameTime"], target + 1.0)
+            host._record_non_intent(proposal_prepare_ack("player1", 6, 2))
+            host._record_non_intent(proposal_prepare_ack("player2", 7, 2))
+            for peer, seq in (("player1", 8), ("player2", 9)):
+                host._record_non_intent({
+                    "kind": "clock_reached", "peer": peer, "local_seq": seq,
+                    "payload": {
+                        "schemaVersion": 1, "generation": 2,
+                        "targetGameTime": target + 1.0,
+                        "actualGameTime": target + 1.0,
+                        "engineTick": 120, "success": True, "error": "",
+                    },
+                })
+            final = host.commits[3]["payload"]["action"]
+            self.assertEqual(final["type"], "clock.set")
+            self.assertEqual(final["effectiveSpeed"], 0)
+
+    def test_paused_resume_catches_even_sub_tolerance_time_skew(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "paused-small-skew"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 0
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
+                    "gameTime": 100.0, "observedSpeed": 0,
+                },
+                "player2": {
+                    "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
+                    "gameTime": 100.1, "observedSpeed": 0,
+                },
+            }
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 100, "kind": "intent",
+                "payload": {"action": {"type": "clock.request", "requestedSpeed": 1}},
+            }))
+            action = commit["payload"]["action"]
+            self.assertEqual(action["type"], "clock.rendezvous")
+            self.assertEqual(action["approachSpeed"], 1)
+            self.assertEqual(action["targetGameTime"], 100.1)
+
+    def test_vehicle_station_round_waits_for_both_peers_and_retries_are_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "vehicle-station-sync", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            now = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host.clock_health = {
+                peer: {
+                    "receivedAt": now, "engineTick": 10, "lastCommitSeq": 0,
+                    "gameTime": 100.0, "observedSpeed": 1,
+                    "tickRate": 60.0, "gameRate": 12.0,
+                }
+                for peer in ("player1", "player2")
+            }
+            host._record_non_intent(vehicle_sync_record("player1", 1, "held", game_time=100.0))
+            self.assertEqual(host.commits, {})
+            host._record_non_intent(vehicle_sync_record("player2", 2, "held", game_time=101.0))
+            release = host.commits[1]["payload"]["action"]
+            self.assertEqual(release["type"], "vehicle.sync_release")
+            self.assertGreater(release["releaseAtGameTime"], 101.0)
+            host._record_non_intent(vehicle_sync_record("player1", 3, "held", game_time=102.0))
+            self.assertEqual(len(host.commits), 1, "held retry emitted a second release")
+            host._record_non_intent(proposal_prepare_ack("player1", 4, 1))
+            host._record_non_intent(proposal_prepare_ack("player2", 5, 1))
+            host._record_non_intent(vehicle_sync_record("player1", 6, "released", game_time=120.0))
+            host._record_non_intent(vehicle_sync_record("player2", 7, "released", game_time=120.2))
+            tracker = next(iter(host.vehicle_sync_rounds.values()))
+            self.assertEqual(tracker["status"], "complete")
+            self.assertEqual(host.vehicle_sync_releases, 1)
+            host._record_non_intent(vehicle_sync_record("player1", 8, "released", game_time=121.0))
+            self.assertEqual(host.vehicle_sync_releases, 1, "release retry counted twice")
+
+    def test_vehicle_stop_mismatch_and_release_rejection_fault_the_session_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "vehicle-station-fault", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+            host._record_non_intent(vehicle_sync_record(
+                "player2", 2, "held", stop_index=1,
+            ))
+            self.assertIn("vehicle-sync-stop-mismatch", host.session_fault)
+            actions = [item["payload"]["action"]["type"] for item in host.commits.values()]
+            self.assertIn("network.sync_fault", actions)
+            self.assertIn("clock.set", actions)
+            host._maybe_adjust_clock_locked(time.monotonic() + 1.0)
+            clock_actions = [
+                item["payload"]["action"] for item in host.commits.values()
+                if item["payload"]["action"]["type"] == "clock.set"
+            ]
+            self.assertEqual(clock_actions[-1]["requestedSpeed"], 0)
+            self.assertEqual(clock_actions[-1]["effectiveSpeed"], 0)
+
+            root2 = root / "release-reject"
+            second = CommitHost(
+                GameBridge(root2 / "host", "vehicle-release-reject", "player1"),
+                "127.0.0.1", 0, root2 / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            second._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+            second._record_non_intent(vehicle_sync_record("player2", 2, "held"))
+            second._record_non_intent(proposal_prepare_ack(
+                "player2", 3, 1, success=False, error="local vehicle mapping is missing",
+            ))
+            self.assertIn("vehicle-sync-release-rejected", second.session_fault)
+            self.assertTrue(second.sync_fault_emitted)
+
+    def test_host_restart_finishes_an_interrupted_vehicle_station_barrier(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "vehicle-restart-release"
+            audit_path = root / "audit.ndjson"
+            seed = CommitHost(
+                GameBridge(root / "seed", session, "player1"),
+                "127.0.0.1", 0, audit_path,
+                require_connected_peers=False,
+            )
+            seed.audit.append(seed._record_message(vehicle_sync_record("player1", 1, "held")))
+            seed.audit.append(seed._record_message(vehicle_sync_record("player2", 2, "held")))
+            recovered = CommitHost(
+                GameBridge(root / "recovered", session, "player1"),
+                "127.0.0.1", 0, audit_path,
+                require_connected_peers=False,
+            )
+            release = recovered.commits[1]["payload"]["action"]
+            self.assertEqual(release["type"], "vehicle.sync_release")
+            self.assertEqual(release["round"], 1)
+            tracker = next(iter(recovered.vehicle_sync_rounds.values()))
+            self.assertEqual(tracker["status"], "release-ordered")
+
+    def test_host_restart_preserves_rejected_clock_and_vehicle_controls(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            clock_session = "clock-reject-restart"
+            clock_audit = root / "clock-audit.ndjson"
+            clock_seed = CommitHost(
+                GameBridge(root / "clock-seed", clock_session, "player1"),
+                "127.0.0.1", 0, clock_audit,
+                require_connected_peers=False,
+            )
+            clock_seed._emit_clock_commit_locked(1, 1, "restore-rejection-test")
+            clock_seed.audit.append(clock_seed._record_message(proposal_prepare_ack(
+                "player2", 1, 1, success=False, error="native speed rejected",
+            )))
+            clock_recovered = CommitHost(
+                GameBridge(root / "clock-recovered", clock_session, "player1"),
+                "127.0.0.1", 0, clock_audit,
+                require_connected_peers=False,
+            )
+            clock_pause = clock_recovered.commits[2]["payload"]["action"]
+            self.assertEqual(clock_pause["type"], "clock.set")
+            self.assertEqual(clock_pause["effectiveSpeed"], 0)
+            self.assertIn("clock-command-rejected", clock_pause["reason"])
+
+            vehicle_session = "vehicle-reject-restart"
+            vehicle_audit = root / "vehicle-audit.ndjson"
+            vehicle_seed = CommitHost(
+                GameBridge(root / "vehicle-seed", vehicle_session, "player1"),
+                "127.0.0.1", 0, vehicle_audit,
+                require_connected_peers=False,
+            )
+            vehicle_seed._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+            vehicle_seed._record_non_intent(vehicle_sync_record("player2", 2, "held"))
+            vehicle_seed.audit.append(vehicle_seed._record_message(proposal_prepare_ack(
+                "player2", 3, 1, success=False, error="vehicle mapping rejected",
+            )))
+            vehicle_recovered = CommitHost(
+                GameBridge(root / "vehicle-recovered", vehicle_session, "player1"),
+                "127.0.0.1", 0, vehicle_audit,
+                require_connected_peers=False,
+            )
+            self.assertIn("vehicle-sync-release-rejected", vehicle_recovered.session_fault)
+            self.assertEqual(
+                vehicle_recovered.commits[2]["payload"]["action"]["type"],
+                "network.sync_fault",
+            )
 
     def test_line_operation_waits_for_physical_consensus_and_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

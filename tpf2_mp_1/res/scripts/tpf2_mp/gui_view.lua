@@ -111,6 +111,24 @@ function M.render(gui, snapshot, options)
       tostring(clock.effectiveSpeed or 0),
       tostring(clock.generation or 0),
       tostring(clock.reason or "waiting for host"))
+    local hostClock = companion.clock or {}
+    local rendezvous = hostClock.rendezvous or clock.rendezvous
+    lines[#lines + 1] = string.format(
+      "Clock convergence: skew %s | rendezvous %s | target %s",
+      hostClock.gameTimeSkew and string.format("%.3f", hostClock.gameTimeSkew) or "-",
+      rendezvous and tostring(rendezvous.status or "armed") or "idle",
+      rendezvous and tostring(rendezvous.targetGameTime or "-") or "-")
+    local hostVehicleSync = companion.vehicleSync or {}
+    local localVehicleSync = snapshot.probes and snapshot.probes.vehicleSync or {}
+    lines[#lines + 1] = string.format(
+      "Train station sync: managed %d | local holds/releases/faults %d/%d/%d | host pending/releases/faults %d/%d/%d",
+      tonumber(localVehicleSync.managed) or 0,
+      tonumber(localVehicleSync.held) or 0,
+      tonumber(localVehicleSync.released) or 0,
+      tonumber(localVehicleSync.faults) or 0,
+      tonumber(hostVehicleSync.pendingRounds) or 0,
+      tonumber(hostVehicleSync.releases) or 0,
+      tonumber(hostVehicleSync.faults) or 0)
     local clockCapture = gui.nativeClockCapture or {}
     lines[#lines + 1] = string.format(
       "Vanilla clock bridge: captured %d | duplicate %d | invalid %d | last %s",

@@ -8,6 +8,7 @@ local runtimeConfig = require "tpf2_mp/runtime_config"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
 local guiVehicleCaptureRuntimeModule = require "tpf2_mp/gui_vehicle_capture_runtime"
+local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 
 local M = {}
 
@@ -27,10 +28,6 @@ function M.new(deps)
   local balanceOf = assert(deps.balanceOf, "balanceOf dependency is required")
   local nativeHookStatus = assert(deps.nativeHookStatus, "nativeHookStatus dependency is required")
   local markNativeContext = assert(deps.markNativeContext, "markNativeContext dependency is required")
-  local configureNativeAuthority =
-    assert(deps.configureNativeAuthority, "configureNativeAuthority dependency is required")
-  local freezeNetworkCalendar =
-    assert(deps.freezeNetworkCalendar, "freezeNetworkCalendar dependency is required")
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
   local EVENT_ID = tostring(deps.eventId or "tpf2mp")
   local SCRIPT_FILE = tostring(deps.scriptFile or "tpf2_mp.lua")
@@ -887,18 +884,13 @@ function M.new(deps)
     return queued > 0
   end
 
-  local function attemptGuiNetworkAuthorityBootstrap()
-    installNativeCommandObserver()
-    markNativeContext("gui")
-    local authorityReady, authorityError = configureNativeAuthority("network")
-    local calendarReady, calendarError = false, nil
-    if authorityReady then calendarReady, calendarError = freezeNetworkCalendar() end
-    return {
-      authorityReady = authorityReady == true,
-      calendarReady = calendarReady == true,
-      error = authorityError or calendarError,
-    }
-  end
+  local attemptGuiNetworkAuthorityBootstrap = guiNetworkBootstrapModule.new({
+    installObserver = installNativeCommandObserver,
+    markNativeContext = markNativeContext,
+    configureAuthority = deps.configureNativeAuthority,
+    freezeGame = deps.freezeNetworkGame,
+    freezeCalendar = deps.freezeNetworkCalendar,
+  })
   
   local function directResultIds(param)
     local result, seen = {}, {}
@@ -1119,11 +1111,13 @@ function M.new(deps)
       end
       if config().startNetwork
         and (not gui.networkAuthorityBootstrap
+          or gui.networkAuthorityBootstrap.gameReady ~= true
           or gui.networkAuthorityBootstrap.calendarReady ~= true)
         and gui.frames % 15 == 0 then
         local priorError = gui.networkAuthorityBootstrap and gui.networkAuthorityBootstrap.error or nil
         gui.networkAuthorityBootstrap = attemptGuiNetworkAuthorityBootstrap()
-        if gui.networkAuthorityBootstrap.calendarReady == true
+        if (gui.networkAuthorityBootstrap.gameReady == true
+            and gui.networkAuthorityBootstrap.calendarReady == true)
           or gui.networkAuthorityBootstrap.error ~= priorError then
           queueAction({
             type = "probe.gui_capabilities",

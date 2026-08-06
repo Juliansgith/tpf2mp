@@ -172,6 +172,14 @@ function M.new(cfg, versions)
         lastError = nil,
         healthEmitted = 0,
         lastHealthLocalSeq = nil,
+        rendezvousReached = 0,
+        rendezvousFaults = 0,
+        startupPause = { requested = false, confirmed = false },
+      },
+      vehicleSync = {
+        schemaVersion = 1,
+        enabled = true,
+        vehicles = {},
       },
       turn = nil,
       lastTransition = nil,
@@ -214,6 +222,16 @@ function M.new(cfg, versions)
       },
       mobility = nil,
       mobilityHistory = {},
+      vehicleSync = {
+        managed = 0,
+        held = 0,
+        released = 0,
+        faults = 0,
+        reports = 0,
+        reportedReleases = {},
+        lastEvent = nil,
+        lastError = nil,
+      },
       capture = {
         preCommitCount = 0,
         nativePreCommitCount = 0,
@@ -428,6 +446,10 @@ function M.migrate(saved, context)
       saved.world.networkClock[key] = util.deepCopy(value)
     end
   end
+  saved.world.vehicleSync = saved.world.vehicleSync or util.deepCopy(defaults.world.vehicleSync)
+  saved.world.vehicleSync.schemaVersion = 1
+  if saved.world.vehicleSync.enabled == nil then saved.world.vehicleSync.enabled = true end
+  saved.world.vehicleSync.vehicles = saved.world.vehicleSync.vehicles or {}
   if saved.world.pauseOnSwitch == nil then saved.world.pauseOnSwitch = config().pauseOnSwitch end
   if saved.world.proxyMode == nil then saved.world.proxyMode = false end
   saved.eventLog = saved.eventLog or { nextSeq = 1, items = {} }
@@ -444,6 +466,13 @@ function M.migrate(saved, context)
   saved.probes.nativeHook = saved.probes.nativeHook or { available = false }
   saved.probes.worldManifest = saved.probes.worldManifest or nil
   saved.probes.mobilityHistory = saved.probes.mobilityHistory or {}
+  saved.probes.vehicleSync = saved.probes.vehicleSync or util.deepCopy(defaults.probes.vehicleSync)
+  for key, value in pairs(defaults.probes.vehicleSync) do
+    if saved.probes.vehicleSync[key] == nil then
+      saved.probes.vehicleSync[key] = util.deepCopy(value)
+    end
+  end
+  saved.probes.vehicleSync.reportedReleases = saved.probes.vehicleSync.reportedReleases or {}
   saved.probes.networkAuthority = saved.probes.networkAuthority
     or util.deepCopy(defaults.probes.networkAuthority)
   saved.probes.networkCalendar = saved.probes.networkCalendar

@@ -81,6 +81,8 @@ A match ends on a year, a valuation target, or bankruptcy.
 
 **Simulation fidelity is negotiable; structural and scoring fidelity are not.** If a train on your rival's screen is a few seconds behind where it is on yours, nobody cares. If a station exists only on one machine, a line points at a different local entity, or revenue differs by a coin, the game is broken. Effort goes where correctness matters.
 
+**Vehicle drift is bounded at service boundaries.** Replicas need not integrate identical mid-leg physics, but they share one negotiated clock and every canonical vehicle rendezvouses at each stop. A train may be slightly ahead between stations; it may not silently gain an extra trip because one player opened a pause menu or one computer ran faster.
+
 **The visible world must support the competitive truth.** Native passengers and freight do not have to match the economic model agent-for-agent, but directionally they must tell the same story. A service winning most of a market cannot routinely show empty trains while the loser appears full. Loads, queues, and score should agree closely enough that players can read the contest from the game world.
 
 **Being second must hurt.** Every mechanic added should create a reason to move first, commit early, or accept risk. If a player can wait, copy, and lose nothing, the mechanic isn't doing its job.

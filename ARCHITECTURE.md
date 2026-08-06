@@ -60,10 +60,17 @@ Runtime-controller modules:
 - `network_intent_runtime.lua` owns the local intent FIFO, host-order wait state,
   barrier back-pressure, bridge ingress, acknowledgement, and reset lifecycle.
 - `network_clock_runtime.lua` owns ordered native clock application, peer-health
-  emission, calendar freeze, and manual-network match bootstrap.
+  emission, future-time rendezvous/catch-up, paused heartbeats, physical
+  line/vehicle pause prerequisites, calendar freeze, and manual-network match
+  bootstrap.
+- `vehicle_sync_runtime.lua` owns local canonical train arrival detection,
+  native station holds, ordered release application/retry, and the digested
+  station-round projection. It never writes a native vehicle position.
 - `validation_runtime.lua` owns both disposable standalone and two-process
   validation state machines. It has no production authority when validation is
   disabled.
+- `validation_clock.lua` owns validator-only shared-clock readiness, settled
+  state, ordered-event, and rendezvous acceptance predicates.
 - `validation_construction.lua` contains stock resources used only by disposable
   engine validation.
 
@@ -72,6 +79,8 @@ GUI/native-adapter modules:
 - `gui_state.lua` creates machine-local GUI state with no shared mutable tables.
 - `gui_capture.lua` projects bounded vanilla proposal/userdata payloads and owns
   station-preview caching/rebasing helpers.
+- `gui_network_bootstrap.lua` re-arms native game/calendar pause authority in
+  the GUI Lua state after a saved world replaces the pre-load engine state.
 - `gui_view.lua` formats the prototype overlay from a public snapshot.
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer
   installation, bounded build/line/speed capture, and GUI callback lifecycle.
@@ -89,11 +98,14 @@ captured table reference would therefore mutate stale state after loading.
 - `protocol.py` defines canonical envelopes and strict portable action schemas.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
 - `client.py` owns client connection/retry and bridge forwarding.
-- `network.py` owns host ordering, prepare/physical/checkpoint consensus, shared
-  clock policy, and re-exports `CommitClient` for compatibility.
+- `network.py` owns host ordering, prepare/physical/checkpoint consensus, and
+  re-exports `CommitClient` for compatibility.
 - `consensus.py` owns tracker construction, deadlines, pending selection, and
-  strict proposal/operation/clock payload validation. `network.py` retains
+  strict proposal/operation/clock/vehicle-sync payload validation. `network.py` retains
   outcome policy and durable broadcast ordering.
+- `synchronization.py` owns the host's projected shared-clock policy,
+  rendezvous/correction lifecycle, adaptive slowest-peer governor, canonical
+  train station-round barrier, synchronization faults, and audit restoration.
 - `bridge.py`, `checkpoint.py`, and `recovery.py` own durable local transport,
   independent replay, and recovery archives respectively.
 
@@ -134,6 +146,9 @@ executable profile verification in the same commit.
 7. GUI view/state modules must not enter canonical digests or saved match state.
 8. Schema changes require an explicit state/protocol version decision and a
    migration or a documented fresh-match requirement.
+9. Native vehicle coordinates remain per-peer presentation state. Assigned
+   canonical trains may start a leg only after the complete fixed peer roster
+   has reported and received the same canonical station-round release.
 
 ## Adding a synchronized vehicle action
 

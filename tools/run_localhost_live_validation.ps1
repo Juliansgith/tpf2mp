@@ -3,11 +3,13 @@ param(
     [string]$Session,
     [ValidateRange(1024, 65535)][int]$Port = 29742,
     [ValidateRange(60, 3600)][int]$SoakTicks = 300,
+    [ValidateRange(30, 3600)][int]$ClockRunTicks = 30,
     [ValidateRange(120, 3600)][int]$TimeoutSeconds = 900,
     [ValidateRange(30, 600)][int]$ConsensusTimeoutSeconds = 180,
     [string]$GameExecutable,
     [string]$LocalModsPath,
     [string]$StartingSave,
+    [switch]$RequireVehicleSyncRound,
     [switch]$SkipTests,
     [switch]$SkipInstall,
     [switch]$SkipNativeBuild,
@@ -177,6 +179,7 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
     $env:TPF2MP_NETWORK_AUTOTEST = if ($OperationalCaptureLab -or $ManualOnly) { '0' } else { '1' }
     $env:TPF2MP_MANUAL_NETWORK = if ($ManualOnly) { '1' } else { '0' }
     $env:TPF2MP_NETWORK_SOAK_TICKS = [string]$SoakTicks
+    $env:TPF2MP_NETWORK_CLOCK_RUN_TICKS = [string]$ClockRunTicks
     $env:TPF2MP_OPERATIONAL_CAPTURE = if ($OperationalCaptureLab) { '1' } else { '0' }
     $env:TPF2MP_OPERATIONAL_SAMPLE_TICKS = [string]$OperationalSampleTicks
     $env:TPF2MP_STARTING_CASH = if ($OperationalCaptureLab -or $ManualOnly) {
@@ -538,7 +541,7 @@ function Stop-ExactProcess([Diagnostics.Process]$Process, [string]$Label, [int]$
     try { $Process.Refresh() } catch { return }
     if ($Process.HasExited) { return }
     if (-not $Process.WaitForExit($GraceSeconds * 1000)) {
-        Write-Warning "$Label PID $($Process.Id) did not stop gracefully; terminating only that disposable PID."
+        Write-Warning "$Label PID $($Process.Id) did not exit within ${GraceSeconds}s; terminating only that disposable PID."
         Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
         $Process.WaitForExit(10000) | Out-Null
     }
@@ -880,7 +883,12 @@ try {
                 throw "$($entry.Peer) game PID $($entry.Game.Id) exited before validation completed (exit $($entry.Game.ExitCode))."
             }
             $result = Read-ValidationResult $entry.Bridge $entry.Peer
-            if ($result) { $peerResults[$entry.Peer] = $result }
+            if ($result) {
+                $peerResults[$entry.Peer] = $result
+                if ($result.payload.status -eq 'failed') {
+                    throw "$($entry.Peer) validation failed: $($result.payload.error)"
+                }
+            }
         }
         if ($peerResults.Count -eq 2) { break }
         if ((Get-Date) -ge $nextProgress) {
@@ -915,6 +923,18 @@ try {
     }
     $badMobility = @($hostStatus.mobilityOutcomes.PSObject.Properties | Where-Object { $_.Value -ne 'converged' })
     if ($badMobility.Count -gt 0) { throw "At least one ordered mobility sample diverged: $($badMobility.Name -join ', ')" }
+    if ($RequireVehicleSyncRound) {
+        if ($null -eq $hostStatus.PSObject.Properties['vehicleSync']) {
+            throw 'Host companion did not publish vehicle synchronization status.'
+        }
+        $vehicleSync = $hostStatus.vehicleSync
+        if ([int]$vehicleSync.trackedVehicles -lt 1 -or [int]$vehicleSync.releases -lt 1 `
+            -or [int]$vehicleSync.faults -ne 0 -or [int]$vehicleSync.pendingRounds -ne 0) {
+            throw ("Populated vehicle rendezvous did not finish cleanly: " +
+                "tracked=$($vehicleSync.trackedVehicles), releases=$($vehicleSync.releases), " +
+                "faults=$($vehicleSync.faults), pending=$($vehicleSync.pendingRounds)")
+        }
+    }
 
     foreach ($gameProcess in @($peer1Game, $peer2Game)) {
         $nativePath = Join-Path $nativeStatusRoot "status-$($gameProcess.Id).json"
@@ -1014,24 +1034,23 @@ catch {
 }
 finally {
     if (-not $KeepGamesOpen) {
-        foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
-            if (Test-Path -LiteralPath $peerBridge) {
-                [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\stop'), 'stop', [Text.UTF8Encoding]::new($false))
-            }
-        }
-        Request-GameQuit $peer2Game 'player2'
-        Request-GameQuit $peer1Game 'player1'
+        # These worlds are explicitly disposable. Neither app.quit() through
+        # the console nor the bootstrap's launcher/stop -> app.stopGame() path
+        # is safe from a UI update callback on Build 35924; both can re-enter
+        # UI::CCore::InvokeStoredFunctions and create a crash dump. Terminate
+        # only the two exact recorded PIDs; there is no save boundary here.
         foreach ($entry in @(
             @{ Process = $peer2Game; Label = 'player2 game' },
             @{ Process = $peer1Game; Label = 'player1 game' }
-        )) { Stop-ExactProcess $entry.Process $entry.Label 45 }
+        )) { Stop-ExactProcess $entry.Process $entry.Label 1 }
     }
     Stop-ExactProcess $clientProcess 'client companion' 1
     Stop-ExactProcess $hostProcess 'host companion' 1
     foreach ($name in @('SteamAppId', 'SteamGameId', 'TPF2MP_PEER_ID', 'TPF2MP_SESSION_ID',
         'TPF2MP_BRIDGE_DIR', 'TPF2MP_START_NETWORK', 'TPF2MP_NETWORK_AUTOTEST',
         'TPF2MP_MANUAL_NETWORK',
-        'TPF2MP_NETWORK_SOAK_TICKS', 'TPF2MP_OPERATIONAL_CAPTURE',
+        'TPF2MP_NETWORK_SOAK_TICKS', 'TPF2MP_NETWORK_CLOCK_RUN_TICKS',
+        'TPF2MP_OPERATIONAL_CAPTURE',
         'TPF2MP_OPERATIONAL_SAMPLE_TICKS', 'TPF2MP_STARTING_CASH',
         'TPF2MP_STAGED_SAVE_NAME')) {
         Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
@@ -1134,6 +1153,8 @@ $runStatus = [ordered]@{
     gameSha256 = $gameHash
     port = $Port
     soakTicks = $SoakTicks
+    clockRunTicks = $ClockRunTicks
+    requireVehicleSyncRound = $RequireVehicleSyncRound.IsPresent
     interactiveAfterValidation = $InteractiveAfterValidation.IsPresent
     manualOnly = $ManualOnly.IsPresent
     interactiveMinutes = $InteractiveMinutes

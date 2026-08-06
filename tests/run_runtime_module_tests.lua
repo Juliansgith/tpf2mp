@@ -7,15 +7,44 @@ local nativeHook = require "tpf2_mp/native_hook"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
+local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
+local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local economyModule = require "tpf2_mp/economy"
 local financeModule = require "tpf2_mp/finance"
 local util = require "tpf2_mp/util"
+
+do
+  local observerCalls, marked, gameCalls, calendarCalls = 0, nil, 0, 0
+  local authorityReady = false
+  local bootstrap = guiNetworkBootstrapModule.new({
+    installObserver = function() observerCalls = observerCalls + 1 end,
+    markNativeContext = function(value) marked = value end,
+    configureAuthority = function()
+      if authorityReady then return true end
+      return false, "authority-not-ready"
+    end,
+    freezeGame = function() gameCalls = gameCalls + 1; return true end,
+    freezeCalendar = function() calendarCalls = calendarCalls + 1; return true end,
+  })
+  local waiting = bootstrap()
+  assert(waiting.authorityReady == false and waiting.gameReady == false
+      and waiting.calendarReady == false and waiting.error == "authority-not-ready"
+      and gameCalls == 0 and calendarCalls == 0,
+    "GUI network bootstrap mutated native clocks before authority was ready")
+  authorityReady = true
+  local ready = bootstrap()
+  assert(ready.authorityReady == true and ready.gameReady == true
+      and ready.calendarReady == true and ready.error == nil
+      and observerCalls == 2 and marked == "gui" and gameCalls == 1 and calendarCalls == 1,
+    "GUI network bootstrap did not prove both post-load clock controls")
+end
 
 local function baseConfig(overrides)
   local result = {
@@ -36,6 +65,49 @@ local function baseConfig(overrides)
   }
   for key, value in pairs(overrides or {}) do result[key] = value end
   return result
+end
+
+do
+  local current = stateSchema.new(baseConfig(), {
+    stateVersion = 21,
+    checkpointVersion = 3,
+  })
+  current.initialized = true
+  current.companyOrder = { "company:1", "company:2" }
+  current.companies = {
+    ["company:1"] = { cid = "company:1", name = "Company 1", playerId = 25 },
+    ["company:2"] = { cid = "company:2", name = "Company 2", playerId = 26 },
+  }
+  financeModule.initialiseNetworkAccounts(
+    current.finance, current.companyOrder, 50000000, { reason = "test" })
+  local nativeReads = 0
+  local snapshot = publicSnapshotModule.new({
+    getState = function() return current end,
+    activeCompany = function() return "company:1", current.companies["company:1"] end,
+    refreshOwnershipProbe = function()
+      return { companies = {}, pinned = { companies = {} }, unassigned = { total = 0 } }
+    end,
+    balanceOf = function()
+      nativeReads = nativeReads + 1
+      error("GUI load must not inspect a newly-created native PLAYER")
+    end,
+    accountOf = function()
+      nativeReads = nativeReads + 1
+      error("GUI load must not inspect a newly-created native PLAYER")
+    end,
+    coreDigest = function() return "core" end,
+    authoredDigest = function() return "model" end,
+    deferredNetworkIntents = function() return {} end,
+    networkIntentAwaitingOrder = function() return nil end,
+    maxDeferredNetworkIntents = 32,
+  })({ allowNativeAccounts = false })
+  assert(nativeReads == 0,
+    "GUI-safe public snapshot touched the native PLAYER entity view")
+  assert(snapshot.companies["company:1"].balance == 50000000
+      and snapshot.companies["company:2"].balance == 50000000,
+    "GUI-safe public snapshot did not use canonical network accounts")
+  assert(snapshot.companies["company:1"].nativeBalance == nil,
+    "GUI-safe public snapshot published an unavailable native balance")
 end
 
 do
@@ -377,7 +449,10 @@ do
     initialized = false,
     tick = 240,
     bridge = { peerId = "player1" },
-    probes = { networkAuthority = { ready = true } },
+    probes = {
+      networkAuthority = { ready = true },
+      networkCalendar = { requested = true, frozen = true },
+    },
   }
   local submissions = 0
   local bootstrapReady = false
@@ -417,6 +492,128 @@ do
 end
 
 do
+  local gameTime, gameSpeed = 10, 1
+  local wall = 100
+  local commands, emitted = {}, {}
+  local current = {
+    networkMode = "network", initialized = true, tick = 30,
+    bridge = { peerId = "player1", nextInSeq = 3 },
+    probes = {
+      networkAuthority = { ready = true },
+      networkCalendar = { requested = true, frozen = true },
+    },
+    world = {
+      networkClock = {
+        requestedSpeed = 1, effectiveSpeed = 1, generation = 0,
+        rendezvousReached = 0, rendezvousFaults = 0,
+        startupPause = { requested = true, confirmed = true },
+      },
+      proposalConsensus = { byId = {} },
+    },
+  }
+  local clock = networkClockRuntimeModule.new({
+    getState = function() return current end,
+    config = function() return {} end,
+    diagnosticLog = function() end,
+    submitIntent = function() return true, {} end,
+    awaitingOrder = function() return nil end,
+    pendingBarrierReason = function() return nil end,
+    clockSnapshot = function()
+      return { time = gameTime, gameSpeed = gameSpeed }
+    end,
+    wallTime = function() return wall end,
+    commandFactory = function(kind)
+      return function(speed) return { kind = kind, speed = speed } end
+    end,
+    authorizeCommand = function(tag) return tag == 0 end,
+    sendCommand = function(command, callback)
+      commands[#commands + 1] = util.deepCopy(command)
+      if command.kind == "setGameSpeed" then gameSpeed = command.speed end
+      if callback then callback(command, true) end
+      return true
+    end,
+    emit = function(kind, payload)
+      emitted[#emitted + 1] = { kind = kind, payload = util.deepCopy(payload) }
+      return true, { local_seq = #emitted }
+    end,
+  })
+  local armed = clock.arm({
+    type = "clock.rendezvous", requestedSpeed = 3, approachSpeed = 1,
+    releaseSpeed = 3, generation = 1, targetGameTime = 12,
+    reason = "runtime-test",
+  })
+  assert(armed == true and #commands == 0
+      and current.world.networkClock.rendezvous.status == "approaching",
+    "future clock rendezvous did not arm without pausing early")
+  gameTime, current.tick = 11.99, 31
+  clock.update()
+  assert(#commands == 0 and #emitted == 0,
+    "future clock rendezvous paused or reported before its target")
+  gameTime, current.tick = 12, 32
+  clock.update()
+  assert(#commands == 1 and commands[1].speed == 0 and gameSpeed == 0
+      and current.world.networkClock.rendezvous.status == "reached"
+      and current.world.networkClock.rendezvousReached == 1,
+    "clock rendezvous did not pause exactly at the local target")
+  local reached
+  for _, envelope in ipairs(emitted) do
+    if envelope.kind == "clock_reached" then reached = envelope.payload end
+  end
+  assert(reached and reached.generation == 1 and reached.targetGameTime == 12
+      and reached.actualGameTime == 12 and reached.success == true,
+    "clock rendezvous did not report its observed arrival")
+  current.tick = 33
+  local applied = clock.apply({
+    type = "clock.set", requestedSpeed = 3, effectiveSpeed = 3,
+    generation = 2, reason = "release-runtime-test",
+  })
+  assert(applied == true and gameSpeed == 3 and #commands == 2
+      and current.world.networkClock.rendezvous == nil
+      and current.world.networkClock.lastRendezvous.generation == 1,
+    "ordered post-rendezvous speed did not release the shared clock")
+  local prerequisite, waitReason = clock.operationPrerequisite({
+    type = "operation.execute", transaction = { kind = "line.update" },
+  })
+  assert(prerequisite and prerequisite.type == "clock.request"
+      and prerequisite.requestedSpeed == 0 and waitReason:find("rendezvous", 1, true),
+    "non-origin line mutation was not guarded by a shared pause prerequisite")
+  local originPrerequisite = clock.operationPrerequisite({
+    type = "operation.execute", originCaptureToken = "already-applied",
+    transaction = { kind = "vehicle.sell" },
+  })
+  assert(originPrerequisite and originPrerequisite.requestedSpeed == 0,
+    "origin-applied vehicle capture did not pause both worlds before replication")
+  current.world.networkClock.effectiveSpeed, gameSpeed = 0, 1
+  local nativeMismatchPrerequisite = clock.operationPrerequisite({
+    type = "operation.execute", transaction = { kind = "vehicle.assign" },
+  })
+  assert(nativeMismatchPrerequisite and nativeMismatchPrerequisite.requestedSpeed == 0,
+    "native running state bypassed the authoritative operation pause")
+  local healthBefore = #emitted
+  gameSpeed = 0
+  assert(clock.emitPausedHealth() == true, "paused clock did not emit its first heartbeat")
+  wall = 101
+  assert(clock.emitPausedHealth() == false,
+    "paused clock heartbeat ignored its wall-time throttle")
+  wall = 102
+  assert(clock.emitPausedHealth() == true and #emitted == healthBefore + 2,
+    "paused clock did not refresh telemetry before the host freshness deadline")
+  gameSpeed = 3
+  local startupPaused = clock.freezeGame()
+  assert(startupPaused == true and gameSpeed == 0
+      and current.world.networkClock.startupPause.confirmed == true,
+    "network startup did not pause the loaded native world immediately")
+  gameTime = nil
+  assert(clock.arm({
+    type = "clock.rendezvous", requestedSpeed = 1, approachSpeed = 1,
+    releaseSpeed = 1, generation = 3, targetGameTime = 20,
+  }) == false, "clock rendezvous accepted an unavailable local game time")
+  local calendarOk, calendarError = clock.freezeCalendar()
+  assert(calendarOk == false and calendarError:find("authorize", 1, true),
+    "calendar freeze ignored a rejected native authorization")
+end
+
+do
   local current = { validation = { enabled = false } }
   local function noop() return true, {} end
   local validation = validationRuntimeModule.new({
@@ -446,6 +643,7 @@ do
     TPF2MP_SESSION_ID = "injected-session",
     TPF2MP_BRIDGE_DIR = "C:/bridge/injected",
     TPF2MP_STARTING_CASH = "75000000",
+    TPF2MP_NETWORK_CLOCK_RUN_TICKS = "900",
     TPF2MP_STARTING_COMPANY_PLAYER_IDS = "9478,9479,9478",
   }
   local cfg = runtimeConfig.read({
@@ -463,6 +661,8 @@ do
     "injected peer/session identity was lost")
   assert(cfg.root == "C:/bridge/injected" and cfg.startingCash == 75000000,
     "injected bridge/economy configuration was lost")
+  assert(cfg.networkClockRunTicks == 900,
+    "injected network clock run window was lost")
   assert(#cfg.startingCompanyPlayerIds == 2
       and cfg.startingCompanyPlayerIds[1] == 9478
       and cfg.startingCompanyPlayerIds[2] == 9479,
@@ -482,13 +682,13 @@ do
 end
 
 do
-  local versions = { stateVersion = 20, checkpointVersion = 2 }
+  local versions = { stateVersion = 21, checkpointVersion = 3 }
   local cfg = baseConfig()
   local first = stateSchema.new(cfg, versions)
   local second = stateSchema.new(cfg, versions)
   first.world.logicalOwners.test = "company:1"
   assert(second.world.logicalOwners.test == nil, "new states share mutable nested tables")
-  assert(first.version == 20 and first.checkpoint.version == 2,
+  assert(first.version == 21 and first.checkpoint.version == 3,
     "new state did not retain its schema versions")
   assert(first.networkMode == "network" and first.bridge.peerId == "player1",
     "new state did not retain its runtime identity")
@@ -499,10 +699,10 @@ do
   local migrated = stateSchema.migrate(first, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 20,
-    checkpointVersion = 2,
+    stateVersion = 21,
+    checkpointVersion = 3,
   })
-  assert(migrated.version == 20 and migrated.world.networkClock.generation == 0,
+  assert(migrated.version == 21 and migrated.world.networkClock.generation == 0,
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
@@ -532,8 +732,8 @@ do
   local fresh = stateSchema.migrate(prior, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 20,
-    checkpointVersion = 2,
+    stateVersion = 21,
+    checkpointVersion = 3,
   })
   local hints = fresh.world.startingOwnershipHints
   assert(fresh.initialized == false and hints
@@ -556,8 +756,8 @@ do
   local cleanRetry = stateSchema.migrate(prior, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 20,
-    checkpointVersion = 2,
+    stateVersion = 21,
+    checkpointVersion = 3,
   })
   assert(cleanRetry.initialized == false
       and cleanRetry.world.autonomyFrozen == false
@@ -644,8 +844,8 @@ do
   local runtime = checkpointRuntimeModule.new({
     getState = function() return current end,
     maxEvents = function() return 100 end,
-    stateVersion = 20,
-    checkpointVersion = 2,
+    stateVersion = 21,
+    checkpointVersion = 3,
     eventRecordVersion = 1,
   })
   local original = util.deepCopy(model)
@@ -683,6 +883,114 @@ do
       "authored digest hides evaluator input " .. mutation[1])
   end
   current.economy = model
+end
+
+do
+  local priorApi = api
+  api = { type = { ComponentType = { TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE" } } }
+  local transportVehicle = {
+    line = 50, state = 1, stopIndex = 0, userStopped = false,
+  }
+  local currentTime, currentSpeed = 10, 1
+  local emitted, commands = {}, {}
+  local current = {
+    networkMode = "network",
+    initialized = true,
+    tick = 1,
+    bridge = { peerId = "player1" },
+    canonical = {
+      byCanonical = {
+        ["line:event:test:1"] = {
+          canonicalId = "line:event:test:1", kind = "line", localId = 50, metadata = {},
+        },
+        ["vehicle:event:test:1"] = {
+          canonicalId = "vehicle:event:test:1", kind = "vehicle", localId = 60,
+          -- A pinned starting-save vehicle has no operation-authored lineCid;
+          -- the runtime must derive its canonical line from the local mapping.
+          metadata = { owner = "company:1" },
+        },
+      },
+      byLocal = { ["line:50"] = "line:event:test:1" },
+    },
+    world = {
+      vehicleSync = { schemaVersion = 1, enabled = true, vehicles = {} },
+    },
+    probes = {
+      vehicleSync = {
+        managed = 0, held = 0, released = 0, faults = 0,
+        reports = 0, reportedReleases = {},
+      },
+    },
+  }
+  local runtime = vehicleSyncRuntimeModule.new({
+    getState = function() return current end,
+    diagnosticLog = function() end,
+    component = function(localId)
+      if localId == 60 then return transportVehicle end
+    end,
+    clockSnapshot = function()
+      return { time = currentTime, gameSpeed = currentSpeed }
+    end,
+    commandFactory = function(name)
+      assert(name == "setUserStopped")
+      return function(localId, stopped) return { localId = localId, stopped = stopped } end
+    end,
+    authorizeCommand = function(tag) return tag == 8 end,
+    sendCommand = function(command, callback)
+      commands[#commands + 1] = util.deepCopy(command)
+      transportVehicle.userStopped = command.stopped
+      callback(command, true)
+      return true
+    end,
+    emit = function(kind, payload)
+      emitted[#emitted + 1] = { kind = kind, payload = util.deepCopy(payload) }
+      return true, { local_seq = #emitted }
+    end,
+  })
+  runtime.update()
+  assert(#commands == 0, "en-route synchronized vehicle was mutated")
+  transportVehicle.state = 2
+  current.tick = 2
+  runtime.update()
+  assert(#commands == 1 and commands[1].stopped == true
+      and emitted[1].payload.state == "held" and emitted[1].payload.round == 1,
+    "first terminal arrival was not held and reported")
+  local releaseOk = runtime.applyRelease({
+    type = "vehicle.sync_release",
+    vehicleCid = "vehicle:event:test:1",
+    lineCid = "line:event:test:1",
+    round = 1,
+    stopIndex = 0,
+    releaseAtGameTime = 12,
+    releaseWhilePaused = false,
+  })
+  assert(releaseOk == true, "ordered station release was rejected")
+  currentTime, current.tick = 11, 3
+  runtime.update()
+  assert(#commands == 1, "vehicle released before its simulation-time target")
+  currentTime, current.tick = 12, 4
+  runtime.update()
+  assert(#commands == 2 and commands[2].stopped == false
+      and emitted[#emitted].payload.state == "released",
+    "vehicle did not release/report at the ordered target")
+  local digestView = vehicleSyncRuntimeModule.digestView(current.world)
+  assert(digestView.vehicles[1].lastAuthorizedRound == 1
+      and digestView.vehicles[1].stopIndex == 0,
+    "authorized vehicle leg is absent from the convergence view")
+  transportVehicle.state, current.tick = 1, 5
+  runtime.update()
+  transportVehicle.state, transportVehicle.stopIndex, current.tick = 2, 1, 6
+  runtime.update()
+  assert(commands[#commands].stopped == true
+      and emitted[#emitted].payload.round == 2
+      and emitted[#emitted].payload.stopIndex == 1,
+    "next station did not advance the canonical vehicle round")
+  transportVehicle.state, current.tick = 1, 7
+  runtime.update()
+  assert(emitted[#emitted].payload.state == "fault"
+      and current.probes.vehicleSync.faults == 1,
+    "departure before authority release did not fault closed")
+  api = priorApi
 end
 
 print("PASS runtime config/state, proposal, intent, clock, validation, native authority, and GUI module boundaries")

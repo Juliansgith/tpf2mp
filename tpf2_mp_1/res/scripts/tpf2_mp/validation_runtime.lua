@@ -4,6 +4,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
+local validationClockModule = require "tpf2_mp/validation_clock"
 
 local M = {}
 
@@ -30,6 +31,7 @@ function M.new(deps)
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
   })
+  local validationClock = validationClockModule.new(getState)
 
   -- Environment-gated, disposable-world validation. Each money mutation gets a
   -- settling window because native commands may not become observable until a
@@ -247,6 +249,9 @@ function M.new(deps)
   
   local function networkValidationFault()
     local fault = state.world.proposalConsensus and state.world.proposalConsensus.sessionFault
+    if not fault and state.world.operationConsensus then
+      fault = state.world.operationConsensus.sessionFault
+    end
     if not fault and state.world.checkpointConsensus
       and state.world.checkpointConsensus.lastOutcome
       and state.world.checkpointConsensus.lastOutcome.success == false then
@@ -328,7 +333,7 @@ function M.new(deps)
     })
     return true
   end
-  
+
   local function runAutomatedNetworkValidation()
     local validation = state.validation
     if not (config().networkAutoValidate and validation and validation.enabled) then return end
@@ -348,10 +353,19 @@ function M.new(deps)
     end
     local fault = networkValidationFault()
     if fault then error(fault) end
-    if validation.stage == "wait-for-network" and state.tick < VALIDATION_WORLD_WARMUP_TICKS then return end
-    if state.tick - (validation.stageStartedTick or 0) < VALIDATION_SETTLE_TICKS then return end
-  
     local stage = validation.stage
+    local startup = state.world.networkClock and state.world.networkClock.startupPause
+    local authority = state.probes.networkAuthority
+    local calendar = state.probes.networkCalendar
+    local pausedBootstrap = startup and startup.confirmed == true
+      and authority and authority.ready == true and calendar and calendar.frozen == true
+      and (stage == "wait-for-network" or stage == "wait-for-match"
+        or stage == "wait-for-initial-checkpoint")
+    if stage == "wait-for-network" and state.tick < VALIDATION_WORLD_WARMUP_TICKS
+      and not pausedBootstrap then return end
+    if state.tick - (validation.stageStartedTick or 0) < VALIDATION_SETTLE_TICKS
+      and not pausedBootstrap then return end
+
     if stage == "wait-for-network" then
       local companionReady, companion = networkValidationCompanionReady()
       if not companionReady then return end
@@ -367,6 +381,10 @@ function M.new(deps)
       validationCheck("native-calendar-frozen-for-finance-stability",
         state.probes.networkCalendar and state.probes.networkCalendar.frozen == true,
         state.probes.networkCalendar)
+      validationCheck("native-game-paused-before-network-bootstrap",
+        state.world.networkClock.startupPause
+          and state.world.networkClock.startupPause.confirmed == true,
+        state.world.networkClock.startupPause)
       validationCheck("companion-link-ready", true, companion)
       if state.bridge.peerId == "player1" then
         local result = networkValidationSubmit({ type = "match.initialise" }, "host-match-initialise-queued")
@@ -418,12 +436,81 @@ function M.new(deps)
         return record.proposalId == nil and record.reason == "match-initialised"
       end)
       if not agreed then return end
+      if not validationClock.peersReady() then return end
       validationCheck("initial-checkpoint-consensus", agreed.success == true, agreed)
       validationCheck("initial-checkpoint-covers-structure",
         agreed.structuralDigest == validation.values.initialStructuralDigest, agreed)
       validation.values.initialCheckpointBoundary = agreed.boundarySeq
       if state.bridge.peerId == "player1" then
-        local result = networkValidationSubmit({ type = "probe.mobility" }, "initial-mobility-sample-queued")
+        local result = networkValidationSubmit({ type = "clock.request", requestedSpeed = 2 },
+          "shared-clock-resume-request-queued")
+        validation.values.clockResumeLocalSeq = result and result.local_seq
+        validation.values.lastClockResumeAttemptTick = state.tick
+      end
+      validationTransition("wait-for-shared-clock-running")
+
+    elseif stage == "wait-for-shared-clock-running" then
+      if not validationClock.settled(2) then
+        local lastAttempt = tonumber(validation.values.lastClockResumeAttemptTick)
+          or tonumber(validation.stageStartedTick) or 0
+        if state.bridge.peerId == "player1" and state.tick - lastAttempt >= 60
+          and validationClock.peersReady() and not awaitingOrder()
+          and not networkPendingBarrierReason() then
+          local result = networkValidationSubmit({ type = "clock.request", requestedSpeed = 2 },
+            "shared-clock-resume-retry-queued")
+          validation.values.clockResumeLocalSeq = result and result.local_seq
+          validation.values.lastClockResumeAttemptTick = state.tick
+        end
+        -- The host deliberately waits for all-peer speed-2 heartbeats before
+        -- pausing, but a slower game-script callback can miss the short local
+        -- interval between the final resume commit and that pause order. The
+        -- ordered successful clock.set proves this replica applied the same
+        -- running generation; let its validator catch up to the current stage.
+        local committed = validationClock.event(2)
+        if state.bridge.peerId ~= "player1" and committed then
+          validation.values.clockRunningObservedTick = state.tick
+          validationCheck("shared-clock-running-locally", true, {
+            orderedEvent = util.deepCopy(committed), caughtUpFromOrderedHistory = true,
+          })
+          validationTransition("wait-for-shared-clock-paused")
+        end
+        return
+      end
+      if not validation.values.clockRunningObservedTick then
+        validation.values.clockRunningObservedTick = state.tick
+        validationCheck("shared-clock-running-locally", true, {
+          clock = util.deepCopy(state.world.networkClock), observed = world.clockSnapshot(),
+        })
+        return
+      end
+      -- Leave the completed running state visible for several update frames so
+      -- the other local game cannot miss it before the host orders the pause.
+      if state.tick - validation.values.clockRunningObservedTick
+        < math.max(30, util.integer(config().networkClockRunTicks, 30)) then return end
+      if state.bridge.peerId == "player1" then
+        local companion = bridge.pollCompanionStatus(state.bridge) or {}
+        -- Heartbeat projection can fluctuate after release while both engines
+        -- run. The barrier's reached reports are the acceptance fact: they
+        -- compare both peers at one target before the release commit.
+        validationCheck("shared-clock-running-cross-peer",
+          validationClock.rendezvousConverged(companion), companion.clock)
+        local result = networkValidationSubmit({ type = "clock.request", requestedSpeed = 0 },
+          "shared-clock-pause-request-queued")
+        validation.values.clockPauseLocalSeq = result and result.local_seq
+      end
+      validationTransition("wait-for-shared-clock-paused")
+
+    elseif stage == "wait-for-shared-clock-paused" then
+      if not validationClock.settled(0) then return end
+      validationCheck("shared-clock-paused-locally", true, {
+        clock = util.deepCopy(state.world.networkClock), observed = world.clockSnapshot(),
+      })
+      if state.bridge.peerId == "player1" then
+        local companion = bridge.pollCompanionStatus(state.bridge) or {}
+        validationCheck("shared-clock-paused-cross-peer",
+          validationClock.rendezvousConverged(companion), companion.clock)
+        local result = networkValidationSubmit({ type = "probe.mobility" },
+          "initial-mobility-sample-queued")
         validation.values.initialMobilityLocalSeq = result and result.local_seq
       end
       validationTransition("wait-for-initial-mobility")

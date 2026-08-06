@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import time
 from typing import Any, Callable, Mapping
@@ -55,10 +56,17 @@ class ConsensusTrackers:
         if tracker is None:
             tracker = {
                 "commitSeq": seq,
+                "actionType": str(action.get("type", "clock.set")),
                 "requestedSpeed": int(action.get("requestedSpeed", 0)),
-                "effectiveSpeed": int(action.get("effectiveSpeed", 0)),
+                "effectiveSpeed": int(action.get(
+                    "effectiveSpeed", action.get("approachSpeed", 0)
+                )),
+                "releaseSpeed": int(action.get(
+                    "releaseSpeed", action.get("effectiveSpeed", 0)
+                )),
                 "generation": int(action.get("generation", 0)),
                 "reason": str(action.get("reason", "host-order")),
+                "targetGameTime": action.get("targetGameTime"),
                 "requiredPeers": self.required_peers,
                 "acks": {},
                 "status": "pending",
@@ -255,10 +263,17 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
         "schemaVersion", "requestedSpeed", "effectiveSpeed", "generation",
         "engineTick", "lastCommitSeq", "proposalPending",
     }
+    schema = payload.get("schemaVersion")
+    rendezvous = {
+        "rendezvousGeneration", "rendezvousState", "rendezvousTargetTime",
+    }
     allowed = required | {"observedSpeed", "gameTime"}
+    if schema == 2:
+        required |= rendezvous
+        allowed |= rendezvous
     if not required <= set(payload) or set(payload) - allowed:
         raise ProtocolError("clock health payload has unknown or missing fields")
-    if payload.get("schemaVersion") != 1:
+    if schema not in {1, 2}:
         raise ProtocolError("unsupported clock health schema")
     for field in (
         "requestedSpeed", "effectiveSpeed", "generation", "engineTick", "lastCommitSeq"
@@ -271,6 +286,84 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
         value = payload.get(field)
         if value is not None and (
             not isinstance(value, (int, float)) or isinstance(value, bool)
+            or not math.isfinite(float(value))
         ):
             raise ProtocolError(f"clock health {field} must be numeric when present")
+    observed_speed = payload.get("observedSpeed")
+    if observed_speed is not None and (
+        float(observed_speed) < 0 or float(observed_speed) > 4
+    ):
+        raise ProtocolError("clock health observedSpeed is outside [0,4]")
+    game_time = payload.get("gameTime")
+    if game_time is not None and float(game_time) < 0:
+        raise ProtocolError("clock health gameTime must be non-negative")
+    if schema == 2:
+        generation = payload.get("rendezvousGeneration")
+        if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
+            raise ProtocolError("clock health rendezvousGeneration must be non-negative")
+        if payload.get("rendezvousState") not in {
+            "idle", "armed", "approaching", "pausing", "reached", "faulted",
+        }:
+            raise ProtocolError("clock health rendezvousState is invalid")
+        target = payload.get("rendezvousTargetTime")
+        if target is not None and (
+            not isinstance(target, (int, float)) or isinstance(target, bool)
+            or not math.isfinite(float(target))
+        ):
+            raise ProtocolError("clock health rendezvousTargetTime must be numeric when present")
+    return dict(payload)
+
+
+def clock_rendezvous_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProtocolError("clock rendezvous payload must be an object")
+    required = {
+        "schemaVersion", "generation", "targetGameTime", "actualGameTime",
+        "engineTick", "success", "error",
+    }
+    if set(payload) != required or payload.get("schemaVersion") != 1:
+        raise ProtocolError("clock rendezvous payload has unknown, missing, or unsupported fields")
+    for field in ("generation", "engineTick"):
+        if not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool) \
+                or payload[field] < 0:
+            raise ProtocolError(f"clock rendezvous {field} must be a non-negative integer")
+    for field in ("targetGameTime", "actualGameTime"):
+        value = payload.get(field)
+        if not isinstance(value, (int, float)) or isinstance(value, bool) \
+                or not math.isfinite(float(value)):
+            raise ProtocolError(f"clock rendezvous {field} must be numeric")
+    if not isinstance(payload.get("success"), bool) or not isinstance(payload.get("error"), str):
+        raise ProtocolError("clock rendezvous success/error fields are invalid")
+    return dict(payload)
+
+
+def vehicle_sync_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ProtocolError("vehicle sync payload must be an object")
+    required = {
+        "schemaVersion", "vehicleCid", "lineCid", "round", "stopIndex",
+        "state", "gameTime", "engineTick", "detail",
+    }
+    if set(payload) != required or payload.get("schemaVersion") != 1:
+        raise ProtocolError("vehicle sync payload has unknown, missing, or unsupported fields")
+    for field, prefix in (("vehicleCid", "vehicle:"), ("lineCid", "line:")):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.startswith(prefix) or len(value) > 320:
+            raise ProtocolError(f"vehicle sync {field} is not canonical")
+    for field, lower, upper in (
+        ("round", 1, 1_000_000_000),
+        ("stopIndex", 0, 255),
+        ("engineTick", 0, 2_147_483_647),
+    ):
+        value = payload.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or not lower <= value <= upper:
+            raise ProtocolError(f"vehicle sync {field} is outside its supported range")
+    if payload.get("state") not in {"held", "released", "fault"}:
+        raise ProtocolError("vehicle sync state is invalid")
+    game_time = payload.get("gameTime")
+    if not isinstance(game_time, (int, float)) or isinstance(game_time, bool) \
+            or not math.isfinite(float(game_time)) or game_time < 0:
+        raise ProtocolError("vehicle sync gameTime must be non-negative numeric")
+    if not isinstance(payload.get("detail"), str) or len(payload["detail"]) > 512:
+        raise ProtocolError("vehicle sync detail is invalid")
     return dict(payload)

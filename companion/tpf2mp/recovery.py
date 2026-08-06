@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .bridge import AuditLog, atomic_write
-from .checkpoint import verify_checkpoint
+from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
 from .protocol import PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_envelope, verify
 
 RECOVERY_PLAN_VERSION = 1
@@ -53,7 +53,7 @@ def analyse_recovery_anchor(audit_path: Path | str, session: str | None = None) 
                 faults.append({"seq": seq, "type": action.get("type"), **dict(action)})
         elif message.get("kind") == "record" and message.get("record_type") == "checkpoint":
             payload = verify_checkpoint(message.get("payload", {}))
-            if payload.get("checkpointVersion") != 2:
+            if payload.get("checkpointVersion") not in {2, CHECKPOINT_VERSION}:
                 continue
             peer = str(message.get("peer", "unknown"))
             if payload.get("sessionId") != selected_session or payload.get("peerId") != peer:

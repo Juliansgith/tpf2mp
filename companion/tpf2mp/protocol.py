@@ -22,6 +22,9 @@ NETWORK_ACTIONS = {
     "finance.toggle_neutralizer",
     "clock.request",
     "clock.set",
+    "clock.rendezvous",
+    "vehicle.sync_release",
+    "network.sync_fault",
     "proposal.prepare",
     "proposal.build",
     "operation.execute",
@@ -1252,6 +1255,56 @@ def validate_action(action: Any) -> dict[str, Any]:
             raise ProtocolError("clock.set has an invalid requested/effective speed")
         if generation < 1 or not isinstance(action.get("reason"), str) or not action["reason"]:
             raise ProtocolError("clock.set requires a positive generation and reason")
+    if action_type == "clock.rendezvous":
+        expected = {
+            "type", "requestedSpeed", "approachSpeed", "releaseSpeed",
+            "generation", "targetGameTime", "reason",
+        }
+        if set(action) != expected:
+            raise ProtocolError("clock.rendezvous has unknown or missing fields")
+        requested = _protocol_int(action.get("requestedSpeed"), "clock requestedSpeed")
+        approach = _protocol_int(action.get("approachSpeed"), "clock approachSpeed")
+        release = _protocol_int(action.get("releaseSpeed"), "clock releaseSpeed")
+        generation = _protocol_int(action.get("generation"), "clock generation")
+        target = action.get("targetGameTime")
+        if requested < 0 or requested > 4 or approach < 0 or approach > 4 \
+                or release < 0 or release > requested:
+            raise ProtocolError("clock.rendezvous has invalid speed fields")
+        if generation < 1 or not isinstance(target, (int, float)) or isinstance(target, bool) \
+                or not math.isfinite(float(target)) or target < 0:
+            raise ProtocolError("clock.rendezvous has an invalid generation or target")
+        if not isinstance(action.get("reason"), str) or not action["reason"]:
+            raise ProtocolError("clock.rendezvous requires a reason")
+    if action_type == "vehicle.sync_release":
+        expected = {
+            "type", "vehicleCid", "lineCid", "round", "stopIndex",
+            "releaseAtGameTime", "releaseWhilePaused",
+        }
+        if set(action) != expected:
+            raise ProtocolError("vehicle.sync_release has unknown or missing fields")
+        if not isinstance(action.get("vehicleCid"), str) \
+                or not action["vehicleCid"].startswith("vehicle:"):
+            raise ProtocolError("vehicle.sync_release requires a canonical vehicleCid")
+        if not isinstance(action.get("lineCid"), str) or not action["lineCid"].startswith("line:"):
+            raise ProtocolError("vehicle.sync_release requires a canonical lineCid")
+        round_number = _protocol_int(action.get("round"), "vehicle sync round")
+        stop_index = _protocol_int(action.get("stopIndex"), "vehicle sync stopIndex")
+        release_time = action.get("releaseAtGameTime")
+        if round_number < 1 or round_number > 1_000_000_000 or not 0 <= stop_index < 256:
+            raise ProtocolError("vehicle.sync_release round/stop is outside its supported range")
+        if not isinstance(release_time, (int, float)) or isinstance(release_time, bool) \
+                or not math.isfinite(float(release_time)) or release_time < 0:
+            raise ProtocolError("vehicle.sync_release release time is invalid")
+        if not isinstance(action.get("releaseWhilePaused"), bool):
+            raise ProtocolError("vehicle.sync_release releaseWhilePaused must be boolean")
+    if action_type == "network.sync_fault":
+        if set(action) != {"type", "scope", "errorCode"}:
+            raise ProtocolError("network.sync_fault has unknown or missing fields")
+        if action.get("scope") not in {"clock", "vehicle"}:
+            raise ProtocolError("network.sync_fault scope is invalid")
+        error_code = action.get("errorCode")
+        if not isinstance(error_code, str) or not error_code or len(error_code) > 512:
+            raise ProtocolError("network.sync_fault errorCode is invalid")
     if action_type in {"proposal.prepare", "proposal.build"}:
         if set(action) != {"type", "transaction"}:
             raise ProtocolError(f"{action_type} has unknown or missing fields")

@@ -13,29 +13,64 @@ function M.new(deps)
   local awaitingOrder = assert(deps.awaitingOrder, "awaitingOrder dependency is required")
   local networkPendingBarrierReason =
     assert(deps.pendingBarrierReason, "pendingBarrierReason dependency is required")
-
+  local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
+  local commandFactory = deps.commandFactory or util.commandFactory
+  local sendCommand = deps.sendCommand or util.sendCommand
+  local authorizeCommand = deps.authorizeCommand or function(tag)
+    local authorize = rawget(_G, "tpf2mp_native_authorize_command")
+    if type(authorize) ~= "function" then
+      return false, "native command authorization is unavailable"
+    end
+    local called, accepted, err = pcall(authorize, tostring(tag))
+    if not called or accepted == false then return false, tostring(err or accepted) end
+    return true
+  end
+  local emit = deps.emit or function(kind, payload, tick)
+    return bridge.emit(getState().bridge, kind, payload, tick)
+  end
+  local wallTime = deps.wallTime or function()
+    if not (os and type(os.time) == "function") then return nil end
+    local ok, value = pcall(os.time)
+    return ok and tonumber(value) or nil
+  end
   local state = setmetatable({}, {
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
   })
   local networkClock = {
     manualBootstrap = { nextAttemptTick = 240, attempts = 0, submitted = false },
+    pausedHealth = { calls = 0, lastWall = nil },
   }
+
+  local function issueSpeed(speed, callback, origin)
+    local factory = commandFactory("setGameSpeed")
+    if not factory then
+      return false, "network clock requires SetGameSpeed factory and native tag-0 authority"
+    end
+    local made, commandOrError = pcall(factory, speed)
+    if not made then return false, "could not create SetGameSpeed: " .. tostring(commandOrError) end
+    local authorized, authorizeError = authorizeCommand(0)
+    if not authorized then
+      return false, "could not authorize SetGameSpeed: " .. tostring(authorizeError)
+    end
+    local sent, sendError = sendCommand(commandOrError, callback,
+      origin or "mod.network.set-game-speed")
+    if not sent then return false, "could not issue SetGameSpeed: " .. tostring(sendError) end
+    return true
+  end
 
   local function freezeNetworkCalendar()
     if state.networkMode ~= "network" then
       state.probes.networkCalendar = { frozen = false, requested = false, standalone = true }
       return true
     end
-    local factory = util.commandFactory("setCalendarSpeed")
-    local authorize = rawget(_G, "tpf2mp_native_authorize_command")
-    if not factory or type(authorize) ~= "function"
-      or not (api and api.cmd and type(api.cmd.sendCommand) == "function") then
+    local factory = commandFactory("setCalendarSpeed")
+    if not factory then
       local message = "network mode requires an authorized setCalendarSpeed command to freeze native finance drift"
       state.probes.networkCalendar = { frozen = false, requested = false, error = message }
       return false, message
     end
-    local authorized, authorizeError = pcall(authorize, "1")
+    local authorized, authorizeError = authorizeCommand(1)
     if not authorized then
       local message = "could not authorize the network calendar freeze: " .. tostring(authorizeError)
       state.probes.networkCalendar = { frozen = false, requested = false, error = message }
@@ -47,84 +82,204 @@ function M.new(deps)
       state.probes.networkCalendar = { frozen = false, requested = false, error = message }
       return false, message
     end
-    local sent, sendError = util.sendCommand(
-      commandOrError, nil, "mod.network.freeze-calendar")
+    local sent, sendError = sendCommand(commandOrError, nil, "mod.network.freeze-calendar")
     if not sent then
       local message = "could not issue the network calendar freeze command: " .. tostring(sendError)
       state.probes.networkCalendar = { frozen = false, requested = true, error = message }
       return false, message
     end
     state.probes.networkCalendar = {
-      frozen = true,
-      requested = true,
-      speed = 0,
-      commandTag = 1,
-      tick = state.tick,
+      frozen = true, requested = true, speed = 0, commandTag = 1, tick = state.tick,
     }
     return true
   end
-  
-  
+
+  local emitHealth
+
+  local function freezeNetworkGame()
+    if state.networkMode ~= "network" then return true end
+    local current, observed = state.world.networkClock, clockSnapshot() or {}
+    current.startupPause = {
+      requested = true, confirmed = tonumber(observed.gameSpeed) == 0,
+      observedBefore = tonumber(observed.gameSpeed), tick = state.tick,
+    }
+    current.requestedSpeed, current.effectiveSpeed = 0, 0
+    if current.startupPause.confirmed then return true end
+    local sent, sendError = issueSpeed(0, function(_, success)
+      current.lastNativeSuccess = success == true
+      current.startupPause.confirmed = success == true
+      if success ~= true then current.startupPause.requested, current.startupPause.error = false, "native startup pause was rejected" end
+    end, "mod.network.startup-pause")
+    if not sent then
+      current.startupPause.requested, current.startupPause.error, current.lastError =
+        false, tostring(sendError), tostring(sendError)
+      return false, sendError
+    end
+    return true
+  end
+
+  local function emitReached(rendezvous, success, errorText)
+    if rendezvous.reachedEmitted then return true end
+    local observed = clockSnapshot()
+    local ok, result = emit("clock_reached", {
+      schemaVersion = 1,
+      generation = util.integer(rendezvous.generation, 0),
+      targetGameTime = tonumber(rendezvous.targetGameTime) or 0,
+      actualGameTime = tonumber(observed.time) or tonumber(rendezvous.targetGameTime) or 0,
+      engineTick = math.max(0, util.integer(state.tick, 0)),
+      success = success == true,
+      error = tostring(errorText or ""),
+    }, state.tick)
+    if ok then
+      rendezvous.reachedEmitted = true
+      state.world.networkClock.rendezvousReached =
+        (state.world.networkClock.rendezvousReached or 0) + (success and 1 or 0)
+      state.world.networkClock.rendezvousFaults =
+        (state.world.networkClock.rendezvousFaults or 0) + (success and 0 or 1)
+      emitHealth(true)
+    else
+      state.world.networkClock.lastError = tostring(result)
+    end
+    return ok, result
+  end
+
+  function networkClock.update()
+    if state.networkMode ~= "network" then return false end
+    local current = state.world.networkClock
+    -- app.loadGame restores native clocks after init(); re-arm them after each load.
+    local startup = current.startupPause
+    if type(startup) ~= "table" or startup.requested ~= true then
+      local paused, pauseError = freezeNetworkGame()
+      if not paused then return false, pauseError end
+      startup = current.startupPause
+    elseif startup.confirmed ~= true then
+      local observed = clockSnapshot() or {}
+      if tonumber(observed.gameSpeed) == 0 then startup.confirmed = true end
+    end
+    local calendar = state.probes.networkCalendar
+    if type(calendar) ~= "table" or calendar.requested ~= true
+      or calendar.frozen ~= true then
+      local frozen, calendarError = freezeNetworkCalendar()
+      if not frozen then return false, calendarError end
+    end
+    local rendezvous = current.rendezvous
+    if type(rendezvous) ~= "table" or rendezvous.reachedEmitted
+      or rendezvous.status == "faulted" then return false end
+    local observed = clockSnapshot()
+    local gameTime = tonumber(observed.time)
+    if not gameTime then
+      rendezvous.status = "faulted"
+      current.lastError = "game time is unavailable during clock rendezvous"
+      return emitReached(rendezvous, false, current.lastError)
+    end
+    if gameTime + 1e-9 < tonumber(rendezvous.targetGameTime) then
+      rendezvous.status = "approaching"
+      return false
+    end
+    if rendezvous.status == "pausing" then return false end
+    if tonumber(observed.gameSpeed) == 0 then
+      current.effectiveSpeed = 0
+      rendezvous.status = "reached"
+      return emitReached(rendezvous, true)
+    end
+    rendezvous.status = "pausing"
+    local sent, sendError = issueSpeed(0, function(_, success)
+      if success == true then
+        current.effectiveSpeed = 0
+        rendezvous.status = "reached"
+        emitReached(rendezvous, true)
+      else
+        rendezvous.status = "faulted"
+        current.lastError = "native rendezvous pause was rejected"
+        emitReached(rendezvous, false, current.lastError)
+      end
+    end, "mod.network.rendezvous-pause")
+    if not sent then
+      rendezvous.status = "faulted"
+      current.lastError = tostring(sendError)
+      emitReached(rendezvous, false, current.lastError)
+      return false, current.lastError
+    end
+    return true
+  end
+
   function networkClock.apply(action)
     if state.networkMode ~= "network" then return false, "ordered clock control is network-only" end
     local requested = util.integer(action and action.requestedSpeed, -1)
     local effective = util.integer(action and action.effectiveSpeed, -1)
     local generation = util.integer(action and action.generation, -1)
+    local current = state.world.networkClock
     if requested < 0 or requested > 4 or effective < 0 or effective > requested then
       return false, "invalid requested/effective network speed"
     end
-    local current = state.world.networkClock
     if generation <= util.integer(current.generation, 0) then
       return false, "stale network clock generation"
     end
-    local factory = util.commandFactory("setGameSpeed")
-    local authorize = rawget(_G, "tpf2mp_native_authorize_command")
-    if not factory or type(authorize) ~= "function"
-      or not (api and api.cmd and type(api.cmd.sendCommand) == "function") then
-      return false, "network clock requires SetGameSpeed factory and native tag-0 authority"
-    end
-    local made, commandOrError = pcall(factory, effective)
-    if not made then return false, "could not create SetGameSpeed: " .. tostring(commandOrError) end
-    local called, authorized, authorizeError = pcall(authorize, "0")
-    if not called or authorized == false then
-      return false, "could not authorize SetGameSpeed: " .. tostring(authorizeError or authorized)
-    end
-  
     local previous = util.deepCopy(current)
-    current.requestedSpeed = requested
-    current.effectiveSpeed = effective
-    current.generation = generation
-    current.reason = tostring(action.reason or "host-order")
-    current.lastCommandTick = state.tick
-    current.lastError = nil
-    local sent, sendError = util.sendCommand(commandOrError, function(_, success)
+    current.requestedSpeed, current.effectiveSpeed = requested, effective
+    current.generation, current.reason = generation, tostring(action.reason or "host-order")
+    current.lastCommandTick, current.lastError = state.tick, nil
+    current.lastRendezvous, current.rendezvous = util.deepCopy(current.rendezvous), nil
+    local sent, sendError = issueSpeed(effective, function(_, success)
       current.lastNativeSuccess = success == true
       if success ~= true then current.lastError = "native SetGameSpeed command was rejected" end
-    end, "mod.network.set-game-speed")
-    if not sent then
-      state.world.networkClock = previous
-      return false, "could not issue SetGameSpeed: " .. tostring(sendError)
-    end
+    end)
+    if not sent then state.world.networkClock = previous; return false, sendError end
     return true, {
-      requestedSpeed = requested,
-      effectiveSpeed = effective,
-      generation = generation,
-      reason = current.reason,
+      requestedSpeed = requested, effectiveSpeed = effective,
+      generation = generation, reason = current.reason,
     }
   end
-  
-  function networkClock.emitHealth()
-    if state.networkMode ~= "network" or not state.initialized or state.tick % 15 ~= 0 then
-      return false
+
+  function networkClock.arm(action)
+    if state.networkMode ~= "network" then return false, "clock rendezvous is network-only" end
+    local requested = util.integer(action and action.requestedSpeed, -1)
+    local approach = util.integer(action and action.approachSpeed, -1)
+    local release = util.integer(action and action.releaseSpeed, -1)
+    local generation = util.integer(action and action.generation, -1)
+    local target = tonumber(action and action.targetGameTime)
+    local current, observed = state.world.networkClock, clockSnapshot()
+    if requested < 0 or requested > 4 or approach < 0 or approach > 4
+      or release < 0 or release > requested or generation <= util.integer(current.generation, 0)
+      or not target or target < 0 or target ~= target or target == math.huge
+      or not tonumber(observed.time) then
+      return false, "invalid clock rendezvous"
     end
-    local observed = world.clockSnapshot()
-    local clock = state.world.networkClock
+    if approach == 0 and tonumber(observed.time) and target > tonumber(observed.time) + 0.35 then
+      return false, "paused rendezvous target is unreachable"
+    end
+    local previous = util.deepCopy(current)
+    current.requestedSpeed, current.effectiveSpeed = requested, approach
+    current.generation, current.reason = generation, tostring(action.reason or "host-rendezvous")
+    current.lastCommandTick, current.lastError = state.tick, nil
+    current.lastRendezvous = util.deepCopy(current.rendezvous)
+    current.rendezvous = {
+      generation = generation, targetGameTime = target,
+      approachSpeed = approach, releaseSpeed = release,
+      status = "armed", armedTick = state.tick, reachedEmitted = false,
+    }
+    if approach > 0 and tonumber(observed.gameSpeed) ~= approach then
+      local sent, sendError = issueSpeed(approach, function(_, success)
+        current.lastNativeSuccess = success == true
+        if success ~= true then current.lastError = "native rendezvous approach speed was rejected" end
+      end, "mod.network.rendezvous-approach")
+      if not sent then state.world.networkClock = previous; return false, sendError end
+    end
+    networkClock.update()
+    return true, util.deepCopy(current.rendezvous)
+  end
+
+  emitHealth = function(force)
+    if state.networkMode ~= "network" or not state.initialized
+      or (force ~= true and state.tick % 15 ~= 0) then return false end
+    local observed, clock = clockSnapshot(), state.world.networkClock
     local proposalPending = false
     for _, record in pairs(state.world.proposalConsensus.byId or {}) do
       if record.status == "pending" then proposalPending = true; break end
     end
-    local ok, envelope = bridge.emit(state.bridge, "clock_health", {
-      schemaVersion = 1,
+    local rendezvous = clock.rendezvous
+    local ok, envelope = emit("clock_health", {
+      schemaVersion = 2,
       requestedSpeed = util.integer(clock.requestedSpeed, 0),
       effectiveSpeed = util.integer(clock.effectiveSpeed, 0),
       generation = util.integer(clock.generation, 0),
@@ -133,45 +288,67 @@ function M.new(deps)
       engineTick = state.tick,
       lastCommitSeq = math.max(0, util.integer((state.bridge.nextInSeq or 1) - 1, 0)),
       proposalPending = proposalPending,
+      rendezvousGeneration = rendezvous and util.integer(rendezvous.generation, 0) or 0,
+      rendezvousState = rendezvous and tostring(rendezvous.status or "armed") or "idle",
+      rendezvousTargetTime = rendezvous and tonumber(rendezvous.targetGameTime) or 0,
     }, state.tick)
     if ok then
       clock.healthEmitted = (clock.healthEmitted or 0) + 1
       clock.lastHealthLocalSeq = envelope.local_seq
-    else
-      clock.lastError = tostring(envelope)
-    end
+    else clock.lastError = tostring(envelope) end
     return ok
   end
-  
-  
+  networkClock.emitHealth = emitHealth
+
+  function networkClock.emitPausedHealth()
+    if state.networkMode ~= "network" or not state.initialized then return false end
+    local observed = clockSnapshot()
+    if tonumber(observed.gameSpeed) ~= 0 then return false end
+    local throttle = networkClock.pausedHealth
+    throttle.calls = throttle.calls + 1
+    local wall = wallTime()
+    if wall then
+      if throttle.lastWall and wall - throttle.lastWall < 2 then return false end
+      throttle.lastWall = wall
+    elseif throttle.calls % 4 ~= 1 then
+      -- Sandboxed fallback: snapshot.request is already launcher-throttled.
+      return false
+    end
+    return emitHealth(true)
+  end
+
+  function networkClock.operationPrerequisite(action)
+    local transaction = type(action) == "table" and action.transaction or nil
+    local kind = type(transaction) == "table" and tostring(transaction.kind or "") or ""
+    if state.networkMode ~= "network" or action.type ~= "operation.execute"
+      or (not kind:match("^vehicle%.") and not kind:match("^line%.")) then return nil end
+    local clock = state.world.networkClock
+    if type(clock.rendezvous) == "table" then return nil end
+    local observed = clockSnapshot()
+    if util.integer(clock.effectiveSpeed, 0) > 0
+      or (tonumber(observed.gameSpeed) or 0) > 0 then
+      return { type = "clock.request", requestedSpeed = 0 },
+        "line/vehicle operation is waiting for a shared-clock rendezvous"
+    end
+    return nil
+  end
+
   function networkClock.maintainManualBootstrap(launcherReady)
-    local cfg = config()
-    local bootstrap = networkClock.manualBootstrap
-    -- The launcher can deliver its readiness event as soon as the paused
-    -- world has been woken, before this script reaches the conservative tick
-    -- 240 authority boundary.  Latch that one-shot handoff: losing it here
-    -- would leave later update ticks dependent on Transport Fever 2's stale
-    -- sandbox file cache and deadlock an otherwise healthy manual session.
+    local cfg, bootstrap = config(), networkClock.manualBootstrap
     if launcherReady == true then bootstrap.launcherReady = true end
-    local bootstrapReady = cfg.manualBootstrapReady == true
-      or bootstrap.launcherReady == true
-    if not cfg.manualNetwork or not bootstrapReady
-      or state.networkMode ~= "network" or state.initialized then return end
-    if state.bridge.peerId ~= "player1" then return end
-    if state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
+    local bootstrapReady = cfg.manualBootstrapReady == true or bootstrap.launcherReady == true
+    if not cfg.manualNetwork or not bootstrapReady or state.networkMode ~= "network"
+      or state.initialized or state.bridge.peerId ~= "player1"
+      or state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
     if awaitingOrder() or networkPendingBarrierReason() then return end
     local authority = state.probes.networkAuthority or {}
-    if authority.ready ~= true then
-      bootstrap.nextAttemptTick = state.tick + 30
-      return
-    end
+    if authority.ready ~= true then bootstrap.nextAttemptTick = state.tick + 30; return end
     bootstrap.attempts = bootstrap.attempts + 1
     local ok, result = submitIntent({ type = "match.initialise" })
     bootstrap.submitted = ok == true
     bootstrap.nextAttemptTick = state.tick + (ok and 600 or 60)
     diagnosticLog("manual-network-bootstrap", {
-      success = ok == true,
-      attempt = bootstrap.attempts,
+      success = ok == true, attempt = bootstrap.attempts,
       localSeq = type(result) == "table" and (result.local_seq or result.localSeq) or nil,
       error = not ok and tostring(type(result) == "table" and result.error or result) or nil,
       tick = state.tick,
@@ -179,13 +356,19 @@ function M.new(deps)
   end
 
   networkClock.freezeCalendar = freezeNetworkCalendar
+  networkClock.freezeGame = freezeNetworkGame
   networkClock.reset = function()
     networkClock.manualBootstrap = {
-      nextAttemptTick = 240,
-      attempts = 0,
-      submitted = false,
-      launcherReady = false,
+      nextAttemptTick = 240, attempts = 0, submitted = false, launcherReady = false,
     }
+    networkClock.pausedHealth = { calls = 0, lastWall = nil }
+    local current = state.world and state.world.networkClock or nil
+    if type(current) == "table" then
+      current.startupPause = { requested = false, confirmed = false }
+    end
+    if type(state.probes) == "table" then
+      state.probes.networkCalendar = { frozen = false, requested = false }
+    end
   end
   return networkClock
 end

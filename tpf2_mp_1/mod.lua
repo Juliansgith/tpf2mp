@@ -111,6 +111,8 @@ function data()
       cfg.autoValidate = envEnabled("TPF2MP_AUTOVALIDATE") or parameterValidation
       cfg.networkAutoValidate = envEnabled("TPF2MP_NETWORK_AUTOTEST")
       cfg.networkSoakTicks = math.max(60, tonumber(env("TPF2MP_NETWORK_SOAK_TICKS", "300")) or 300)
+      cfg.networkClockRunTicks = math.max(30,
+        tonumber(env("TPF2MP_NETWORK_CLOCK_RUN_TICKS", "30")) or 30)
       cfg.operationalCapture = envEnabled("TPF2MP_OPERATIONAL_CAPTURE")
       cfg.operationalSampleTicks = math.max(30,
         tonumber(env("TPF2MP_OPERATIONAL_SAMPLE_TICKS", "120")) or 120)

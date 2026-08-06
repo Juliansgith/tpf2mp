@@ -5,8 +5,10 @@ import unittest
 from tpf2mp.consensus import (
     ConsensusTrackers,
     clock_health_payload,
+    clock_rendezvous_payload,
     operation_completion_payload,
     proposal_completion_payload,
+    vehicle_sync_payload,
 )
 from tpf2mp.protocol import ProtocolError
 
@@ -101,8 +103,40 @@ class ConsensusTrackerTests(unittest.TestCase):
             "proposalPending": False,
         }
         self.assertEqual(clock_health_payload(health), health)
+        health_v2 = {
+            **health,
+            "schemaVersion": 2,
+            "rendezvousGeneration": 2,
+            "rendezvousState": "armed",
+            "rendezvousTargetTime": 120.5,
+        }
+        self.assertEqual(clock_health_payload(health_v2), health_v2)
+        reached = {
+            "schemaVersion": 1,
+            "generation": 2,
+            "targetGameTime": 120.5,
+            "actualGameTime": 120.6,
+            "engineTick": 91,
+            "success": True,
+            "error": "",
+        }
+        self.assertEqual(clock_rendezvous_payload(reached), reached)
+        vehicle = {
+            "schemaVersion": 1,
+            "vehicleCid": "vehicle:event:test:1",
+            "lineCid": "line:event:test:1",
+            "round": 3,
+            "stopIndex": 1,
+            "state": "held",
+            "gameTime": 121.0,
+            "engineTick": 92,
+            "detail": "canonical-stop-held",
+        }
+        self.assertEqual(vehicle_sync_payload(vehicle), vehicle)
         with self.assertRaises(ProtocolError):
             clock_health_payload({**health, "engineTick": True})
+        with self.assertRaises(ProtocolError):
+            vehicle_sync_payload({**vehicle, "stopIndex": 256})
 
 
 if __name__ == "__main__":

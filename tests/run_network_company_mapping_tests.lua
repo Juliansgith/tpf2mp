@@ -238,11 +238,13 @@ api = {
       developTown = function() return {} end,
       setSimBuildingManualDevelopment = function() return {} end,
       setCalendarSpeed = function() return {} end,
+      setGameSpeed = function(speed) return { speed = speed } end,
     },
-    sendCommand = function(command)
+    sendCommand = function(command, callback)
       if command and command.player and command.journal and players[command.player] then
         players[command.player].balance = players[command.player].balance + command.journal.amount
       end
+      if callback then callback(command, true) end
     end,
   },
 }

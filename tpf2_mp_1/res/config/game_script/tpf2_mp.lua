@@ -19,6 +19,7 @@ local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
@@ -26,8 +27,8 @@ local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 20
-local CHECKPOINT_VERSION = 2
+local STATE_VERSION = 21
+local CHECKPOINT_VERSION = 3
 local EVENT_RECORD_VERSION = 1
 
 local function config() return runtimeConfig.read() end
@@ -59,6 +60,8 @@ local applyCommitted
 local MAX_DEFERRED_NETWORK_INTENTS = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS
 local networkIntentController
 local networkClock
+local vehicleSync
+local freezeNetworkGame
 local freezeNetworkCalendar
 
 local function diagnosticLog(event, values)
@@ -1237,6 +1240,7 @@ handlers["network.operation_outcome"] = function(action)
     consensus.failed = (consensus.failed or 0) + 1
     consensus.sessionFault = util.deepCopy(outcome)
   end
+  if success and vehicleSync then vehicleSync.onOperationConsensus(record) end
   return success, util.deepCopy(outcome)
 end
 
@@ -1577,18 +1581,25 @@ handlers["probe.gui_capabilities"] = function(action)
     and action.networkAuthorityBootstrap or nil
   if state.networkMode == "network" and bootstrap and action.localOnly == true then
     local authorityReady, authorityView = validatedNetworkAuthority(state.probes.nativeHook)
+    local gameReady = bootstrap.gameReady == true
     local calendarReady = bootstrap.calendarReady == true
     state.probes.networkAuthority = {
-      ready = authorityReady and calendarReady,
+      ready = authorityReady and gameReady and calendarReady,
       mode = "network",
       buildGateEnabled = authorityView.buildGateEnabled,
       commandGateEnabled = authorityView.commandGateEnabled,
       commandVisitors = authorityView.commandVisitors,
       source = "validated-gui-native-bootstrap",
-      error = authorityReady and calendarReady and nil
+      error = authorityReady and gameReady and calendarReady and nil
         or tostring(bootstrap.error or "GUI native authority bootstrap was incomplete"),
     }
-    if authorityReady and calendarReady then
+    if authorityReady and gameReady and calendarReady then
+      state.world.networkClock.startupPause = {
+        requested = true, confirmed = true, source = "validated-gui-native-bootstrap",
+        tick = state.tick,
+      }
+      state.world.networkClock.requestedSpeed = 0
+      state.world.networkClock.effectiveSpeed = 0
       state.probes.networkCalendar = {
         frozen = true,
         requested = true,
@@ -1859,7 +1870,8 @@ handlers["probe.export_research"] = function()
     "BuildProposal has a payload-aware pre-mutation gate. Of the twenty-three additional exact visitor gates, fifteen line/railway-vehicle/name/color tags have strict canonical operation codecs. Native SetGameSpeed is now host-ordered; calendar/logo/field/terrain/date/cheat/person-debug categories stay fail-closed for player input.",
     "Proposal schema 5 canonically serializes road/track changes plus named signal/waypoint edge objects, including retained objects across edge replacement, with quoted cost and no machine-local IDs. Schema 7 adds stock rail-station placement and bounded generic named .con/.module payloads for depots, ordinary constructions, ASSET_DEFAULT roots, upgrades, modular station edits, and removal. Both paths use repository names, strict ownership, preflight and physical consensus. Opaque/script callbacks and ambiguous dependency migration fail closed; every peer still requires an identical pinned mod pack.",
     "Construction uses all-peer prepare before native mutation, then two-peer physical completion consensus, ordered success/fault controls, a bounded timeout, and fail-closed dependency gating. A readiness rejection is non-fatal because neither world changed. Match start and each successful physical result are followed by a host-verified checkpoint barrier; in-place native geometry rollback is deliberately not claimed.",
-    "The shared network clock orders pause/speed generations and adaptively caps the effective speed from peer heartbeat, engine-tick and command-backlog health. It is offline-tested but still needs live pause/resume and slowdown/recovery proof; it is not deterministic native-agent lockstep.",
+    "Shared-clock v2 projects staggered peer heartbeats to one host time, orders future-time pause/speed rendezvous, corrects bounded overshoot, emits paused heartbeats, and adaptively caps the effective speed from engine/backlog health. Populated localhost is live-proven; two-computer long-pause and slowdown/recovery proof remains.",
+    "Assigned canonical trains are held at every native terminal until both peers report the same vehicle, line, stop and sequential leg round, then receive one ordered future-time release. Format-3 checkpoints digest that authority state. Four populated localhost rounds are live-proven. This does not teleport trains; a different stop index faults closed.",
     "Line/vehicle creation IDs are discovered from the native callback result or an exact before/after component-set delta, then bound to event-derived canonical IDs.",
     "The GUI rejects known mutating actions against rival logical entities. Native visitors now stop selected unsupported line, vehicle, naming, speed, terrain, date, and cheat commands in network mode; unlisted/autonomous categories still require dedicated authority analysis.",
     "Populated local hot-seat validation covers stations, depots, lines, two running trains and real passenger/cargo trips. Canonical network sale/replacement/maintenance and long-running income/expense still require live destructive tests.",
@@ -1897,6 +1909,30 @@ end
 
 handlers["clock.set"] = function(action)
   return networkClock.apply(action)
+end
+
+handlers["clock.rendezvous"] = function(action)
+  return networkClock.arm(action)
+end
+
+handlers["vehicle.sync_release"] = function(action)
+  return vehicleSync.applyRelease(action)
+end
+
+handlers["network.sync_fault"] = function(action)
+  if state.networkMode ~= "network" then return false, "synchronization faults are network-only" end
+  local fault = {
+    success = false,
+    status = "faulted",
+    scope = tostring(action and action.scope or "synchronization"),
+    errorCode = tostring(action and action.errorCode or "synchronization-fault"),
+    tick = state.tick,
+  }
+  state.world.operationConsensus.sessionFault = util.deepCopy(fault)
+  state.world.operationConsensus.lastOutcome = util.deepCopy(fault)
+  state.world.operationConsensus.failed = (state.world.operationConsensus.failed or 0) + 1
+  state.lastError = "network synchronization fault: " .. fault.errorCode
+  return true, fault
 end
 
 handlers["native.build_gate"] = function(action)
@@ -2673,6 +2709,9 @@ networkIntentController = networkIntentRuntimeModule.new({
   coreDigest = coreDigest,
   proposalPreparation = proposalPreparation,
   maxDeferredIntents = MAX_DEFERRED_NETWORK_INTENTS,
+  physicalPrerequisite = function(action)
+    return networkClock and networkClock.operationPrerequisite(action) or nil
+  end,
 })
 local submitIntent = networkIntentController.submit
 local processDeferredNetworkIntent = networkIntentController.processDeferred
@@ -2687,7 +2726,13 @@ networkClock = networkClockRuntimeModule.new({
   awaitingOrder = networkIntentController.awaitingOrder,
   pendingBarrierReason = networkPendingBarrierReason,
 })
+freezeNetworkGame = networkClock.freezeGame
 freezeNetworkCalendar = networkClock.freezeCalendar
+
+vehicleSync = vehicleSyncRuntimeModule.new({
+  getState = function() return state end,
+  diagnosticLog = diagnosticLog,
+})
 
 -- Game-script update ticks stop while a loaded world is paused, but GUI
 -- frames and script events continue.  Keep ordered ingress in one helper so
@@ -2699,6 +2744,10 @@ local function pumpNetworkBridge(includeHealth)
   if state.networkMode ~= "network" then return true end
   local consumeOk, consumeError = pcall(consumeBridge)
   if not consumeOk then state.bridge.lastError = tostring(consumeError) end
+  local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
+  if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
+  local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
+  if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
   local deferredOk, deferredError = xpcall(processDeferredNetworkIntent, debug.traceback)
   if not deferredOk then
     state.lastError = "deferred multiplayer physical-action processing failed: "
@@ -2708,6 +2757,10 @@ local function pumpNetworkBridge(includeHealth)
   if includeHealth ~= false then
     local healthError
     healthOk, healthError = xpcall(networkClock.emitHealth, debug.traceback)
+    if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
+  else
+    local healthError
+    healthOk, healthError = xpcall(networkClock.emitPausedHealth, debug.traceback)
     if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
   end
   return consumeOk and deferredOk and healthOk
@@ -2944,6 +2997,7 @@ local guiEventRuntime = guiEventRuntimeModule.new({
   nativeHookStatus = nativeHookStatus,
   markNativeContext = markNativeContext,
   configureNativeAuthority = configureNativeAuthority,
+  freezeNetworkGame = freezeNetworkGame,
   freezeNetworkCalendar = freezeNetworkCalendar,
   diagnosticLog = diagnosticLog,
   eventId = EVENT_ID,
@@ -3099,6 +3153,7 @@ end
 local function resetTransientRuntime()
   networkIntentController.reset()
   networkClock.reset()
+  vehicleSync.reset()
   -- Custody of an origin-applied (already natively mutated) operation lives
   -- in module-locals: the deferred queue, the awaiting-order latch, and the
   -- token registry all die with a script reload while the native mutation
@@ -3139,11 +3194,12 @@ local script = {
     if not authorityReady then
       state.lastError = authorityError
     elseif state.networkMode == "network" then
+      local gameReady, gameError = freezeNetworkGame()
       local calendarReady, calendarError = freezeNetworkCalendar()
-      if not calendarReady then
+      if not gameReady or not calendarReady then
         state.probes.networkAuthority.ready = false
-        state.probes.networkAuthority.error = calendarError
-        state.lastError = calendarError
+        state.probes.networkAuthority.error = tostring(gameError or calendarError)
+        state.lastError = state.probes.networkAuthority.error
       end
     end
   end,
@@ -3151,6 +3207,10 @@ local script = {
   update = function()
     if not isEngineThread() then return end
     state.tick = (state.tick or 0) + 1
+    local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
+    if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
+    local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
+    if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
     enforceProxyLoanLimit()
     local constructionOk, constructionResult, constructionError =
       xpcall(processCanonicalConstructionProposals, debug.traceback)
@@ -3234,7 +3294,10 @@ local script = {
       -- Build 35924's stored-function renderer recursively. The GUI state must
       -- still receive engine state so it can materialise ordered proposals.
       if config().networkAutoValidate then return end
-      gui.snapshot = publicSnapshot()
+      -- The GUI entity view can lag newly-created PLAYER entities by one
+      -- state transfer.  Keep load() a pure projection of serialized state;
+      -- canonical network accounts are already sufficient for this display.
+      gui.snapshot = publicSnapshot({ allowNativeAccounts = false })
       if gui.status then renderGui() end
     end
   end,
@@ -3323,13 +3386,16 @@ local script = {
           function() return networkClock.maintainManualBootstrap(launcherReady) end,
           debug.traceback)
         if not bootstrapOk then state.probes.lastError = tostring(bootstrapError) end
-        -- A paused engine tick is not a new clock-health sample.  Suppressing
-        -- it here also prevents repeated GUI frames at a tick divisible by 15
-        -- from flooding the telemetry outbox.
+        -- Paused GUI frames repeat one engine tick. The wall-throttled health
+        -- path keeps samples fresh without flooding the telemetry outbox.
         local pumpOk, pumpError = xpcall(function()
           return pumpNetworkBridge(false)
         end, debug.traceback)
         if not pumpOk then state.bridge.lastError = tostring(pumpError) end
+        if config().networkAutoValidate then
+          local validationOk, validationError = xpcall(runAutomatedNetworkValidation, debug.traceback)
+          if not validationOk then validationFail(validationError) end
+        end
       end
       publishSnapshot()
     end

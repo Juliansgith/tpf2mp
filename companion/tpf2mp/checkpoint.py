@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import copy
+import math
 from pathlib import Path
 from typing import Any, Mapping
 
 from .protocol import ProtocolError, checksum, decode_line, validate_envelope
 
-CHECKPOINT_VERSION = 2
-SUPPORTED_CHECKPOINT_VERSIONS = {1, CHECKPOINT_VERSION}
+CHECKPOINT_VERSION = 3
+SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, CHECKPOINT_VERSION}
 EVENT_RECORD_VERSION = 1
 
 
@@ -18,12 +19,9 @@ def _mapping(value: Any, name: str) -> dict[str, Any]:
 
 
 def _positive_int(value: Any, name: str, minimum: int = 0) -> int:
-    if isinstance(value, bool):
+    if not isinstance(value, int) or isinstance(value, bool):
         raise ProtocolError(f"{name} is not an integer")
-    try:
-        result = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ProtocolError(f"{name} is not an integer") from exc
+    result = value
     if result < minimum:
         raise ProtocolError(f"{name} is below {minimum}")
     return result
@@ -55,6 +53,70 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     core = copy.deepcopy(model)
     core["canonical"] = copy.deepcopy(canonical)
+    if checkpoint_version >= 3:
+        vehicle_sync = _mapping(
+            checkpoint.get("vehicleSynchronization"),
+            "checkpoint vehicle synchronization",
+        )
+        if set(vehicle_sync) != {"schemaVersion", "enabled", "vehicles"} \
+                or vehicle_sync.get("schemaVersion") != 1 \
+                or not isinstance(vehicle_sync.get("enabled"), bool):
+            raise ProtocolError("checkpoint vehicle synchronization header is invalid")
+        vehicles = vehicle_sync.get("vehicles")
+        lua_empty = isinstance(vehicles, Mapping) and not vehicles
+        if not isinstance(vehicles, list) and not lua_empty:
+            raise ProtocolError("checkpoint synchronized vehicles are not an array")
+        seen_vehicles: set[str] = set()
+        for item_value in [] if lua_empty else vehicles:
+            item = _mapping(item_value, "checkpoint synchronized vehicle")
+            required = {
+                "vehicleCid", "lineCid", "lastAuthorizedRound", "releaseWhilePaused",
+            }
+            allowed = required | {
+                "companyCid", "stopIndex", "releaseAtGameTime",
+            }
+            if not required <= set(item) or set(item) - allowed:
+                raise ProtocolError("checkpoint synchronized vehicle fields are invalid")
+            vehicle_cid, line_cid = item["vehicleCid"], item["lineCid"]
+            if not isinstance(vehicle_cid, str) or not vehicle_cid.startswith("vehicle:") \
+                    or len(vehicle_cid) > 320 or vehicle_cid in seen_vehicles:
+                raise ProtocolError("checkpoint synchronized vehicle id is invalid or duplicated")
+            if not isinstance(line_cid, str) or not line_cid.startswith("line:") \
+                    or len(line_cid) > 320:
+                raise ProtocolError("checkpoint synchronized vehicle line is invalid")
+            seen_vehicles.add(vehicle_cid)
+            last_round = _positive_int(
+                item["lastAuthorizedRound"], "vehicle lastAuthorizedRound"
+            )
+            if last_round > 1_000_000_000:
+                raise ProtocolError("checkpoint synchronized vehicle round is too large")
+            if not isinstance(item["releaseWhilePaused"], bool):
+                raise ProtocolError("checkpoint synchronized vehicle pause flag is invalid")
+            if "companyCid" in item and (
+                not isinstance(item["companyCid"], str)
+                or not item["companyCid"].startswith("company:")
+                or len(item["companyCid"]) > 320
+            ):
+                raise ProtocolError("checkpoint synchronized vehicle company is invalid")
+            if "stopIndex" in item:
+                stop_index = _positive_int(item["stopIndex"], "vehicle stopIndex")
+                if stop_index > 255:
+                    raise ProtocolError("checkpoint synchronized vehicle stopIndex is too large")
+            if "releaseAtGameTime" in item and (
+                not isinstance(item["releaseAtGameTime"], (int, float))
+                or isinstance(item["releaseAtGameTime"], bool)
+                or not math.isfinite(float(item["releaseAtGameTime"]))
+                or item["releaseAtGameTime"] < 0
+            ):
+                raise ProtocolError("checkpoint synchronized vehicle release time is invalid")
+            if last_round > 0 and (
+                "stopIndex" not in item or "releaseAtGameTime" not in item
+            ):
+                raise ProtocolError("authorized vehicle round is missing its stop/release anchor")
+        actual_vehicle_sync = checksum(vehicle_sync)
+        if checkpoint.get("vehicleSynchronizationDigest") != actual_vehicle_sync:
+            raise ProtocolError("checkpoint vehicle synchronization digest mismatch")
+        core["vehicleSynchronization"] = copy.deepcopy(vehicle_sync)
     actual_core = checksum(core)
     if checkpoint.get("coreDigest") != actual_core:
         raise ProtocolError(
@@ -106,6 +168,10 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
     if checkpoint_version >= 2:
         convergence_view["financialDigest"] = checkpoint["financialDigest"]
+    if checkpoint_version >= 3:
+        convergence_view["vehicleSynchronizationDigest"] = checkpoint[
+            "vehicleSynchronizationDigest"
+        ]
     if "structuralDigest" in checkpoint:
         convergence_view["structuralDigest"] = checkpoint["structuralDigest"]
     if "worldManifestDigest" in checkpoint:

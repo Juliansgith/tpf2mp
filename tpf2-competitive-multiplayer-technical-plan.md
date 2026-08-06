@@ -305,6 +305,18 @@ A complete hot-seat competitive game is expected to require no reverse engineeri
 
 ---
 
+## Current implementation addendum (2026-08-06)
+
+State schema 21/checkpoint format 3 adds shared-clock and vehicle-synchronization domains to the authored-model, canonical, structural, and financial projections. Completed per-vehicle station-release rounds are persisted and digested so reload cannot repeat a departure barrier.
+
+Vanilla roads, tracks, stations, station modules, depots, signals, waypoints, assets, bulldozing, and supported upgrades have live bidirectional capture/replay evidence with company authorization. Vehicle purchase, line assignment, peer visibility, and movement passed a human two-instance run. Shared-clock v2 turns pause, resume, and speed changes into future rendezvous barriers, projects fresh peer heartbeats to host time, caps speed to the slowest healthy peer, and faults failed corrections. A per-canonical-vehicle station barrier holds every replica at the same stop until all peers report the same round, then schedules one future release. This bounds accumulated service divergence at operationally meaningful points without requiring identical mid-leg physics.
+
+**2026-08-06 train/clock live checkpoint.** Session `train-station-fresh-clock-20260806-0630` loaded the same populated save in two exact Build 35924 processes, paused both restored worlds until authority and both clock samples were ready, then resumed its real NOHAB + two-BC4 train. Four alternating canonical station rounds released at game times `1097.2`, `1146.6221294362097`, `1195.0`, and `1241.2`; the last was pause-safe. Host status ended at one tracked vehicle, four releases, zero pending rounds/faults, clock skew zero, and converged mobility/lifecycle/route phase. Final core/model/structure/mobility were `1fea40f9`/`98f01295`/`e1488bff`/`6fca8ed2` on both peers.
+
+The next gates are human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
+
+---
+
 ## Standing risks
 
 - **Only categories with proven visitors can be stopped before mutation** → keep the 23 newly gated commands unavailable until they also have canonical payload/replay; keep unlisted categories out of network authority until their own pre-mutation points are proven.

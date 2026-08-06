@@ -10,13 +10,17 @@ $root = [IO.Path]::GetFullPath($ProjectRoot)
 $budgets = [ordered]@{
     'tpf2_mp_1\res\config\game_script\tpf2_mp.lua' = 3400
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
-    'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 450
-    'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_runtime.lua' = 300
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_runtime.lua' = 360
+    'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_runtime.lua' = 420
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
+    'tpf2_mp_1\res\scripts\tpf2_mp\validation_clock.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_network_bootstrap.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_runtime.lua' = 650
     'companion\tpf2mp\network.py' = 1450
     'companion\tpf2mp\consensus.py' = 400
+    'companion\tpf2mp\synchronization.py' = 700
     'native\src\hook_dll.cpp' = 1250
     'native\src\native_command_codec.cpp' = 350
     'native\src\native_hook_status.cpp' = 300
@@ -47,6 +51,7 @@ $requiredModules = @(
     'tpf2_mp/operation_runtime',
     'tpf2_mp/network_intent_runtime',
     'tpf2_mp/network_clock_runtime',
+    'tpf2_mp/vehicle_sync_runtime',
     'tpf2_mp/validation_runtime',
     'tpf2_mp/gui_state',
     'tpf2_mp/gui_capture',
@@ -85,6 +90,9 @@ if (-not $hostSource.Contains('from .client import CommitClient') `
     -or -not $hostSource.Contains('from .transport import ConnectedPeer') `
     -or -not $hostSource.Contains('ConsensusTrackers')) {
     throw 'Companion host no longer composes the client/transport/consensus boundaries.'
+}
+if (-not $hostSource.Contains('from .synchronization import SynchronizationCoordinator')) {
+    throw 'Companion host no longer composes the clock/vehicle synchronization boundary.'
 }
 foreach ($movedDefinition in @(
     'class ConsensusTrackers:',

@@ -19,22 +19,35 @@ function M.new(env)
   local maxDeferredNetworkIntents = env.maxDeferredNetworkIntents or 32
   local function currentState() return env.getState() end
 
-  local function publicSnapshot()
+  local function publicSnapshot(options)
+    options = type(options) == "table" and options or {}
+    -- game-script load() also runs in Build 35924's GUI-side Lua state.  A
+    -- PLAYER created by the engine can be present in the serialized mod state
+    -- one frame before the GUI entity view has admitted the same local ID.
+    -- Calling game.interface.getEntity for that ID does not fail as a Lua
+    -- error on this build; it can dereference an uninitialised native entity
+    -- slot.  The load projection therefore uses canonical finance only.  GUI
+    -- capture paths that deliberately inspect an already-visible native
+    -- entity keep the default behaviour.
+    local allowNativeAccounts = options.allowNativeAccounts ~= false
     local deferredNetworkIntents = env.deferredNetworkIntents()
     local networkIntentAwaitingOrder = env.networkIntentAwaitingOrder()
     local cid, company = env.activeCompany()
     local ownership = currentState().probes.ownership or env.refreshOwnershipProbe()
     local proxyBalanceDelta = 0
     if currentState().world.proxyMode and currentState().world.turn and currentState().world.turn.active then
-      local currentProxyBalance = env.balanceOf(currentState().world.controlPlayerId) or nil
+      local currentProxyBalance = allowNativeAccounts
+        and (env.balanceOf(currentState().world.controlPlayerId) or nil) or nil
       if currentProxyBalance and currentState().world.turn.balanceStart then
         proxyBalanceDelta = currentProxyBalance - currentState().world.turn.balanceStart
       end
     end
     local publicCompanies = {}
     for _, companyCid in ipairs(util.sortedKeys(currentState().companies)) do
-      local nativeBalance = env.balanceOf(currentState().companies[companyCid].playerId) or nil
-      local nativeAccount = env.accountOf(currentState().companies[companyCid].playerId) or {}
+      local nativeBalance = allowNativeAccounts
+        and (env.balanceOf(currentState().companies[companyCid].playerId) or nil) or nil
+      local nativeAccount = allowNativeAccounts
+        and (env.accountOf(currentState().companies[companyCid].playerId) or {}) or {}
       local canonicalAccount = currentState().networkMode == "network"
         and finance.networkAccount(currentState().finance, companyCid) or nil
       local publicBalance = canonicalAccount and canonicalAccount.balance or nativeBalance
@@ -63,6 +76,7 @@ function M.new(env)
       networkCalendar = util.deepCopy(currentState().probes.networkCalendar),
       capture = util.deepCopy(currentState().probes.capture),
       operational = util.deepCopy(currentState().probes.operational),
+      vehicleSync = util.deepCopy(currentState().probes.vehicleSync),
       lastError = currentState().probes.lastError,
       structuralDigest = structural and structural.digest or nil,
       worldManifestDigest = currentState().probes.worldManifest and currentState().probes.worldManifest.digest or nil,
@@ -113,8 +127,10 @@ function M.new(env)
       startingCash = util.deepCopy(currentState().finance.startingCash),
       networkAccounts = util.deepCopy(currentState().finance.networkAccounts),
       networkClock = util.deepCopy(currentState().world.networkClock),
+      vehicleSync = util.deepCopy(currentState().world.vehicleSync),
       proxyMode = currentState().world.proxyMode == true,
-      controlAccount = currentState().world.controlPlayerId and env.accountOf(currentState().world.controlPlayerId) or nil,
+      controlAccount = allowNativeAccounts and currentState().world.controlPlayerId
+        and env.accountOf(currentState().world.controlPlayerId) or nil,
       turn = util.deepCopy(currentState().world.turn),
       lastTransition = util.deepCopy(currentState().world.lastTransition),
       ownership = util.deepCopy(ownership),

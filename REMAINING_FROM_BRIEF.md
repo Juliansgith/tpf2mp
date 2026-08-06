@@ -1,7 +1,7 @@
 # What remains from the TPF2MP brief
 
-Last updated: 2026-08-04 after prototype `0.21.2-alpha`, state schema `20`,
-checkpoint format `2`, edge proposal schema `5`, construction proposal schema `7`, populated two-process convergence,
+Last updated: 2026-08-06 after prototype `0.21.2-alpha`, state schema `21`,
+checkpoint format `3`, edge proposal schema `5`, construction proposal schema `7`, populated two-process convergence,
 direct passenger telemetry, automatic checkpoint-linked save archiving, and the
 live title-screen multiplayer entry.
 
@@ -20,8 +20,12 @@ placement/removal with rival denial, and lamp/fence placement. The
 release candidate also passes bidirectional proposal/checkpoint consensus after
 compacting autonomous scenery into a digest-only manifest. The stock line
 manager now passes human two-process create/rename/color/delete and populated
-add/remove-stop proof. Shared-clock stress, two-stop reorder/alternate-terminal
-proof, vehicle lifecycle, complex topology, and two-computer proof remain.
+add/remove-stop proof. Stock train purchase, assignment, peer visibility, and
+movement now have human two-process proof. Future-time clock rendezvous and a
+canonical per-station train barrier also pass a populated exact-build run with
+four alternating releases and zero faults; human slow-peer/disconnect stress,
+two-stop reorder/alternate-terminal proof, the rest
+of the vehicle lifecycle, complex topology, and two-computer proof remain.
 
 It is not yet general Transport Fever 2 multiplayer. The remaining work is no
 longer “discover whether any synchronization architecture works.” It is to
@@ -38,17 +42,17 @@ and product hardening.
 | Separate roads/tracks | Logical ownership, private/public distinction, rival veto, canonical replay, private endpoint custody, and defense-in-depth endpoint authorization are implemented. Resource names are resolved data-first rather than hardcoded by index. Exact-geometry lazy binding and all-peer prepare make local resolution failure non-mutating. Own extension, rival rejection, upgrades, queued upgrades, and named signals/waypoints are live-proven. | Fresh public-town-road/resource-preflight proof; then crossings, splits/joins, bridges, tunnels, complex dependencies, and optional access/leasing rules. |
 | Stations and depots | Local compound custody and rival denial are live-proven. Network schema 7 retains strict stock station placement and adds a bounded named adapter for depots, ordinary constructions, `ASSET_GROUP` assets, observable upgrades, modular station edits, and removal. Exact-build receipts plus ordinary two-process UI runs prove depot placement/use, station placement/edit/removal, bench placement/removal with rival denial, lamp/fence placement, physical consensus, and checkpoints. | Broader station/depot families, data-only mod construction variants, scripted adapters, and long-session use/removal with active lines. |
 | Lines | Canonical lifecycle/update operations, strict validation, authorization, replay/result consensus, and tests exist. Hook 0.13 captures ordinary CreateLine/DeleteLine/UpdateLine/SetName/SetColor payloads, including exact ordered stop/station/terminal tuples; zero- and one-stop vanilla editor states and the bounded rapid-action queue are covered. Two stock-widget localhost sessions prove New Line, rename, color, Delete Line, Add Station, and per-stop removal across independent processes with matching physical results and checkpoints. | Two-populated-stop reorder and alternate-terminal visual proof, live rival-edit fault-path proof (origin residue now faults closed with an ordered pause), rapid-click/rejection recovery playtests, then broader schedule settings. |
-| Railway vehicles | Canonical operation representation, authorization, replay/result, finance, consensus, and checkpoints exist. Hook 0.13 captures stock BuyVehicle player/depot scalars before mutation and correlates them with the GUI's exact loco+waggon consist; SetLine has typed native capture. Model metadata supplies one concrete load selection per compartment while automatic cargo remains enabled. An exact NOHAB + two BC4 purchase succeeds in a disposable Build 35924 process and through the ordinary UI on two independent processes with matching physical/checkpoint results and isolated finances. Mobility schema 3 compares canonical consist/control lifecycle separately from route stop phase and warns after three consecutive phase mismatches. Native, Lua, Python, and GUI regressions pass. | Two-process assignment proof first; then transparent start/stop, reverse, maintenance, send-to-depot, replacement and sale capture, depot/failure constraints, safe paused relaunch recovery, and an unpaused phase-drift run. Road vehicles, ships, and aircraft follow afterward. |
+| Railway vehicles | Canonical operation representation, authorization, replay/result, finance, consensus, and checkpoints exist. Hook 0.13 captures stock BuyVehicle player/depot scalars before mutation and correlates them with the GUI's exact loco+waggon consist; SetLine has typed native capture. An exact NOHAB + two BC4 purchase succeeds in a disposable Build 35924 process and through the ordinary UI on two independent processes with matching physical/checkpoint results and isolated finances. A later human run assigned the train and observed the same canonical vehicle moving in both worlds. State 21 holds each copy at every terminal until both peers report the same vehicle/line/stop/round, then applies one ordered future-time release; a populated localhost gate completed four alternating rounds with zero faults. | Human long-pause/speed-3, deliberate slow-peer, and disconnect/reconnect recovery. Then add transparent start/stop, reverse, maintenance, send-to-depot, replacement and sale capture, depot/failure constraints, and safe paused relaunch recovery. Road vehicles, ships, and aircraft follow afterward. |
 | Contested passenger demand | Model version 4: generalized cost in cents (fare/time/wait/transfers/comfort/lagged crowding), integer-exact logit shares over a pinned exp table, zero demand beyond the 8-theta cutoff, share-as-stock with exact conservation, and a digested last-fare latch that moves downward immediately on a fare hike while retaining smooth crowding decay. Markets carry a kind: cargo weights waiting at half the passenger rate, pays 1800 s per transshipment, values time at 60 cents/hour, and competes against trucking; the seeded demo now includes a freight corridor and cross-language cargo parity vectors. Authored aggregates saturate below Lua's exact-integer limit; v2/v3 replay remains supported. | Passenger corridor binding is implemented: line.register derives gravity demand from town capacities over computed distance and service facts (journey/headway/capacity) from canonical geometry plus repository consist metadata, origin-computed and carried on the ordered action, with a recorded fail-soft fallback ladder; per-station model boards with log-scale crowd glyphs render in the panel. | Live-verify the computed facts path (`factsSource` telemetry; does Build 35924 expose `modelRep.get`?), calibrate the corridor constants against real lines, hot-seat playtests to tune VOT/theta/alpha per market kind, bind cargo services to industry chains, decide transfer behavior, and balance match pacing. Freight scarcity mechanics remain the concept-layer follow-up. |
 | Passenger/cargo presentation | Direct ECS telemetry now reads the populated passenger service: 413 people, 10 line users, 8 aboard, 2 waiting, identical on both peers. Cargo paths are present. | Cargo-positive proof and a host steering/injection/withholding policy so visible queues/loads reflect authoritative allocation. |
 | Fares, score, match ending | Implemented in the model and in-game panel, with deterministic epoch/value ending and tie-breaks. | Better route-selection UX, calendar-based options, balance, and multi-hour human sessions. |
-| Save/load | State migrates through schema 19, including canonical shared-save ownership, accounts, bindings, proposal consensus, checkpoint barriers, shared clock, and stable construction/asset/edge-object manifests. Byte-pinned native starting-save load is automated after title entry. | Live save/reload after every asset/operation state, active failure recovery, and long-running sessions. |
-| Checkpoints/resync | Format 2 covers model, canonical registry/structure, and canonical balances/loans. Construction readiness is checked before mutation; every successful physical action opens an all-peer barrier. A shared clock slows or pauses on stale peers/backlog and recovers with hysteresis. Hook 0.13 converts suppressed vanilla speed controls into ordered clock requests. Mobility schema 3 adds separate vehicle lifecycle and route-phase digests with a persistent-mismatch warning. Rejected transport intents return an ordered release control so the origin FIFO cannot remain latched. | Live vanilla-control clock tuning and pause/resume proof, decide whether persistent vehicle phase mismatch pauses automatically, implement coordinated return-to-depot/relaunch recovery, exact-boundary native snapshot or stronger association, automatic two-peer restore, and local binding recovery. Arbitrary divergent geometry or moving-train position is not patched in place. |
+| Save/load | State migrates through schema 21, including canonical shared-save ownership, accounts, bindings, proposal/checkpoint consensus, shared-clock rendezvous state, canonical train release rounds, and stable construction/asset/edge-object manifests. Byte-pinned native starting-save load is automated after title entry. | Live save/reload during a held/releasing train round, active failure recovery, and long-running sessions. |
+| Checkpoints/resync | Format 3 covers model, canonical registry/structure, canonical balances/loans, and authorized per-train station rounds; formats 1/2 remain readable. Future-time clock barriers project staggered telemetry, correct bounded overshoot, refresh while paused, and adapt to the slowest peer. Assigned trains use all-peer station hold/release barriers; four populated rounds and a final paused release are live-proven, while negative acknowledgements/restart gaps fault or resume durably in tests. | Human vanilla-control long-pause, speed-3, deliberate slow-peer, and reconnect proof; then coordinated return-to-depot/relaunch recovery, exact-boundary native snapshot, automatic two-peer restore, and local binding recovery. Arbitrary divergent geometry or moving-train coordinates are not patched in place. |
 | Recovery archives | Host watcher links a later stable native save to the latest verified agreed boundary, hashes the save triplet, and exposes status. End-to-end boundary-8 proof passes. | Automatically request the native save at the boundary, require both-peer archive agreement, and execute coordinated rollback. Current association is explicit, not exact-tick proof. |
 | Authoritative history/replay | Ordered commits/controls, digest-chained events, checkpoint reports, 4-event and 104-event independent Python replay pass. | Rotation/retention, full replay coverage for new operations, randomized long traces, and automatic first-fault bundles. |
 | Canonical identity | Local IDs stay out of portable state. Shared-save pre-existing ownership is now authoritative and live-convergent on both peers. | Deletion/reuse stress, every dependency class, multiple pre-existing companies, disconnect/restart rebinding. |
 | Native proposal replay | Schema 5 covers road/track/node changes plus named signals/waypoints and retained edge objects. Schema 7 covers strict stock station placement plus bounded portable construction/asset build, observable upgrade/edit, and removal. Engine replay, compound binding, finance, consensus, checkpoints, malformed-payload rejection, no-op rejection, and the bounded ordinary-UI facility matrix pass. | Complex topology, broader/mod construction adapters, and a two-computer human proof. |
-| Vanilla action capture | Native hook observes queue and direct apply paths; BuildProposal has a payload-aware gate; 23 consequential visitors fail closed. Construction uses prepare -> unanimous readiness -> host build -> one-shot release -> result/checkpoint. Hook 0.13 captures tag-0 speed, typed tags 3-5/28-29 line payloads, and pointer-free tag-6/tag-13 SetLine/BuyVehicle scalar payloads. Stock BuyVehicle is correlated with the exact GUI consist without dereferencing native config pointers. | Live purchase/assignment and pause/speed controls; add versioned adapters for remaining vehicle/category commands, and continue bypass-route auditing. Arbitrary script-mod commands are not automatically safe. |
+| Vanilla action capture | Native hook observes queue and direct apply paths; BuildProposal has a payload-aware gate; 23 consequential visitors fail closed. Construction uses prepare -> unanimous readiness -> host build -> one-shot release -> result/checkpoint. Hook 0.13 captures tag-0 speed, typed tags 3-5/28-29 line payloads, and pointer-free tag-6/tag-13 SetLine/BuyVehicle scalar payloads. Stock purchase/assignment has human two-process proof; canonical terminal holds reuse gated tag 8 and pass four live populated rounds. | Add versioned adapters for remaining vehicle/category commands, and continue bypass-route auditing. Arbitrary script-mod commands are not automatically safe. |
 | Frozen autonomy | Town/industry freeze and readback are implemented and used in authority validation. | Long unpaused no-player-change drift trace, then host-authored town/industry events one subsystem at a time. |
 | Main-menu/session UX | Launcher Host/Join plus a real title-screen `MULTIPLAYER` entry are live-proven. Selection receipt gates automatic pinned-save load. Status, logs, evidence, and exact-session stop exist. | Two-computer usability, clearer lobby/roster/ready/error UX, reconnect/restore UI, optional discovery, and onboarding. |
 | Installer/release | One-file companion, native binaries, checksum manifest, Steam discovery, backup install, strict verify, recoverable uninstall, launcher, menu coordinator, recovery watcher, and docs are packaged. | Clean-machine testing, updater/code signing, more Steam layouts, compatibility matrix, public support policy. |
@@ -57,17 +61,21 @@ and product hardening.
 
 ## Strongest proof and its exact meaning
 
-`runtime/localhost-live/populated-network-ownershipfix-20260803` loaded the same
-populated save in two exact game processes and finished with identical core
-`7a1b9f9d`, model `5b59ecf2`, structure `07db112f`, and mobility `a7ae06ac`.
-Both peers reconstructed both private-track transactions. The audit reports 2
-complete physical proposals, 3 complete checkpoint barriers, 5 mobility
-convergences, and no faults.
+`runtime/localhost-live/train-station-fresh-clock-20260806-0630` loaded the same
+populated save in two exact game processes, paused both restored worlds before
+network bootstrap, waited for both clock samples, and ran the pre-existing
+three-part train through four alternating station releases. It finished with
+identical core `1fea40f9`, model `98f01295`, structure `e1488bff`, and mobility
+`6fca8ed2`. Host status reports one tracked train, four releases, zero pending
+rounds/faults, zero final clock skew, and converged lifecycle/route phase. The
+independent audit reports 15 convergence outcomes, 2 complete physical
+proposals, 3 complete checkpoint barriers, and no unresolved peer digests.
 
-The final 300-tick soak was paused and autonomy-frozen. It establishes that the
-populated canonical mapping and authority bookkeeping do not drift while idle;
-it does not establish native RNG lockstep with trains and people moving. That
-must be a distinct unpaused test with intermediate samples.
+The older `populated-network-ownershipfix-20260803` paused soak remains the
+canonical ownership/static-drift baseline. The new run advances the proof to a
+moving real train and intermediate station barriers; it still does not claim
+deterministic native passengers, exact mid-leg coordinates, or two-computer
+latency behavior.
 
 Direct ECS telemetry succeeded in the populated source world even though the
 documented convenience readers did not. Passenger count is no longer an
@@ -99,19 +107,19 @@ The combined evidence and exact remaining boundary are in
 
 ## Ordered next gates
 
-### 1. Fresh localhost preflight and clock proof
+### 1. Human train-clock stress
 
-Start two state-schema-19 instances from a fresh shared save. From Player 2,
-build one public road connected to a town road and one free-standing road. Both
-must appear exactly once on both peers and charge only Company 2. Exercise a
-non-default named road/track resource, then provoke one unsupported placement;
-the rejection must mutate neither world and a later supported build must still
-succeed without restarting.
+The automated populated localhost gate already proves four complete canonical
+station releases, including one pause-safe release. Use the manual lab to pause
+from Player 1 while mid-leg, remain paused for at least fifteen seconds, resume
+from Player 2, then repeat at speed 3. Both overlays must return to zero pending
+rounds with zero clock/train faults; the format-3 checkpoint projections must
+match.
 
-Using the normal game controls, request speed 1, speed 4, and Pause from alternating peers. Both games must show
-the same clock generation and effective native speed. Deliberately burden one
-process, verify adaptive step-down/resync pause, remove the burden, and verify
-hysteretic recovery without lost or duplicate construction.
+Then deliberately burden one process, verify adaptive step-down/resync and
+hysteretic recovery without lost/duplicate work. Finally disconnect/reconnect
+the client long enough for its train to hold at a station and verify the audit
+replays the same next release.
 
 ### 2. Two-computer populated human run
 

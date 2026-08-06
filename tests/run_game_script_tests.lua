@@ -105,7 +105,10 @@ api = {
       setCalendarSpeed = function(speed) return { kind = "calendar", speed = speed } end,
       setGameSpeed = function(speed) return { kind = "speed", speed = speed } end,
     },
-    sendCommand = function(command) commands[#commands + 1] = command end,
+    sendCommand = function(command, callback)
+      commands[#commands + 1] = command
+      if callback then callback(command, true) end
+    end,
   },
 }
 
@@ -114,7 +117,9 @@ local script = assert(data())
 script.init()
 assert(buildGateEnables == 1 and commandGateEnables == 1,
   "network startup did not enable both native authority gates")
-assert(authorizedCommandTags[1] == "1" and commands[1].kind == "calendar" and commands[1].speed == 0,
+assert(authorizedCommandTags[1] == "0" and commands[1].kind == "speed" and commands[1].speed == 0,
+  "network startup did not freeze the loaded game through an authorized tag-0 command")
+assert(authorizedCommandTags[2] == "1" and commands[2].kind == "calendar" and commands[2].speed == 0,
   "network startup did not freeze the calendar through an authorized tag-1 command")
 
 script.handleEvent("test", "tpf2mp", "intent", { type = "match.initialise" })
@@ -146,7 +151,7 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 20,
+assert(initialized.version == 21,
   "state schema was not migrated to the asset-root construction version")
 assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
 
@@ -162,7 +167,7 @@ assert(checkpointMessage, "baseline checkpoint was not emitted")
 assert(bridgeModule.verify(checkpointMessage), "baseline checkpoint envelope failed verification")
 assert(checkpointMessage.kind == "checkpoint", "baseline checkpoint used the wrong message kind")
 local checkpoint = checkpointMessage.payload
-assert(checkpoint.checkpointVersion == 2, "checkpoint format version is wrong")
+assert(checkpoint.checkpointVersion == 3, "checkpoint format version is wrong")
 assert(checkpoint.financialDigest == hash.value(checkpoint.financial), "checkpoint financial digest is invalid")
 assert(checkpoint.financial.companies["company:1"].balance == 5000000,
   "checkpoint did not capture canonical company finances")
@@ -170,6 +175,7 @@ assert(checkpoint.modelDigest == hash.value(checkpoint.model), "checkpoint model
 assert(checkpoint.canonicalDigest == hash.value(checkpoint.canonical), "checkpoint canonical digest is invalid")
 local checkpointCore = util.deepCopy(checkpoint.model)
 checkpointCore.canonical = util.deepCopy(checkpoint.canonical)
+checkpointCore.vehicleSynchronization = util.deepCopy(checkpoint.vehicleSynchronization)
 assert(checkpoint.coreDigest == hash.value(checkpointCore), "checkpoint core digest is invalid")
 local checkpointCopy = util.deepCopy(checkpoint)
 local expectedCheckpointDigest = checkpointCopy.checkpointDigest
@@ -352,7 +358,8 @@ assert(#freshSession.companyOrder == 0
 assert(freshSession.bridge.sessionId == "engine-test-new-session"
   and freshSession.recovery.freshNetworkBootstrap
   and freshSession.recovery.freshNetworkBootstrap.reason
-    == "launcher-new-network-session-over-prior-network-save",
+    == "launcher-new-network-session-over-prior-network-save"
+  and freshSession.world.networkClock.startupPause.requested == false,
   "new network session did not record its physical-world-only bootstrap")
 game.config.tpf2mp.sessionId = "engine-test"
 print("PASS game-script intent/commit/persistence integration")

@@ -17,6 +17,7 @@ function M.new(deps)
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
   local coreDigest = assert(deps.coreDigest, "coreDigest dependency is required")
   local proposalPreparation = assert(deps.proposalPreparation, "proposalPreparation dependency is required")
+  local physicalPrerequisite = deps.physicalPrerequisite
   local MAX_DEFERRED_NETWORK_INTENTS =
     tonumber(deps.maxDeferredIntents) or M.MAX_DEFERRED_INTENTS
 
@@ -28,6 +29,11 @@ function M.new(deps)
   local networkIntentAwaitingOrder = nil
 
   local function networkPendingBarrierReason()
+    local rendezvous = state.world.networkClock and state.world.networkClock.rendezvous
+    if rendezvous then
+      return "shared clock rendezvous is awaiting all-peer simulation time: "
+        .. tostring(rendezvous.generation or "-")
+    end
     for digest, preparation in pairs(proposalPreparation.pending) do
       return "proposal is prepared and awaiting host commit: "
         .. tostring(preparation.transactionId or digest)
@@ -227,6 +233,19 @@ function M.new(deps)
       return false, state.lastError
     end
     local pendingReason = networkPendingBarrierReason()
+    if not pendingReason and not networkIntentAwaitingOrder and #deferredNetworkIntents == 0
+      and type(physicalPrerequisite) == "function" then
+      local called, prerequisite, prerequisiteReason = pcall(physicalPrerequisite, action)
+      if not called then
+        state.lastError = "physical prerequisite failed: " .. tostring(prerequisite)
+        publishSnapshot()
+        return false, state.lastError
+      elseif prerequisite then
+        local prerequisiteOk, prerequisiteResult = emitNetworkIntent(prerequisite)
+        if not prerequisiteOk then return false, prerequisiteResult end
+        pendingReason = tostring(prerequisiteReason or "shared-clock prerequisite is pending")
+      end
+    end
     if not pendingReason and networkIntentAwaitingOrder then
       pendingReason = "local intent is awaiting its host order: "
         .. tostring(networkIntentAwaitingOrder.localSeq or "-")

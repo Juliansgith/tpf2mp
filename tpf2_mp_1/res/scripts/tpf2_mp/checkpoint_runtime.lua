@@ -3,6 +3,7 @@ local hash = require "tpf2_mp/hash"
 local canonical = require "tpf2_mp/canonical"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
+local vehicleSyncRuntime = require "tpf2_mp/vehicle_sync_runtime"
 
 local M = {}
 
@@ -100,6 +101,7 @@ function M.new(env)
   local function coreStateSnapshot()
     local result = authoredStateSnapshot()
     result.canonical = canonical.digestView(currentState().canonical)
+    result.vehicleSynchronization = vehicleSyncRuntime.digestView(currentState().world)
     return result
   end
   
@@ -158,6 +160,7 @@ function M.new(env)
   local function emitCheckpoint(reason, boundarySeq)
     local model = authoredStateSnapshot()
     local canonicalView = canonical.digestView(currentState().canonical)
+    local vehicleSynchronization = vehicleSyncRuntime.digestView(currentState().world)
     local financial, financialError = checkpointFinancialSnapshot()
     if not financial then
       currentState().checkpoint.lastError = tostring(financialError)
@@ -216,6 +219,8 @@ function M.new(env)
       modelDigest = hash.value(model),
       canonical = canonicalView,
       canonicalDigest = hash.value(canonicalView),
+      vehicleSynchronization = vehicleSynchronization,
+      vehicleSynchronizationDigest = hash.value(vehicleSynchronization),
       coreDigest = coreDigest(),
       financial = financial,
       financialDigest = hash.value(financial),
@@ -232,6 +237,7 @@ function M.new(env)
       lastCommitSeq = eventCursor.lastCommitSeq,
       modelDigest = payload.modelDigest,
       canonicalDigest = payload.canonicalDigest,
+      vehicleSynchronizationDigest = payload.vehicleSynchronizationDigest,
       coreDigest = payload.coreDigest,
       financialDigest = payload.financialDigest,
     }

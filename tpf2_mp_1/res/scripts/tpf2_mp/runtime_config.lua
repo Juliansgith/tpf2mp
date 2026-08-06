@@ -147,6 +147,9 @@ function M.read(options)
         or source.operationalSampleTicks, 120)),
     networkSoakTicks = math.max(60, util.integer(
       readEnvironment("TPF2MP_NETWORK_SOAK_TICKS") or source.networkSoakTicks, 300)),
+    networkClockRunTicks = math.max(30, util.integer(
+      readEnvironment("TPF2MP_NETWORK_CLOCK_RUN_TICKS")
+        or source.networkClockRunTicks, 30)),
     startingCash = math.max(0, util.integer(
       readEnvironment("TPF2MP_STARTING_CASH") or source.startingCash, 5000000)),
     startingCompanyPlayerIds = playerIdList(

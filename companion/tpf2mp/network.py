@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .bridge import AuditLog, GameBridge
-from .checkpoint import verify_checkpoint
+from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
 from .consensus import (
     ConsensusTrackers,
-    clock_health_payload,
     operation_completion_payload,
     proposal_completion_payload,
 )
+from .synchronization import SynchronizationCoordinator
 from .protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -92,12 +92,14 @@ class CommitHost:
         self.operation_consensus = self.consensus.operations
         self.checkpoint_consensus = self.consensus.checkpoints
         self.clock_controls = self.consensus.clock_controls
+        self.synchronization = SynchronizationCoordinator(self)
         self.last_agreed_checkpoint: dict[str, Any] | None = None
         self.session_fault: str | None = None
         self.status = "starting"
         self.last_error: str | None = None
         self.next_seq = 1
         self._load_audit()
+        self.synchronization.finalize_restore()
         for tracker in list(self.proposal_prepares.values()):
             if tracker.get("status") == "pending":
                 self._resolve_prepare_locked(tracker)
@@ -140,13 +142,7 @@ class CommitHost:
                 "vehiclePhaseOutcomes": dict(self.vehicle_phase_outcomes),
                 "vehiclePhaseDivergenceStreak": self.vehicle_phase_divergence_streak,
                 "vehiclePhaseState": self.vehicle_phase_state,
-                "clock": {
-                    "requestedSpeed": self.clock_requested_speed,
-                    "effectiveSpeed": self.clock_effective_speed,
-                    "generation": self.clock_generation,
-                    "pendingSeq": self._pending_clock_seq(),
-                    "healthPeers": sorted(self.clock_health),
-                },
+                **self.synchronization.status(),
             }
         )
 
@@ -170,8 +166,13 @@ class CommitHost:
                         if prepared:
                             prepared["status"] = "committed"
                             prepared["buildSeq"] = seq
-                    elif action.get("type") == "clock.set":
+                    elif action.get("type") in {"clock.set", "clock.rendezvous"}:
                         self._track_clock(message)
+                    elif action.get("type") == "vehicle.sync_release":
+                        self.synchronization.track_vehicle_release(message)
+                    elif action.get("type") == "network.sync_fault":
+                        self.session_fault = str(action.get("errorCode") or "synchronization-fault")
+                        self.sync_fault_emitted = True
                     elif action.get("type") == "operation.execute":
                         self._track_operation(message)
                     elif action.get("type") == "match.initialise":
@@ -241,7 +242,7 @@ class CommitHost:
                 boundary_seq = int(payload["eventCursor"]["lastCommitSeq"])
                 tracker = self.checkpoint_consensus.get(boundary_seq)
                 if tracker:
-                    if payload.get("checkpointVersion") != 2:
+                    if payload.get("checkpointVersion") != CHECKPOINT_VERSION:
                         raise ProtocolError("network checkpoint audit uses a legacy checkpoint format")
                     tracker["checkpoints"][str(message.get("peer", "unknown"))] = payload
             elif message.get("kind") == "record" and message.get("record_type") == "ack":
@@ -262,26 +263,32 @@ class CommitHost:
                         "digest": payload.get("digest"),
                         "error": payload.get("error"),
                     }
-                    if set(clock_tracker["requiredPeers"]) <= set(clock_tracker["acks"]):
+                    if payload.get("success") is not True:
+                        clock_tracker["status"] = "faulted"
+                    elif set(clock_tracker["requiredPeers"]) <= set(clock_tracker["acks"]):
                         clock_tracker["status"] = (
                             "complete"
                             if all(item["success"] for item in clock_tracker["acks"].values())
                             else "faulted"
                         )
+                self.synchronization.resolve_vehicle_ack(
+                    prepare_seq, peer, payload.get("success") is True,
+                    str(payload.get("error") or ""), restoring=True,
+                )
+            elif message.get("kind") == "record" and message.get("record_type") == "clock_reached":
+                self.synchronization.record_clock_reached({
+                    "peer": message.get("peer"), "payload": message.get("payload", {}),
+                }, restoring=True)
+            elif message.get("kind") == "record" and message.get("record_type") == "vehicle_sync":
+                self.synchronization.record_vehicle_sync({
+                    "peer": message.get("peer"), "payload": message.get("payload", {}),
+                }, restoring=True)
 
     def _track_proposal_prepare(self, commit: Mapping[str, Any]) -> dict[str, Any]:
         return self.consensus.track_prepare(commit)
 
     def _track_clock(self, commit: Mapping[str, Any]) -> dict[str, Any]:
-        seq = int(commit["seq"])
-        created = seq not in self.clock_controls
-        tracker = self.consensus.track_clock(commit)
-        if created:
-            self.clock_last_adjustment = time.monotonic()
-        self.clock_requested_speed = tracker["requestedSpeed"]
-        self.clock_effective_speed = tracker["effectiveSpeed"]
-        self.clock_generation = max(self.clock_generation, tracker["generation"])
-        return tracker
+        return self.synchronization.track_clock(commit)
 
     def _pending_clock_seq(self) -> int | None:
         return self.consensus.pending_clock_seq()
@@ -355,8 +362,10 @@ class CommitHost:
                 raise ProtocolError(f"{action['type']} may only originate from host peer {self.bridge.peer}")
             if action["type"] == "proposal.build":
                 raise ProtocolError("proposal.build is host-generated; submit proposal.prepare first")
-            if action["type"] == "clock.set":
-                raise ProtocolError("clock.set is host-generated; submit clock.request")
+            if action["type"] in {
+                "clock.set", "clock.rendezvous", "vehicle.sync_release", "network.sync_fault",
+            }:
+                raise ProtocolError(f"{action['type']} is host-generated")
             if clock_request and not emergency_pause and self.require_connected_peers:
                 with self.peers_lock:
                     connected = set(self.peers)
@@ -403,17 +412,7 @@ class CommitHost:
                     )
             if clock_request:
                 requested = int(action["requestedSpeed"])
-                self.clock_generation += 1
-                effective = requested
-                action = validate_action(
-                    {
-                        "type": "clock.set",
-                        "requestedSpeed": requested,
-                        "effectiveSpeed": effective,
-                        "generation": self.clock_generation,
-                        "reason": f"player-request:{origin}",
-                    }
-                )
+                action = self.synchronization.prepare_clock_request(requested, origin)
             seq = self.next_seq
             self.next_seq += 1
             commit = sign(
@@ -439,7 +438,7 @@ class CommitHost:
                 self._track_operation(commit)
             elif action["type"] == "match.initialise":
                 self._track_checkpoint_boundary(seq, "match-initialised")
-            elif action["type"] == "clock.set":
+            elif action["type"] in {"clock.set", "clock.rendezvous"}:
                 self._track_clock(commit)
             self.bridge.write_inbound(commit)
         self._broadcast(commit)
@@ -627,43 +626,9 @@ class CommitHost:
         effective_speed: int,
         reason: str,
     ) -> dict[str, Any]:
-        requested_speed = max(0, min(4, int(requested_speed)))
-        effective_speed = max(0, min(requested_speed, int(effective_speed)))
-        self.clock_generation += 1
-        action = validate_action(
-            {
-                "type": "clock.set",
-                "requestedSpeed": requested_speed,
-                "effectiveSpeed": effective_speed,
-                "generation": self.clock_generation,
-                "reason": str(reason)[:160] or "host-adjustment",
-            }
+        return self.synchronization.emit_clock_set(
+            requested_speed, effective_speed, reason
         )
-        seq = self.next_seq
-        self.next_seq += 1
-        commit = sign(
-            {
-                "protocol": PROTOCOL_VERSION,
-                "session": self.bridge.session,
-                "seq": seq,
-                "kind": "commit",
-                "origin_peer": self.bridge.peer,
-                "origin_local_seq": -self.clock_generation,
-                "clock_control": True,
-                "tick": 0,
-                "payload": {"action": action},
-            }
-        )
-        self.audit.append(commit)
-        self.commits[seq] = commit
-        self._track_clock(commit)
-        self.clock_last_adjustment = time.monotonic()
-        self.bridge.write_inbound(commit)
-        self._broadcast(commit)
-        print(
-            f"shared clock requested={requested_speed} effective={effective_speed}: {reason}"
-        )
-        return commit
 
     def _resolve_clock_ack_locked(
         self,
@@ -671,109 +636,13 @@ class CommitHost:
         peer: str,
         acknowledgement: dict[str, Any],
     ) -> None:
-        previous = tracker["acks"].get(peer)
-        if previous and previous != acknowledgement:
-            raise ProtocolError(f"peer {peer} sent conflicting clock acknowledgements")
-        tracker["acks"][peer] = acknowledgement
-        if set(tracker["requiredPeers"]) - set(tracker["acks"]):
-            return
-        failed = [
-            name for name in tracker["requiredPeers"]
-            if tracker["acks"][name].get("success") is not True
-        ]
-        if not failed:
-            tracker["status"] = "complete"
-            return
-        tracker["status"] = "faulted"
-        self.last_error = "clock-command-rejected:" + ",".join(failed)
-        if (
-            tracker["generation"] == self.clock_generation
-            and tracker["effectiveSpeed"] != 0
-        ):
-            self._emit_clock_commit_locked(
-                tracker["requestedSpeed"], 0, self.last_error + ":resync-pause"
-            )
-
-    _clock_health_payload = staticmethod(clock_health_payload)
+        self.synchronization.resolve_clock_ack(tracker, peer, acknowledgement)
 
     def _record_clock_health_locked(self, message: Mapping[str, Any]) -> None:
-        peer = str(message.get("peer", "unknown"))
-        if peer not in self.required_peers:
-            raise ProtocolError(f"clock health came from unexpected peer {peer}")
-        payload = self._clock_health_payload(message.get("payload"))
-        now = time.monotonic()
-        prior = self.clock_health.get(peer)
-        sample: dict[str, Any] = dict(payload)
-        sample["receivedAt"] = now
-        if prior:
-            elapsed = now - float(prior["receivedAt"])
-            if elapsed > 0:
-                sample["tickRate"] = max(
-                    0.0, (payload["engineTick"] - prior["engineTick"]) / elapsed
-                )
-                if payload.get("gameTime") is not None and prior.get("gameTime") is not None:
-                    sample["gameRate"] = (
-                        float(payload["gameTime"]) - float(prior["gameTime"])
-                    ) / elapsed
-        self.clock_health[peer] = sample
-        self._maybe_adjust_clock_locked(now)
+        self.synchronization.record_clock_health(message)
 
     def _maybe_adjust_clock_locked(self, now: float | None = None) -> None:
-        now = time.monotonic() if now is None else now
-        if self.clock_requested_speed == 0 or self._pending_clock_seq() is not None:
-            return
-        samples = [self.clock_health.get(peer) for peer in self.required_peers]
-        missing = any(sample is None for sample in samples)
-        stale = [
-            now - float(sample["receivedAt"])
-            for sample in samples if sample is not None
-        ]
-        max_stale = max(stale, default=0.0)
-        latest_seq = max(0, self.next_seq - 1)
-        backlogs = [
-            max(0, latest_seq - int(sample.get("lastCommitSeq", 0)))
-            for sample in samples if sample is not None
-        ]
-        max_backlog = max(backlogs, default=0)
-        rates = [
-            float(sample["tickRate"])
-            for sample in samples if sample is not None and sample.get("tickRate") is not None
-        ]
-        rate_ratio = min(rates) / max(rates) if len(rates) >= 2 and max(rates) > 0 else 1.0
-        observed_mismatch = any(
-            sample is not None
-            and sample.get("observedSpeed") is not None
-            and abs(float(sample["observedSpeed"]) - self.clock_effective_speed) > 0.1
-            for sample in samples
-        )
-        low_rate = any(rate < 2.0 for rate in rates)
-        unhealthy = (
-            missing and now - self.clock_last_adjustment > 9.0
-        ) or max_stale > 6.0 or max_backlog > 2 or rate_ratio < 0.65 or low_rate or observed_mismatch
-        severe = max_stale > 12.0 or max_backlog > 6
-        if unhealthy:
-            self.clock_healthy_since = None
-            if now - self.clock_last_adjustment < 3.0:
-                return
-            target = 0 if severe else max(1, self.clock_effective_speed - 1)
-            if target != self.clock_effective_speed:
-                reason = "adaptive-resync-pause" if severe else "adaptive-slowest-peer-cap"
-                self._emit_clock_commit_locked(self.clock_requested_speed, target, reason)
-            return
-        if self.clock_healthy_since is None:
-            self.clock_healthy_since = now
-            return
-        if (
-            self.clock_effective_speed < self.clock_requested_speed
-            and now - self.clock_healthy_since >= 12.0
-            and now - self.clock_last_adjustment >= 4.0
-        ):
-            self._emit_clock_commit_locked(
-                self.clock_requested_speed,
-                self.clock_effective_speed + 1,
-                "adaptive-recovery-step",
-            )
-            self.clock_healthy_since = now
+        self.synchronization.maybe_adjust_clock(now)
 
     def _emit_proposal_outcome_locked(
         self,
@@ -1056,8 +925,10 @@ class CommitHost:
 
     def _record_checkpoint_locked(self, message: Mapping[str, Any]) -> None:
         payload = verify_checkpoint(message.get("payload", {}))
-        if payload.get("checkpointVersion") != 2:
-            raise ProtocolError("network checkpoint consensus requires checkpoint format 2")
+        if payload.get("checkpointVersion") != CHECKPOINT_VERSION:
+            raise ProtocolError(
+                f"network checkpoint consensus requires checkpoint format {CHECKPOINT_VERSION}"
+            )
         peer = str(message.get("peer", "unknown"))
         if payload.get("sessionId") != self.bridge.session:
             raise ProtocolError("checkpoint payload session does not match the network session")
@@ -1130,19 +1001,7 @@ class CommitHost:
     def _expire_proposals(self) -> None:
         now = time.monotonic()
         with self.order_lock:
-            for tracker in list(self.clock_controls.values()):
-                if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
-                    tracker["status"] = "faulted"
-                    missing = sorted(set(tracker["requiredPeers"]) - set(tracker["acks"]))
-                    self.last_error = "clock-ack-timeout:" + ",".join(missing)
-                    if (
-                        tracker["generation"] == self.clock_generation
-                        and tracker["effectiveSpeed"] != 0
-                    ):
-                        self._emit_clock_commit_locked(
-                            tracker["requestedSpeed"], 0,
-                            self.last_error + ":resync-pause",
-                        )
+            self.synchronization.expire(now)
             for tracker in self.proposal_prepares.values():
                 if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
                     missing = sorted(set(tracker["requiredPeers"]) - set(tracker["acks"]))
@@ -1219,6 +1078,10 @@ class CommitHost:
                             "error": payload.get("error"),
                         },
                     )
+                self.synchronization.resolve_vehicle_ack(
+                    commit_seq, peer, payload.get("success") is True,
+                    str(payload.get("error") or ""),
+                )
                 tracker = self.proposal_consensus.get(commit_seq)
                 if tracker and tracker.get("status") == "pending" and payload.get("success") is not True:
                     self._emit_proposal_outcome_locked(tracker, False, f"proposal-queue-rejected:{peer}")
@@ -1230,6 +1093,10 @@ class CommitHost:
                     )
             elif message.get("kind") == "clock_health":
                 self._record_clock_health_locked(message)
+            elif message.get("kind") == "clock_reached":
+                self.synchronization.record_clock_reached(message)
+            elif message.get("kind") == "vehicle_sync":
+                self.synchronization.record_vehicle_sync(message)
             elif message.get("kind") == "mobility":
                 payload = message.get("payload", {})
                 sample_key = payload.get("sampleKey")
