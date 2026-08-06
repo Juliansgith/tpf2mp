@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
 local canonical = require "tpf2_mp/canonical"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
+local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 
 local M = {}
 
@@ -792,14 +793,30 @@ function M.initialiseCompanies(worldState, registry, desiredCount, options)
     -- Map that local player to the peer's canonical company, not always to
     -- Company 1. Other companies are local representations and may therefore
     -- use different native player IDs/order on different machines.
+    local usedPlayers = { [tonumber(current)] = true }
+    local hintedPlayers = worldState.startingOwnershipHints
+      and worldState.startingOwnershipHints.companyPlayerIds or {}
     for index = 1, desiredCount do
       if index == localCompanyIndex then
         worldState.playerIds[index] = current
       else
-        if not game.interface.addPlayer then return false, "game.interface.addPlayer unavailable" end
-        local added, playerId = pcall(game.interface.addPlayer)
-        if not added or not playerId then return false, "addPlayer failed: " .. tostring(playerId) end
+        local hintedPlayerId = tonumber(hintedPlayers[index])
+        local hintedEntity = hintedPlayerId and safeEntity(hintedPlayerId) or nil
+        local hintedIsPlayer = hintedPlayerId and not usedPlayers[hintedPlayerId]
+          and ((api.type.ComponentType.PLAYER
+              and component(hintedPlayerId, api.type.ComponentType.PLAYER) ~= nil)
+            or (hintedEntity and tostring(hintedEntity.type or ""):upper() == "PLAYER"))
+        local playerId
+        if hintedIsPlayer then
+          playerId = hintedPlayerId
+        else
+          if not game.interface.addPlayer then return false, "game.interface.addPlayer unavailable" end
+          local added
+          added, playerId = pcall(game.interface.addPlayer)
+          if not added or not playerId then return false, "addPlayer failed: " .. tostring(playerId) end
+        end
         worldState.playerIds[index] = playerId
+        usedPlayers[tonumber(playerId)] = true
       end
     end
   elseif not proxyMode and options.localCompanyIndex ~= nil then
@@ -826,6 +843,38 @@ function M.initialiseCompanies(worldState, registry, desiredCount, options)
     if not ok then return false, err end
     if game.interface.setName then pcall(game.interface.setName, playerId, "Company " .. index) end
   end
+  local ownershipProjection
+  if not proxyMode and options.canonicalNetworkOwnership == true then
+    local projected, result = nativeOwnershipProjection.apply(worldState, worldState.playerIds, {
+      listOwned = M.listAllPlayerOwned,
+      ownerOf = M.ownerOf,
+      kindOf = M.kindOf,
+      setPlayer = function(entityId, playerId)
+        if type(game.interface.setPlayer) ~= "function" then
+          error("game.interface.setPlayer unavailable")
+        end
+        return game.interface.setPlayer(entityId, playerId)
+      end,
+    })
+    if not projected then return false, result end
+    ownershipProjection = result
+    worldState.nativeOwnershipProjection = {
+      schemaVersion = 1,
+      required = result.required,
+      retainedEdges = result.retainedEdges,
+      unsupported = result.unsupported,
+      byCompany = (function()
+        local value = {}
+        for companyCid, company in pairs(result.byCompany or {}) do
+          value[companyCid] = {
+            required = company.required,
+            retainedEdges = company.retainedEdges,
+          }
+        end
+        return value
+      end)(),
+    }
+  end
   if proxyMode and game.interface.setName then pcall(game.interface.setName, current, "TPF2MP Turn Desk") end
   local result = util.deepCopy(worldState.playerIds)
   result.companyPlayerIds = util.deepCopy(worldState.playerIds)
@@ -833,6 +882,7 @@ function M.initialiseCompanies(worldState, registry, desiredCount, options)
   result.proxyMode = proxyMode
   result.localCompanyIndex = proxyMode and nil or localCompanyIndex
   result.initialNetworkOwnership = initialNetworkOwnership
+  result.nativeOwnershipProjection = ownershipProjection
   return true, result
 end
 
@@ -1344,6 +1394,8 @@ M.consistTransportFacts = corridorBindingModule.consistTransportFacts
 M.gravityDemand = corridorBindingModule.gravityDemand
 M.carriedByTown = corridorBindingModule.carriedByTown
 M.townGrowthTargets = corridorBindingModule.townGrowthTargets
+M.departureSchedule = corridorBindingModule.departureSchedule
+M.synchronizationSchedule = corridorBindingModule.synchronizationSchedule
 M.departureSlots = corridorBindingModule.departureSlots
 M.stationBoards = corridorBindingModule.stationBoards
 local corridorBinding = corridorBindingModule.new({
@@ -1565,7 +1617,7 @@ end
 -- this function: counts and vehicle state are keyed by canonical identity. A
 -- person, cargo item, line, or vehicle changing local entity ID therefore
 -- cannot by itself create a false network mismatch.
-function M.mobilitySnapshot(registry)
+function M.mobilitySnapshot(registry, worldState)
   local systems = api and api.engine and api.engine.system or {}
   local types = api and api.type and api.type.ComponentType or {}
   local personSystem = systems.simPersonSystem
@@ -1706,9 +1758,15 @@ function M.mobilitySnapshot(registry)
   -- Separate authored/lifecycle state from route phase. The former must agree
   -- after every canonical operation; the latter can differ for a few frames
   -- while independently simulated peers execute the same ordered command.
+  --
+  -- Native userStopped is deliberately not lifecycle authority. The network
+  -- station barrier temporarily changes that bit on each peer at different
+  -- wall-clock instants. Manual stop intent is already canonical binding
+  -- metadata written by the ordered vehicle.stop operation, so digest that
+  -- intent and expose the native actuator bit only as non-digested diagnostics.
   -- stopIndex is still important: a persistent mismatch means the trains are
   -- serving different stations, not merely rendering at different metres.
-  local vehicleLifecycle, vehiclePhases = {}, {}
+  local vehicleLifecycle, vehiclePhases, vehicleStopDiagnostics = {}, {}, {}
   for _, vehicleId in ipairs(M.listVehicles()) do
     local vehicleCid = M.bindExisting(registry, vehicleId, "vehicle", { name = nameOf(vehicleId) })
     local transportVehicle = component(vehicleId, types.TRANSPORT_VEHICLE)
@@ -1719,15 +1777,25 @@ function M.mobilitySnapshot(registry)
     end
     local models, consistKnown, vehicleParts = vehicleConsistNames(transportVehicle)
     local binding = registry.byCanonical and registry.byCanonical[vehicleCid] or nil
+    local metadata = binding and binding.metadata or {}
+    local nativeUserStopped = safeComponentField(transportVehicle, "userStopped") == true
     vehicleLifecycle[#vehicleLifecycle + 1] = {
       vehicleCid = vehicleCid,
-      ownerCid = binding and binding.metadata and binding.metadata.owner or nil,
+      ownerCid = metadata.owner,
       lineCid = lineCid,
-      userStopped = safeComponentField(transportVehicle, "userStopped") == true,
+      requestedStopped = metadata.userStopped == true,
       sellOnArrival = safeComponentField(transportVehicle, "sellOnArrival") == true,
       vehicleParts = vehicleParts,
       consistKnown = consistKnown,
       consistModels = models,
+    }
+    local syncEntry = worldState and worldState.vehicleSync
+      and worldState.vehicleSync.vehicles and worldState.vehicleSync.vehicles[vehicleCid] or nil
+    vehicleStopDiagnostics[#vehicleStopDiagnostics + 1] = {
+      vehicleCid = vehicleCid,
+      requestedStopped = metadata.userStopped == true,
+      nativeUserStopped = nativeUserStopped,
+      barrierManaged = syncEntry ~= nil,
     }
     local stopIndex = tonumber(safeComponentField(transportVehicle, "stopIndex"))
     vehiclePhases[#vehiclePhases + 1] = {
@@ -1740,7 +1808,9 @@ function M.mobilitySnapshot(registry)
     function(a, b) return tostring(a.vehicleCid) < tostring(b.vehicleCid) end)
   table.sort(vehiclePhases,
     function(a, b) return tostring(a.vehicleCid) < tostring(b.vehicleCid) end)
-  local vehicleLifecycleView = { schemaVersion = 1, vehicles = vehicleLifecycle }
+  table.sort(vehicleStopDiagnostics,
+    function(a, b) return tostring(a.vehicleCid) < tostring(b.vehicleCid) end)
+  local vehicleLifecycleView = { schemaVersion = 2, vehicles = vehicleLifecycle }
   local vehiclePhaseView = { schemaVersion = 1, vehicles = vehiclePhases }
 
   -- TerminalInfo is intentionally opaque in the published API. We count its
@@ -1768,7 +1838,7 @@ function M.mobilitySnapshot(registry)
   end
 
   local digestView = {
-    schemaVersion = 3,
+    schemaVersion = 4,
     availability = availability,
     totalPersons = totalPersons,
     terminalEdges = terminalEdges,
@@ -1793,6 +1863,7 @@ function M.mobilitySnapshot(registry)
   local snapshot = util.deepCopy(digestView)
   snapshot.scope = "native-read-only-aggregate"
   snapshot.errors = errors
+  snapshot.vehicleStopDiagnostics = vehicleStopDiagnostics
   snapshot.vehicleLifecycleDigest = hash.value(vehicleLifecycleView)
   snapshot.vehiclePhaseDigest = hash.value(vehiclePhaseView)
   snapshot.digest = hash.value(digestView)

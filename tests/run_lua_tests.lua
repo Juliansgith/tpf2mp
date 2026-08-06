@@ -1148,7 +1148,7 @@ test("mobility telemetry falls back to direct populated-world components", funct
   }
   local snapshot = world.mobilitySnapshot(canonical.newState())
   api, game = previousApi, previousGame
-  equal(snapshot.schemaVersion, 3)
+  equal(snapshot.schemaVersion, 4)
   equal(snapshot.totalPersons, 4)
   equal(snapshot.totals.directCargoEntities, 3)
   equal(snapshot.totals.passengersOnVehicle, 2)
@@ -1163,9 +1163,10 @@ test("mobility telemetry falls back to direct populated-world components", funct
   truthy(not json.encode(snapshot):match("2001"), "mobility payload leaked a cargo entity ID")
 end)
 
-test("vehicle lifecycle and route phase have separate canonical mobility digests", function()
+test("vehicle lifecycle normalizes barrier stop actuation and separates route phase", function()
   local previousApi, previousGame = api, game
   local stopIndex = 1
+  local nativeUserStopped = false
   game = {
     interface = {
       getEntity = function(id)
@@ -1194,7 +1195,7 @@ test("vehicle lifecycle and route phase have separate canonical mobility digests
           return {
             line = 10,
             stopIndex = stopIndex,
-            userStopped = false,
+            userStopped = nativeUserStopped,
             sellOnArrival = false,
             transportVehicleConfig = { vehicles = {
               { part = { modelId = 17 } },
@@ -1212,12 +1213,16 @@ test("vehicle lifecycle and route phase have separate canonical mobility digests
   local registry = canonical.newState()
   local first = world.mobilitySnapshot(registry)
   stopIndex = 2
+  nativeUserStopped = true
   local second = world.mobilitySnapshot(registry)
   api, game = previousApi, previousGame
   equal(#first.vehicleLifecycle, 1)
   equal(first.vehicleLifecycle[1].vehicleParts, 2)
   equal(first.vehicleLifecycle[1].consistModels[2], "vehicle/waggon/open_1910.mdl")
+  equal(first.vehicleLifecycle[1].requestedStopped, false)
   equal(first.vehicleLifecycleDigest, second.vehicleLifecycleDigest)
+  equal(first.vehicleStopDiagnostics[1].nativeUserStopped, false)
+  equal(second.vehicleStopDiagnostics[1].nativeUserStopped, true)
   truthy(first.vehiclePhaseDigest ~= second.vehiclePhaseDigest,
     "moving to another route stop did not change the vehicle phase digest")
   truthy(not json.encode(first):match('"vehicleCid":101'),
@@ -1790,16 +1795,37 @@ test("carried-by-town splits corridor allocations between digested endpoints", f
 end)
 
 test("departure slots are periodic, phased, and future-dated", function()
-  local service = { lineCid = "line:slot-test", headwaySeconds = 600 }
-  local slot = world.departureSlots(service, 5000)
+  local service = { lineCid = "line:slot-test", headwaySeconds = 600,
+    journeySeconds = 900, metadata = { stationGroupCids = { "station:a", "station:b" } } }
+  local slot = world.departureSlots(service, 5000, 0)
   equal(slot.periodSeconds, 600)
   truthy(slot.phaseSeconds >= 0 and slot.phaseSeconds < 600, "phase must sit inside the period")
   truthy(slot.nextDepartureAt > 5000, "the next departure is in the future")
   truthy(slot.holdSeconds > 0 and slot.holdSeconds <= 600, "hold time is bounded by one period")
-  local later = world.departureSlots(service, slot.nextDepartureAt)
+  local later = world.departureSlots(service, slot.nextDepartureAt, 0)
   equal(later.nextDepartureAt, slot.nextDepartureAt + 600, "slots advance by exactly one period")
-  local repeated = world.departureSlots(service, 5000)
+  equal(later.slotIndex, slot.slotIndex + 1)
+  local repeated = world.departureSlots(service, 5000, 0)
   equal(repeated.phaseSeconds, slot.phaseSeconds, "phase must be a pure function of the line")
+  local opposite = world.departureSlots(service, 5000, 1)
+  truthy(opposite.phaseSeconds ~= slot.phaseSeconds,
+    "different stops must receive a deterministic journey offset")
+  local registered = world.synchronizationSchedule(service.lineCid, service, 0)
+  equal(registered.enabled, true,
+    "registered train synchronization must enable the model schedule")
+  equal(registered.periodSeconds, slot.periodSeconds,
+    "registered train synchronization must consume the model schedule")
+  equal(registered.phaseSeconds, slot.phaseSeconds)
+  local fallbackA = world.synchronizationSchedule("line:fallback", nil, 0)
+  local fallbackB = world.synchronizationSchedule("line:fallback", nil, 1)
+  equal(fallbackA.enabled, false,
+    "ordinary lines must rendezvous without an invented timetable dwell")
+  equal(hash.value(fallbackA), hash.value(fallbackB),
+    "an unscheduled line must report the same disabled policy at every stop")
+  local disabledService = util.deepCopy(service)
+  disabledService.enabled = false
+  equal(world.synchronizationSchedule(service.lineCid, disabledService, 0).enabled, false,
+    "a disabled competitive service must not leak its old timetable into train control")
 end)
 
 test("applying town growth issues one deterministic setTownInfo per grown town", function()
@@ -1998,6 +2024,83 @@ test("network peer maps its original native player to its canonical company", fu
   equal(hostResult.companyPlayerIds[2], 101)
   equal(hash.value(canonical.digestView(hostRegistry)), hash.value(canonical.digestView(registry)),
     "peer-local player order changed the canonical registry digest")
+end)
+
+test("fresh network bootstrap rehomes saved manager entities to each peer company", function()
+  local previousGame, previousApi = game, api
+  local function bootstrap(localCompanyIndex)
+    local owners = { [10] = 200 }
+    local players = {
+      [100] = { id = 100, type = "PLAYER" },
+      [200] = { id = 200, type = "PLAYER" },
+    }
+    local nextPlayer = 300
+    game = {
+      interface = {
+        getPlayer = function() return 100 end,
+        getEntity = function(id)
+          return players[id] or (id == 10 and { id = 10, type = "LINE" } or nil)
+        end,
+        addPlayer = function()
+          nextPlayer = nextPlayer + 1
+          players[nextPlayer] = { id = nextPlayer, type = "PLAYER" }
+          return nextPlayer
+        end,
+        setName = function() end,
+        setPlayer = function(id, playerId) owners[id] = playerId end,
+      },
+    }
+    api = {
+      type = { ComponentType = {
+        PLAYER_OWNED = "PLAYER_OWNED", PLAYER = "PLAYER", LINE = "LINE",
+      } },
+      engine = {
+        getComponent = function(id, kind)
+          if kind == "PLAYER_OWNED" and owners[id] then return { player = owners[id] } end
+          if kind == "PLAYER" and players[id] then return players[id] end
+          if kind == "LINE" and id == 10 then return { stops = {} } end
+          return nil
+        end,
+        forEachEntityWithComponent = function(callback, kind)
+          if kind == "PLAYER_OWNED" then
+            for id in pairs(owners) do callback(id) end
+          end
+        end,
+      },
+    }
+    local registry = canonical.newState()
+    local worldState = {
+      playerIds = {}, logicalOwners = {},
+      startingOwnershipHints = {
+        schemaVersion = 1,
+        companyPlayerIds = { 200, 100 },
+        logicalOwners = { ["10"] = "company:1" },
+      },
+    }
+    local ok, result = world.initialiseCompanies(worldState, registry, 2, {
+      proxyMode = false,
+      localCompanyIndex = localCompanyIndex,
+      canonicalNetworkOwnership = true,
+    })
+    return ok, result, registry, worldState, owners[10]
+  end
+
+  local hostOk, host, hostRegistry, hostWorld, hostLineOwner = bootstrap(1)
+  local clientOk, client, clientRegistry, clientWorld, clientLineOwner = bootstrap(2)
+  api, game = previousApi, previousGame
+  truthy(hostOk, host)
+  truthy(clientOk, client)
+  equal(host.companyPlayerIds[1], 100, "host UI player did not represent Company 1")
+  equal(hostLineOwner, 100, "host line remained attached to the saved remote native player")
+  equal(client.companyPlayerIds[1], 200, "client did not reuse the saved remote Company 1 player")
+  equal(client.companyPlayerIds[2], 100, "client UI player did not represent Company 2")
+  equal(clientLineOwner, 200, "client changed the correctly mapped remote Company 1 line")
+  equal(host.nativeOwnershipProjection.projected, 1)
+  equal(client.nativeOwnershipProjection.unchanged, 1)
+  equal(hostWorld.logicalOwners["10"], "company:1")
+  equal(clientWorld.logicalOwners["10"], "company:1")
+  equal(hash.value(canonical.digestView(hostRegistry)), hash.value(canonical.digestView(clientRegistry)),
+    "save/load native projection changed the canonical company digest")
 end)
 
 local function financeHarness(failPlayer)

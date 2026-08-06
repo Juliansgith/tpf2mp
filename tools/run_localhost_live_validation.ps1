@@ -928,11 +928,20 @@ try {
             throw 'Host companion did not publish vehicle synchronization status.'
         }
         $vehicleSync = $hostStatus.vehicleSync
+        $pending = [int]$vehicleSync.pendingRounds
+        $releaseOrdered = if ($null -ne $vehicleSync.PSObject.Properties['pendingByStatus'] `
+            -and $null -ne $vehicleSync.pendingByStatus.PSObject.Properties['release-ordered']) {
+            [int]$vehicleSync.pendingByStatus.'release-ordered'
+        } else { 0 }
+        $safePausedPending = $pending -eq 0 -or (
+            [int]$hostStatus.clock.effectiveSpeed -eq 0 -and $releaseOrdered -eq $pending)
         if ([int]$vehicleSync.trackedVehicles -lt 1 -or [int]$vehicleSync.releases -lt 1 `
-            -or [int]$vehicleSync.faults -ne 0 -or [int]$vehicleSync.pendingRounds -ne 0) {
+            -or [int]$vehicleSync.faults -ne 0 -or -not $safePausedPending) {
             throw ("Populated vehicle rendezvous did not finish cleanly: " +
                 "tracked=$($vehicleSync.trackedVehicles), releases=$($vehicleSync.releases), " +
-                "faults=$($vehicleSync.faults), pending=$($vehicleSync.pendingRounds)")
+                "scheduled=$($vehicleSync.scheduledReleases), " +
+                "unscheduled=$($vehicleSync.unscheduledReleases), faults=$($vehicleSync.faults), " +
+                "pending=$pending, releaseOrdered=$releaseOrdered")
         }
     }
 

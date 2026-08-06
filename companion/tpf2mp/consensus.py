@@ -5,7 +5,7 @@ import re
 import time
 from typing import Any, Callable, Mapping
 
-from .protocol import MAX_PROPOSAL_OUTPUTS, ProtocolError
+from .protocol import MAX_PROPOSAL_OUTPUTS, ProtocolError, validate_vehicle_schedule
 
 
 class ConsensusTrackers:
@@ -54,6 +54,7 @@ class ConsensusTrackers:
         action = commit.get("payload", {}).get("action", {})
         tracker = self.clock_controls.get(seq)
         if tracker is None:
+            started_at = self.monotonic()
             tracker = {
                 "commitSeq": seq,
                 "actionType": str(action.get("type", "clock.set")),
@@ -70,7 +71,8 @@ class ConsensusTrackers:
                 "requiredPeers": self.required_peers,
                 "acks": {},
                 "status": "pending",
-                "deadline": self.monotonic() + min(self.completion_timeout, 10.0),
+                "startedAt": started_at,
+                "deadline": started_at + min(self.completion_timeout, 10.0),
             }
             self.clock_controls[seq] = tracker
         return tracker
@@ -344,7 +346,9 @@ def vehicle_sync_payload(payload: Any) -> dict[str, Any]:
         "schemaVersion", "vehicleCid", "lineCid", "round", "stopIndex",
         "state", "gameTime", "engineTick", "detail",
     }
-    if set(payload) != required or payload.get("schemaVersion") != 1:
+    schema = payload.get("schemaVersion")
+    expected = required if schema == 1 else required | {"schedule"}
+    if set(payload) != expected or schema not in {1, 2}:
         raise ProtocolError("vehicle sync payload has unknown, missing, or unsupported fields")
     for field, prefix in (("vehicleCid", "vehicle:"), ("lineCid", "line:")):
         value = payload.get(field)
@@ -366,4 +370,7 @@ def vehicle_sync_payload(payload: Any) -> dict[str, Any]:
         raise ProtocolError("vehicle sync gameTime must be non-negative numeric")
     if not isinstance(payload.get("detail"), str) or len(payload["detail"]) > 512:
         raise ProtocolError("vehicle sync detail is invalid")
-    return dict(payload)
+    result = dict(payload)
+    if schema == 2:
+        result["schedule"] = validate_vehicle_schedule(payload["schedule"], release=False)
+    return result

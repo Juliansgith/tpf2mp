@@ -5,7 +5,14 @@ import math
 from pathlib import Path
 from typing import Any, Mapping
 
-from .protocol import ProtocolError, checksum, decode_line, validate_envelope
+from .protocol import (
+    MAX_EXACT_INTEGER,
+    ProtocolError,
+    checksum,
+    decode_line,
+    validate_envelope,
+    validate_vehicle_schedule,
+)
 
 CHECKPOINT_VERSION = 3
 SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, CHECKPOINT_VERSION}
@@ -58,8 +65,11 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
             checkpoint.get("vehicleSynchronization"),
             "checkpoint vehicle synchronization",
         )
-        if set(vehicle_sync) != {"schemaVersion", "enabled", "vehicles"} \
-                or vehicle_sync.get("schemaVersion") != 1 \
+        sync_schema = vehicle_sync.get("schemaVersion")
+        expected_sync_fields = {"schemaVersion", "enabled", "vehicles"}
+        if sync_schema == 2:
+            expected_sync_fields.add("scheduleReservations")
+        if set(vehicle_sync) != expected_sync_fields or sync_schema not in {1, 2} \
                 or not isinstance(vehicle_sync.get("enabled"), bool):
             raise ProtocolError("checkpoint vehicle synchronization header is invalid")
         vehicles = vehicle_sync.get("vehicles")
@@ -75,6 +85,9 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
             allowed = required | {
                 "companyCid", "stopIndex", "releaseAtGameTime",
             }
+            if sync_schema == 2:
+                required.add("schedule")
+                allowed.add("schedule")
             if not required <= set(item) or set(item) - allowed:
                 raise ProtocolError("checkpoint synchronized vehicle fields are invalid")
             vehicle_cid, line_cid = item["vehicleCid"], item["lineCid"]
@@ -113,6 +126,45 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "stopIndex" not in item or "releaseAtGameTime" not in item
             ):
                 raise ProtocolError("authorized vehicle round is missing its stop/release anchor")
+            if sync_schema == 2:
+                schedule = validate_vehicle_schedule(item["schedule"], release=True)
+                if schedule["enabled"] and (
+                    float(item.get("releaseAtGameTime", -1))
+                    != float(schedule["scheduledDepartureAt"])
+                    or item["releaseWhilePaused"]
+                ):
+                    raise ProtocolError("checkpoint vehicle schedule/release anchor is inconsistent")
+        if sync_schema == 2:
+            reservations = vehicle_sync.get("scheduleReservations")
+            empty_reservations = isinstance(reservations, Mapping) and not reservations
+            if not isinstance(reservations, list) and not empty_reservations:
+                raise ProtocolError("checkpoint schedule reservations are not an array")
+            seen_reservations: set[tuple[str, int]] = set()
+            for item_value in [] if empty_reservations else reservations:
+                item = _mapping(item_value, "checkpoint schedule reservation")
+                expected = {
+                    "lineCid", "stopIndex", "periodSeconds", "phaseSeconds",
+                    "lastSlotIndex", "lastScheduledDepartureAt",
+                }
+                if set(item) != expected:
+                    raise ProtocolError("checkpoint schedule reservation fields are invalid")
+                line_cid = item["lineCid"]
+                stop_index = _positive_int(item["stopIndex"], "reservation stopIndex")
+                period = _positive_int(item["periodSeconds"], "reservation periodSeconds", 1)
+                phase = _positive_int(item["phaseSeconds"], "reservation phaseSeconds")
+                slot = _positive_int(item["lastSlotIndex"], "reservation lastSlotIndex")
+                scheduled = item["lastScheduledDepartureAt"]
+                key = (line_cid, stop_index)
+                if not isinstance(line_cid, str) or not line_cid.startswith("line:") \
+                        or len(line_cid) > 320 or key in seen_reservations \
+                        or stop_index > 255 or period > 31_536_000 or phase >= period \
+                        or slot > 1_000_000_000 \
+                        or not isinstance(scheduled, (int, float)) \
+                        or isinstance(scheduled, bool) or not math.isfinite(float(scheduled)) \
+                        or float(scheduled) > MAX_EXACT_INTEGER \
+                        or float(scheduled) != phase + slot * period:
+                    raise ProtocolError("checkpoint schedule reservation is invalid")
+                seen_reservations.add(key)
         actual_vehicle_sync = checksum(vehicle_sync)
         if checkpoint.get("vehicleSynchronizationDigest") != actual_vehicle_sync:
             raise ProtocolError("checkpoint vehicle synchronization digest mismatch")

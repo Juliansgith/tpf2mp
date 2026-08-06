@@ -2,30 +2,12 @@ local util = require "tpf2_mp/util"
 local bridge = require "tpf2_mp/bridge"
 local canonical = require "tpf2_mp/canonical"
 local world = require "tpf2_mp/world"
+local vehicleSyncState = require "tpf2_mp/vehicle_sync_state"
 
 local M = {}
+local disabledSchedule = vehicleSyncState.disabledSchedule
 
-function M.digestView(worldState)
-  local source = worldState and worldState.vehicleSync or {}
-  local vehicles = {}
-  for _, vehicleCid in ipairs(util.sortedKeys(source.vehicles or {})) do
-    local item = source.vehicles[vehicleCid]
-    vehicles[#vehicles + 1] = {
-      vehicleCid = vehicleCid,
-      lineCid = item.lineCid,
-      companyCid = item.companyCid,
-      lastAuthorizedRound = math.max(0, util.integer(item.lastAuthorizedRound, 0)),
-      stopIndex = item.stopIndex,
-      releaseAtGameTime = item.releaseAtGameTime,
-      releaseWhilePaused = item.releaseWhilePaused == true,
-    }
-  end
-  return {
-    schemaVersion = 1,
-    enabled = source.enabled ~= false,
-    vehicles = vehicles,
-  }
-end
+M.digestView = vehicleSyncState.digestView
 
 function M.new(deps)
   assert(type(deps) == "table" and type(deps.getState) == "function",
@@ -78,7 +60,7 @@ function M.new(deps)
   local function report(binding, record, reportState, detail)
     local gameTime = now()
     local payload = {
-      schemaVersion = 1,
+      schemaVersion = 2,
       vehicleCid = binding.canonicalId,
       lineCid = tostring(record.lineCid),
       round = math.max(1, util.integer(record.round, 1)),
@@ -87,6 +69,7 @@ function M.new(deps)
       gameTime = gameTime,
       engineTick = math.max(0, util.integer(state.tick, 0)),
       detail = tostring(detail or ""),
+      schedule = vehicleSyncState.reportSchedule(record.schedule),
     }
     local ok, result = emit("vehicle_sync", payload, state.tick)
     local telemetry = probe()
@@ -147,6 +130,8 @@ function M.new(deps)
   end
 
   local function hold(binding, record, localId)
+    record.schedule = vehicleSyncState.scheduleFor(
+      state.economy, record.lineCid, record.stopIndex, world.synchronizationSchedule)
     record.phase = "holding"
     local sent, sendError = issueStopped(binding, record, localId, true, function(success)
       if success then
@@ -234,6 +219,7 @@ function M.new(deps)
         stopIndex = entry and entry.stopIndex or nil,
         releaseReportPending = nativeState ~= 2 and lastRound > 0
           and util.integer(reportedReleases[binding.canonicalId], 0) < lastRound,
+        schedule = entry and util.deepCopy(entry.schedule) or disabledSchedule(),
       }
       localVehicles[binding.canonicalId] = record
     end
@@ -283,8 +269,8 @@ function M.new(deps)
         report(binding, record, "held", "canonical-stop-held-retry")
       end
     elseif record.phase == "release-armed" then
-      local gameTime, gameSpeed, observed = now()
-      local due = entry and (entry.releaseWhilePaused == true or gameSpeed == 0
+      local gameTime, _, observed = now()
+      local due = entry and (entry.releaseWhilePaused == true
         or gameTime >= tonumber(entry.releaseAtGameTime or math.huge))
       if due then return release(binding, record, localId, vehicle, observed) end
     elseif record.phase == "await-departure" and record.releaseReportPending
@@ -308,6 +294,9 @@ function M.new(deps)
       or type(action.releaseWhilePaused) ~= "boolean" then
       return false, "invalid canonical vehicle release"
     end
+    local releaseSchedule, scheduleError = vehicleSyncState.normalizeReleaseSchedule(
+      action.schedule, releaseAt, action.releaseWhilePaused)
+    if not releaseSchedule then return false, scheduleError end
     local binding = state.canonical.byCanonical[vehicleCid]
     if not binding or binding.kind ~= "vehicle" then
       return false, "canonical vehicle release target is not mapped"
@@ -320,6 +309,7 @@ function M.new(deps)
       local same = entry.lineCid == lineCid and entry.stopIndex == stopIndex
         and tonumber(entry.releaseAtGameTime) == releaseAt
         and entry.releaseWhilePaused == action.releaseWhilePaused
+        and vehicleSyncState.equalSchedules(entry.schedule, releaseSchedule)
       if not same then return false, "conflicting duplicate vehicle release" end
       return true, util.deepCopy(entry)
     end
@@ -331,12 +321,26 @@ function M.new(deps)
       stopIndex = stopIndex,
       releaseAtGameTime = releaseAt,
       releaseWhilePaused = action.releaseWhilePaused == true,
+      schedule = util.deepCopy(releaseSchedule),
     }
+    sync.scheduleReservations = sync.scheduleReservations or {}
+    if releaseSchedule.enabled == true then
+      local reservationKey = lineCid .. "#" .. tostring(stopIndex)
+      sync.scheduleReservations[reservationKey] = {
+        lineCid = lineCid,
+        stopIndex = stopIndex,
+        periodSeconds = releaseSchedule.periodSeconds,
+        phaseSeconds = releaseSchedule.phaseSeconds,
+        lastSlotIndex = releaseSchedule.slotIndex,
+        lastScheduledDepartureAt = releaseSchedule.scheduledDepartureAt,
+      }
+    end
     local record = localVehicles[vehicleCid]
     if record then
       record.lineCid = lineCid
       record.round = round
       record.stopIndex = stopIndex
+      record.schedule = util.deepCopy(releaseSchedule)
       record.phase = "release-armed"
     end
     return true, util.deepCopy(sync.vehicles[vehicleCid])
@@ -358,6 +362,7 @@ function M.new(deps)
         stopIndex = prior.stopIndex,
         releaseAtGameTime = prior.releaseAtGameTime,
         releaseWhilePaused = prior.releaseWhilePaused == true,
+        schedule = util.deepCopy(prior.schedule or disabledSchedule()),
       }
       localVehicles[data.targetCid] = nil
       return true
@@ -371,6 +376,9 @@ function M.new(deps)
           sync.vehicles[vehicleCid] = nil
           localVehicles[vehicleCid] = nil
         end
+      end
+      for key, reservation in pairs(sync.scheduleReservations or {}) do
+        if reservation.lineCid == data.targetCid then sync.scheduleReservations[key] = nil end
       end
       return true
     end

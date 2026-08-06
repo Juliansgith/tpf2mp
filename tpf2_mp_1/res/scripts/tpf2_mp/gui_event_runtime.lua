@@ -29,6 +29,8 @@ function M.new(deps)
   local nativeHookStatus = assert(deps.nativeHookStatus, "nativeHookStatus dependency is required")
   local markNativeContext = assert(deps.markNativeContext, "markNativeContext dependency is required")
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
+  local projectNetworkSpeedIndicator = assert(deps.projectNetworkSpeedIndicator,
+    "projectNetworkSpeedIndicator dependency is required")
   local EVENT_ID = tostring(deps.eventId or "tpf2mp")
   local SCRIPT_FILE = tostring(deps.scriptFile or "tpf2_mp.lua")
   local setDifference = util.setDifference
@@ -602,8 +604,10 @@ function M.new(deps)
     if latest == nil then return false end
     gui.nativeClockCapture.captured = (gui.nativeClockCapture.captured or 0) + validCount
     gui.nativeClockCapture.lastRequestedSpeed = latest
-    local requested = tonumber(snapshot.networkClock and snapshot.networkClock.requestedSpeed)
-    if requested == latest then
+    local clock = state.world and state.world.networkClock or snapshot.networkClock or {}
+    local requested = tonumber(clock.requestedSpeed)
+    local effective = tonumber(clock.effectiveSpeed)
+    if requested == latest and effective == latest then
       gui.nativeClockCapture.duplicates = (gui.nativeClockCapture.duplicates or 0) + 1
       return false
     end
@@ -1078,6 +1082,8 @@ function M.new(deps)
 
   local function guiUpdate()
       gui.frames = gui.frames + 1
+      local indicatorOk, indicatorError = pcall(projectNetworkSpeedIndicator)
+      if not indicatorOk then gui.lastError = tostring(indicatorError) end
       local currentConfig = config()
       if gui.awaitingManualHandoff and currentConfig.networkManualHandoff then
         -- Ignore validator-era suppression counters so a human action cannot be
@@ -1178,7 +1184,7 @@ function M.new(deps)
         -- ordinary UI intents until the operation result is returned.
       elseif #gui.queue > 0 then
         dispatchQueuedAction()
-      elseif gui.frames % 300 == 0 then
+      elseif gui.frames % 120 == 0 then
         queueAction({ type = "snapshot.request", localOnly = true })
       end
   end

@@ -145,22 +145,58 @@ function M.townGrowthTargets(carriedByTown, currentCapacities)
   return targets
 end
 
--- Deterministic departure slots per service. Pure computation only: the
--- enforcement mode (host-ordered holds versus locally issued holds) is
--- gated on the agents-off pivot, because vehicle userStopped state is
--- currently lifecycle-digest material and per-departure ordered operations
--- would serialize through consensus barriers.
-function M.departureSlots(service, gameTimeSeconds)
-  local period = math.max(1, tonumber(service.headwaySeconds) or 1)
-  local phase = hash.adler32 and (hash.adler32(tostring(service.lineCid)) % period)
-    or 0
+-- Canonical schedule policy consumed by the station barrier. The base phase
+-- belongs to the line; each stop receives a deterministic journey offset so
+-- termini do not accidentally share one departure instant. The host reserves
+-- concrete slot indices, which prevents two trains arriving together from
+-- claiming the same service departure.
+function M.departureSchedule(service, stopIndex)
+  local period = math.max(1, math.floor(tonumber(service and service.headwaySeconds) or 1))
+  local lineCid = tostring(service and service.lineCid or "")
+  local basePhase = hash.adler32 and (hash.adler32(lineCid) % period) or 0
+  local stops = service and service.metadata and service.metadata.stationGroupCids or {}
+  local stopCount = math.max(1, type(stops) == "table" and #stops or 0)
+  local normalizedStop = math.max(0, math.floor(tonumber(stopIndex) or 0)) % stopCount
+  local offset = 0
+  if stopCount > 1 then
+    local journey = math.max(0, math.floor(tonumber(service.journeySeconds) or period))
+    offset = math.floor(journey * normalizedStop / (stopCount - 1))
+  end
+  return {
+    schemaVersion = 1,
+    enabled = true,
+    periodSeconds = period,
+    phaseSeconds = (basePhase + offset) % period,
+  }
+end
+
+-- Registered competitive services supply the timetable enforced by the
+-- station barrier. An ordinary line has no authored headway yet, so inventing
+-- one here would turn synchronization into an artificial station dwell. It
+-- still uses the all-peer barrier, but the host releases it after the normal
+-- network safety guard instead of reserving a timetable slot.
+function M.synchronizationSchedule(lineCid, service, stopIndex)
+  if type(service) == "table" and service.enabled ~= false then
+    return M.departureSchedule(service, stopIndex)
+  end
+  return { schemaVersion = 1, enabled = false }
+end
+
+-- Returns the first strictly future slot from the same policy the network
+-- station barrier enforces. Pure callers (UI/model/tests) and enforcement must
+-- therefore never grow independent opinions about departure timing.
+function M.departureSlots(service, gameTimeSeconds, stopIndex)
+  local schedule = M.departureSchedule(service, stopIndex)
+  local period, phase = schedule.periodSeconds, schedule.phaseSeconds
   local now = math.max(0, math.floor(tonumber(gameTimeSeconds) or 0))
   local sincePhase = now - phase
   local index = math.floor(sincePhase / period) + 1
   local nextDeparture = phase + index * period
   return {
+    schemaVersion = schedule.schemaVersion,
     periodSeconds = period,
     phaseSeconds = phase,
+    slotIndex = index,
     nextDepartureAt = nextDeparture,
     holdSeconds = nextDeparture - now,
   }

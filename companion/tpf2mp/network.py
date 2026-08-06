@@ -29,12 +29,17 @@ HOST_AUTHORITY_ACTIONS = {
     "match.initialise",
     "match.finish",
     "world.freeze",
-    "line.register",
     "economy.seed_demo",
     "economy.settle",
     "probe.mobility",
     "finance.toggle_neutralizer",
 }
+
+# Actions any peer may originate for its own company. line.register is
+# company-bound rather than host-authority so a client's line can enter the
+# competitive economy at all: registration is now automatic, and only the
+# owning peer computes and carries its own service facts.
+COMPANY_BOUND_ACTIONS = {"proposal.prepare", "operation.execute", "line.register"}
 
 
 class CommitHost:
@@ -160,12 +165,21 @@ class CommitHost:
                     if action.get("type") == "proposal.prepare":
                         self._track_proposal_prepare(message)
                     elif action.get("type") == "proposal.build":
-                        self._track_proposal(message)
+                        proposal = self._track_proposal(message)
                         prepared_from = int(message.get("prepared_from_seq", 0))
                         prepared = self.proposal_prepares.get(prepared_from)
                         if prepared:
                             prepared["status"] = "committed"
                             prepared["buildSeq"] = seq
+                            prepared_digests = {
+                                item.get("digest")
+                                for peer, item in prepared.get("acks", {}).items()
+                                if peer in prepared.get("requiredPeers", ())
+                                and item.get("success") is True
+                            }
+                            if len(prepared_digests) == 1 and None not in prepared_digests:
+                                prepared["preparedCoreDigest"] = next(iter(prepared_digests))
+                                proposal["preparedCoreDigest"] = prepared["preparedCoreDigest"]
                     elif action.get("type") in {"clock.set", "clock.rendezvous"}:
                         self._track_clock(message)
                     elif action.get("type") == "vehicle.sync_release":
@@ -188,10 +202,22 @@ class CommitHost:
                     elif action.get("type") == "network.proposal_outcome":
                         commit_seq = int(action.get("commitSeq", 0))
                         tracker = self.proposal_consensus.get(commit_seq)
+                        recoverable = action.get("recoverable") is True \
+                            and action.get("success") is not True
                         if tracker:
-                            tracker["status"] = "complete" if action.get("success") else "faulted"
+                            tracker["status"] = (
+                                "complete" if action.get("success")
+                                else "rejected" if recoverable
+                                else "faulted"
+                            )
                             tracker["outcome"] = dict(action)
-                        if not action.get("success"):
+                        if recoverable:
+                            self._track_checkpoint_boundary(
+                                seq,
+                                f"physical-rejection:{action.get('proposalId')}",
+                                str(action.get("proposalId", "")),
+                            )
+                        elif not action.get("success"):
                             self.session_fault = str(action.get("errorCode") or "proposal-consensus-failed")
                         else:
                             self._track_checkpoint_boundary(
@@ -375,7 +401,7 @@ class CommitHost:
                         "cannot resume the shared clock while peers are disconnected: "
                         + ", ".join(missing)
                     )
-            if action["type"] in {"match.initialise", "proposal.prepare", "operation.execute"}:
+            if action["type"] in {"match.initialise", "proposal.prepare", "operation.execute", "line.register"}:
                 if self.require_connected_peers:
                     with self.peers_lock:
                         connected = set(self.peers)
@@ -393,6 +419,18 @@ class CommitHost:
                     raise ProtocolError(
                         f"proposal.prepare from {origin} must act for {expected_company}, not {actual_company}"
                     )
+            if action["type"] == "line.register":
+                peer_number = re.fullmatch(r"player([1-9][0-9]*)", origin)
+                expected_company = f"company:{peer_number.group(1)}" if peer_number else None
+                actual_company = action["companyCid"]
+                service_company = action["service"].get("companyCid")
+                if expected_company and actual_company != expected_company:
+                    raise ProtocolError(
+                        f"line.register from {origin} must act for {expected_company}, "
+                        f"not {actual_company}"
+                    )
+                if service_company != actual_company:
+                    raise ProtocolError("line.register service company must match the acting company")
             if action["type"] == "operation.execute":
                 peer_number = re.fullmatch(r"player([1-9][0-9]*)", origin)
                 expected_company = f"company:{peer_number.group(1)}" if peer_number else None
@@ -585,7 +623,8 @@ class CommitHost:
         tracker["buildSeq"] = seq
         self.audit.append(commit)
         self.commits[seq] = commit
-        self._track_proposal(commit)
+        proposal = self._track_proposal(commit)
+        proposal["preparedCoreDigest"] = tracker.get("preparedCoreDigest")
         self.bridge.write_inbound(commit)
         self._broadcast(commit)
         print(
@@ -618,6 +657,7 @@ class CommitHost:
                 tracker, "proposal-prepare-core-digest-mismatch"
             )
             return
+        tracker["preparedCoreDigest"] = next(iter(digests))
         self._commit_prepared_proposal_locked(tracker)
 
     def _emit_clock_commit_locked(
@@ -649,9 +689,13 @@ class CommitHost:
         tracker: dict[str, Any],
         success: bool,
         error_code: str | None = None,
+        *,
+        recoverable: bool = False,
     ) -> dict[str, Any]:
         if tracker.get("status") != "pending":
             return dict(tracker.get("outcome", {}))
+        if success and recoverable:
+            raise ProtocolError("successful proposal outcome cannot be recoverable")
         completions = tracker["completions"]
         result_digests = {item["resultDigest"] for item in completions.values() if item.get("resultDigest")}
         core_digests = {item["coreDigest"] for item in completions.values() if item.get("coreDigest")}
@@ -679,6 +723,8 @@ class CommitHost:
             action["financeDelta"] = origin_completion["financeDelta"]
         if not success:
             action["errorCode"] = str(error_code or "proposal-consensus-failed")
+            if recoverable:
+                action["recoverable"] = True
         seq = self.next_seq
         self.next_seq += 1
         control = sign(
@@ -692,9 +738,16 @@ class CommitHost:
                 "payload": {"action": action},
             }
         )
-        tracker["status"] = "complete" if success else "faulted"
+        tracker["status"] = "complete" if success else "rejected" if recoverable else "faulted"
         tracker["outcome"] = dict(action)
-        if not success:
+        if recoverable:
+            self.last_error = action["errorCode"]
+            self._track_checkpoint_boundary(
+                seq,
+                f"physical-rejection:{tracker['proposalId']}",
+                tracker["proposalId"],
+            )
+        elif not success:
             self.session_fault = action["errorCode"]
         else:
             self._track_checkpoint_boundary(
@@ -708,6 +761,11 @@ class CommitHost:
         self._broadcast(control)
         if success:
             print(f"proposal {tracker['proposalId']} physically converged at {result_digest}")
+        elif recoverable:
+            print(
+                f"proposal {tracker['proposalId']} was identically rejected on all peers "
+                "without world mutation; session remains healthy"
+            )
         else:
             print(f"PROPOSAL CONSENSUS FAULT {tracker['proposalId']}: {action['errorCode']}")
         return control
@@ -718,11 +776,54 @@ class CommitHost:
         if not required <= set(completions):
             return
         selected = [completions[peer] for peer in tracker["requiredPeers"]]
-        if any(item.get("success") is not True for item in selected):
-            self._emit_proposal_outcome_locked(tracker, False, "peer-native-proposal-failed")
-            return
         if any(item.get("proposalDigest") != tracker["proposalDigest"] for item in selected):
             self._emit_proposal_outcome_locked(tracker, False, "proposal-digest-mismatch")
+            return
+        success_values = {item.get("success") for item in selected}
+        if success_values == {False}:
+            if any(item.get("outputs") for item in selected):
+                self._emit_proposal_outcome_locked(
+                    tracker, False, "failed-native-proposal-left-canonical-outputs"
+                )
+                return
+            if any("financeDelta" in item for item in selected):
+                self._emit_proposal_outcome_locked(
+                    tracker, False, "failed-native-proposal-reported-finance-delta"
+                )
+                return
+            if len({item.get("errorCode") for item in selected}) != 1:
+                self._emit_proposal_outcome_locked(
+                    tracker, False, "native-rejection-error-mismatch"
+                )
+                return
+            if len({item["resultDigest"] for item in selected}) != 1:
+                self._emit_proposal_outcome_locked(
+                    tracker, False, "physical-result-digest-mismatch"
+                )
+                return
+            if len({item["coreDigest"] for item in selected}) != 1:
+                self._emit_proposal_outcome_locked(
+                    tracker, False, "physical-core-digest-mismatch"
+                )
+                return
+            failed_core_digest = selected[0]["coreDigest"]
+            if not tracker.get("preparedCoreDigest") \
+                    or failed_core_digest != tracker.get("preparedCoreDigest"):
+                self._emit_proposal_outcome_locked(
+                    tracker, False, "native-rejection-mutated-prepared-core"
+                )
+                return
+            self._emit_proposal_outcome_locked(
+                tracker,
+                False,
+                "native-proposal-rejected",
+                recoverable=True,
+            )
+            return
+        if success_values != {True}:
+            self._emit_proposal_outcome_locked(
+                tracker, False, "mixed-native-proposal-results"
+            )
             return
         if len({item["resultDigest"] for item in selected}) != 1:
             self._emit_proposal_outcome_locked(tracker, False, "physical-result-digest-mismatch")

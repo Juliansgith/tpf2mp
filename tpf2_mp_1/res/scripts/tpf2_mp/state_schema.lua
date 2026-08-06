@@ -138,6 +138,7 @@ function M.new(cfg, versions)
       proposalConsensus = {
         byId = {},
         completed = 0,
+        rejected = 0,
         failed = 0,
         lastOutcome = nil,
         sessionFault = nil,
@@ -177,9 +178,10 @@ function M.new(cfg, versions)
         startupPause = { requested = false, confirmed = false },
       },
       vehicleSync = {
-        schemaVersion = 1,
+        schemaVersion = 2,
         enabled = true,
         vehicles = {},
+        scheduleReservations = {},
       },
       turn = nil,
       lastTransition = nil,
@@ -419,6 +421,8 @@ function M.migrate(saved, context)
   saved.world.proposalConsensus.byId = saved.world.proposalConsensus.byId or {}
   saved.world.proposalConsensus.completed = math.max(0,
     util.integer(saved.world.proposalConsensus.completed, 0))
+  saved.world.proposalConsensus.rejected = math.max(0,
+    util.integer(saved.world.proposalConsensus.rejected, 0))
   saved.world.proposalConsensus.failed = math.max(0,
     util.integer(saved.world.proposalConsensus.failed, 0))
   saved.world.operations = saved.world.operations or util.deepCopy(defaults.world.operations)
@@ -447,9 +451,15 @@ function M.migrate(saved, context)
     end
   end
   saved.world.vehicleSync = saved.world.vehicleSync or util.deepCopy(defaults.world.vehicleSync)
-  saved.world.vehicleSync.schemaVersion = 1
+  saved.world.vehicleSync.schemaVersion = 2
   if saved.world.vehicleSync.enabled == nil then saved.world.vehicleSync.enabled = true end
   saved.world.vehicleSync.vehicles = saved.world.vehicleSync.vehicles or {}
+  saved.world.vehicleSync.scheduleReservations = saved.world.vehicleSync.scheduleReservations or {}
+  for _, item in pairs(saved.world.vehicleSync.vehicles) do
+    if type(item) == "table" and type(item.schedule) ~= "table" then
+      item.schedule = { schemaVersion = 1, enabled = false }
+    end
+  end
   if saved.world.pauseOnSwitch == nil then saved.world.pauseOnSwitch = config().pauseOnSwitch end
   if saved.world.proxyMode == nil then saved.world.proxyMode = false end
   saved.eventLog = saved.eventLog or { nextSeq = 1, items = {} }

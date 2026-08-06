@@ -345,6 +345,23 @@ assert(sentEvents[#sentEvents].name == "intent"
     and sentEvents[#sentEvents].param.requestedSpeed == 4,
   "suppressed vanilla game speed was not converted into an ordered clock request")
 
+-- A safety fence retains the player's requested speed while temporarily
+-- forcing effective speed zero.  Re-selecting that requested speed is the
+-- resume signal and must not be discarded as a duplicate.
+local recoveryState = script.save()
+recoveryState.world.networkClock.requestedSpeed = 4
+recoveryState.world.networkClock.effectiveSpeed = 0
+recoveryState.world.networkClock.generation = 9
+script.load(recoveryState)
+local recoveryEventCount = #sentEvents
+nativeSpeedRequests[#nativeSpeedRequests + 1] = "4"
+script.guiUpdate()
+assert(#sentEvents == recoveryEventCount + 1
+    and sentEvents[#sentEvents].name == "intent"
+    and sentEvents[#sentEvents].param.type == "clock.request"
+    and sentEvents[#sentEvents].param.requestedSpeed == 4,
+  "a fenced shared clock discarded its same-requested-speed resume signal")
+
 -- Reproduce the live stock-widget race: LINE can become enumerable one GUI
 -- update before the post-visitor native capture is readable. The correlation
 -- ledger must retain that exact owned result instead of losing the command.

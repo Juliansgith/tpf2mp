@@ -130,12 +130,15 @@ function M.render(gui, snapshot, options)
       tonumber(hostVehicleSync.releases) or 0,
       tonumber(hostVehicleSync.faults) or 0)
     local clockCapture = gui.nativeClockCapture or {}
+    local indicator = clockCapture.indicator or {}
     lines[#lines + 1] = string.format(
-      "Vanilla clock bridge: captured %d | duplicate %d | invalid %d | last %s",
+      "Vanilla clock bridge: captured %d | duplicate %d | invalid %d | last %s | indicator %s repairs %d",
       tonumber(clockCapture.captured) or 0,
       tonumber(clockCapture.duplicates) or 0,
       tonumber(clockCapture.invalid) or 0,
-      tostring(clockCapture.lastRequestedSpeed or "-"))
+      tostring(clockCapture.lastRequestedSpeed or "-"),
+      tostring(indicator.lastButtonIndex or "-"),
+      tonumber(indicator.repairs) or 0)
   end
   if snapshot.validation and snapshot.validation.enabled then
     lines[#lines + 1] = string.format(
@@ -180,35 +183,51 @@ function M.render(gui, snapshot, options)
     )
   end
   local shownMarkets = 0
-  for _, marketCid in ipairs(util.sortedKeys(results.markets or {})) do
+  local marketOrder = util.sortedKeys(results.markets or {})
+  if #marketOrder > 0 then
+    lines[#lines + 1] = "-- CONTESTED MARKETS (this is the contest; people on"
+      .. " platforms are scenery) --"
+  end
+  for _, marketCid in ipairs(marketOrder) do
     if shownMarkets >= 8 then break end
     shownMarkets = shownMarkets + 1
     local market = results.markets[marketCid]
-    lines[#lines + 1] = string.format("Market %s%s: demand %d, outside %d",
+    local travelling = (market.demand or 0) - (market.outside or 0)
+    local travellingPct = (market.demand or 0) > 0
+      and math.floor(travelling * 100 / market.demand) or 0
+    lines[#lines + 1] = string.format(
+      "%s%s: %d of %d travelling (%d%%), %d stayed home",
       market.name or marketCid,
-      market.kind == "cargo" and " [cargo]" or "",
-      market.demand or 0, market.outside or 0)
+      market.kind == "cargo" and " [freight]" or "",
+      travelling, market.demand or 0, travellingPct, market.outside or 0)
     for _, lineCid in ipairs(util.sortedKeys(market.services or {})) do
       local service = market.services[lineCid]
       local factors = service.factors or {}
+      -- Share is a stock chasing an equilibrium, so an arrow beats two
+      -- numbers: it answers "am I winning this corridor right now?"
+      local share = service.sharePpm or 0
+      local target = service.equilibriumPpm or 0
+      local trend = "holding"
+      if target > share + 2000 then trend = "GAINING"
+      elseif target + 2000 < share then trend = "LOSING" end
       lines[#lines + 1] = string.format(
-        "  %s: %d pax (%d.%02d%%), eff $%.2f = fare %.2f + time %.2f + wait %.2f + xfer %.2f + crowd %.2f - comfort %.2f | share %d.%d%% -> eq %d.%d%%",
+        "  %s: %d carried, %d.%d%% share -> %d.%d%% %s | $%.2f revenue",
         service.name or lineCid,
         service.allocated or 0,
-        math.floor((service.shareBasisPoints or 0) / 100),
-        (service.shareBasisPoints or 0) % 100,
+        math.floor(share / 10000), math.floor(share % 10000 / 1000),
+        math.floor(target / 10000), math.floor(target % 10000 / 1000),
+        trend,
+        (service.revenueCents or 0) / 100)
+      lines[#lines + 1] = string.format(
+        "      costs the passenger $%.2f = fare %.2f + time %.2f + wait %.2f"
+          .. " + transfers %.2f + crowding %.2f - comfort %.2f",
         (factors.gcCents or 0) / 100,
         (factors.fareCents or service.fareCents or 0) / 100,
         (factors.timeCostCents or 0) / 100,
         (factors.waitCostCents or 0) / 100,
         (factors.transferCostCents or 0) / 100,
         (factors.crowdCostCents or 0) / 100,
-        (factors.comfortCents or 0) / 100,
-        math.floor((service.sharePpm or 0) / 10000),
-        math.floor((service.sharePpm or 0) % 10000 / 1000),
-        math.floor((service.equilibriumPpm or 0) / 10000),
-        math.floor((service.equilibriumPpm or 0) % 10000 / 1000)
-      )
+        (factors.comfortCents or 0) / 100)
     end
   end
   local boards = snapshot.stationBoards or {}
@@ -281,9 +300,10 @@ function M.render(gui, snapshot, options)
     operations.failed or 0, operations.retained or 0)
   local consensus = snapshot.proposalConsensus or {}
   lines[#lines + 1] = string.format(
-    "Physical consensus pending/complete/faulted: %d/%d/%d | session %s",
+    "Physical consensus pending/complete/rejected/faulted: %d/%d/%d/%d | session %s",
     consensus.pending or 0,
     consensus.completed or 0,
+    consensus.rejected or 0,
     consensus.failed or 0,
     consensus.sessionFault and "FAULTED" or "healthy"
   )
@@ -320,8 +340,13 @@ function M.render(gui, snapshot, options)
   end
   local mobility = snapshot.probes and snapshot.probes.mobility or nil
   if mobility then
+    -- Diagnostics, deliberately below the contest and deliberately labelled:
+    -- these are the game's own wandering agents, which the competitive model
+    -- neither reads nor scores. Reading them as market truth is the single
+    -- most likely way to misinterpret this panel.
     lines[#lines + 1] = string.format(
-      "Native mobility: people %s | line uses pax %s cargo %s | vehicles %s | digest %s",
+      "Native agents (scenery, not scored): people %s | line uses pax %s cargo %s"
+        .. " | vehicles %s | digest %s",
       tostring(mobility.totalPersons or "-"),
       tostring(mobility.totals and mobility.totals.passengerLineUses or "-"),
       tostring(mobility.totals and mobility.totals.cargoLineUses or "-"),

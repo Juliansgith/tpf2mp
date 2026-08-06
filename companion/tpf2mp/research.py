@@ -200,8 +200,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"{_value(proposals.get('applied') if isinstance(proposals, Mapping) else None)} / "
             f"{_value(proposals.get('failed') if isinstance(proposals, Mapping) else None)} / "
             f"{_value(proposals.get('retained') if isinstance(proposals, Mapping) else None)}",
-            f"- Physical consensus completed/faulted/session fault: "
+            f"- Physical consensus completed/rejected/faulted/session fault: "
             f"{_value(consensus.get('completed') if isinstance(consensus, Mapping) else None)} / "
+            f"{_value(consensus.get('rejected', 0) if isinstance(consensus, Mapping) else None)} / "
             f"{_value(consensus.get('failed') if isinstance(consensus, Mapping) else None)} / "
             f"{_value(consensus.get('sessionFault') if isinstance(consensus, Mapping) else None)}",
             f"- Checkpoint barriers completed/faulted/last agreed: "

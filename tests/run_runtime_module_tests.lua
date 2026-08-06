@@ -11,6 +11,7 @@ local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
@@ -68,8 +69,57 @@ local function baseConfig(overrides)
 end
 
 do
+  local current = {
+    networkMode = "network", initialized = true,
+    world = { networkClock = { effectiveSpeed = 4 } },
+  }
+  local buttons, emitted, wakeups = {}, {}, 0
+  for index = 0, 3 do
+    local button = { selected = index == 0 or index == 3 }
+    function button:isSelected() return self.selected end
+    function button:setSelected(value, emit)
+      self.selected = value == true
+      emitted[#emitted + 1] = emit
+    end
+    buttons["menu.speedButton" .. index] = button
+  end
+  local indicator = networkSpeedIndicatorModule.new({
+    getState = function() return current end,
+    getById = function(id) return buttons[id] end,
+    wakeClock = function() wakeups = wakeups + 1 end,
+    wallTime = function() return 100 end,
+  })
+  assert(indicator.project() == true
+      and buttons["menu.speedButton0"].selected == false
+      and buttons["menu.speedButton3"].selected == true,
+    "authoritative running speed did not repair a dual-selected stock clock")
+  assert(emitted[1] == false and wakeups == 1,
+    "clock-indicator repair emitted a synthetic player click")
+  buttons["menu.speedButton0"].selected = true
+  indicator.project()
+  assert(wakeups == 1,
+    "persistent modal pause flooded the paused snapshot wake path")
+  current.world.networkClock.effectiveSpeed = 0
+  buttons["menu.speedButton0"].selected = false
+  buttons["menu.speedButton3"].selected = false
+  assert(indicator.project() == true
+      and buttons["menu.speedButton0"].selected == true
+      and buttons["menu.speedButton3"].selected == false,
+    "authoritative pause did not repair a blank stock clock selection")
+  current.world.networkClock.effectiveSpeed = 3
+  assert(indicator.project() == true
+      and buttons["menu.speedButton3"].selected == true,
+    "adaptive native speed 3 was not projected onto the fastest stock button")
+  current.networkMode = "standalone"
+  buttons["menu.speedButton0"].selected = true
+  assert(indicator.project() == false
+      and buttons["menu.speedButton0"].selected == true,
+    "network clock projection mutated a standalone speed bar")
+end
+
+do
   local current = stateSchema.new(baseConfig(), {
-    stateVersion = 21,
+    stateVersion = 22,
     checkpointVersion = 3,
   })
   current.initialized = true
@@ -682,13 +732,13 @@ do
 end
 
 do
-  local versions = { stateVersion = 21, checkpointVersion = 3 }
+  local versions = { stateVersion = 22, checkpointVersion = 3 }
   local cfg = baseConfig()
   local first = stateSchema.new(cfg, versions)
   local second = stateSchema.new(cfg, versions)
   first.world.logicalOwners.test = "company:1"
   assert(second.world.logicalOwners.test == nil, "new states share mutable nested tables")
-  assert(first.version == 21 and first.checkpoint.version == 3,
+  assert(first.version == 22 and first.checkpoint.version == 3,
     "new state did not retain its schema versions")
   assert(first.networkMode == "network" and first.bridge.peerId == "player1",
     "new state did not retain its runtime identity")
@@ -699,10 +749,10 @@ do
   local migrated = stateSchema.migrate(first, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 21,
+    stateVersion = 22,
     checkpointVersion = 3,
   })
-  assert(migrated.version == 21 and migrated.world.networkClock.generation == 0,
+  assert(migrated.version == 22 and migrated.world.networkClock.generation == 0,
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
@@ -732,7 +782,7 @@ do
   local fresh = stateSchema.migrate(prior, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 21,
+    stateVersion = 22,
     checkpointVersion = 3,
   })
   local hints = fresh.world.startingOwnershipHints
@@ -756,7 +806,7 @@ do
   local cleanRetry = stateSchema.migrate(prior, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 21,
+    stateVersion = 22,
     checkpointVersion = 3,
   })
   assert(cleanRetry.initialized == false
@@ -818,6 +868,40 @@ do
   assert(status.value:find("Peer: player1", 1, true), "GUI status formatter lost peer identity")
   assert(details.value:find("Session: runtime-module-test", 1, true),
     "GUI detail formatter lost session identity")
+
+  -- The panel must present the model as the contest and native agents as
+  -- scenery, so a player never has to infer which layer is authoritative.
+  guiView.render(first, {
+    networkMode = "network",
+    peerId = "player1",
+    sessionId = "runtime-module-test",
+    activeCompanyName = "Company 1",
+    match = { status = "running", rules = {} },
+    bridge = { companion = { connected = true, status = "connected" } },
+    companyOrder = {},
+    lastResults = { markets = { ["market:x"] = {
+      name = "Alpha to Beta", demand = 1000, outside = 400,
+      services = { ["line:a"] = {
+        name = "Alpha Express", allocated = 480, revenueCents = 480000,
+        sharePpm = 480000, equilibriumPpm = 560000,
+        factors = { gcCents = 1312, fareCents = 1000, timeCostCents = 300,
+          waitCostCents = 112, transferCostCents = 0, crowdCostCents = 0,
+          comfortCents = 100 },
+      } },
+    } } },
+    probes = { mobility = { totalPersons = 413, totals = {} } },
+  }, { maxDeferredNetworkIntents = 32 })
+  assert(details.value:find("platforms are scenery", 1, true),
+    "the market section did not frame itself as the contest")
+  assert(details.value:find("600 of 1000 travelling", 1, true),
+    "the market line did not report induced travel in player terms")
+  assert(details.value:find("480 carried", 1, true)
+      and details.value:find("GAINING", 1, true),
+    "the service line did not report carried passengers and its trend")
+  assert(details.value:find("costs the passenger $13.12", 1, true),
+    "the generalized-cost breakdown lost its legible framing")
+  assert(details.value:find("Native agents (scenery, not scored)", 1, true),
+    "native agent counts were not demoted to labelled diagnostics")
 end
 
 do
@@ -844,7 +928,7 @@ do
   local runtime = checkpointRuntimeModule.new({
     getState = function() return current end,
     maxEvents = function() return 100 end,
-    stateVersion = 21,
+    stateVersion = 22,
     checkpointVersion = 3,
     eventRecordVersion = 1,
   })
@@ -913,7 +997,20 @@ do
       byLocal = { ["line:50"] = "line:event:test:1" },
     },
     world = {
-      vehicleSync = { schemaVersion = 1, enabled = true, vehicles = {} },
+      vehicleSync = {
+        schemaVersion = 2, enabled = true, vehicles = {}, scheduleReservations = {},
+      },
+    },
+    economy = {
+      services = {
+        ["line:event:test:1"] = {
+          lineCid = "line:event:test:1",
+          enabled = true,
+          headwaySeconds = 60,
+          journeySeconds = 120,
+          metadata = { stationGroupCids = { "station_group:test:1", "station_group:test:2" } },
+        },
+      },
     },
     probes = {
       vehicleSync = {
@@ -955,36 +1052,54 @@ do
   assert(#commands == 1 and commands[1].stopped == true
       and emitted[1].payload.state == "held" and emitted[1].payload.round == 1,
     "first terminal arrival was not held and reported")
+  local policy = emitted[1].payload.schedule
+  assert(policy.enabled == true and policy.periodSeconds == 60,
+    "registered service did not report its canonical departure policy")
+  local slotIndex = math.floor((currentTime - policy.phaseSeconds) / policy.periodSeconds) + 1
+  local scheduledDeparture = policy.phaseSeconds + slotIndex * policy.periodSeconds
   local releaseOk = runtime.applyRelease({
     type = "vehicle.sync_release",
     vehicleCid = "vehicle:event:test:1",
     lineCid = "line:event:test:1",
     round = 1,
     stopIndex = 0,
-    releaseAtGameTime = 12,
+    releaseAtGameTime = scheduledDeparture,
     releaseWhilePaused = false,
+    schedule = {
+      schemaVersion = 1,
+      enabled = true,
+      periodSeconds = policy.periodSeconds,
+      phaseSeconds = policy.phaseSeconds,
+      slotIndex = slotIndex,
+      scheduledDepartureAt = scheduledDeparture,
+    },
   })
   assert(releaseOk == true, "ordered station release was rejected")
-  currentTime, current.tick = 11, 3
+  currentTime, currentSpeed, current.tick = scheduledDeparture - 1, 0, 3
   runtime.update()
-  assert(#commands == 1, "vehicle released before its simulation-time target")
-  currentTime, current.tick = 12, 4
+  assert(#commands == 1,
+    "paused vehicle released before its canonical scheduled departure")
+  currentTime, current.tick = scheduledDeparture, 4
   runtime.update()
   assert(#commands == 2 and commands[2].stopped == false
       and emitted[#emitted].payload.state == "released",
     "vehicle did not release/report at the ordered target")
   local digestView = vehicleSyncRuntimeModule.digestView(current.world)
   assert(digestView.vehicles[1].lastAuthorizedRound == 1
-      and digestView.vehicles[1].stopIndex == 0,
-    "authorized vehicle leg is absent from the convergence view")
+      and digestView.vehicles[1].stopIndex == 0
+      and digestView.vehicles[1].schedule.slotIndex == slotIndex
+      and digestView.scheduleReservations[1].lastSlotIndex == slotIndex,
+    "authorized vehicle schedule is absent from the convergence view")
   transportVehicle.state, current.tick = 1, 5
   runtime.update()
+  current.economy.services["line:event:test:1"] = nil
   transportVehicle.state, transportVehicle.stopIndex, current.tick = 2, 1, 6
   runtime.update()
   assert(commands[#commands].stopped == true
       and emitted[#emitted].payload.round == 2
-      and emitted[#emitted].payload.stopIndex == 1,
-    "next station did not advance the canonical vehicle round")
+      and emitted[#emitted].payload.stopIndex == 1
+      and emitted[#emitted].payload.schedule.enabled == false,
+    "ordinary line did not advance with synchronization-only release policy")
   transportVehicle.state, current.tick = 1, 7
   runtime.update()
   assert(emitted[#emitted].payload.state == "fault"

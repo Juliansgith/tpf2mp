@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-06 (Europe/Amsterdam), prototype `0.21.2`, state schema `21`, checkpoint format `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
+Last updated: 2026-08-06 (Europe/Amsterdam), prototype `0.22.0-alpha`, state schema `22`, checkpoint format `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
 
 This directory distinguishes four things that must not be blurred together:
 
@@ -29,6 +29,20 @@ per-station train barrier, format-3 convergence projection, restart behavior,
 and focused live-test contract are recorded in
 [TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md](TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md).
 
+The two-train Escape-pause trace, exact stock speed-button contract,
+authoritative indicator projection, immediate native pause fence, and bounded
+resume path are recorded in
+[CLOCK_INDICATOR_AND_NATIVE_PAUSE_FENCE_2026-08-06.md](CLOCK_INDICATOR_AND_NATIVE_PAUSE_FENCE_2026-08-06.md).
+
+The follow-up lifecycle normalization, single departure-schedule policy,
+durable slot allocator, barrier pruning, and 50-train authority stress are
+recorded in
+[STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md](STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md).
+
+The unanimous `Too much curvature` rejection, the old fatal-session response,
+and the strict reject-and-continue no-mutation predicate are recorded in
+[RECOVERABLE_NATIVE_PROPOSAL_REJECTION_2026-08-06.md](RECOVERABLE_NATIVE_PROPOSAL_REJECTION_2026-08-06.md).
+
 ## Pinned build
 
 - Executable: `F:\SteamLibrary\steamapps\common\Transport Fever 2\TransportFever2.exe`
@@ -44,15 +58,17 @@ The native component additionally requires 17 unique signatures at the pinned lo
 
 ### Two real localhost game processes
 
-`runtime/localhost-live/train-station-fresh-clock-20260806-0630` is the current
-strongest two-live-game proof. Two exact Build 35924 processes loaded the same
-populated save and held its restored native clock until both peers were ready.
-Its real NOHAB + two-BC4 train completed four alternating canonical station
-releases. Host status ended with one tracked vehicle, four releases, no pending
-rounds/faults, clock skew zero, and converged mobility/lifecycle/route phase.
-Both peers finished at core `1fea40f9`, model `98f01295`, structure `e1488bff`,
-and mobility `6fca8ed2`. Full evidence is in
-[TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md](TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md).
+`runtime/localhost-live/train-prompt-barrier-state22-20260806-105918` is the
+current strongest ordinary-line proof. Two exact Build 35924 processes loaded
+the same populated save and ran its real NOHAB + two-BC4 train through four
+prompt barriers. Host status records zero scheduled and four unscheduled
+release commits, zero pending rounds/faults, 1.86 seconds average latency, and
+2.38 seconds maximum latency. Both peers finished at core `fba1630d`, model
+`98f01295`, structure `15189409`, and mobility `8e5d90e6`; the audit records
+15/15 commit convergences, 2/0/0 physical proposals, and 3/0/0 checkpoint
+barriers. The separate `train-scheduled-state22-20260806-1010` receipt remains
+the authored-schedule mechanism baseline. Full evidence is in
+[STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md](STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md).
 
 `runtime/localhost-live/populated-network-ownershipfix-20260803` remains the
 static ownership baseline. Two exact Build 35924 processes loaded the same populated save containing towns, industries, a depot, stations, a passenger line, a train, and 413 simulated people. Both peers mapped the pre-existing network to the same canonical owner, originated one private 25,000 track transaction each, reconstructed both results, and finished with matching core `7a1b9f9d`, model `5b59ecf2`, structure `07db112f`, and mobility `a7ae06ac`. Three checkpoints, two physical results, and five mobility comparisons converged with zero faults. The 300-tick final soak was paused and autonomy-frozen; it is a populated static-convergence proof, not a running RNG-lockstep proof. Direct ECS telemetry read 10 line users, 8 aboard, and 2 waiting on both peers. Full evidence, the canonical ownership fix, recovery watcher, and title-menu proof are in [POPULATED_NETWORK_RECOVERY_AND_MENU_2026-08-03.md](POPULATED_NETWORK_RECOVERY_AND_MENU_2026-08-03.md).
@@ -207,7 +223,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 21 maps pre-existing shared-save assets to authoritative canonical owners, maps each machine's original native player to its assigned canonical company, persists canonical accounts, and retains construction/asset/edge-object manifests plus shared-clock and train-release authority. Public base nodes/edges can be lazily rebound by exact canonical geometry when a town-road junction was not in the original local map. The companion requires unanimous no-mutation prepare acknowledgements before a build, then matching two-peer physical completion records before it emits an ordered outcome. A failed prepare is non-fatal. The canonical builder quote is authoritative; the ordered outcome charges the canonical account and reconciles peer-local native wallet caches before the financial checkpoint. Match start and each physical success require matching format-3 model/canonical/structural/financial/train-release checkpoints before another gameplay intent can commit. Post-build mismatch, missing-peer timeout, native failure, or an unchanged upgrade postcondition faults closed. Host clock/train controls may bypass gameplay barriers so authority can rendezvous, slow, pause, or release a fully matched station round.
+State schema 22 maps pre-existing shared-save assets to authoritative canonical owners, maps each machine's original native player to its assigned canonical company, persists canonical accounts, and retains construction/asset/edge-object manifests plus shared-clock, train-release authority, and line-stop departure-slot reservations. Public base nodes/edges can be lazily rebound by exact canonical geometry when a town-road junction was not in the original local map. The companion requires unanimous no-mutation prepare acknowledgements before a build, then matching two-peer physical completion records before it emits `proposal.build`. A failed prepare is non-fatal. The canonical builder quote is authoritative; the ordered outcome charges the canonical account and reconciles peer-local native wallet caches before the financial checkpoint. Match start and each physical success require matching format-3 model/canonical/structural/financial/train-release checkpoints before another gameplay intent can commit. Post-build mismatch, missing-peer timeout, native failure, or an unchanged upgrade postcondition faults closed. Host clock/train controls may bypass gameplay barriers so authority can rendezvous, slow, pause, or release a fully matched station round.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two
@@ -274,6 +290,7 @@ Relevant documented behavior used by the implementation:
 - [PROPOSAL_EDGE_OWNERSHIP_BUILD35924_2026-08-01.md](PROPOSAL_EDGE_OWNERSHIP_BUILD35924_2026-08-01.md) — arbitrary-player edge replacement and ID changes.
 - [CROSS_COMPANY_TRACK_REPLACEMENT_2026-08-01.md](CROSS_COMPANY_TRACK_REPLACEMENT_2026-08-01.md) — manual ownership theft, exact topology pairs, and finance barrier.
 - [MOBILITY_TELEMETRY_2026-08-01.md](MOBILITY_TELEMETRY_2026-08-01.md) — aggregate passenger/cargo observation boundary.
+- [SAVE_LOAD_NATIVE_MANAGER_OWNERSHIP_2026-08-06.md](SAVE_LOAD_NATIVE_MANAGER_OWNERSHIP_2026-08-06.md) — stale native player IDs, manager invisibility, fail-closed ownership projection, and exact reload proof.
 - [LIVE_VALIDATION_CHECKLIST.md](LIVE_VALIDATION_CHECKLIST.md) — next manual and two-peer experiments in order.
 - [BUILD_REPORT_2026-07-31.md](BUILD_REPORT_2026-07-31.md) — historical delivery record with superseding addenda.
 
@@ -282,7 +299,7 @@ Relevant documented behavior used by the implementation:
 - Does every vanilla builder route pass through the captured Lua call and tag-15 visitor gate?
 - How long can two independently running Build 35924 worlds remain equivalent after schema-5/7 transactions when autonomous systems and real services are introduced?
 - What automatic native-save boundary and reload mechanism can turn a consensus fault into a coordinated recovery instead of a manual restart?
-- Do future-time pause/resume and per-station train releases remain fault-free across four or more live two-process station rounds, including a fifteen-second pause and a speed-3 rendezvous?
+- What station-barrier latency and signaling interactions appear with two or more real trains on one populated line? Long-pause/speed-3 and deliberate slow-peer recovery now pass with one train.
 - Do two populated stops retain their order and alternate-terminal selections through the actual widgets from both origins? Basic stock create/rename/color/delete/add/remove now passes.
 - Which canonical payload, reference-translation, replay, and postcondition formats are required to turn each gated vehicle category into playable synchronized actions?
 - Which consequential or autonomous mutation paths remain outside the selected 23 visitors?

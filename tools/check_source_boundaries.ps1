@@ -12,7 +12,10 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
     'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_runtime.lua' = 360
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_speed_indicator.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_runtime.lua' = 420
+    'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_state.lua' = 180
+    'tpf2_mp_1\res\scripts\tpf2_mp\native_ownership_projection.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_clock.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
@@ -21,6 +24,8 @@ $budgets = [ordered]@{
     'companion\tpf2mp\network.py' = 1450
     'companion\tpf2mp\consensus.py' = 400
     'companion\tpf2mp\synchronization.py' = 700
+    'companion\tpf2mp\vehicle_barrier.py' = 390
+    'companion\tpf2mp\paused_deadline.py' = 210
     'native\src\hook_dll.cpp' = 1250
     'native\src\native_command_codec.cpp' = 350
     'native\src\native_hook_status.cpp' = 300
@@ -51,6 +56,7 @@ $requiredModules = @(
     'tpf2_mp/operation_runtime',
     'tpf2_mp/network_intent_runtime',
     'tpf2_mp/network_clock_runtime',
+    'tpf2_mp/network_speed_indicator',
     'tpf2_mp/vehicle_sync_runtime',
     'tpf2_mp/validation_runtime',
     'tpf2_mp/gui_state',
@@ -81,6 +87,16 @@ foreach ($movedDefinition in @(
         throw "Extracted responsibility was copied back into the game-script entry point: $movedDefinition"
     }
 }
+$vehicleSyncSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_runtime.lua') -Raw
+if (-not $vehicleSyncSource.Contains('require "tpf2_mp/vehicle_sync_state"')) {
+    throw 'Vehicle runtime no longer composes the vehicle synchronization state boundary.'
+}
+$worldSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\world.lua') -Raw
+if (-not $worldSource.Contains('require "tpf2_mp/native_ownership_projection"')) {
+    throw 'World runtime no longer composes the native ownership projection boundary.'
+}
 
 $hostSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\network.py') -Raw
 if ($hostSource -match '(?m)^class CommitClient:') {
@@ -93,6 +109,18 @@ if (-not $hostSource.Contains('from .client import CommitClient') `
 }
 if (-not $hostSource.Contains('from .synchronization import SynchronizationCoordinator')) {
     throw 'Companion host no longer composes the clock/vehicle synchronization boundary.'
+}
+$syncSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\synchronization.py') -Raw
+if (-not $syncSource.Contains('from .vehicle_barrier import VehicleStationBarrier')) {
+    throw 'Clock coordinator no longer composes the vehicle-station barrier boundary.'
+}
+$vehicleBarrierSource = Get-Content -LiteralPath `
+    (Join-Path $root 'companion\tpf2mp\vehicle_barrier.py') -Raw
+if (-not $vehicleBarrierSource.Contains('from .paused_deadline import PausedDeadlineRegistry')) {
+    throw 'Vehicle-station barrier no longer composes pause-aware deadline bookkeeping.'
+}
+if (-not $syncSource.Contains('from .paused_deadline import SharedPauseProtection')) {
+    throw 'Clock coordinator no longer composes shared-pause timeout protection.'
 }
 foreach ($movedDefinition in @(
     'class ConsensusTrackers:',

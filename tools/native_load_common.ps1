@@ -631,6 +631,12 @@ function Invoke-Tpf2mpPinnedSaveLoad {
     }
     Invoke-Tpf2mpUiRectangleClick $GameProcess $save.components.expectedSaveRect $save.components.menuRect `
         (Join-Path $EvidenceDirectory 'click-pinned-save.json')
+    # The physical click helper returns after posting the mouse transition, not
+    # after Build 35924's UI thread has committed the newly selected save.  At
+    # low menu FPS, immediately clicking Start can therefore launch the row
+    # that was selected on entering the page (often the previous lab save).
+    # Give the native page at least one slow frame before arming Start.
+    Start-Sleep -Milliseconds 750
     [IO.File]::WriteAllText((Join-Path $BridgePath 'launcher\save-selected'), $ExpectedSaveBaseName, [Text.UTF8Encoding]::new($false))
 
     $start = Wait-Tpf2mpMenuStage $GameProcess $BridgePath $Session $Peer `

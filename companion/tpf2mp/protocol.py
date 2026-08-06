@@ -8,6 +8,7 @@ from decimal import Decimal, localcontext, ROUND_HALF_UP
 from typing import Any, Mapping
 
 PROTOCOL_VERSION = 1
+MAX_EXACT_INTEGER = 9_007_199_254_740_991
 
 NETWORK_ACTIONS = {
     "match.initialise",
@@ -197,6 +198,42 @@ def _protocol_int(value: Any, label: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
         raise ProtocolError(f"{label} must be an integer")
     return value
+
+
+def validate_vehicle_schedule(value: Any, *, release: bool) -> dict[str, Any]:
+    """Validate the shared departure policy or one concrete reserved slot.
+
+    A disabled object is explicit so Lua never has to encode JSON null.  Older
+    station-barrier records omit the field entirely; their callers normalize
+    that absence to the disabled form before invoking this validator.
+    """
+    if not isinstance(value, dict) or value.get("schemaVersion") != 1 \
+            or not isinstance(value.get("enabled"), bool):
+        raise ProtocolError("vehicle schedule header is invalid")
+    if value["enabled"] is False:
+        if set(value) != {"schemaVersion", "enabled"}:
+            raise ProtocolError("disabled vehicle schedule has unknown fields")
+        return dict(value)
+    expected = {"schemaVersion", "enabled", "periodSeconds", "phaseSeconds"}
+    if release:
+        expected |= {"slotIndex", "scheduledDepartureAt"}
+    if set(value) != expected:
+        raise ProtocolError("enabled vehicle schedule has unknown or missing fields")
+    period = _protocol_int(value.get("periodSeconds"), "vehicle schedule periodSeconds")
+    phase = _protocol_int(value.get("phaseSeconds"), "vehicle schedule phaseSeconds")
+    if not 1 <= period <= 31_536_000 or not 0 <= phase < period:
+        raise ProtocolError("vehicle schedule period/phase is outside its supported range")
+    if release:
+        slot = _protocol_int(value.get("slotIndex"), "vehicle schedule slotIndex")
+        scheduled = value.get("scheduledDepartureAt")
+        if not 0 <= slot <= 1_000_000_000:
+            raise ProtocolError("vehicle schedule slotIndex is outside its supported range")
+        if not isinstance(scheduled, (int, float)) or isinstance(scheduled, bool) \
+                or not math.isfinite(float(scheduled)) or scheduled < 0 \
+                or scheduled > MAX_EXACT_INTEGER \
+                or float(scheduled) != phase + slot * period:
+            raise ProtocolError("vehicle schedule departure does not match its reserved slot")
+    return dict(value)
 
 
 def _proposal_vec3(value: Any, label: str) -> None:
@@ -1276,11 +1313,12 @@ def validate_action(action: Any) -> dict[str, Any]:
         if not isinstance(action.get("reason"), str) or not action["reason"]:
             raise ProtocolError("clock.rendezvous requires a reason")
     if action_type == "vehicle.sync_release":
-        expected = {
+        legacy = {
             "type", "vehicleCid", "lineCid", "round", "stopIndex",
             "releaseAtGameTime", "releaseWhilePaused",
         }
-        if set(action) != expected:
+        fields = frozenset(action)
+        if fields not in {frozenset(legacy), frozenset(legacy | {"schedule"})}:
             raise ProtocolError("vehicle.sync_release has unknown or missing fields")
         if not isinstance(action.get("vehicleCid"), str) \
                 or not action["vehicleCid"].startswith("vehicle:"):
@@ -1297,6 +1335,14 @@ def validate_action(action: Any) -> dict[str, Any]:
             raise ProtocolError("vehicle.sync_release release time is invalid")
         if not isinstance(action.get("releaseWhilePaused"), bool):
             raise ProtocolError("vehicle.sync_release releaseWhilePaused must be boolean")
+        schedule = validate_vehicle_schedule(
+            action.get("schedule", {"schemaVersion": 1, "enabled": False}), release=True
+        )
+        if schedule["enabled"] and (
+            float(release_time) != float(schedule["scheduledDepartureAt"])
+            or action["releaseWhilePaused"]
+        ):
+            raise ProtocolError("scheduled vehicle release time/pause mode is inconsistent")
     if action_type == "network.sync_fault":
         if set(action) != {"type", "scope", "errorCode"}:
             raise ProtocolError("network.sync_fault has unknown or missing fields")

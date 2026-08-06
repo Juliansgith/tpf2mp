@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-06 for prototype `0.21.2-alpha`, state schema `21`,
+Last updated: 2026-08-06 for prototype `0.22.0-alpha`, state schema `22`,
 checkpoint format `3`, edge proposal schema `5`, construction proposal schema
 `7`, and native hook `0.13.0`.
 
@@ -25,7 +25,13 @@ TPF2MP contains two usable but differently mature modes:
   BuyVehicle/SetLine now have pre-mutation typed capture plus human
   two-process purchase/assignment/movement proof. Shared-clock v2 and a
   canonical per-station train hold/release barrier now pass a populated
-  two-process run with four releases, zero faults, and matching final state. The rest
+  two-process run with four releases, zero faults, and matching final state.
+  State 22 additionally makes an enabled demand service the barrier's one
+  timetable, removes its native hold bit from lifecycle authority, persists
+  host-reserved slots, prunes completed rounds, and exposes load telemetry.
+  Ordinary lines use the same barrier with a short guarded release and no
+  invented timetable. Both paths now have exact two-process proof, and human
+  speed-3 play recovered after deliberately delaying one peer. The rest
   of the vehicle lifecycle, complex topology, scripted callbacks,
   autonomous drift, and a two-computer session remain open.
 
@@ -34,15 +40,18 @@ has not crossed the finished-product gate.
 
 ## Strongest current evidence
 
-`runtime/localhost-live/train-station-fresh-clock-20260806-0630` is the
-strongest network receipt. Two exact Build 35924 processes loaded the same
-populated save, remained paused until both authority/clock samples were ready,
-then ran its real three-part train through four alternating station barriers.
-The final host status records one tracked vehicle, four releases, no pending
-rounds or faults, clock skew zero, and converged mobility/lifecycle/route
-phase. Both peers ended at core `1fea40f9`, model `98f01295`, structure
-`e1488bff`, and mobility `6fca8ed2`; the audit verifies 15 convergence outcomes,
-2/0/0 physical proposals, and 3/0/0 checkpoint barriers.
+`runtime/localhost-live/train-prompt-barrier-state22-20260806-105918` is the
+strongest ordinary-line receipt. Two exact Build 35924 processes loaded the
+same populated save and ran its real three-part train through four prompt
+station rounds. The host records zero scheduled and four unscheduled releases,
+zero pending rounds, zero faults, a 1.86-second average round latency, and a
+2.38-second maximum. Both peers ended at core `fba1630d`, model `98f01295`,
+structure `15189409`, and mobility `8e5d90e6`; the audit verifies 15/15 commit
+convergences, 2/0/0 physical proposals, and 3/0/0 checkpoint barriers. The
+registered-schedule mechanism retains the exact-build baseline in
+`train-scheduled-state22-20260806-1010`, and a later human run proved its
+long-pause/speed-3 rendezvous behavior before the artificial fallback was
+removed from ordinary lines.
 
 The older `runtime/localhost-live/populated-network-ownershipfix-20260803`
 remains the static ownership baseline. It passed with two
@@ -109,7 +118,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   stations/groups, depots, lines, and railway vehicles.
 - Machine-local numeric IDs remain in per-peer binding maps and do not enter the
   portable transaction/checkpoint digest.
-- State schema 21 makes shared-save ownership authoritative, persists the
+- State schema 22 makes shared-save ownership authoritative, persists the
   generation-numbered shared clock and canonical train-release rounds, and includes constructions, assets, and
   edge objects in the stable world manifest. The same
   pre-existing network no longer becomes Company 1 on one peer and Company 2 on
@@ -146,6 +155,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   its world is still unchanged. A failed prepare mutates neither world and is a
   recoverable placement rejection; only unanimous readiness permits the host to
   emit the native build commit.
+- A unanimously rejected native build is recoverable only when every peer
+  reports no outputs or finance delta, identical result/core/error values, and
+  a core digest equal to the prepare barrier. It is counted separately as a
+  rejected placement and must close a new all-peer checkpoint before another
+  command. Mixed results, residue, changed core, timeout, or missing evidence
+  still fault closed. This fixes the live `Too much curvature` case where both
+  worlds stayed unchanged but the old fatal outcome blocked later bulldozing.
 - Canonical proposal schema 5 for bounded road/track/node changes plus named
   signal/waypoint edge objects, with stable existing references, repository resource names, geometry, private ownership,
   catenary, removals, deterministic temporary references, and a bounded builder
@@ -250,9 +266,18 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   gated tag-8 `setUserStopped`, and reports a canonical vehicle/line/stop/round.
   Both peers must match before one ordered future-time release. State 21 and
   checkpoint 3 persist/digest the authorized round; retries and host restart
-  are idempotent, while mismatch, timeout, rejection, or premature departure
-  faults and pauses. Exact coordinates remain native and per-peer. Four live
-  populated localhost rounds alternate correctly between both stops.
+  are idempotent. An all-peer-acknowledged shared pause suspends pending round
+  deadlines and pause-adjusts latency telemetry; timeout budget resumes only
+  after a latest-generation running control is acknowledged by all peers. Esc
+  can stop a game's bridge loop before that acknowledgement. A pending pause
+  is therefore also timeout-protected when another peer accepted it, the
+  missing game had fresh pre-pause telemetry, and its TCP companion remains
+  connected. This is reported separately as `connected-quiescent-modal` and
+  never changes strict `pauseAcknowledged`. Disconnect, negative
+  acknowledgement, uncorroborated staleness, mismatch, active-time timeout,
+  rejection, or premature departure still faults and pauses. Exact coordinates
+  remain native and per-peer. Four live populated localhost rounds alternate
+  correctly between both stops.
 
 ### Native authority layer
 
@@ -342,13 +367,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 55 Lua unit tests and 73 cross-language economy scenarios;
+  - 56 Lua unit tests and 73 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 104-event replay
     integrations;
   - 35 mod Lua and all 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 56 Python protocol/network/checkpoint/recovery/report tests.
+  - 59 Python protocol/network/checkpoint/recovery/report tests.
 
 ## Not yet established
 
@@ -356,9 +381,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 - Fresh two-process proof that the non-fatal prepare path fixes public town-road
   junctions, resolves non-default resource names, and permits a later build
   after a rejected placement.
-- Human alternating-peer Pause/Speed 1-4 and long-paused resume, adaptive
-  step-down under a deliberately slow peer, and automatic recovery without
-  lost/duplicate work. The automated speed-2 pause plus four station releases pass.
+- Live multi-train station-barrier throughput, signaling interaction, and peak
+  pending behavior. Human speed-3 play and a deliberately delayed peer now
+  recover at the next station; automatic disconnect/reconnect recovery remains
+  open.
 - Moving populated worlds remaining equivalent over a long unpaused soak.
 - Complex topology splits/joins, bridges, tunnels, terrain mutation, scripted
   construction callbacks, mod construction variants, and arbitrary command
@@ -384,10 +410,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 ## Next gate
 
 The bounded stock construction/facility, basic line/vehicle matrices, shared
-clock, and four-round train barrier now pass locally. Next use the manual lab
-for Pause/resume from alternating peers, a pause longer than 15 seconds, and a
-speed-3 rendezvous. Then deliberately slow one process to verify adaptive
-step-down/recovery and run the remaining two-stop reorder/alternate-terminal
+clock, four-round train barrier, long pause, speed-3 rendezvous, and deliberate
+slow-peer recovery now pass locally. Next use the manual lab for two trains on
+one line to measure signaling interaction, station-barrier latency, and peak
+pending rounds. Then run the remaining two-stop reorder/alternate-terminal
 check.
 
 Then run the trusted two-computer populated test: enter via the title-screen

@@ -441,26 +441,32 @@ def vehicle_sync_record(
     local_seq: int,
     state: str,
     *,
+    vehicle_cid: str = "vehicle:event:station-sync:1",
+    line_cid: str = "line:event:station-sync:1",
     round_number: int = 1,
     stop_index: int = 0,
     game_time: float = 100.0,
     detail: str = "",
+    schedule: dict | None = None,
 ) -> dict:
+    payload = {
+        "schemaVersion": 2 if schedule is not None else 1,
+        "vehicleCid": vehicle_cid,
+        "lineCid": line_cid,
+        "round": round_number,
+        "stopIndex": stop_index,
+        "state": state,
+        "gameTime": game_time,
+        "engineTick": local_seq,
+        "detail": detail,
+    }
+    if schedule is not None:
+        payload["schedule"] = json.loads(json.dumps(schedule))
     return {
         "kind": "vehicle_sync",
         "peer": peer,
         "local_seq": local_seq,
-        "payload": {
-            "schemaVersion": 1,
-            "vehicleCid": "vehicle:event:station-sync:1",
-            "lineCid": "line:event:station-sync:1",
-            "round": round_number,
-            "stopIndex": stop_index,
-            "state": state,
-            "gameTime": game_time,
-            "engineTick": local_seq,
-            "detail": detail,
-        },
+        "payload": payload,
     }
 
 
@@ -557,6 +563,19 @@ class ProtocolTests(unittest.TestCase):
             "releaseWhilePaused": False,
         })
         self.assertEqual(release["round"], 1)
+        scheduled = validate_action({
+            **release,
+            "releaseAtGameTime": 125,
+            "schedule": {
+                "schemaVersion": 1,
+                "enabled": True,
+                "periodSeconds": 60,
+                "phaseSeconds": 5,
+                "slotIndex": 2,
+                "scheduledDepartureAt": 125,
+            },
+        })
+        self.assertEqual(scheduled["schedule"]["slotIndex"], 2)
         with self.assertRaisesRegex(ProtocolError, "0 through 4"):
             validate_action({"type": "clock.request", "requestedSpeed": 5})
         with self.assertRaisesRegex(ProtocolError, "invalid requested/effective"):
@@ -566,6 +585,13 @@ class ProtocolTests(unittest.TestCase):
             })
         with self.assertRaisesRegex(ProtocolError, "release time"):
             validate_action({**release, "releaseAtGameTime": float("nan")})
+        with self.assertRaisesRegex(ProtocolError, "reserved slot"):
+            validate_action({
+                **scheduled,
+                "schedule": {**scheduled["schedule"], "scheduledDepartureAt": 126},
+            })
+        with self.assertRaisesRegex(ProtocolError, "pause mode"):
+            validate_action({**scheduled, "releaseWhilePaused": True})
 
     def test_canonical_proposal_transaction_is_strict_and_tamper_evident(self) -> None:
         transaction = proposal_transaction()
@@ -1369,6 +1395,69 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "missing its stop/release anchor"):
             verify_checkpoint(payload)
 
+    def test_checkpoint_v3_accepts_and_binds_departure_schedule_state(self) -> None:
+        payload = self.checkpoint_payload()
+        schedule = {
+            "schemaVersion": 1,
+            "enabled": True,
+            "periodSeconds": 60,
+            "phaseSeconds": 5,
+            "slotIndex": 2,
+            "scheduledDepartureAt": 125,
+        }
+        vehicle_sync = {
+            "schemaVersion": 2,
+            "enabled": True,
+            "vehicles": [{
+                "vehicleCid": "vehicle:event:test:1",
+                "lineCid": "line:event:test:1",
+                "companyCid": "company:1",
+                "lastAuthorizedRound": 1,
+                "stopIndex": 0,
+                "releaseAtGameTime": 125,
+                "releaseWhilePaused": False,
+                "schedule": schedule,
+            }],
+            "scheduleReservations": [{
+                "lineCid": "line:event:test:1",
+                "stopIndex": 0,
+                "periodSeconds": 60,
+                "phaseSeconds": 5,
+                "lastSlotIndex": 2,
+                "lastScheduledDepartureAt": 125,
+            }],
+        }
+        payload["vehicleSynchronization"] = vehicle_sync
+        payload["vehicleSynchronizationDigest"] = checksum(vehicle_sync)
+        core = json.loads(json.dumps(payload["model"]))
+        core["canonical"] = payload["canonical"]
+        core["vehicleSynchronization"] = vehicle_sync
+        payload["coreDigest"] = checksum(core)
+        payload["convergenceKey"] = checksum({
+            "checkpointVersion": payload["checkpointVersion"],
+            "stateVersion": payload["stateVersion"],
+            "protocol": payload["protocol"],
+            "sessionId": payload["sessionId"],
+            "lastCommitSeq": payload["eventCursor"]["lastCommitSeq"],
+            "modelDigest": payload["modelDigest"],
+            "canonicalDigest": payload["canonicalDigest"],
+            "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
+            "coreDigest": payload["coreDigest"],
+            "financialDigest": payload["financialDigest"],
+        })
+        payload.pop("checkpointDigest", None)
+        payload["checkpointDigest"] = checksum(payload)
+        self.assertEqual(
+            verify_checkpoint(payload)["vehicleSynchronization"]["schemaVersion"], 2
+        )
+
+        tampered = json.loads(json.dumps(payload))
+        tampered["vehicleSynchronization"]["scheduleReservations"][0][
+            "lastScheduledDepartureAt"
+        ] = 126
+        with self.assertRaisesRegex(ProtocolError, "reservation is invalid"):
+            verify_checkpoint(tampered)
+
     def test_audit_replay_chains_checkpoint_event_records(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             audit = AuditLog(Path(directory) / "audit.ndjson")
@@ -1585,7 +1674,10 @@ class ResearchReportTests(unittest.TestCase):
             self.assertIn("Latest bounded proposal snapshot", markdown)
             self.assertIn("streetBuilder", markdown)
             self.assertIn("Canonical proposals queued/applied/failed/retained: 2 / 1 / 1 / 2", markdown)
-            self.assertIn("Physical consensus completed/faulted/session fault: 1 / 0 / unknown", markdown)
+            self.assertIn(
+                "Physical consensus completed/rejected/faulted/session fault: 1 / 0 / 0 / unknown",
+                markdown,
+            )
             self.assertIn("Checkpoint barriers completed/faulted/last agreed: 2 / 0", markdown)
             output = root / "report.md"
             write_report(bridge.root, "research-session", output)
@@ -1845,6 +1937,34 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertAlmostEqual(host.clock_game_time_skew, 3.0, places=6)
             self.assertEqual(host.commits[1]["payload"]["action"]["type"], "clock.rendezvous")
 
+    def test_recovered_clock_ack_timeout_is_not_left_as_current_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "recovered-clock-warning", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host.clock_healthy_since = sampled_at - 20.0
+            host.clock_last_adjustment = sampled_at - 20.0
+            host.clock_health = {
+                peer: {
+                    "receivedAt": sampled_at, "engineTick": 100,
+                    "lastCommitSeq": 0, "gameTime": 100.0,
+                    "observedSpeed": 1, "tickRate": 60.0, "gameRate": 12.0,
+                }
+                for peer in ("player1", "player2")
+            }
+            host.last_error = "clock-ack-timeout:player2"
+            host._maybe_adjust_clock_locked(sampled_at)
+            self.assertIsNone(host.last_error)
+
+            host.last_error = "vehicle-sync-timeout:vehicle:1"
+            host._maybe_adjust_clock_locked(sampled_at)
+            self.assertEqual(host.last_error, "vehicle-sync-timeout:vehicle:1")
+
     def test_authoritative_pause_corrects_a_native_running_world(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1869,6 +1989,82 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertEqual(action["requestedSpeed"], 0)
             self.assertEqual(action["effectiveSpeed"], 0)
             self.assertEqual(action["reason"], "authoritative-pause-enforcement")
+
+    def test_unilateral_native_pause_is_fenced_immediately_then_waits_for_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "native-pause-fence", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 4
+            host.clock_generation = 8
+            host.clock_last_adjustment = sampled_at
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
+                    "requestedSpeed": 4, "effectiveSpeed": 4, "generation": 8,
+                    "gameTime": 101.0, "observedSpeed": 4,
+                    "tickRate": 60.0, "gameRate": 96.0,
+                },
+                "player2": {
+                    "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
+                    "requestedSpeed": 4, "effectiveSpeed": 4, "generation": 8,
+                    "gameTime": 99.0, "observedSpeed": 0,
+                    "tickRate": 60.0, "gameRate": 0.0,
+                },
+            }
+            host._maybe_adjust_clock_locked(sampled_at)
+            fence = host.commits[1]["payload"]["action"]
+            self.assertEqual(fence["type"], "clock.set")
+            self.assertEqual(fence["requestedSpeed"], 4)
+            self.assertEqual(fence["effectiveSpeed"], 0)
+            self.assertEqual(fence["generation"], 9)
+            self.assertEqual(fence["reason"], "native-peer-pause-fence:player2")
+            self.assertEqual(
+                host.synchronization.status()["clock"]["pauseFence"]["status"],
+                "fence-ordered",
+            )
+            host._maybe_adjust_clock_locked(sampled_at + 20.0)
+            self.assertEqual(len(host.commits), 1,
+                "native pause fence waited for the generic adaptive delay")
+
+            host._record_non_intent(proposal_prepare_ack("player1", 1, 1))
+            host._record_non_intent(proposal_prepare_ack("player2", 2, 1))
+            resumed_at = time.monotonic()
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": resumed_at, "engineTick": 110, "lastCommitSeq": 1,
+                    "requestedSpeed": 4, "effectiveSpeed": 0, "generation": 9,
+                    "gameTime": 101.0, "observedSpeed": 0,
+                    "tickRate": 60.0, "gameRate": 0.0,
+                },
+                "player2": {
+                    "receivedAt": resumed_at, "engineTick": 110, "lastCommitSeq": 1,
+                    "requestedSpeed": 4, "effectiveSpeed": 0, "generation": 9,
+                    "gameTime": 99.0, "observedSpeed": 0,
+                    "tickRate": 60.0, "gameRate": 0.0,
+                },
+            }
+            host._maybe_adjust_clock_locked(resumed_at)
+            self.assertEqual(len(host.commits), 1,
+                "the host resumed while the native modal pause was still open")
+
+            host.clock_health["player2"]["observedSpeed"] = 4
+            host.clock_health["player2"]["gameRate"] = 96.0
+            host._maybe_adjust_clock_locked(resumed_at)
+            catch_up = host.commits[2]["payload"]["action"]
+            self.assertEqual(catch_up["type"], "clock.rendezvous")
+            self.assertEqual(catch_up["approachSpeed"], 1)
+            self.assertEqual(catch_up["releaseSpeed"], 4)
+            self.assertEqual(catch_up["targetGameTime"], 101.0)
+            self.assertIn(":resume-observed", catch_up["reason"])
+            self.assertEqual(
+                host.synchronization.status()["clock"]["lastPauseFence"]["status"],
+                "catch-up-ordered",
+            )
 
     def test_pause_is_a_future_rendezvous_and_absolute_skew_gets_a_catchup_round(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2001,17 +2197,381 @@ class NetworkIntegrationTests(unittest.TestCase):
             release = host.commits[1]["payload"]["action"]
             self.assertEqual(release["type"], "vehicle.sync_release")
             self.assertGreater(release["releaseAtGameTime"], 101.0)
+            self.assertLessEqual(
+                release["releaseAtGameTime"] - 101.0, 24.0,
+                "an unscheduled line exceeded its two-second network safety guard",
+            )
+            self.assertEqual(
+                release["schedule"], {"schemaVersion": 1, "enabled": False}
+            )
+            self.assertEqual(
+                host.synchronization.status()["vehicleSync"]["pendingByStatus"],
+                {"release-ordered": 1},
+            )
             host._record_non_intent(vehicle_sync_record("player1", 3, "held", game_time=102.0))
             self.assertEqual(len(host.commits), 1, "held retry emitted a second release")
             host._record_non_intent(proposal_prepare_ack("player1", 4, 1))
             host._record_non_intent(proposal_prepare_ack("player2", 5, 1))
             host._record_non_intent(vehicle_sync_record("player1", 6, "released", game_time=120.0))
             host._record_non_intent(vehicle_sync_record("player2", 7, "released", game_time=120.2))
-            tracker = next(iter(host.vehicle_sync_rounds.values()))
-            self.assertEqual(tracker["status"], "complete")
+            self.assertEqual(host.vehicle_sync_rounds, {}, "completed round was not pruned")
             self.assertEqual(host.vehicle_sync_releases, 1)
+            self.assertEqual(host.vehicle_sync_pruned_rounds, 1)
+            self.assertEqual(host.vehicle_sync_scheduled_releases, 0)
+            self.assertEqual(host.vehicle_sync_unscheduled_releases, 1)
             host._record_non_intent(vehicle_sync_record("player1", 8, "released", game_time=121.0))
             self.assertEqual(host.vehicle_sync_releases, 1, "release retry counted twice")
+
+    def test_acknowledged_shared_pause_suspends_vehicle_round_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = [1_000.0]
+            monotonic = lambda: now[0]
+            with mock.patch(
+                "tpf2mp.synchronization.time.monotonic", side_effect=monotonic
+            ), mock.patch(
+                "tpf2mp.vehicle_barrier.time.monotonic", side_effect=monotonic
+            ):
+                host = CommitHost(
+                    GameBridge(root / "host", "long-shared-pause", "player1"),
+                    "127.0.0.1", 0, root / "audit.ndjson",
+                    require_connected_peers=False,
+                )
+                host.clock_requested_speed = host.clock_effective_speed = 1
+                host._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+                tracker = next(iter(host.vehicle_sync_rounds.values()))
+                self.assertEqual(tracker["deadline"], 1_180.0)
+
+                now[0] = 1_001.0
+                pause = host._emit_clock_commit_locked(1, 0, "long-user-pause")
+                self.assertFalse(host.clock_pause_acknowledged)
+                host._record_non_intent(proposal_prepare_ack("player1", 2, pause["seq"]))
+                host._record_non_intent(proposal_prepare_ack("player2", 1, pause["seq"]))
+                self.assertTrue(host.clock_pause_acknowledged)
+                self.assertEqual(host.clock_pause_acknowledged_generation, 1)
+                self.assertEqual(
+                    host.synchronization.status()["vehicleSync"]["timeoutPausedRounds"], 1
+                )
+
+                now[0] = 1_401.0
+                host.synchronization.expire(now[0])
+                self.assertIsNone(host.session_fault, "shared pause consumed active timeout budget")
+
+                resume = host._emit_clock_commit_locked(1, 1, "long-user-pause-ended")
+                now[0] = 1_451.0
+                host.synchronization.expire(now[0])
+                self.assertTrue(
+                    host.clock_pause_acknowledged,
+                    "pending resume incorrectly restarted the vehicle timeout",
+                )
+                host._record_non_intent(proposal_prepare_ack("player1", 3, resume["seq"]))
+                host._record_non_intent(proposal_prepare_ack("player2", 2, resume["seq"]))
+                self.assertFalse(host.clock_pause_acknowledged)
+                self.assertEqual(host.clock_pause_acknowledged_generation, 2)
+                self.assertEqual(tracker["deadline"], 1_630.0)
+
+                host.synchronization.vehicle.expire(1_629.999)
+                self.assertIsNone(host.session_fault)
+                host.synchronization.vehicle.expire(1_630.0)
+                self.assertEqual(
+                    host.session_fault,
+                    "vehicle-sync-timeout:vehicle:event:station-sync:1:1",
+                )
+
+    def test_stale_clock_ack_cannot_regress_acknowledged_pause_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "pause-generation-order", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            first_pause = host._emit_clock_commit_locked(1, 0, "initial-pause")
+            host._record_non_intent(proposal_prepare_ack("player1", 1, first_pause["seq"]))
+            host._record_non_intent(proposal_prepare_ack("player2", 1, first_pause["seq"]))
+            stale_resume = host._emit_clock_commit_locked(1, 1, "stale-resume")
+            newer_pause = host._emit_clock_commit_locked(1, 0, "newer-pause")
+            host._record_non_intent(proposal_prepare_ack("player1", 2, newer_pause["seq"]))
+            host._record_non_intent(proposal_prepare_ack("player2", 2, newer_pause["seq"]))
+            host._record_non_intent(proposal_prepare_ack("player1", 3, stale_resume["seq"]))
+            host._record_non_intent(proposal_prepare_ack("player2", 3, stale_resume["seq"]))
+
+            self.assertTrue(host.clock_pause_acknowledged)
+            self.assertEqual(host.clock_pause_acknowledged_generation, 3)
+
+    def test_vehicle_round_latency_excludes_acknowledged_pause_duration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = [3_000.0]
+            monotonic = lambda: now[0]
+            with mock.patch(
+                "tpf2mp.synchronization.time.monotonic", side_effect=monotonic
+            ), mock.patch(
+                "tpf2mp.vehicle_barrier.time.monotonic", side_effect=monotonic
+            ):
+                host = CommitHost(
+                    GameBridge(root / "host", "pause-adjusted-latency", "player1"),
+                    "127.0.0.1", 0, root / "audit.ndjson",
+                    require_connected_peers=False,
+                )
+                host.clock_requested_speed = host.clock_effective_speed = 1
+                host._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+                host._record_non_intent(vehicle_sync_record("player2", 1, "held"))
+
+                now[0] = 3_001.0
+                pause = host._emit_clock_commit_locked(1, 0, "latency-pause")
+                host._record_non_intent(proposal_prepare_ack("player1", 2, pause["seq"]))
+                host._record_non_intent(proposal_prepare_ack("player2", 2, pause["seq"]))
+                now[0] = 3_401.0
+                resume = host._emit_clock_commit_locked(1, 1, "latency-resume")
+                host._record_non_intent(proposal_prepare_ack("player1", 3, resume["seq"]))
+                host._record_non_intent(proposal_prepare_ack("player2", 3, resume["seq"]))
+
+                now[0] = 3_404.0
+                host._record_non_intent(vehicle_sync_record("player1", 4, "released"))
+                host._record_non_intent(vehicle_sync_record("player2", 4, "released"))
+                telemetry = host.synchronization.status()["vehicleSync"]
+                self.assertEqual(telemetry["averageRoundLatencyMs"], 4_000.0)
+                self.assertEqual(telemetry["maxRoundLatencyMs"], 4_000.0)
+                self.assertEqual(telemetry["timeoutPausedRounds"], 0)
+
+    def test_unacknowledged_pause_does_not_suspend_vehicle_round_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = [2_000.0]
+            monotonic = lambda: now[0]
+            with mock.patch(
+                "tpf2mp.synchronization.time.monotonic", side_effect=monotonic
+            ), mock.patch(
+                "tpf2mp.vehicle_barrier.time.monotonic", side_effect=monotonic
+            ):
+                host = CommitHost(
+                    GameBridge(root / "host", "unacknowledged-pause", "player1"),
+                    "127.0.0.1", 0, root / "audit.ndjson",
+                    require_connected_peers=False,
+                )
+                host.clock_requested_speed = host.clock_effective_speed = 1
+                host._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+                now[0] = 2_001.0
+                pause = host._emit_clock_commit_locked(1, 0, "missing-peer-pause")
+                host._record_non_intent(proposal_prepare_ack("player1", 2, pause["seq"]))
+                self.assertFalse(host.clock_pause_acknowledged)
+                self.assertFalse(
+                    host.synchronization.status()["vehicleSync"]["timeoutPaused"]
+                )
+
+                host.synchronization.vehicle.expire(2_180.0)
+                self.assertEqual(
+                    host.session_fault,
+                    "vehicle-sync-timeout:vehicle:event:station-sync:1:1",
+                )
+
+    def test_connected_quiescent_modal_pause_protects_pending_deadlines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = [1_000.0]
+            monotonic = lambda: now[0]
+            with mock.patch(
+                "tpf2mp.synchronization.time.monotonic", side_effect=monotonic
+            ), mock.patch(
+                "tpf2mp.vehicle_barrier.time.monotonic", side_effect=monotonic
+            ):
+                host = CommitHost(
+                    GameBridge(root / "host", "connected-modal-pause", "player1"),
+                    "127.0.0.1", 0, root / "audit.ndjson",
+                    require_connected_peers=False,
+                )
+                host.consensus.monotonic = monotonic
+                host.clock_requested_speed = host.clock_effective_speed = 1
+                host._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+                tracker = next(iter(host.vehicle_sync_rounds.values()))
+                host.clock_health["player2"] = {
+                    "receivedAt": 1_000.0,
+                    "engineTick": 100,
+                    "lastCommitSeq": 0,
+                    "requestedSpeed": 1,
+                    "effectiveSpeed": 1,
+                    "generation": 0,
+                    "gameTime": 100.0,
+                    "observedSpeed": 1,
+                }
+
+                now[0] = 1_001.0
+                pause = host._emit_clock_commit_locked(1, 0, "modal-pause-fence")
+                host._record_non_intent(proposal_prepare_ack("player1", 2, pause["seq"]))
+                self.assertFalse(host.clock_pause_acknowledged)
+
+                now[0] = 1_004.0
+                host.synchronization.expire(now[0])
+                status = host.synchronization.status()
+                self.assertTrue(status["clock"]["pauseProtected"])
+                self.assertEqual(
+                    status["clock"]["pauseProtectionMode"],
+                    "connected-quiescent-modal",
+                )
+                self.assertEqual(status["clock"]["pauseQuiescentPeers"], ["player2"])
+                self.assertFalse(status["clock"]["pauseAcknowledged"])
+                self.assertTrue(status["vehicleSync"]["timeoutPaused"])
+                self.assertEqual(status["vehicleSync"]["timeoutPausedRounds"], 1)
+
+                now[0] = 1_404.0
+                host.synchronization.expire(now[0])
+                self.assertIsNone(host.session_fault)
+                self.assertEqual(host.clock_controls[pause["seq"]]["status"], "pending")
+                self.assertEqual(len(host.commits), 1, "protected pause emitted timeout spam")
+
+                host._record_non_intent(proposal_prepare_ack("player2", 1, pause["seq"]))
+                status = host.synchronization.status()
+                self.assertTrue(status["clock"]["pauseAcknowledged"])
+                self.assertEqual(status["clock"]["pauseProtectionMode"], "acknowledged")
+
+                now[0] = 1_405.0
+                resume = host._emit_clock_commit_locked(1, 1, "modal-pause-ended")
+                now[0] = 1_410.0
+                host._record_non_intent(proposal_prepare_ack("player1", 3, resume["seq"]))
+                host._record_non_intent(proposal_prepare_ack("player2", 2, resume["seq"]))
+                status = host.synchronization.status()
+                self.assertFalse(status["clock"]["pauseProtected"])
+                self.assertFalse(status["vehicleSync"]["timeoutPaused"])
+                self.assertEqual(tracker["deadline"], 1_586.0)
+
+                host.synchronization.vehicle.expire(1_585.999)
+                self.assertIsNone(host.session_fault)
+                host.synchronization.vehicle.expire(1_586.0)
+                self.assertEqual(
+                    host.session_fault,
+                    "vehicle-sync-timeout:vehicle:event:station-sync:1:1",
+                )
+
+    def test_disconnected_quiescent_peer_does_not_protect_deadlines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            now = [2_000.0]
+            monotonic = lambda: now[0]
+            with mock.patch(
+                "tpf2mp.synchronization.time.monotonic", side_effect=monotonic
+            ), mock.patch(
+                "tpf2mp.vehicle_barrier.time.monotonic", side_effect=monotonic
+            ):
+                host = CommitHost(
+                    GameBridge(root / "host", "disconnected-modal-pause", "player1"),
+                    "127.0.0.1", 0, root / "audit.ndjson",
+                    require_connected_peers=True,
+                )
+                host.consensus.monotonic = monotonic
+                host.clock_requested_speed = host.clock_effective_speed = 1
+                host._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+                host.clock_health["player2"] = {
+                    "receivedAt": 2_000.0,
+                    "engineTick": 100,
+                    "lastCommitSeq": 0,
+                    "requestedSpeed": 1,
+                    "effectiveSpeed": 1,
+                    "generation": 0,
+                    "gameTime": 100.0,
+                    "observedSpeed": 1,
+                }
+
+                now[0] = 2_001.0
+                pause = host._emit_clock_commit_locked(1, 0, "disconnected-pause")
+                host._record_non_intent(proposal_prepare_ack("player1", 2, pause["seq"]))
+                now[0] = 2_004.0
+                host.synchronization.expire(now[0])
+                status = host.synchronization.status()
+                self.assertFalse(status["clock"]["pauseProtected"])
+                self.assertFalse(status["vehicleSync"]["timeoutPaused"])
+
+                host.synchronization.vehicle.expire(2_180.0)
+                self.assertEqual(
+                    host.session_fault,
+                    "vehicle-sync-timeout:vehicle:event:station-sync:1:1",
+                )
+
+    def test_departure_schedule_allocates_unique_slots_under_fifty_train_burst(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "vehicle-schedule-burst", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            policy = {
+                "schemaVersion": 1,
+                "enabled": True,
+                "periodSeconds": 60,
+                "phaseSeconds": 5,
+            }
+            line_cid = "line:event:schedule-burst:1"
+            for index in range(50):
+                host._record_non_intent(vehicle_sync_record(
+                    "player1", index + 1, "held",
+                    vehicle_cid=f"vehicle:event:schedule-burst:{index + 1}",
+                    line_cid=line_cid,
+                    game_time=100,
+                    schedule=policy,
+                ))
+            self.assertEqual(host.vehicle_sync_peak_pending, 50)
+            for index in range(50):
+                host._record_non_intent(vehicle_sync_record(
+                    "player2", index + 1, "held",
+                    vehicle_cid=f"vehicle:event:schedule-burst:{index + 1}",
+                    line_cid=line_cid,
+                    game_time=100,
+                    schedule=policy,
+                ))
+
+            releases = [item["payload"]["action"] for item in host.commits.values()]
+            self.assertEqual(len(releases), 50)
+            slots = [item["schedule"]["slotIndex"] for item in releases]
+            self.assertEqual(slots, list(range(slots[0], slots[0] + 50)))
+            self.assertTrue(all(
+                item["releaseAtGameTime"] == 5 + item["schedule"]["slotIndex"] * 60
+                and item["releaseWhilePaused"] is False
+                for item in releases
+            ))
+
+            for index in range(50):
+                vehicle_cid = f"vehicle:event:schedule-burst:{index + 1}"
+                for peer in ("player1", "player2"):
+                    host._record_non_intent(vehicle_sync_record(
+                        peer, index + 51, "released",
+                        vehicle_cid=vehicle_cid,
+                        line_cid=line_cid,
+                        game_time=releases[index]["releaseAtGameTime"],
+                        schedule=policy,
+                    ))
+            telemetry = host.synchronization.status()["vehicleSync"]
+            self.assertEqual(host.vehicle_sync_rounds, {})
+            self.assertEqual(telemetry["prunedRounds"], 50)
+            self.assertEqual(telemetry["scheduledReleases"], 50)
+            self.assertEqual(telemetry["unscheduledReleases"], 0)
+            self.assertEqual(telemetry["slotReservations"], 1)
+            self.assertIsNone(host.session_fault)
+
+    def test_different_departure_policies_fault_before_release(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "vehicle-schedule-mismatch", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            first = {
+                "schemaVersion": 1, "enabled": True,
+                "periodSeconds": 60, "phaseSeconds": 5,
+            }
+            second = {**first, "periodSeconds": 90}
+            host._record_non_intent(vehicle_sync_record(
+                "player1", 1, "held", schedule=first,
+            ))
+            host._record_non_intent(vehicle_sync_record(
+                "player2", 1, "held", schedule=second,
+            ))
+            self.assertIn("vehicle-sync-schedule-mismatch", host.session_fault)
+            self.assertFalse(any(
+                item["payload"]["action"]["type"] == "vehicle.sync_release"
+                for item in host.commits.values()
+            ))
 
     def test_vehicle_stop_mismatch_and_release_rejection_fault_the_session_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2277,7 +2837,7 @@ class NetworkIntegrationTests(unittest.TestCase):
             outcome = decode_line((bridge.inbox / "000000000003.json").read_bytes())
             self.assertFalse(outcome["payload"]["action"]["success"])
 
-    def test_lua_empty_failed_completion_outputs_fault_without_timeout(self) -> None:
+    def test_identical_empty_native_rejection_is_recoverable_and_checkpointed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             session = "physical-lua-empty-failure"
@@ -2306,11 +2866,42 @@ class NetworkIntegrationTests(unittest.TestCase):
                 completion["payload"]["outputs"] = {}
                 host._record_non_intent(completion)
 
-            self.assertEqual(host.proposal_consensus[build_seq]["status"], "faulted")
-            self.assertEqual(host.session_fault, "peer-native-proposal-failed")
+            self.assertEqual(host.proposal_consensus[build_seq]["status"], "rejected")
+            self.assertIsNone(host.session_fault)
             self.assertIsNone(host._pending_proposal())
             outcome = decode_line((bridge.inbox / "000000000003.json").read_bytes())
-            self.assertEqual(outcome["payload"]["action"]["errorCode"], "peer-native-proposal-failed")
+            action = outcome["payload"]["action"]
+            self.assertFalse(action["success"])
+            self.assertTrue(action["recoverable"])
+            self.assertEqual(action["errorCode"], "native-proposal-rejected")
+            self.assertEqual(action["coreDigest"], "22222222")
+            pending_checkpoint = host._pending_checkpoint()
+            self.assertIsNotNone(pending_checkpoint)
+            self.assertEqual(pending_checkpoint["boundarySeq"], 3)
+            self.assertEqual(
+                pending_checkpoint["reason"],
+                f"physical-rejection:{session}:player2:{build_seq}",
+            )
+
+            reason = f"physical-rejection:{session}:player2:{build_seq}"
+            host._record_non_intent(consensus_checkpoint(session, "player1", 12, 3, reason))
+            host._record_non_intent(consensus_checkpoint(session, "player2", 13, 3, reason))
+            self.assertEqual(host.checkpoint_consensus[3]["status"], "complete")
+            self.assertIsNone(host.session_fault)
+            self.assertEqual(replay(root / "audit.ndjson", session), 0)
+
+            plan = verify_recovery_plan(build_recovery_plan(root / "audit.ndjson", session))
+            self.assertIsNone(plan.get("laterFault"))
+            restored = CommitHost(
+                bridge,
+                "127.0.0.1",
+                0,
+                root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            self.assertEqual(restored.proposal_consensus[build_seq]["status"], "rejected")
+            self.assertIsNone(restored.session_fault)
+            self.assertEqual(restored.last_agreed_checkpoint["boundarySeq"], 3)
 
             malformed = proposal_completion(session, "player1", 12, transaction, success=False)["payload"]
             malformed["outputs"] = {"edge:1": {"kind": "edge"}}
@@ -2322,6 +2913,76 @@ class NetworkIntegrationTests(unittest.TestCase):
             )["payload"]
             failed_operation["outputs"] = {}
             self.assertEqual(CommitHost._operation_completion_payload(failed_operation)["outputs"], {})
+
+    def test_failed_proposal_is_fatal_if_rejection_has_residue_or_changed_core(self) -> None:
+        cases = (
+            ("core", "native-rejection-mutated-prepared-core"),
+            ("outputs", "failed-native-proposal-left-canonical-outputs"),
+            ("mixed", "mixed-native-proposal-results"),
+        )
+        for case, expected_error in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                session = f"physical-rejection-{case}"
+                bridge = GameBridge(root / "host", session, "player1")
+                host = CommitHost(
+                    bridge,
+                    "127.0.0.1",
+                    0,
+                    root / "audit.ndjson",
+                    require_connected_peers=False,
+                )
+                transaction = proposal_transaction("company:2")
+                intent = sign(
+                    {
+                        "protocol": 1,
+                        "session": session,
+                        "peer": "player2",
+                        "local_seq": 1,
+                        "tick": 0,
+                        "kind": "intent",
+                        "payload": {
+                            "action": {"type": "proposal.prepare", "transaction": transaction}
+                        },
+                    }
+                )
+                _, build = pass_proposal_prepare(host, intent)
+                build_seq = int(build["seq"])
+                first = proposal_completion(
+                    session,
+                    "player1",
+                    10,
+                    transaction,
+                    commit_seq=build_seq,
+                    success=False,
+                )
+                second = proposal_completion(
+                    session,
+                    "player2",
+                    11,
+                    transaction,
+                    commit_seq=build_seq,
+                    success=case == "mixed",
+                )
+                if case == "core":
+                    first["payload"]["coreDigest"] = "33333333"
+                    second["payload"]["coreDigest"] = "33333333"
+                elif case == "outputs":
+                    output = {
+                        "kind": "edge",
+                        "cid": "edge:created:2:1",
+                        "slot": "edge:1",
+                    }
+                    first["payload"]["outputs"] = [output]
+                    second["payload"]["outputs"] = [dict(output)]
+                host._record_non_intent(first)
+                host._record_non_intent(second)
+
+                self.assertEqual(host.proposal_consensus[build_seq]["status"], "faulted")
+                self.assertEqual(host.session_fault, expected_error)
+                outcome = decode_line((bridge.inbox / "000000000003.json").read_bytes())
+                self.assertFalse(outcome["payload"]["action"].get("recoverable", False))
+                self.assertEqual(outcome["payload"]["action"]["errorCode"], expected_error)
 
     def test_proposal_waits_for_two_physical_completions_before_next_commit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2475,6 +3136,50 @@ class NetworkIntegrationTests(unittest.TestCase):
             host._expire_proposals()
             self.assertEqual(tracker["status"], "faulted")
             self.assertIn("checkpoint-consensus-timeout", host.session_fault)
+
+    def test_line_register_is_company_bound_not_host_only(self) -> None:
+        # Registration is automatic now, so a client's own line must be able to
+        # enter the economy; it still may not register for a rival company.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bridge = GameBridge(root / "host", "register-auth", "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, root / "audit.ndjson", require_connected_peers=False
+            )
+
+            def registration(company: str, service_company: str) -> dict:
+                return {
+                    "type": "line.register",
+                    "lineCid": "line:event:register-auth:player2:4:1",
+                    "companyCid": company,
+                    "market": {
+                        "cid": "market:auth", "name": "Auth", "demand": 1000,
+                        "votCentsPerHour": 450, "gcOutsideCents": 2500, "thetaCents": 250,
+                    },
+                    "service": {
+                        "lineCid": "line:event:register-auth:player2:4:1",
+                        "marketCid": "market:auth", "companyCid": service_company,
+                        "name": "Client service", "headwaySeconds": 600,
+                        "journeySeconds": 1200, "fareCents": 1000, "capacity": 400,
+                        "quality": 100,
+                    },
+                }
+
+            def envelope(action: dict, local_seq: int) -> dict:
+                return sign({
+                    "protocol": 1, "session": "register-auth", "peer": "player2",
+                    "local_seq": local_seq, "tick": 0, "kind": "intent",
+                    "payload": {"action": action},
+                })
+
+            with self.assertRaisesRegex(ProtocolError, "must act for company:2"):
+                host._commit(envelope(registration("company:1", "company:1"), 1))
+            with self.assertRaisesRegex(ProtocolError, "service company must match"):
+                host._commit(envelope(registration("company:2", "company:1"), 2))
+
+            commit = host._commit(envelope(registration("company:2", "company:2"), 3))
+            self.assertIsNotNone(commit)
+            self.assertEqual(commit["payload"]["action"]["companyCid"], "company:2")
 
     def test_host_binds_numbered_peers_to_their_proposal_company(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

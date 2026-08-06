@@ -19,6 +19,7 @@ local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
@@ -27,7 +28,7 @@ local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 21
+local STATE_VERSION = 22
 local CHECKPOINT_VERSION = 3
 local EVENT_RECORD_VERSION = 1
 
@@ -63,6 +64,11 @@ local networkClock
 local vehicleSync
 local freezeNetworkGame
 local freezeNetworkCalendar
+-- Automatic line registration is defined beside its handler but referenced by
+-- the operation runtime constructed earlier, and it submits intents through a
+-- controller built later still.
+local autoRegisterLineFor
+local submitIntent
 
 local function diagnosticLog(event, values)
   local record = { event = tostring(event), stateVersion = STATE_VERSION }
@@ -606,6 +612,7 @@ local function initialiseMatch(rules)
   })
   if not ok then return false, playersOrError end
   local playerIds = playersOrError.companyPlayerIds or playersOrError
+  local nativeOwnershipProjection = playersOrError.nativeOwnershipProjection
   state.companies = {}
   state.companyOrder = {}
   for index, playerId in ipairs(playerIds) do
@@ -684,6 +691,7 @@ local function initialiseMatch(rules)
     worldManifestDigest = state.probes.worldManifest.digest,
     proxyMode = state.world.proxyMode,
     proxySetup = proxySetup,
+    nativeOwnershipProjection = util.deepCopy(nativeOwnershipProjection),
     funding = funding,
     match = util.deepCopy(state.match),
     note = state.world.proxyMode
@@ -1018,6 +1026,7 @@ local operationRuntime = operationRuntimeModule.new({
   coreDigest = coreDigest,
   refreshOwnershipProbe = refreshOwnershipProbe,
   proposalPreparation = proposalPreparation,
+  autoRegisterLine = function(...) return autoRegisterLineFor(...) end,
 })
 local queueCanonicalOperation = operationRuntime.queue
 local finaliseCanonicalOperation = operationRuntime.finalise
@@ -1247,6 +1256,8 @@ end
 handlers["network.proposal_outcome"] = function(action)
   if state.networkMode ~= "network" then return false, "proposal consensus exists only in network mode" end
   local proposalId = type(action) == "table" and tostring(action.proposalId or "") or ""
+  local requestedRecoverable = type(action) == "table" and action.recoverable == true
+  local recoverable = requestedRecoverable and action.success ~= true
   local consensus = state.world.proposalConsensus
   local record = state.world.proposals.byId[proposalId]
   if not record then
@@ -1257,12 +1268,14 @@ handlers["network.proposal_outcome"] = function(action)
       proposalId = proposalId,
       commitSeq = tonumber(action.commitSeq),
       success = false,
+      recoverable = false,
       status = "faulted",
       proposalDigest = tostring(action.proposalDigest or ""),
       resultDigest = tostring(action.resultDigest or ""),
       coreDigest = tostring(action.coreDigest or ""),
       peers = util.deepCopy(type(action.peers) == "table" and action.peers or {}),
-      errorCode = tostring(action.errorCode or "proposal-consensus-failed"),
+      errorCode = recoverable and "recoverable-rejection-references-unknown-proposal"
+        or tostring(action.errorCode or "proposal-consensus-failed"),
       tick = state.tick,
     }
     consensus.byId[proposalId] = fault
@@ -1277,20 +1290,45 @@ handlers["network.proposal_outcome"] = function(action)
   local existing = consensus.byId[proposalId]
   if existing and existing.status ~= "pending" then
     local same = existing.success == (action.success == true)
+      and existing.recoverable == recoverable
       and tostring(existing.resultDigest or "") == tostring(action.resultDigest or "")
       and tostring(existing.coreDigest or "") == tostring(action.coreDigest or "")
     if not same then return false, "conflicting proposal consensus outcome" end
-    return existing.success, util.deepCopy(existing)
+    return existing.success == true or existing.recoverable == true, util.deepCopy(existing)
   end
   local localCompletion = record.completion
   local success = action.success == true
+  if requestedRecoverable and success then
+    success = false
+    action = util.deepCopy(action)
+    action.errorCode = "successful-consensus-cannot-be-recoverable"
+  end
   if success and (not localCompletion
     or localCompletion.success ~= true
+    or tostring(localCompletion.proposalDigest or "") ~= tostring(action.proposalDigest or "")
     or tostring(localCompletion.resultDigest or "") ~= tostring(action.resultDigest or "")
     or tostring(localCompletion.coreDigest or "") ~= tostring(action.coreDigest or "")) then
     success = false
     action = util.deepCopy(action)
     action.errorCode = "local-completion-does-not-match-consensus"
+  end
+  if recoverable then
+    local outputs = localCompletion and localCompletion.outputs
+    local transactionDigest = record.transaction and tostring(record.transaction.digest or "") or ""
+    if not localCompletion
+      or localCompletion.success ~= false
+      or type(outputs) ~= "table"
+      or next(outputs) ~= nil
+      or localCompletion.financeDelta ~= nil
+      or transactionDigest == ""
+      or transactionDigest ~= tostring(action.proposalDigest or "")
+      or tostring(localCompletion.proposalDigest or "") ~= tostring(action.proposalDigest or "")
+      or tostring(localCompletion.resultDigest or "") ~= tostring(action.resultDigest or "")
+      or tostring(localCompletion.coreDigest or "") ~= tostring(action.coreDigest or "") then
+      recoverable = false
+      action = util.deepCopy(action)
+      action.errorCode = "recoverable-rejection-does-not-match-local-completion"
+    end
   end
   local authoritativeFinanceDelta = tonumber(action.financeDelta)
   local localFinanceDelta = localCompletion and tonumber(localCompletion.financeDelta) or nil
@@ -1338,7 +1376,8 @@ handlers["network.proposal_outcome"] = function(action)
     proposalId = proposalId,
     commitSeq = tonumber(action.commitSeq),
     success = success,
-    status = success and "complete" or "faulted",
+    recoverable = recoverable,
+    status = success and "complete" or recoverable and "rejected" or "faulted",
     proposalDigest = tostring(action.proposalDigest or ""),
     resultDigest = tostring(action.resultDigest or ""),
     coreDigest = tostring(action.coreDigest or ""),
@@ -1355,11 +1394,13 @@ handlers["network.proposal_outcome"] = function(action)
   consensus.lastOutcome = util.deepCopy(outcome)
   if success then
     consensus.completed = (consensus.completed or 0) + 1
+  elseif recoverable then
+    consensus.rejected = (consensus.rejected or 0) + 1
   else
     consensus.failed = (consensus.failed or 0) + 1
     consensus.sessionFault = util.deepCopy(outcome)
   end
-  return success, util.deepCopy(outcome)
+  return success or recoverable, util.deepCopy(outcome)
 end
 
 handlers["network.checkpoint_outcome"] = function(action)
@@ -1424,6 +1465,40 @@ handlers["network.checkpoint_outcome"] = function(action)
     state.world.proposalConsensus.sessionFault = fault
   end
   return success, util.deepCopy(record)
+end
+
+-- Registration is automatic: any operation that changes a line's shape or its
+-- vehicle set makes the owning peer re-derive that line's competitive facts.
+-- The player never asks for a market; running a service is the request.
+local AUTO_REGISTER_KINDS = {
+  ["line.create"] = "targetCid",
+  ["line.update"] = "targetCid",
+  ["vehicle.assign"] = "lineCid",
+}
+
+autoRegisterLineFor = function(transaction, outputCid)
+  if type(transaction) ~= "table" then return end
+  local field = AUTO_REGISTER_KINDS[transaction.kind]
+  if not field then return end
+  local lineCid = transaction.data and transaction.data[field] or nil
+  if transaction.kind == "line.create" then lineCid = outputCid end
+  if type(lineCid) ~= "string" or lineCid == "" then return end
+  local companyCid = transaction.companyCid
+  if state.economy.services[lineCid]
+    and state.economy.services[lineCid].companyCid ~= companyCid then return end
+  -- Only the owning peer derives and carries the facts; every other peer
+  -- applies the ordered result, exactly like a manual registration.
+  if state.networkMode == "network" and activeCompany() ~= companyCid then return end
+  local localId = canonical.resolveLocal(state.canonical, lineCid)
+  if not localId then return end
+  local queued, queueError = pcall(submitIntent, {
+    type = "line.register", lineCid = lineCid, companyCid = companyCid,
+  })
+  if not queued then
+    diagnosticLog("auto-register-failed", {
+      lineCid = lineCid, error = tostring(queueError), tick = state.tick,
+    })
+  end
 end
 
 handlers["line.register"] = function(action)
@@ -1781,7 +1856,7 @@ end
 
 handlers["probe.mobility"] = function(_, eventId)
   state.probes.nativeHook = nativeHookStatus()
-  state.probes.mobility = world.mobilitySnapshot(state.canonical)
+  state.probes.mobility = world.mobilitySnapshot(state.canonical, state.world)
   local payload = util.deepCopy(state.probes.mobility)
   payload.type = "mobility"
   payload.sampleKey = tostring(eventId)
@@ -2656,8 +2731,9 @@ applyCommitted = function(action, actor, commitSeq)
       diagnosticLog("checkpoint-error", { tick = state.tick, error = tostring(checkpointError) })
     end
   elseif success and action.type == "network.proposal_outcome"
-    and action.success == true and authoritySeq then
-    local reason = "physical-consensus:" .. tostring(action.proposalId or "unknown")
+    and (action.success == true or action.recoverable == true) and authoritySeq then
+    local reason = (action.success == true and "physical-consensus:" or "physical-rejection:")
+      .. tostring(action.proposalId or "unknown")
     local checkpointed, checkpointError = exportCheckpointBarrier(authoritySeq, reason, action.proposalId)
     if not checkpointed then
       diagnosticLog("checkpoint-barrier-error", {
@@ -2668,6 +2744,15 @@ applyCommitted = function(action, actor, commitSeq)
     end
   elseif success and action.type == "network.operation_outcome"
     and action.success == true and authoritySeq then
+    -- Both worlds have now agreed on this operation's physical result, so the
+    -- owning peer can safely re-derive the line's competitive facts from a
+    -- world its rival also sees.
+    local record = state.world.operations.byId[tostring(action.operationId or "")]
+    if record then
+      local outputCid = record.result and record.result.outputs
+        and record.result.outputs[1] and record.result.outputs[1].cid or nil
+      autoRegisterLineFor(record.transaction, outputCid)
+    end
     local reason = "operation-consensus:" .. tostring(action.operationId or "unknown")
     local checkpointed, checkpointError = exportCheckpointBarrier(
       authoritySeq, reason, action.operationId)
@@ -2713,7 +2798,7 @@ networkIntentController = networkIntentRuntimeModule.new({
     return networkClock and networkClock.operationPrerequisite(action) or nil
   end,
 })
-local submitIntent = networkIntentController.submit
+submitIntent = networkIntentController.submit
 local processDeferredNetworkIntent = networkIntentController.processDeferred
 local consumeBridge = networkIntentController.consume
 local networkPendingBarrierReason = networkIntentController.pendingBarrierReason
@@ -2797,6 +2882,16 @@ local function queueAction(action)
   gui.lastError = nil
   renderGui()
 end
+local networkSpeedIndicator = networkSpeedIndicatorModule.new({
+  getState = function() return state end,
+  wakeClock = function()
+    for _, action in ipairs(gui.queue) do
+      if action.type == "snapshot.request" then return end
+    end
+    table.insert(gui.queue, 1, { type = "snapshot.request", localOnly = true })
+  end,
+})
+gui.nativeClockCapture.indicator = networkSpeedIndicator.status()
 
 local function enforceProxyGuiLocks()
   if not (gui.snapshot and gui.snapshot.proxyMode) then return end
@@ -2900,7 +2995,10 @@ local function ensureWindow()
     } } end },
   })
   addRow(rootLayout, {
-    { "Register Selected Line", function() return { type = "line.register", localLineId = assert(gui.selectedLineId, "select a line first") } end },
+    -- Registration is automatic after any line or assignment change; this
+    -- stays as a manual re-derive for lines that predate the match or whose
+    -- facts a player wants refreshed on demand.
+    { "Re-check Selected Line", function() return { type = "line.register", localLineId = assert(gui.selectedLineId, "select a line first") } end },
     { "Claim Selected Asset", function() return { type = "world.claim", ids = { assert(gui.selectedEntityId, "select an entity first") } } end },
     { "Fare -1.00", function() return { type = "fare.adjust", localLineId = assert(gui.selectedLineId, "select a line first"), deltaCents = -100 } end },
     { "Fare +1.00", function() return { type = "fare.adjust", localLineId = assert(gui.selectedLineId, "select a line first"), deltaCents = 100 } end },
@@ -2921,8 +3019,7 @@ local function ensureWindow()
     { "Pause", function() return { type = "clock.request", requestedSpeed = 0 } end },
     { "Speed 1", function() return { type = "clock.request", requestedSpeed = 1 } end },
     { "Speed 2", function() return { type = "clock.request", requestedSpeed = 2 } end },
-    { "Speed 3", function() return { type = "clock.request", requestedSpeed = 3 } end },
-    { "Speed 4", function() return { type = "clock.request", requestedSpeed = 4 } end },
+    { "Speed 3", function() return { type = "clock.request", requestedSpeed = 4 } end },
   })
   addRow(rootLayout, {
     { "Toggle Build Gate (Test)", function()
@@ -3000,6 +3097,7 @@ local guiEventRuntime = guiEventRuntimeModule.new({
   freezeNetworkGame = freezeNetworkGame,
   freezeNetworkCalendar = freezeNetworkCalendar,
   diagnosticLog = diagnosticLog,
+  projectNetworkSpeedIndicator = networkSpeedIndicator.project,
   eventId = EVENT_ID,
   scriptFile = SCRIPT_FILE,
 })

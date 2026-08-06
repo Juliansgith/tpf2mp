@@ -140,6 +140,7 @@ def replay(path: Path, session: str | None) -> int:
                     proposal_commits[seq] = {
                         "proposalId": f"{message.get('session')}:{message.get('origin_peer')}:{seq}",
                         "proposalDigest": action.get("transaction", {}).get("digest"),
+                        "preparedFromSeq": int(message.get("prepared_from_seq", 0)),
                     }
                 elif action.get("type") == "match.initialise":
                     checkpoint_expected_boundaries.add(seq)
@@ -150,7 +151,7 @@ def replay(path: Path, session: str | None) -> int:
                     if commit_seq not in proposal_commits:
                         raise ProtocolError("proposal outcome references an unknown proposal commit")
                     proposal_outcomes[commit_seq] = dict(action)
-                    if action.get("success") is True:
+                    if action.get("success") is True or action.get("recoverable") is True:
                         checkpoint_expected_boundaries.add(seq)
                 elif action.get("type") == "network.checkpoint_outcome":
                     boundary_seq = int(action.get("boundarySeq", 0))
@@ -207,7 +208,7 @@ def replay(path: Path, session: str | None) -> int:
             converged += 1
         else:
             incomplete += 1
-    physical_complete = physical_faulted = physical_pending = 0
+    physical_complete = physical_rejected = physical_faulted = physical_pending = 0
     for commit_seq, proposal in proposal_commits.items():
         outcome = proposal_outcomes.get(commit_seq)
         if not outcome:
@@ -219,6 +220,8 @@ def replay(path: Path, session: str | None) -> int:
             raise ProtocolError(f"proposal outcome identity mismatch at commit {commit_seq}")
         if outcome.get("proposalDigest") != proposal["proposalDigest"]:
             raise ProtocolError(f"proposal outcome digest mismatch at commit {commit_seq}")
+        if outcome.get("success") and outcome.get("recoverable") is True:
+            raise ProtocolError(f"successful proposal is marked recoverable at commit {commit_seq}")
         if outcome.get("success"):
             if not required or not required <= set(completions):
                 raise ProtocolError(f"successful proposal outcome lacks peer completions at commit {commit_seq}")
@@ -229,7 +232,43 @@ def replay(path: Path, session: str | None) -> int:
                 raise ProtocolError(f"physical result divergence at commit {commit_seq}")
             if len({item["coreDigest"] for item in selected}) != 1:
                 raise ProtocolError(f"physical core divergence at commit {commit_seq}")
+            if outcome.get("resultDigest") != selected[0]["resultDigest"] \
+                    or outcome.get("coreDigest") != selected[0]["coreDigest"]:
+                raise ProtocolError(f"proposal outcome digests differ from completions at commit {commit_seq}")
             physical_complete += 1
+        elif outcome.get("recoverable") is True:
+            if not required or not required <= set(completions):
+                raise ProtocolError(
+                    f"recoverable proposal rejection lacks peer completions at commit {commit_seq}"
+                )
+            selected = [completions[peer] for peer in sorted(required)]
+            if any(item.get("success") is not False for item in selected):
+                raise ProtocolError(
+                    f"recoverable proposal rejection contains a successful peer at commit {commit_seq}"
+                )
+            if any(item.get("outputs") or "financeDelta" in item for item in selected):
+                raise ProtocolError(
+                    f"recoverable proposal rejection contains mutation residue at commit {commit_seq}"
+                )
+            if len({item["resultDigest"] for item in selected}) != 1 \
+                    or len({item["coreDigest"] for item in selected}) != 1:
+                raise ProtocolError(
+                    f"recoverable proposal rejection diverged at commit {commit_seq}"
+                )
+            if outcome.get("resultDigest") != selected[0]["resultDigest"] \
+                    or outcome.get("coreDigest") != selected[0]["coreDigest"]:
+                raise ProtocolError(
+                    f"recoverable proposal outcome digests differ from completions at commit {commit_seq}"
+                )
+            prepared_from = int(proposal.get("preparedFromSeq", 0))
+            prepared = acknowledgements.get(prepared_from, {})
+            if not required <= set(prepared) \
+                    or len({prepared[peer] for peer in required}) != 1 \
+                    or selected[0]["coreDigest"] != next(iter({prepared[peer] for peer in required})):
+                raise ProtocolError(
+                    f"recoverable proposal rejection does not preserve its prepare core at commit {commit_seq}"
+                )
+            physical_rejected += 1
         else:
             physical_faulted += 1
     checkpoint_complete = checkpoint_faulted = checkpoint_pending = 0
@@ -257,7 +296,8 @@ def replay(path: Path, session: str | None) -> int:
     print(
         f"audit valid: {commits} commits, {controls} controls, {records} telemetry records, "
         f"{converged} converged, {incomplete} awaiting peer digests, "
-        f"physical proposals complete/faulted/pending={physical_complete}/{physical_faulted}/{physical_pending}, "
+        f"physical proposals complete/rejected/faulted/pending="
+        f"{physical_complete}/{physical_rejected}/{physical_faulted}/{physical_pending}, "
         f"checkpoint barriers complete/faulted/pending={checkpoint_complete}/{checkpoint_faulted}/{checkpoint_pending}, "
         f"{checkpoints} checkpoints, {event_records} event records ({replayed_events} chained), peers={sorted(peers)}"
     )

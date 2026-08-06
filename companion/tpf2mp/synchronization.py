@@ -7,9 +7,10 @@ from typing import Any, Mapping
 from .consensus import (
     clock_health_payload,
     clock_rendezvous_payload,
-    vehicle_sync_payload,
 )
 from .protocol import PROTOCOL_VERSION, ProtocolError, sign, validate_action
+from .paused_deadline import SharedPauseProtection
+from .vehicle_barrier import VehicleStationBarrier
 
 
 class SynchronizationCoordinator:
@@ -24,27 +25,24 @@ class SynchronizationCoordinator:
     CLOCK_RENDEZVOUS_TOLERANCE = 0.35
     CLOCK_MAX_CATCHUP_SPAN = 1_800.0
     CLOCK_RENDEZVOUS_TIMEOUT = 60.0
-    VEHICLE_ROUND_TIMEOUT = 180.0
+    NATIVE_PAUSE_SAMPLE_MAX_AGE = 2.5
+    QUIESCENT_PAUSE_ENTRY_MAX_AGE = 15.0
 
     def __init__(self, host: Any) -> None:
         self.host = host
         host.clock_rendezvous = None
         host.clock_last_rendezvous = None
         host.clock_game_time_skew = None
-        host.vehicle_sync_rounds = {}
-        host.vehicle_sync_last_round = {}
-        host.vehicle_sync_releases = 0
-        host.vehicle_sync_faults = 0
-        host.vehicle_sync_fault_reasons = set()
-        host.vehicle_sync_last_release = None
-        host.sync_fault_emitted = False
+        host.clock_pause_acknowledged = False
+        host.clock_pause_acknowledged_at = None
+        host.clock_pause_acknowledged_generation = 0
+        self.pause = SharedPauseProtection(host)
+        self.clock_pause_fence: dict[str, Any] | None = None
+        self.clock_last_pause_fence: dict[str, Any] | None = None
+        self.vehicle = VehicleStationBarrier(host, self)
 
     def status(self) -> dict[str, Any]:
         rendezvous = self.host.clock_rendezvous
-        pending_rounds = [
-            item for item in self.host.vehicle_sync_rounds.values()
-            if item.get("status") not in {"complete", "faulted"}
-        ]
         return {
             "clock": {
                 "requestedSpeed": self.host.clock_requested_speed,
@@ -53,16 +51,15 @@ class SynchronizationCoordinator:
                 "pendingSeq": self.host.consensus.pending_clock_seq(),
                 "healthPeers": sorted(self.host.clock_health),
                 "gameTimeSkew": self.host.clock_game_time_skew,
+                "pauseAcknowledged": self.shared_pause_acknowledged(),
+                "pauseAcknowledgedGeneration": self.host.clock_pause_acknowledged_generation,
+                **self.pause.status(),
                 "rendezvous": self._public_rendezvous(rendezvous),
                 "lastRendezvous": self._public_rendezvous(self.host.clock_last_rendezvous),
+                "pauseFence": self._public_pause_fence(self.clock_pause_fence),
+                "lastPauseFence": self._public_pause_fence(self.clock_last_pause_fence),
             },
-            "vehicleSync": {
-                "trackedVehicles": len(self.host.vehicle_sync_last_round),
-                "pendingRounds": len(pending_rounds),
-                "releases": self.host.vehicle_sync_releases,
-                "faults": self.host.vehicle_sync_faults,
-                "lastRelease": self.host.vehicle_sync_last_release,
-            },
+            "vehicleSync": self.vehicle.status(),
         }
 
     @staticmethod
@@ -76,6 +73,64 @@ class SynchronizationCoordinator:
                 "releaseSpeed", "reason", "status", "observedSkew", "correctionCount",
             )
         }
+
+    @staticmethod
+    def _public_pause_fence(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        if not value:
+            return None
+        return {
+            key: value.get(key)
+            for key in (
+                "status", "peers", "requestedSpeed", "releaseSpeed",
+                "fenceGeneration", "observedSkew", "reason",
+            )
+        }
+
+    def shared_pause_acknowledged(self) -> bool:
+        return self.host.clock_pause_acknowledged is True
+
+    def pause_deadlines_protected(self) -> bool:
+        return self.pause.active()
+
+    def _set_pause_acknowledged(
+        self, paused: bool, generation: int, now: float | None = None
+    ) -> None:
+        paused = bool(paused)
+        generation = int(generation)
+        current_generation = int(self.host.clock_pause_acknowledged_generation)
+        if generation < current_generation:
+            return
+        if generation == current_generation:
+            if self.host.clock_pause_acknowledged is not paused:
+                raise ProtocolError("clock generation has conflicting acknowledged pause states")
+            return
+        now = time.monotonic() if now is None else now
+        state_changed = self.host.clock_pause_acknowledged is not paused
+        self.host.clock_pause_acknowledged_generation = generation
+        self.host.clock_pause_acknowledged = paused
+        self.host.clock_pause_acknowledged_at = now if paused else None
+        protection_changed = self.pause.set_acknowledged(paused, generation, now)
+        if state_changed or protection_changed:
+            self.vehicle.on_clock_pause_protection_changed(now)
+
+    def _peer_companion_connected(self, peer: str) -> bool:
+        if not self.host.require_connected_peers or peer == self.host.bridge.peer:
+            return True
+        with self.host.peers_lock:
+            return peer in self.host.peers
+
+    def _refresh_quiescent_pause(self, now: float) -> int | None:
+        protected_seq, changed = self.pause.refresh_quiescent(
+            self.host.clock_controls.values(),
+            self.host.clock_health,
+            now,
+            self._peer_companion_connected,
+            stale_after=self.NATIVE_PAUSE_SAMPLE_MAX_AGE,
+            entry_max_age=self.QUIESCENT_PAUSE_ENTRY_MAX_AGE,
+        )
+        if changed:
+            self.vehicle.on_clock_pause_protection_changed(now)
+        return protected_seq
 
     def _fresh_samples(self, now: float | None = None) -> list[dict[str, Any]] | None:
         now = time.monotonic() if now is None else now
@@ -136,13 +191,15 @@ class SynchronizationCoordinator:
             if requested != 0:
                 raise ProtocolError("cannot resume/change the shared clock without fresh all-peer time samples")
             self.host.clock_generation += 1
-            return validate_action({
+            action = validate_action({
                 "type": "clock.set",
                 "requestedSpeed": 0,
                 "effectiveSpeed": 0,
                 "generation": self.host.clock_generation,
                 "reason": f"player-request:{origin}:telemetry-failsafe",
             })
+            self._retire_pause_fence("superseded-by-player-request")
+            return action
         times = self._projected_game_times(samples)
         current = max(0, min(4, int(self.host.clock_effective_speed)))
         skew = max(times) - min(times)
@@ -155,9 +212,11 @@ class SynchronizationCoordinator:
         else:
             approach = current
             target = max(times) + self._guard_distance(samples)
-        return self._new_rendezvous_action(
+        action = self._new_rendezvous_action(
             requested, approach, requested, target, f"player-request:{origin}"
         )
+        self._retire_pause_fence("superseded-by-player-request")
+        return action
 
     def _new_rendezvous_action(
         self,
@@ -305,6 +364,10 @@ class SynchronizationCoordinator:
             return
         if set(tracker["requiredPeers"]) <= set(tracker["acks"]):
             tracker["status"] = "complete"
+            self._set_pause_acknowledged(
+                int(tracker["effectiveSpeed"]) == 0,
+                int(tracker["generation"]),
+            )
 
     def record_clock_health(self, message: Mapping[str, Any]) -> None:
         peer = str(message.get("peer", "unknown"))
@@ -384,6 +447,74 @@ class SynchronizationCoordinator:
         self.host.clock_rendezvous = None
         self.emit_clock_set(requested, release, active["reason"] + ":all-peers-ready")
 
+    def _retire_pause_fence(self, status: str) -> None:
+        if not self.clock_pause_fence:
+            return
+        retired = dict(self.clock_pause_fence)
+        retired["status"] = status
+        self.clock_last_pause_fence = retired
+        self.clock_pause_fence = None
+
+    def _unexpected_native_pause_peers(self, now: float) -> list[str]:
+        if self.host.clock_effective_speed <= 0:
+            return []
+        result: list[str] = []
+        for peer in self.host.required_peers:
+            sample = self.host.clock_health.get(peer)
+            if not sample or now - float(sample.get("receivedAt", 0.0)) \
+                    > self.NATIVE_PAUSE_SAMPLE_MAX_AGE:
+                continue
+            if int(sample.get("generation", -1)) != self.host.clock_generation \
+                    or int(sample.get("effectiveSpeed", -1)) != self.host.clock_effective_speed:
+                continue
+            observed = sample.get("observedSpeed")
+            if observed is not None and abs(float(observed)) <= 0.1:
+                result.append(peer)
+        return result
+
+    def _begin_native_pause_fence(self, peers: list[str], now: float) -> None:
+        if self.clock_pause_fence or not peers:
+            return
+        requested = max(1, int(self.host.clock_requested_speed))
+        release = max(1, int(self.host.clock_effective_speed))
+        reason = "native-peer-pause-fence:" + ",".join(peers)
+        self.clock_pause_fence = {
+            "status": "fence-ordered",
+            "peers": list(peers),
+            "requestedSpeed": requested,
+            "releaseSpeed": release,
+            "observedSkew": self.host.clock_game_time_skew,
+            "reason": reason,
+            "startedAt": now,
+        }
+        message = self.emit_clock_set(requested, 0, reason)
+        self.clock_pause_fence["fenceGeneration"] = self.host.clock_generation
+        self.clock_pause_fence["commitSeq"] = int(message["seq"])
+
+    def _maybe_resume_native_pause_fence(self, now: float) -> None:
+        fence = self.clock_pause_fence
+        if not fence or self.host.clock_rendezvous \
+                or self.host.consensus.pending_clock_seq() is not None:
+            return
+        samples = self._fresh_samples(now)
+        if not samples:
+            return
+        generation = int(fence.get("fenceGeneration", self.host.clock_generation))
+        if any(int(sample.get("generation", -1)) < generation for sample in samples):
+            return
+        # Keep both worlds paused while an Esc/modal pause remains open.  A
+        # direct native resume that bypasses the visitor is still observable;
+        # the ordinary captured clock.request path handles visitor-gated resumes.
+        if not any(abs(float(sample.get("observedSpeed") or 0)) > 0.1 for sample in samples):
+            return
+        times = self._projected_game_times(samples, now)
+        action = self._new_rendezvous_action(
+            int(fence["requestedSpeed"]), 1, int(fence["releaseSpeed"]),
+            max(times), str(fence["reason"]) + ":resume-observed",
+        )
+        self._retire_pause_fence("catch-up-ordered")
+        self._emit_action(action, "clock_control")
+
     def maybe_adjust_clock(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
         samples = [self.host.clock_health.get(peer) for peer in self.host.required_peers]
@@ -394,6 +525,7 @@ class SynchronizationCoordinator:
         times = self._projected_game_times(timed_samples, now)
         self.host.clock_game_time_skew = max(times) - min(times) if len(times) >= 2 else None
         if self.host.session_fault:
+            self._retire_pause_fence("faulted-session")
             observed_running = any(
                 sample is not None and sample.get("observedSpeed") is not None
                 and abs(float(sample["observedSpeed"])) > 0.1
@@ -409,6 +541,9 @@ class SynchronizationCoordinator:
                     or (observed_running and pending_clock is None):
                 self.emit_clock_set(0, 0, "faulted-session-pause-enforcement")
             return
+        if self.clock_pause_fence:
+            self._maybe_resume_native_pause_fence(now)
+            return
         if self.host.clock_rendezvous or self.host.consensus.pending_clock_seq() is not None:
             return
         if self.host.clock_requested_speed == 0:
@@ -419,6 +554,10 @@ class SynchronizationCoordinator:
             )
             if observed_running and now - self.host.clock_last_adjustment >= 1.0:
                 self.emit_clock_set(0, 0, "authoritative-pause-enforcement")
+            return
+        paused_peers = self._unexpected_native_pause_peers(now)
+        if paused_peers:
+            self._begin_native_pause_fence(paused_peers, now)
             return
         missing = any(sample is None for sample in samples)
         stale = [now - float(sample["receivedAt"]) for sample in samples if sample is not None]
@@ -476,8 +615,11 @@ class SynchronizationCoordinator:
                 "adaptive-recovery-step",
             )
             self.host.clock_healthy_since = now
+        elif str(self.host.last_error or "").startswith("clock-ack-timeout:"):
+            self.host.last_error = None
 
     def emergency_pause(self, reason: str) -> None:
+        self._retire_pause_fence("faulted:" + str(reason)[:120])
         active = self.host.clock_rendezvous
         if active:
             active["status"] = "faulted"
@@ -486,214 +628,41 @@ class SynchronizationCoordinator:
         if self.host.clock_effective_speed != 0 or self.host.clock_requested_speed != 0:
             self.emit_clock_set(self.host.clock_requested_speed, 0, reason + ":resync-pause")
 
-    @staticmethod
-    def _round_key(vehicle_cid: str, round_number: int) -> str:
-        return f"{vehicle_cid}#{round_number}"
-
     def record_vehicle_sync(self, message: Mapping[str, Any], restoring: bool = False) -> None:
-        peer = str(message.get("peer", "unknown"))
-        if peer not in self.host.required_peers:
-            raise ProtocolError(f"vehicle sync report came from unexpected peer {peer}")
-        payload = vehicle_sync_payload(message.get("payload"))
-        if payload["state"] == "fault":
-            reason = f"vehicle-sync-local-fault:{peer}:{payload['vehicleCid']}:{payload['detail']}"
-            if restoring:
-                self._remember_vehicle_fault(reason)
-            else:
-                self._fault_vehicle_session(reason)
-            return
-        key = self._round_key(payload["vehicleCid"], payload["round"])
-        last_round = int(self.host.vehicle_sync_last_round.get(payload["vehicleCid"], 0))
-        tracker = self.host.vehicle_sync_rounds.get(key)
-        if tracker is None:
-            if payload["round"] != last_round + 1:
-                if payload["round"] <= last_round:
-                    return
-                reason = "vehicle-sync-round-gap:" + key
-                if restoring:
-                    self._remember_vehicle_fault(reason)
-                else:
-                    self._fault_vehicle_session(reason)
-                return
-            tracker = {
-                "vehicleCid": payload["vehicleCid"],
-                "lineCid": payload["lineCid"],
-                "round": payload["round"],
-                "stopIndex": payload["stopIndex"],
-                "requiredPeers": self.host.required_peers,
-                "held": {},
-                "released": {},
-                "status": "waiting-arrivals",
-                "deadline": time.monotonic() + self.VEHICLE_ROUND_TIMEOUT,
-            }
-            self.host.vehicle_sync_rounds[key] = tracker
-        if payload["lineCid"] != tracker["lineCid"] or payload["stopIndex"] != tracker["stopIndex"]:
-            reason = "vehicle-sync-stop-mismatch:" + key
-            if restoring:
-                self._remember_vehicle_fault(reason)
-            else:
-                self._fault_vehicle_session(reason)
-            return
-        bucket = tracker["held"] if payload["state"] == "held" else tracker["released"]
-        previous = bucket.get(peer)
-        if previous and (
-            previous["vehicleCid"] != payload["vehicleCid"]
-            or previous["lineCid"] != payload["lineCid"]
-            or previous["round"] != payload["round"]
-            or previous["stopIndex"] != payload["stopIndex"]
-            or previous["state"] != payload["state"]
-        ):
-            raise ProtocolError(f"peer {peer} sent conflicting vehicle sync reports")
-        bucket[peer] = payload
-        if payload["state"] == "held":
-            if tracker.get("status") in {"release-ordered", "complete"}:
-                return
-            if set(tracker["requiredPeers"]) <= set(tracker["held"]):
-                tracker["status"] = "ready-to-release"
-                if not restoring:
-                    self._maybe_emit_vehicle_release(tracker)
-        elif tracker.get("status") not in {"release-ordered", "complete"}:
-            reason = "vehicle-sync-release-before-authority:" + key
-            if restoring:
-                self._remember_vehicle_fault(reason)
-            else:
-                self._fault_vehicle_session(reason)
-        elif tracker.get("status") != "complete" \
-                and set(tracker["requiredPeers"]) <= set(tracker["released"]):
-            tracker["status"] = "complete"
-            tracker["completedAt"] = time.monotonic()
-            self.host.vehicle_sync_releases += 1
-            self.host.vehicle_sync_last_release = {
-                "vehicleCid": tracker["vehicleCid"],
-                "lineCid": tracker["lineCid"],
-                "round": tracker["round"],
-                "stopIndex": tracker["stopIndex"],
-                "releaseAtGameTime": tracker.get("releaseAtGameTime"),
-            }
-
-    def _maybe_emit_vehicle_release(self, tracker: dict[str, Any]) -> None:
-        if tracker.get("status") not in {"ready-to-release", "waiting-clock"}:
-            return
-        if self.host.clock_rendezvous:
-            tracker["status"] = "waiting-clock"
-            return
-        if float(self.host.clock_game_time_skew or 0.0) > self.CLOCK_SKEW_LIMIT \
-                and self.host.clock_effective_speed > 0:
-            tracker["status"] = "waiting-clock"
-            self.begin_rendezvous(
-                self.host.clock_requested_speed, self.host.clock_effective_speed,
-                "vehicle-release-clock-skew",
-            )
-            return
-        reports = [tracker["held"][peer] for peer in tracker["requiredPeers"]]
-        paused = self.host.clock_effective_speed == 0
-        release_time = max(float(item["gameTime"]) for item in reports)
-        samples = self._fresh_samples()
-        if not paused:
-            if samples:
-                release_time = max(release_time, *self._projected_game_times(samples))
-            release_time += self._guard_distance(samples or reports, 1.5)
-        action = {
-            "type": "vehicle.sync_release",
-            "vehicleCid": tracker["vehicleCid"],
-            "lineCid": tracker["lineCid"],
-            "round": tracker["round"],
-            "stopIndex": tracker["stopIndex"],
-            "releaseAtGameTime": release_time,
-            "releaseWhilePaused": paused,
-        }
-        message = self._emit_action(action, "vehicle_sync_control")
-        tracker["controlSeq"] = message["seq"]
-        tracker["status"] = "release-ordered"
-        tracker["releaseAtGameTime"] = release_time
-        tracker["releaseWhilePaused"] = paused
-        tracker["deadline"] = time.monotonic() + self.VEHICLE_ROUND_TIMEOUT
-        self.host.vehicle_sync_last_round[tracker["vehicleCid"]] = tracker["round"]
-        print(
-            f"vehicle sync release {tracker['vehicleCid']} round={tracker['round']} "
-            f"stop={tracker['stopIndex']} at gameTime={release_time:.3f}"
-        )
+        self.vehicle.record(message, restoring=restoring)
 
     def track_vehicle_release(self, commit: Mapping[str, Any]) -> None:
-        action = validate_action(commit.get("payload", {}).get("action"))
-        key = self._round_key(action["vehicleCid"], action["round"])
-        tracker = self.host.vehicle_sync_rounds.setdefault(key, {
-            "vehicleCid": action["vehicleCid"],
-            "lineCid": action["lineCid"],
-            "round": action["round"],
-            "stopIndex": action["stopIndex"],
-            "requiredPeers": self.host.required_peers,
-            "held": {},
-            "released": {},
-            "deadline": time.monotonic() + self.VEHICLE_ROUND_TIMEOUT,
-        })
-        tracker.update({
-            "controlSeq": int(commit["seq"]),
-            "status": "release-ordered",
-            "releaseAtGameTime": action["releaseAtGameTime"],
-            "releaseWhilePaused": action["releaseWhilePaused"],
-            "acks": tracker.get("acks", {}),
-        })
-        self.host.vehicle_sync_last_round[action["vehicleCid"]] = max(
-            int(self.host.vehicle_sync_last_round.get(action["vehicleCid"], 0)),
-            int(action["round"]),
-        )
+        self.vehicle.track_release(commit)
 
     def flush_vehicle_rounds(self) -> None:
-        for tracker in list(self.host.vehicle_sync_rounds.values()):
-            if tracker.get("status") in {"ready-to-release", "waiting-clock"}:
-                self._maybe_emit_vehicle_release(tracker)
+        self.vehicle.flush()
 
     def resolve_vehicle_ack(
         self, commit_seq: int, peer: str, success: bool, error: str,
         restoring: bool = False,
     ) -> None:
-        for tracker in self.host.vehicle_sync_rounds.values():
-            if int(tracker.get("controlSeq", -1)) != int(commit_seq):
-                continue
-            acknowledgements = tracker.setdefault("acks", {})
-            current = {"success": bool(success), "error": str(error)}
-            previous = acknowledgements.get(peer)
-            if previous and previous != current:
-                raise ProtocolError(f"peer {peer} sent conflicting vehicle release acknowledgements")
-            acknowledgements[peer] = current
-            if not success:
-                tracker["status"] = "faulted"
-                reason = f"vehicle-sync-release-rejected:{peer}:{tracker['vehicleCid']}:{error}"
-                if restoring:
-                    self._remember_vehicle_fault(reason)
-                else:
-                    self._fault_vehicle_session(reason)
-            return
-
-    def _remember_vehicle_fault(self, reason: str) -> None:
-        reason = str(reason)
-        if reason not in self.host.vehicle_sync_fault_reasons:
-            self.host.vehicle_sync_fault_reasons.add(reason)
-            self.host.vehicle_sync_faults += 1
-        self.host.session_fault = self.host.session_fault or reason
-        self.host.last_error = reason
-
-    def _fault_vehicle_session(self, reason: str) -> None:
-        self._remember_vehicle_fault(reason)
-        if not self.host.sync_fault_emitted:
-            self.host.sync_fault_emitted = True
-            self._emit_action({
-                "type": "network.sync_fault",
-                "scope": "vehicle",
-                "errorCode": str(reason)[:512],
-            }, "synchronization_fault")
-        self.emergency_pause(str(reason))
+        self.vehicle.resolve_ack(commit_seq, peer, success, error, restoring=restoring)
 
     def finalize_restore(self) -> None:
-        if self.host.session_fault and not self.host.sync_fault_emitted \
-                and str(self.host.session_fault).startswith("vehicle-sync-"):
-            self._fault_vehicle_session(str(self.host.session_fault))
+        self.vehicle.restore_fault()
         latest_clock = max(
             self.host.clock_controls.values(),
             key=lambda item: int(item.get("generation", 0)),
             default=None,
         )
+        latest_complete = max(
+            (
+                item for item in self.host.clock_controls.values()
+                if item.get("status") == "complete"
+            ),
+            key=lambda item: int(item.get("generation", 0)),
+            default=None,
+        )
+        if latest_complete:
+            self._set_pause_acknowledged(
+                int(latest_complete.get("effectiveSpeed", 0)) == 0,
+                int(latest_complete.get("generation", 0)),
+            )
         if latest_clock and latest_clock.get("status") == "faulted" \
                 and int(latest_clock.get("generation", -1)) == self.host.clock_generation:
             failed = sorted(
@@ -705,12 +674,15 @@ class SynchronizationCoordinator:
         active = self.host.clock_rendezvous
         if active and set(active["requiredPeers"]) <= set(active["reached"]):
             self._complete_rendezvous(active)
-        self.flush_vehicle_rounds()
+        self.vehicle.flush()
 
     def expire(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
+        protected_clock_seq = self._refresh_quiescent_pause(now)
         for tracker in list(self.host.clock_controls.values()):
             if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
+                if int(tracker.get("commitSeq", -1)) == protected_clock_seq:
+                    continue
                 tracker["status"] = "faulted"
                 missing = sorted(set(tracker["requiredPeers"]) - set(tracker["acks"]))
                 self.host.last_error = "clock-ack-timeout:" + ",".join(missing)
@@ -722,10 +694,4 @@ class SynchronizationCoordinator:
             active["status"] = "faulted"
             self.host.last_error = "clock-rendezvous-timeout:" + ",".join(missing)
             self.emergency_pause(self.host.last_error)
-        for tracker in list(self.host.vehicle_sync_rounds.values()):
-            if tracker.get("status") not in {"complete", "faulted"} \
-                    and now >= float(tracker["deadline"]):
-                tracker["status"] = "faulted"
-                self._fault_vehicle_session(
-                    f"vehicle-sync-timeout:{tracker['vehicleCid']}:{tracker['round']}"
-                )
+        self.vehicle.expire(now)

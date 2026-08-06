@@ -2,7 +2,14 @@
 
 Date: 2026-08-06 (Europe/Amsterdam)
 
-Implementation: prototype `0.21.2`, state schema `21`, checkpoint format `3`
+Implementation at live proof: prototype `0.21.2`, state schema `21`, checkpoint format `3`
+
+Superseding hardening: prototype `0.22.0-alpha`, state schema `22` integrates
+the demand departure schedule, normalizes barrier-managed lifecycle state,
+and adds load telemetry/pruning. See
+`STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md`. The live receipt
+below remains evidence for the earlier unscheduled barrier and is not silently
+relabelled as proof of the new scheduled path.
 
 Live status: railway purchase, assignment, peer visibility, and movement are
 human-observed on two Build 35924 processes. Session
@@ -76,7 +83,7 @@ binding has an assigned canonical `lineCid`.
    established at-terminal state; `stopIndex` identifies the line stop.
 2. On the first new terminal arrival it one-shot-authorizes native command tag
    8 and applies `setUserStopped(vehicle, true)`.
-3. Only a successful native hold emits a schema-1 `vehicle_sync` report with
+3. Only a successful native hold emits a `vehicle_sync` report with
    canonical vehicle/line identity, sequential round, stop index, game time,
    and engine tick.
 4. The host waits for the complete fixed peer roster. Vehicle, line, round, and
@@ -90,7 +97,9 @@ binding has an assigned canonical `lineCid`.
 7. Both peers report release. The next observed departure arms the following
    station round.
 
-Retries may update diagnostic time/tick fields but cannot change canonical
+The live-proven build used report schema 1. State schema 22 emits report schema
+2 with an explicit departure policy and host-reserved slot; its live gate is
+still owed. Retries may update diagnostic time/tick fields but cannot change canonical
 vehicle, line, round, stop, or state. A repeated held/released report cannot
 emit or count a second release. A release order is sequential and idempotent.
 

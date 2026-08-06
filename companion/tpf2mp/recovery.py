@@ -49,7 +49,9 @@ def analyse_recovery_anchor(audit_path: Path | str, session: str | None = None) 
                     agreed.append((seq, dict(action)))
                 else:
                     faults.append({"seq": seq, "type": action.get("type"), **dict(action)})
-            elif action.get("type") == "network.proposal_outcome" and action.get("success") is not True:
+            elif action.get("type") == "network.proposal_outcome" \
+                    and action.get("success") is not True \
+                    and action.get("recoverable") is not True:
                 faults.append({"seq": seq, "type": action.get("type"), **dict(action)})
         elif message.get("kind") == "record" and message.get("record_type") == "checkpoint":
             payload = verify_checkpoint(message.get("payload", {}))

@@ -1,5 +1,5 @@
 function data()
-  local minorVersion = 21
+  local minorVersion = 22
   local peerValues = { "player1 (host)", "player2 (client)" }
   local peerIds = { "player1", "player2" }
   local sessionValues = { "local-dev", "match-1", "match-2", "sync-lab" }

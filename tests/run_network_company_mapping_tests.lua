@@ -16,6 +16,7 @@ local players = {
 }
 local components = {
   BASE_NODE = {}, BASE_EDGE = {}, BASE_EDGE_TRACK = {}, BASE_EDGE_STREET = {}, PLAYER_OWNED = {},
+  LINE = {}, TRANSPORT_VEHICLE = {},
   CONSTRUCTION = {}, STATION = {}, STATION_GROUP = {}, VEHICLE_DEPOT = {},
   ASSET_GROUP = {}, SIGNAL_LIST = {},
 }
@@ -29,6 +30,10 @@ components.BASE_NODE[91] = { position = { x = 0, y = 0, z = 0 } }
 components.BASE_EDGE[92] = { node0 = 90, node1 = 91 }
 components.BASE_EDGE_TRACK[92] = { trackType = 0, catenary = false }
 components.PLAYER_OWNED[92] = { player = 100 }
+components.LINE[96] = { stops = {} }
+components.TRANSPORT_VEHICLE[97] = { line = 96, stopIndex = 0 }
+components.PLAYER_OWNED[96] = { player = 100 }
+components.PLAYER_OWNED[97] = { player = 100 }
 local nextPlayer = 100
 local buildGateEnables, commandGateEnables = 0, 0
 local buildGateEnabled, commandGateEnabled = false, false
@@ -389,9 +394,18 @@ assert(initialized.world.logicalOwners["90"] == "company:1"
   and initialized.world.logicalOwners["91"] == "company:1",
   "pre-existing private track endpoints were not assigned canonical custody")
 assert(initialized.world.initialNetworkOwnership
-  and initialized.world.initialNetworkOwnership.companies["company:1"].total == 1
+  and initialized.world.initialNetworkOwnership.companies["company:1"].total == 3
   and initialized.world.initialNetworkOwnership.trackedNodes == 2,
   "starting-save ownership manifest did not capture the pre-existing track")
+assert(components.PLAYER_OWNED[92].player == 100,
+  "network bootstrap called the invalid legacy BASE_EDGE owner setter")
+assert(components.PLAYER_OWNED[96].player == 101
+    and components.PLAYER_OWNED[97].player == 101,
+  "player2 retained remote Company 1 line/vehicle in its stock managers")
+assert(initialized.lastResult and initialized.lastResult.nativeOwnershipProjection
+    and initialized.lastResult.nativeOwnershipProjection.projected == 2
+    and initialized.lastResult.nativeOwnershipProjection.retainedEdges == 1,
+  "network match did not report its native manager ownership projection")
 local initialTrack
 for _, object in ipairs(initialized.probes.structural.objects or {}) do
   if object.cid and object.kind == "edge" then initialTrack = object; break end
@@ -1389,6 +1403,112 @@ do
   script.load(savedState)
   assert(script.save().world.operationConsensus.sessionFault == nil,
     "a reload with no outstanding custody must not fault")
+end
+
+-- A native proposal that every peer rejects without outputs or a core change
+-- is a rejected user action, not a divergent session. The ordered rejection
+-- must close its own checkpoint and leave subsequent construction enabled.
+do
+  local proposalId = "network-company-map:player2:999"
+  local proposalDigest = "a1b2c3d4"
+  local resultDigest = "b1c2d3e4"
+  local coreDigest = "c1d2e3f4"
+  local savedState = script.save()
+  savedState.world.proposals.byId[proposalId] = {
+    proposalId = proposalId,
+    commitSeq = 999,
+    companyCid = "company:2",
+    transaction = { digest = proposalDigest },
+    status = "failed",
+    completion = {
+      proposalId = proposalId,
+      commitSeq = 999,
+      proposalDigest = proposalDigest,
+      success = false,
+      outputs = {},
+      resultDigest = resultDigest,
+      coreDigest = coreDigest,
+      errorCode = "native-proposal-failed",
+    },
+  }
+  script.load(savedState)
+  script.update()
+  local loadedCompletion = assert(script.save().world.proposals.byId[proposalId].completion,
+    "reloaded failed proposal did not retain a completion report")
+  resultDigest = loadedCompletion.resultDigest
+  coreDigest = loadedCompletion.coreDigest
+  writeOrdered(42, "control", "player1", {
+    type = "network.proposal_outcome",
+    proposalId = proposalId,
+    commitSeq = 999,
+    proposalDigest = proposalDigest,
+    success = false,
+    recoverable = true,
+    resultDigest = resultDigest,
+    coreDigest = coreDigest,
+    errorCode = "native-proposal-rejected",
+    peers = { "player1", "player2" },
+  })
+  script.update()
+  local rejected = script.save()
+  local outcome = rejected.world.proposalConsensus.byId[proposalId]
+  assert(outcome and outcome.status == "rejected" and outcome.recoverable == true
+      and rejected.world.proposalConsensus.rejected == 1
+      and rejected.world.proposalConsensus.failed == 0
+      and rejected.world.proposalConsensus.sessionFault == nil,
+    "identical no-residue native rejection faulted the Lua session: " .. json.encode({
+      outcome = outcome,
+      fault = rejected.world.proposalConsensus.sessionFault,
+      record = rejected.world.proposals.byId[proposalId],
+    }))
+  assert(rejected.world.checkpointConsensus.byBoundary["42"]
+      and rejected.world.checkpointConsensus.byBoundary["42"].reason
+        == "physical-rejection:" .. proposalId,
+    "recoverable native rejection did not open a convergence checkpoint")
+  writeCheckpointConsensus(43, rejected, 42)
+  script.update()
+  local recovered = script.save()
+  assert(recovered.world.checkpointConsensus.byBoundary["42"].status == "complete"
+      and recovered.world.checkpointConsensus.sessionFault == nil,
+    "recoverable native rejection did not close its convergence checkpoint")
+
+  local residueId = "network-company-map:player2:1000"
+  recovered.world.proposals.byId[residueId] = {
+    proposalId = residueId,
+    commitSeq = 1000,
+    companyCid = "company:2",
+    transaction = { digest = proposalDigest },
+    status = "failed",
+    completion = {
+      proposalId = residueId,
+      commitSeq = 1000,
+      proposalDigest = proposalDigest,
+      success = false,
+      outputs = { { kind = "edge", cid = "edge:residue", slot = "edge:1" } },
+      resultDigest = resultDigest,
+      coreDigest = coreDigest,
+      errorCode = "native-proposal-failed",
+    },
+  }
+  writeOrdered(44, "control", "player1", {
+    type = "network.proposal_outcome",
+    proposalId = residueId,
+    commitSeq = 1000,
+    proposalDigest = proposalDigest,
+    success = false,
+    recoverable = true,
+    resultDigest = resultDigest,
+    coreDigest = coreDigest,
+    errorCode = "native-proposal-rejected",
+    peers = { "player1", "player2" },
+  })
+  script.update()
+  local residueFault = script.save().world.proposalConsensus.sessionFault
+  assert(residueFault and residueFault.status == "faulted"
+      and residueFault.errorCode == "recoverable-rejection-does-not-match-local-completion"
+      and script.save().world.proposalConsensus.rejected == 1
+      and script.save().world.proposalConsensus.failed == 1,
+    "a rejected proposal with local outputs was incorrectly treated as recoverable")
 end
 
 print("PASS network signals, depots, arbitrary constructions, station editing/removal, ownership, finance, and consensus")

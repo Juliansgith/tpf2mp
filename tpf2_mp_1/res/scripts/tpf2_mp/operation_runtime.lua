@@ -441,6 +441,12 @@ function M.new(env)
     record.status = "applied"
     record.completedTick = currentState().tick
     record.result = util.deepCopy(result)
+    -- Standalone has no consensus outcome to hang auto-registration on, so a
+    -- completed local operation is itself the trigger. Network mode registers
+    -- after both peers agree, in the operation-outcome handler.
+    if currentState().networkMode ~= "network" and env.autoRegisterLine then
+      pcall(env.autoRegisterLine, record.transaction, output and output.cid or nil)
+    end
     currentState().world.operations.applied = (currentState().world.operations.applied or 0) + 1
     currentState().probes.capture.operationReplayCount =
       (currentState().probes.capture.operationReplayCount or 0) + 1

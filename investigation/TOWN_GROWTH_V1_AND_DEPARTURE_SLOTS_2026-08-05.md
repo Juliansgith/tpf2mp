@@ -2,8 +2,9 @@
 
 Date: 2026-08-05 (Europe/Amsterdam)  
 Scope: towns now grow as a deterministic consequence of ordered settlements,
-and departure slots exist as a pure computation whose enforcement mode is
-deliberately gated on the agents-off pivot decision.
+and departure slots were introduced as a pure computation. Their subsequent
+station-barrier enforcement is recorded in
+`STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md`.
 
 ## Town growth v1: growth is a consequence of the settlement
 
@@ -43,30 +44,20 @@ construction-event layer from the agents-off design); native command tags
 20/21 remain ungated in the hook — acceptable for trusted sessions, listed
 as a required gate before town commands are considered adversary-safe.
 
-## Departure slots: computation now, enforcement after the pivot
+## Departure slots: original foundation and later enforcement
 
-`departureSlots(service, gameTimeSeconds)` assigns each line a stable phase
+`departureSlots(service, gameTimeSeconds, stopIndex)` assigns each line a stable phase
 (adler32 of its canonical id modulo its headway) and returns the period,
 phase, next departure time, and hold duration — pure integer arithmetic on
 digested facts plus the shared clock, strictly future-dated, advancing by
 exactly one period.
 
-Enforcement is deliberately not built. Holding a vehicle uses
-`setUserStopped` (the Timetables mod's five-year-proven mechanism, already
-modeled as the canonical `vehicle.stop` operation), but under the current
-architecture `userStopped` is lifecycle-digest material: per-departure
-ordered operations would serialize every train through physical-consensus
-and checkpoint barriers, and locally issued holds would flap the digest.
-The two coherent enforcement modes are:
-
-- after the agents-off pivot reclassifies vehicle state as per-peer
-  presentation: local hold/release from the shared slot table, free;
-- without the pivot: reclassify `userStopped` out of the lifecycle digest
-  into phase state with a tolerance, then locally enforce.
-
-Either way the slot table is the shared source of truth, and it doubles as
-the enforced-headway input the demand model wants. This is recorded so the
-pivot decision consciously owns it.
+State schema 22 implements the second option identified here: canonical manual
+stop intent remains lifecycle authority, native barrier-managed `userStopped`
+is diagnostic, and the host station barrier enforces concrete slots from the
+same policy. This closes the two-scheduler gap without waiting for agents-off.
+The later audit also adds per-stop phase offsets, durable slot reservations,
+strict cross-language validation, pruning, and load telemetry.
 
 ## Tests
 

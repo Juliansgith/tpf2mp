@@ -148,6 +148,7 @@ function M.new(env)
       },
       proposalConsensus = {
         completed = currentState().world.proposalConsensus.completed or 0,
+        rejected = currentState().world.proposalConsensus.rejected or 0,
         failed = currentState().world.proposalConsensus.failed or 0,
         pending = (function()
           local count = 0
