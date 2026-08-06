@@ -15,6 +15,7 @@ local world = require "tpf2_mp/world"
 local guiView = require "tpf2_mp/gui_view"
 local presentation = require "tpf2_mp/presentation"
 local nativeHook = require "tpf2_mp/native_hook"
+local matchRuntimeModule = require "tpf2_mp/match_runtime"
 
 local tests, passed = {}, 0
 
@@ -41,6 +42,46 @@ test("canonical JSON and cross-language checksum", function()
   local decoded = json.decode(encoded)
   equal(decoded.a, "x")
   equal(decoded.b, 2)
+end)
+
+test("match runtime preserves ranking and bankruptcy precedence", function()
+  local originalScoreboard = economy.scoreboard
+  local ok, failure = xpcall(function()
+    economy.scoreboard = function()
+      return {
+        ["company:1"] = {
+          companyCid = "company:1", modelValueCents = 100,
+          settledRevenueCents = 50, settledDemand = 10, marketWins = 1,
+        },
+        ["company:2"] = {
+          companyCid = "company:2", modelValueCents = 200,
+          settledRevenueCents = 60, settledDemand = 12, marketWins = 2,
+        },
+      }
+    end
+    local state = {
+      initialized = true,
+      tick = 77,
+      match = { status = "running", rules = {} },
+      companies = { ["company:1"] = {}, ["company:2"] = {} },
+      companyOrder = { "company:1", "company:2" },
+      economy = { epoch = 0 },
+      probes = { bankruptCid = "company:2" },
+    }
+    local runtime = matchRuntimeModule.new({ getState = function() return state end })
+    local winnerCid, ranked = runtime.rankedWinner()
+    equal(winnerCid, "company:2")
+    equal(ranked[1].companyCid, "company:2")
+    local result = runtime.evaluateEnd()
+    equal(result.match.finishReason, "bankruptcy")
+    equal(result.match.winnerCid, "company:1")
+    equal(result.match.finishedTick, 77)
+    local running, runningError = runtime.requireRunning()
+    equal(running, false)
+    equal(runningError, "match is not running")
+  end, debug.traceback)
+  economy.scoreboard = originalScoreboard
+  if not ok then error(failure, 0) end
 end)
 
 test("mod command origins are synchronous and always restored", function()
@@ -2088,6 +2129,65 @@ test("solvency state is digest-projected so peers agree on who is failing", func
   local view = finance.networkDigestView(state)
   equal(view.accounts["company:1"].insolventSettlements, 1)
   truthy(view.accounts["company:1"].creditLimit > 0)
+end)
+
+test("development points accumulate, spend in whole buildings, and stay bounded", function()
+  local worldState = {}
+  local constants = world.TOWN_DEVELOPMENT
+  -- A quiet corridor banks progress instead of losing it.
+  local none = world.accumulateDevelopment(worldState, { ["town:a"] = 150 })
+  equal(next(none), nil, "a trickle of demand must not yet buy a building")
+  equal(worldState.townDevelopmentPoints["town:a"], 150)
+
+  local due = world.accumulateDevelopment(worldState, { ["town:a"] = 300 })
+  equal(due["town:a"], 1, "accumulated points buy exactly one building")
+  equal(worldState.townDevelopmentPoints["town:a"], 50, "the remainder carries forward")
+
+  -- A boom is capped so one settlement cannot flood a town.
+  local boom = world.accumulateDevelopment(worldState, { ["town:a"] = 100000 })
+  equal(boom["town:a"], constants.maxCallsPerSettle)
+  truthy(worldState.townDevelopmentPoints["town:a"] <= constants.maxPointsCarried,
+    "the accumulator must stay bounded")
+
+  local repeated = world.accumulateDevelopment({}, { ["town:a"] = 800 })
+  equal(repeated["town:a"], 2, "the same input always produces the same batch")
+end)
+
+test("ordered town development issues one native call per due building", function()
+  local previousApi, previousGame = api, game
+  local calls = {}
+  api = { cmd = {
+    make = { developTown = function(townId) return { townId = townId } end },
+    sendCommand = function(command, callback)
+      calls[#calls + 1] = command.townId
+      if callback then callback(command, true) end
+    end,
+  } }
+  game = { interface = {} }
+  local registry = canonical.newState()
+  registry.byCanonical["town:pre:alpha"] = { localId = 71, kind = "town" }
+  registry.byLocal["71"] = "town:pre:alpha"
+  local outcome = world.applyTownDevelopment(registry, { ["town:pre:alpha"] = 2 })
+  api, game = previousApi, previousGame
+  equal(outcome.towns, 1)
+  equal(outcome.calls, 2, "two due buildings means two native calls")
+  equal(#calls, 2)
+  equal(calls[1], 71)
+  equal(#outcome.errors, 0)
+end)
+
+test("town development reports unmapped towns instead of guessing", function()
+  local previousApi, previousGame = api, game
+  api = { cmd = {
+    make = { developTown = function(townId) return { townId = townId } end },
+    sendCommand = function(_, callback) if callback then callback({}, true) end end,
+  } }
+  game = { interface = {} }
+  local outcome = world.applyTownDevelopment(canonical.newState(), { ["town:missing"] = 1 })
+  api, game = previousApi, previousGame
+  equal(outcome.calls, 0)
+  truthy(#outcome.errors == 1 and outcome.errors[1]:find("not mapped locally"),
+    "an unmapped town must be reported, not silently developed")
 end)
 
 test("crowd icons bucket by magnitude", function()

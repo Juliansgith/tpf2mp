@@ -73,6 +73,9 @@ function data()
         { key = "startingCash", name = "Company starting cash", values = { "5 million", "10 million", "20 million" }, defaultIndex = 0 },
         { key = "epochLimit", name = "Match length (settlement epochs)", values = { "Unlimited", "12", "24", "48" }, defaultIndex = 2 },
         { key = "valuationTarget", name = "Victory model value", values = { "Disabled", "$250k", "$500k", "$1m" }, defaultIndex = 2 },
+        { key = "townDevelopment", name = "Physical town growth (experimental)",
+          values = { "Off (capacities only)", "On (ordered native development)" },
+          defaultIndex = 0 },
         { key = "bankruptcy", name = "Bankruptcy elimination",
           values = { "On (3 insolvent settlements)", "Off (build together)", "Harsh (1 settlement)" },
           defaultIndex = 0 },
@@ -165,6 +168,7 @@ function data()
       -- Loss conditions are a match setting. "Off" keeps credit and interest
       -- meaningful but never eliminates anyone, which is the build-together
       -- session people ask for.
+      cfg.townDevelopment = tonumber(selected.townDevelopment) == 1
       local bankruptcyChoice = tonumber(selected.bankruptcy) or 0
       cfg.bankruptcyEnabled = bankruptcyChoice ~= 1
       cfg.insolventSettlements = bankruptcyChoice == 2 and 1 or 3

@@ -26,6 +26,7 @@ local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
+local matchRuntimeModule = require "tpf2_mp/match_runtime"
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
@@ -43,6 +44,11 @@ local function newState()
   })
 end
 local state = newState()
+local matchRuntime = matchRuntimeModule.new({ getState = function() return state end })
+local rankedWinner = matchRuntime.rankedWinner
+local finishMatch = matchRuntime.finish
+local evaluateMatchEnd = matchRuntime.evaluateEnd
+local requireRunningMatch = matchRuntime.requireRunning
 -- Machine-local GUI result IDs live only long enough for the engine to apply a
 -- sanitized proposal.finalise event. They are never serialized into the
 -- portable action, checkpoint, or network protocol.
@@ -822,63 +828,6 @@ local function seedDemo()
   return true, preview
 end
 
-local function rankedWinner()
-  local scores = economy.scoreboard(state.economy, state.companies)
-  local ranked = {}
-  for _, cid in ipairs(util.sortedKeys(scores)) do ranked[#ranked + 1] = scores[cid] end
-  table.sort(ranked, function(a, b)
-    if a.modelValueCents ~= b.modelValueCents then return a.modelValueCents > b.modelValueCents end
-    if a.settledRevenueCents ~= b.settledRevenueCents then return a.settledRevenueCents > b.settledRevenueCents end
-    if a.settledDemand ~= b.settledDemand then return a.settledDemand > b.settledDemand end
-    if a.marketWins ~= b.marketWins then return a.marketWins > b.marketWins end
-    return a.companyCid < b.companyCid
-  end)
-  return ranked[1] and ranked[1].companyCid or nil, ranked
-end
-
-local function finishMatch(reason, winnerCid)
-  if not state.initialized then return false, "initialise the match first" end
-  if state.match.status == "finished" then return false, "match is already finished" end
-  if winnerCid ~= nil and not state.companies[winnerCid] then return false, "unknown winner company" end
-  local rankedWinnerCid, ranked = rankedWinner()
-  state.match.status = "finished"
-  state.match.finishedTick = state.tick
-  state.match.finishReason = tostring(reason or "manual")
-  state.match.winnerCid = winnerCid or rankedWinnerCid
-  return true, { match = util.deepCopy(state.match), ranking = ranked }
-end
-
-local function evaluateMatchEnd()
-  if state.match.status ~= "running" then return nil end
-  local rules = state.match.rules or {}
-  local winnerCid, ranked = rankedWinner()
-  local leader = ranked[1]
-  local reason
-  -- Bankruptcy outranks the scoring conditions: a company that cannot fund
-  -- itself has lost regardless of who was ahead on model value.
-  local bankruptCid = state.probes.bankruptCid
-  if bankruptCid then
-    reason = "bankruptcy"
-    for _, candidate in ipairs(state.companyOrder or {}) do
-      if candidate ~= bankruptCid then winnerCid = candidate; break end
-    end
-  elseif util.integer(rules.valuationTargetCents, 0) > 0
-    and leader and leader.modelValueCents >= util.integer(rules.valuationTargetCents, 0) then
-    reason = "valuation-target"
-  elseif util.integer(rules.maxEpochs, 0) > 0 and state.economy.epoch >= util.integer(rules.maxEpochs, 0) then
-    reason = "epoch-limit"
-  end
-  if not reason then return nil end
-  local ok, result = finishMatch(reason, winnerCid)
-  return ok and result or nil
-end
-
-local function requireRunningMatch()
-  if not state.initialized then return false, "initialise the match first" end
-  if state.match.status ~= "running" then return false, "match is not running" end
-  return true
-end
-
 local function proposalResourceName(kind, index)
   local repository = api and api.res and (kind == "street" and api.res.streetTypeRep
     or (kind == "track" and api.res.trackTypeRep
@@ -1501,38 +1450,24 @@ handlers["network.checkpoint_outcome"] = function(action)
   return success, util.deepCopy(record)
 end
 
--- Registration is automatic: any operation that changes a line's shape or its
--- vehicle set makes the owning peer re-derive that line's competitive facts.
--- The player never asks for a market; running a service is the request.
-local AUTO_REGISTER_KINDS = {
-  ["line.create"] = "targetCid",
-  ["line.update"] = "targetCid",
-  ["vehicle.assign"] = "lineCid",
-}
-
 autoRegisterLineFor = function(transaction, outputCid)
-  if type(transaction) ~= "table" then return end
-  local field = AUTO_REGISTER_KINDS[transaction.kind]
-  if not field then return end
-  local lineCid = transaction.data and transaction.data[field] or nil
-  if transaction.kind == "line.create" then lineCid = outputCid end
-  if type(lineCid) ~= "string" or lineCid == "" then return end
-  local companyCid = transaction.companyCid
-  if state.economy.services[lineCid]
-    and state.economy.services[lineCid].companyCid ~= companyCid then return end
-  -- Only the owning peer derives and carries the facts; every other peer
-  -- applies the ordered result, exactly like a manual registration.
-  if state.networkMode == "network" and activeCompany() ~= companyCid then return end
-  local localId = canonical.resolveLocal(state.canonical, lineCid)
-  if not localId then return end
-  local queued, queueError = pcall(submitIntent, {
-    type = "line.register", lineCid = lineCid, companyCid = companyCid,
+  return world.autoRegisterLine(state, transaction, outputCid, {
+    activeCompany = activeCompany, submit = submitIntent, log = diagnosticLog,
   })
-  if not queued then
-    diagnosticLog("auto-register-failed", {
-      lineCid = lineCid, error = tostring(queueError), tick = state.tick,
-    })
-  end
+end
+
+-- Ordered physical town growth. The batch is computed by the host from the
+-- settlement it just ordered and carried on this action, so both peers make
+-- the identical development calls. Whether the native results then agree is
+-- exactly what the structural digest already measures.
+handlers["town.develop"] = function(action)
+  local running, runningError = requireRunningMatch()
+  if not running then return false, runningError end
+  return true, util.deepCopy(world.runOrderedDevelopment(
+    state, type(action.batch) == "table" and action.batch or {},
+    function()
+      return world.structuralSnapshot(state.canonical, state.world, state.companies)
+    end, diagnosticLog))
 end
 
 handlers["line.register"] = function(action)
@@ -1599,6 +1534,12 @@ handlers["economy.settle"] = function(action, eventId)
   -- verifies convergence. Fail-soft and recorded, never digest material.
   local grew, growth = pcall(world.applyTownGrowth, state.canonical, state.economy, results)
   state.probes.townGrowth = grew and growth or { errors = { tostring(growth) } }
+  -- Carried demand also buys buildings. The host turns accumulated growth
+  -- points into an ordered development batch so both peers make identical
+  -- native calls; whether the results agree is what the structural digest
+  -- measures. Only the host emits, and only when something is actually due.
+  world.settleDevelopment(state, results, state.economy, config(),
+    submitIntent, function(...) return applyCommitted(...) end)
   -- Credit interest and solvency are part of settling, so capital committed
   -- to a losing corridor eventually costs the match rather than merely
   -- costing money. Deterministic over authored state on every peer.
@@ -2719,6 +2660,11 @@ local function normaliseForNetwork(action)
     if state.bridge.peerId ~= "player1" then return nil, "only the host peer can settle the authoritative economy" end
     local preview = util.deepCopy(state.economy)
     copy.results = economy.evaluateAll(preview)
+  elseif copy.type == "town.develop" then
+    if state.bridge.peerId ~= "player1" then return nil, "only the host peer can order town development" end
+    if type(copy.batch) ~= "table" or next(copy.batch) == nil then
+      return nil, "town development order carries no towns"
+    end
   elseif copy.type == "probe.mobility" then
     if state.bridge.peerId ~= "player1" then return nil, "only the host peer can request an ordered mobility sample" end
   end

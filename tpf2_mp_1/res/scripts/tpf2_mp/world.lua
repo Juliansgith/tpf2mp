@@ -1412,6 +1412,12 @@ local corridorBinding = corridorBindingModule.new({
 M.computedServiceFacts = corridorBinding.computedServiceFacts
 M.makeLineService = corridorBinding.makeLineService
 M.applyTownGrowth = corridorBinding.applyTownGrowth
+M.applyTownDevelopment = corridorBinding.applyTownDevelopment
+M.runOrderedDevelopment = corridorBinding.runOrderedDevelopment
+M.settleDevelopment = corridorBinding.settleDevelopment
+M.autoRegisterLine = corridorBinding.autoRegisterLine
+M.accumulateDevelopment = corridorBindingModule.accumulateDevelopment
+M.TOWN_DEVELOPMENT = corridorBindingModule.TOWN_DEVELOPMENT
 
 M.townCapacity = townCapacity
 

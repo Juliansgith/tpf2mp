@@ -147,6 +147,10 @@ function M.read(options)
     -- Loss conditions are match settings; the defaults come from the mod
     -- parameters and any of them can be switched off for a build-together
     -- session that only compares company value at the end.
+    -- Physical town development is an experiment: it lets vanilla choose
+    -- lots and relies on the structural digest to say whether the two
+    -- worlds agreed. Off by default until a live run answers that.
+    townDevelopment = source.townDevelopment == true,
     bankruptcyEnabled = source.bankruptcyEnabled ~= false,
     insolventSettlements = util.integer(source.insolventSettlements, 3),
     creditBaseLimitCents = util.integer(source.creditBaseLimitCents, 500000000),

@@ -27,6 +27,7 @@ NETWORK_ACTIONS = {
     "vehicle.sync_release",
     "network.sync_fault",
     "recovery.save_receipt",
+    "town.develop",
     "proposal.prepare",
     "proposal.build",
     "operation.execute",
@@ -1344,6 +1345,21 @@ def validate_action(action: Any) -> dict[str, Any]:
             or action["releaseWhilePaused"]
         ):
             raise ProtocolError("scheduled vehicle release time/pause mode is inconsistent")
+    if action_type == "town.develop":
+        # The host's development batch: canonical town ids to a small whole
+        # number of native development calls. Bounded so a malformed or
+        # runaway batch cannot flood either world with buildings.
+        if set(action) - {"type", "batch"} or "batch" not in action:
+            raise ProtocolError("town.develop has unknown or missing fields")
+        batch = action["batch"]
+        if not isinstance(batch, Mapping) or not batch or len(batch) > 512:
+            raise ProtocolError("town.develop batch is empty or too large")
+        for town_cid, calls in batch.items():
+            if not isinstance(town_cid, str) or not town_cid.startswith("town:") \
+                    or len(town_cid) > 320:
+                raise ProtocolError("town.develop batch has an invalid town id")
+            if not isinstance(calls, int) or isinstance(calls, bool) or not 1 <= calls <= 8:
+                raise ProtocolError("town.develop call count is out of range")
     if action_type == "recovery.save_receipt":
         # A peer declaring "I wrote a native save of this exact agreed
         # boundary, while paused, with nothing ordered since". The claim is

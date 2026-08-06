@@ -148,6 +148,48 @@ function M.townGrowthTargets(carriedByTown, currentCapacities)
   return targets
 end
 
+-- Physical town growth, as an experiment that reports rather than assumes.
+--
+-- Capacity growth (above) is deterministic and already converges, but a town
+-- whose capacity rises without gaining buildings still looks frozen, and
+-- frozen towns are the thing testers object to by name. The cheapest honest
+-- route is to let the game's own development logic choose lots and to order
+-- only *when* it runs: the host emits one ordered `town.develop`, both peers
+-- apply it, and the existing structural digest then says whether native
+-- growth is deterministic enough to keep.
+--
+-- If it converges, visible growth costs almost nothing. If it diverges, the
+-- structural comparison says so on the first attempt and authored placement
+-- through the construction pipeline becomes the plan. Either way the answer
+-- comes from one live session instead of a guess.
+M.TOWN_DEVELOPMENT = {
+  pointsPerBuilding = 400,    -- carried passengers behind one development call
+  maxCallsPerSettle = 2,      -- per town, so a boom cannot flood a world
+  maxPointsCarried = 4000,    -- accumulator ceiling
+}
+
+-- Growth points accumulate per town from carried demand and are spent in
+-- whole buildings, so a quiet corridor still eventually grows its towns and
+-- a busy one does not grow without bound.
+function M.accumulateDevelopment(worldState, carriedByTown)
+  local constants = M.TOWN_DEVELOPMENT
+  local pending = worldState.townDevelopmentPoints or {}
+  local due = {}
+  for _, townCid in ipairs(util.sortedKeys(carriedByTown or {})) do
+    local total = math.min(constants.maxPointsCarried,
+      util.integer(pending[townCid], 0) + util.integer(carriedByTown[townCid], 0))
+    local calls = math.min(constants.maxCallsPerSettle,
+      math.floor(total / constants.pointsPerBuilding))
+    if calls > 0 then
+      due[townCid] = calls
+      total = total - calls * constants.pointsPerBuilding
+    end
+    pending[townCid] = total
+  end
+  worldState.townDevelopmentPoints = pending
+  return due
+end
+
 -- Canonical schedule policy consumed by the station barrier. The base phase
 -- belongs to the line; each stop receives a deterministic journey offset so
 -- termini do not accidentally share one departure instant. The host reserves
@@ -223,6 +265,106 @@ function M.new(deps)
   -- peer runs this with identical results/state, issues identical native
   -- setTownInfo commands, and the structural probe verifies convergence.
   -- Fail-soft: an unavailable factory or unmapped town skips with a record.
+  -- Applies one ordered development batch. Every peer runs the identical
+  -- call sequence; the structural probe then decides whether the native
+  -- results agreed. Fail-soft with a recorded outcome, because an
+  -- unavailable factory must not fault a session that is otherwise healthy.
+  function binding.applyTownDevelopment(registry, batch)
+    local outcome = { towns = 0, calls = 0, errors = {} }
+    local factory = util.commandFactory("developTown")
+    if not factory then
+      outcome.errors[#outcome.errors + 1] = "developTown command factory is unavailable"
+      return outcome
+    end
+    for _, townCid in ipairs(util.sortedKeys(batch or {})) do
+      local localId = resolveLocal(registry, townCid)
+      if not localId then
+        outcome.errors[#outcome.errors + 1] = "town is not mapped locally: " .. tostring(townCid)
+      else
+        outcome.towns = outcome.towns + 1
+        for _ = 1, math.max(0, util.integer(batch[townCid], 0)) do
+          local made, commandOrError = pcall(factory, localId)
+          local ok, err = false, commandOrError
+          if made then
+            ok, err = util.sendCommand(commandOrError, nil, "mod.world.town-development")
+          end
+          if ok then outcome.calls = outcome.calls + 1
+          else outcome.errors[#outcome.errors + 1] = tostring(err) end
+        end
+      end
+    end
+    return outcome
+  end
+
+  -- Registration is automatic: any operation that changes a line's shape or
+  -- its vehicle set makes the owning peer re-derive that line's competitive
+  -- facts. The player never asks for a market; running a service is the ask.
+  local AUTO_REGISTER_KINDS = {
+    ["line.create"] = "targetCid",
+    ["line.update"] = "targetCid",
+    ["vehicle.assign"] = "lineCid",
+  }
+
+  function binding.autoRegisterLine(state, transaction, outputCid, deps)
+    if type(transaction) ~= "table" then return end
+    local field = AUTO_REGISTER_KINDS[transaction.kind]
+    if not field then return end
+    local lineCid = transaction.data and transaction.data[field] or nil
+    if transaction.kind == "line.create" then lineCid = outputCid end
+    if type(lineCid) ~= "string" or lineCid == "" then return end
+    local companyCid = transaction.companyCid
+    local existing = state.economy.services[lineCid]
+    if existing and existing.companyCid ~= companyCid then return end
+    -- Only the owning peer derives and carries the facts; every other peer
+    -- applies the ordered result, exactly like a manual registration.
+    if state.networkMode == "network" and deps.activeCompany() ~= companyCid then return end
+    if not resolveLocal(state.canonical, lineCid) then return end
+    local queued, queueError = pcall(deps.submit, {
+      type = "line.register", lineCid = lineCid, companyCid = companyCid,
+    })
+    if not queued and deps.log then
+      deps.log("auto-register-failed", {
+        lineCid = lineCid, error = tostring(queueError), tick = state.tick,
+      })
+    end
+  end
+
+  -- Applies an ordered batch and refreshes the structural probe so the next
+  -- checkpoint compares the world these calls produced, not the one before.
+  function binding.runOrderedDevelopment(state, batch, structuralSnapshot, log)
+    local applied, outcome = pcall(binding.applyTownDevelopment, state.canonical, batch)
+    state.probes.townDevelopment = applied and outcome or { errors = { tostring(outcome) } }
+    state.probes.townDevelopment.batch = util.deepCopy(batch)
+    state.probes.structural = structuralSnapshot()
+    state.probes.townDevelopment.structuralDigest = state.probes.structural
+      and state.probes.structural.digest or nil
+    if log then
+      log("town-development", {
+        towns = state.probes.townDevelopment.towns,
+        calls = state.probes.townDevelopment.calls,
+        structuralDigest = state.probes.townDevelopment.structuralDigest,
+        tick = state.tick,
+      })
+    end
+    return state.probes.townDevelopment
+  end
+
+  -- Turns a settlement's carried demand into an ordered development batch on
+  -- the host, or applies it directly when there is no ordering to do.
+  function binding.settleDevelopment(state, results, economyState, cfg, submit, apply)
+    if not cfg.townDevelopment then return nil end
+    local carried = M.carriedByTown(results, economyState.markets)
+    local due = M.accumulateDevelopment(state.world, carried)
+    if next(due) == nil then return nil end
+    if state.networkMode == "network" then
+      if state.bridge.peerId ~= "player1" then return nil end
+      pcall(submit, { type = "town.develop", batch = due })
+    else
+      apply({ type = "town.develop", batch = due }, state.bridge.peerId, nil)
+    end
+    return due
+  end
+
   function binding.applyTownGrowth(registry, economyState, results)
     local outcome = { towns = 0, skipped = 0, errors = {} }
     local carriedByTown = M.carriedByTown(results, economyState.markets)
