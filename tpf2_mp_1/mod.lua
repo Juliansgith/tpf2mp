@@ -1,5 +1,12 @@
+-- Loaded defensively: a mod whose entry point throws does not load at all,
+-- and losing the whole multiplayer mod to a module path problem would be a
+-- far worse failure than running the vanilla crowd. Absence therefore
+-- degrades to the vanilla policy rather than a partial one.
+local presentationOk, presentation = pcall(require, "tpf2_mp/presentation")
+
 function data()
   local minorVersion = 22
+  local agentModeKeys = { "skeleton", "vanilla", "empty" }
   local peerValues = { "player1 (host)", "player2 (client)" }
   local peerIds = { "player1", "player2" }
   local sessionValues = { "local-dev", "match-1", "match-2", "sync-lab" }
@@ -66,6 +73,12 @@ function data()
         { key = "startingCash", name = "Company starting cash", values = { "5 million", "10 million", "20 million" }, defaultIndex = 0 },
         { key = "epochLimit", name = "Match length (settlement epochs)", values = { "Unlimited", "12", "24", "48" }, defaultIndex = 2 },
         { key = "valuationTarget", name = "Victory model value", values = { "Disabled", "$250k", "$500k", "$1m" }, defaultIndex = 2 },
+        { key = "agentMode", name = "Native crowd simulation",
+          values = {
+            "Skeleton crew (recommended)",
+            "Full vanilla population",
+            "None (fastest)",
+          }, defaultIndex = 0 },
         { key = "liveValidator", name = "Developer disposable-world validator", values = { "Off", "Run once" }, defaultIndex = 0 },
       },
     },
@@ -143,6 +156,62 @@ function data()
       -- A paused simulation can stop engine-script updates on some builds. The
       -- unattended validator therefore keeps the disposable test game moving.
       if cfg.autoValidate then cfg.pauseOnSwitch = false end
+
+      -- Agent presentation policy. The competitive model owns demand and
+      -- score; native crowds are decoration whose cost the player chooses.
+      -- This is match content: it changes town-building data, so the policy
+      -- fingerprint travels with the pinned mod set and both peers must
+      -- agree before a session starts.
+      if not presentationOk then
+        cfg.agentMode = "vanilla"
+        cfg.agentPolicyFingerprint = ""
+        cfg.agentPolicyError = tostring(presentation)
+        return
+      end
+      local agentModeKey = env("TPF2MP_AGENT_MODE",
+        agentModeKeys[(tonumber(selected.agentMode) or 0) + 1] or presentation.DEFAULT_MODE)
+      local policy = presentation.mode(agentModeKey)
+      cfg.agentMode = policy.label
+      cfg.agentPolicyFingerprint = presentation.fingerprint(policy)
+
+      -- Load speed is per-vehicle data, so pinning it makes dwell independent
+      -- of how many agents board. The model's fixed per-stop dwell then
+      -- describes the world exactly instead of approximating it.
+      if policy.pinLoadSpeed then
+        addModifier("loadModel", function(_, data)
+          local transport = data and data.metadata and data.metadata.transportVehicle or nil
+          if transport and transport.loadSpeed ~= nil then
+            transport.loadSpeed = presentation.PINNED_LOAD_SPEED
+          end
+          return data
+        end)
+      end
+
+      -- Town buildings carry personCapacity, and sims exist because of it.
+      -- Scaling it here is the same supported surface the ecosystem uses;
+      -- buildings created from this point carry the scaled value.
+      if policy.capacityDenominator > 1 or policy.capacityNumerator ~= 1 then
+        addModifier("loadConstruction", function(_, data)
+          if data and data.type == "TOWN_BUILDING" and type(data.updateFn) == "function" then
+            local inner = data.updateFn
+            data.updateFn = function(params)
+              local result = inner(params)
+              if result and result.personCapacity and result.personCapacity.capacity then
+                result.personCapacity.capacity = presentation.scaledCapacity(
+                  result.personCapacity.capacity, policy)
+              end
+              return result
+            end
+          end
+          return data
+        end)
+      end
+
+      -- Shipped decouplers: cargo weight is what makes load affect physics,
+      -- and destination recomputation is the dominant per-agent cost.
+      game.config.simulateCargoWeight = policy.simulateCargoWeight
+      game.config.simPersonDestinationRecomputationProbability =
+        policy.destinationRecomputationPermille / 1000
     end,
   }
 end

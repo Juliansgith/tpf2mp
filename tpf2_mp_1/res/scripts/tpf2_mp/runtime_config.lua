@@ -142,6 +142,10 @@ function M.read(options)
     manualNetwork = manualNetwork,
     manualBootstrapReady = manualBootstrapReady,
     operationalCapture = operationalCapture,
+    -- Agent presentation policy is match content; the label and its
+    -- fingerprint travel into state so peers can compare them.
+    agentMode = tostring(readEnvironment("TPF2MP_AGENT_MODE") or source.agentMode or "skeleton"),
+    agentPolicyFingerprint = tostring(source.agentPolicyFingerprint or ""),
     operationalSampleTicks = math.max(30, util.integer(
       readEnvironment("TPF2MP_OPERATIONAL_SAMPLE_TICKS")
         or source.operationalSampleTicks, 120)),

@@ -13,6 +13,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local guiView = require "tpf2_mp/gui_view"
+local presentation = require "tpf2_mp/presentation"
 local nativeHook = require "tpf2_mp/native_hook"
 
 local tests, passed = {}, 0
@@ -1865,6 +1866,106 @@ test("applying town growth issues one deterministic setTownInfo per grown town",
   equal(sent[1].capacities[1], 106, "200 carried at 5% -> 10 points -> 6 residential")
   equal(sent[1].capacities[2], 102)
   equal(sent[1].capacities[3], 101)
+end)
+
+test("agent presentation policy scales capacity deterministically per mode", function()
+  local skeleton = presentation.mode("skeleton")
+  local vanilla = presentation.mode("vanilla")
+  local empty = presentation.mode("empty")
+  equal(presentation.mode("nonsense").label, "skeleton", "unknown modes fall back to the default")
+
+  -- Vanilla is an exact identity: no rounding, no floor, no surprises.
+  equal(presentation.scaledCapacity(137, vanilla), 137)
+  -- Skeleton keeps every populated building alive with at least one person.
+  equal(presentation.scaledCapacity(640, skeleton), 10)
+  equal(presentation.scaledCapacity(30, skeleton), 1, "a small building keeps one inhabitant")
+  equal(presentation.scaledCapacity(0, skeleton), 0, "an empty building stays empty")
+  -- Empty removes the crowd entirely.
+  equal(presentation.scaledCapacity(640, empty), 0)
+
+  truthy(presentation.fingerprint(skeleton) ~= presentation.fingerprint(vanilla)
+    and presentation.fingerprint(skeleton) ~= presentation.fingerprint(empty),
+    "each policy must have a distinct match fingerprint")
+  equal(presentation.fingerprint(skeleton), presentation.fingerprint(presentation.mode("skeleton")),
+    "the same policy must fingerprint identically")
+  truthy(vanilla.pinLoadSpeed == false and skeleton.pinLoadSpeed == true,
+    "only the reduced policies pin dwell")
+  truthy(vanilla.simulateCargoWeight == true and skeleton.simulateCargoWeight == false,
+    "reduced policies must decouple load from vehicle physics")
+end)
+
+test("applying the agent policy verifies by readback and reports the outcome", function()
+  local previousApi, previousGame = api, game
+  local capacities = { [71] = { 640, 320, 160 } }
+  local sent = {}
+  api = { cmd = {
+    make = { setTownInfo = function(townId, values)
+      return { townId = townId, values = values }
+    end },
+    sendCommand = function(command, callback)
+      sent[#sent + 1] = command
+      -- A cooperative build applies the write, so the readback should agree.
+      capacities[command.townId] = { command.values[1], command.values[2], command.values[3] }
+      if callback then callback(command, true) end
+    end,
+  } }
+  game = { interface = { getTowns = function() return { 71 } end } }
+  local deps = {
+    listTowns = function() return { 71 } end,
+    townCapacity = function(townId)
+      local values = capacities[townId]
+      return (values[1] or 0) + (values[2] or 0) + (values[3] or 0), values
+    end,
+  }
+  local worldState = {}
+  local outcome = presentation.applyToWorld(worldState, presentation.mode("skeleton"), deps)
+  api, game = previousApi, previousGame
+
+  equal(outcome.towns, 1)
+  equal(outcome.applied, 1)
+  equal(outcome.verified, 1, "a readback that matches the target is the proof")
+  equal(outcome.runtimeScalingWorks, true)
+  equal(#outcome.errors, 0)
+  equal(sent[1].values[1], 10, "640 residents become 10 under the skeleton policy")
+  equal(worldState.agentPolicy.mode, "skeleton", "the outcome is recorded on world state")
+
+  -- A build that ignores the write must be reported as such, not assumed.
+  previousApi, previousGame = api, game
+  local stubborn = { [71] = { 640, 320, 160 } }
+  api = { cmd = {
+    make = { setTownInfo = function(townId, values) return { townId = townId, values = values } end },
+    sendCommand = function(command, callback)
+      if callback then callback(command, true) end
+      return true
+    end,
+  } }
+  game = { interface = { getTowns = function() return { 71 } end } }
+  local stubbornDeps = {
+    listTowns = function() return { 71 } end,
+    townCapacity = function(townId)
+      local values = stubborn[townId]
+      return (values[1] or 0) + (values[2] or 0) + (values[3] or 0), values
+    end,
+  }
+  local ignored = presentation.applyToWorld({}, presentation.mode("skeleton"), stubbornDeps)
+  api, game = previousApi, previousGame
+  equal(ignored.applied, 1)
+  equal(ignored.verified, 0, "an unchanged readback must not count as verified")
+  equal(ignored.runtimeScalingWorks, false,
+    "the probe must report that runtime scaling does not work on this build")
+end)
+
+test("the vanilla policy leaves an existing world untouched", function()
+  local previousApi, previousGame = api, game
+  api = { cmd = { make = {}, sendCommand = function() error("vanilla policy must issue no commands") end } }
+  game = { interface = { getTowns = function() return { 71 } end } }
+  local outcome = presentation.applyToWorld({}, presentation.mode("vanilla"), {
+    listTowns = function() error("vanilla policy must not enumerate towns") end,
+    townCapacity = function() error("vanilla policy must not read capacities") end,
+  })
+  api, game = previousApi, previousGame
+  equal(outcome.applied, 0)
+  truthy(outcome.skipped ~= nil, "the vanilla policy must explain why it did nothing")
 end)
 
 test("crowd icons bucket by magnitude", function()

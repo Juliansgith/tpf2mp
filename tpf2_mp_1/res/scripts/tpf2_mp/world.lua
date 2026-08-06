@@ -1413,6 +1413,8 @@ M.computedServiceFacts = corridorBinding.computedServiceFacts
 M.makeLineService = corridorBinding.makeLineService
 M.applyTownGrowth = corridorBinding.applyTownGrowth
 
+M.townCapacity = townCapacity
+
 function M.freezeAutonomy(worldState, freeze)
   local result = { freeze = freeze and true or false, towns = 0, industries = 0, errors = {} }
   for _, townId in ipairs(M.listTowns()) do

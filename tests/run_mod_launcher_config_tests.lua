@@ -1,8 +1,13 @@
 local project = assert(arg[1], "project root argument required"):gsub("\\", "/")
+-- The game adds a mod's res/scripts to the module path before loading
+-- mod.lua; mirror that so this harness exercises the real require.
+package.path = project .. "/tpf2_mp_1/res/scripts/?.lua;" .. package.path
 
 _ = function(value) return value end
 getCurrentModId = function() return "!tpf2_mp" end
 game = { config = {} }
+local modifiers = {}
+addModifier = function(name, fn) modifiers[name] = fn end
 
 assert(loadfile(project .. "/tpf2_mp_1/mod.lua"))()
 local definition = assert(data())

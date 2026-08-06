@@ -6,6 +6,7 @@ local economy = require "tpf2_mp/economy"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
+local presentation = require "tpf2_mp/presentation"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
@@ -673,6 +674,12 @@ local function initialiseMatch(rules)
   }
   state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)
   if config().autoFreeze and not state.world.autonomyFrozen then world.freezeAutonomy(state.world, true) end
+  -- The data modifier only reaches buildings created after it loads, so an
+  -- existing save keeps its original crowd. Apply the policy to the towns
+  -- already here, verify by readback, and record the outcome: one live match
+  -- then reports whether runtime scaling works on this build.
+  presentation.applyConfiguredPolicy(state, config(),
+    { listTowns = world.listTowns, townCapacity = world.townCapacity }, diagnosticLog)
   state.match = {
     status = "running",
     startedTick = state.tick,

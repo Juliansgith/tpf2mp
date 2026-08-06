@@ -11,6 +11,9 @@ M.SERVICE_FACTS = {
   routeFactorPct = 125,           -- euclidean -> track distance allowance
   speedUtilisationPct = 70,       -- sustained share of consist top speed
   defaultTopSpeedKmh = 100,
+  -- With the agent policy pinning load speed, native dwell no longer varies
+  -- with boarding, so this constant describes the world exactly instead of
+  -- averaging it. Under the vanilla-population policy it remains an estimate.
   dwellSecondsPerStop = 45,
   turnaroundSeconds = 240,        -- both terminals combined per cycle
   minHeadwaySeconds = 60,
