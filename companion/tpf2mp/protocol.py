@@ -26,6 +26,7 @@ NETWORK_ACTIONS = {
     "clock.rendezvous",
     "vehicle.sync_release",
     "network.sync_fault",
+    "recovery.save_receipt",
     "proposal.prepare",
     "proposal.build",
     "operation.execute",
@@ -1343,6 +1344,34 @@ def validate_action(action: Any) -> dict[str, Any]:
             or action["releaseWhilePaused"]
         ):
             raise ProtocolError("scheduled vehicle release time/pause mode is inconsistent")
+    if action_type == "recovery.save_receipt":
+        # A peer declaring "I wrote a native save of this exact agreed
+        # boundary, while paused, with nothing ordered since". The claim is
+        # ordered so the other peer sees it, and the host only trusts it after
+        # checking its own commit history for the same window.
+        allowed = {
+            "type", "boundarySeq", "savedAtUnix", "saveSha256",
+            "coreDigest", "convergenceKey", "paused",
+        }
+        if set(action) - allowed or not allowed - {"type"} <= set(action):
+            raise ProtocolError("recovery.save_receipt has unknown or missing fields")
+        boundary = action["boundarySeq"]
+        if not isinstance(boundary, int) or isinstance(boundary, bool) or boundary < 1:
+            raise ProtocolError("recovery.save_receipt boundarySeq is invalid")
+        saved_at = action["savedAtUnix"]
+        if not isinstance(saved_at, int) or isinstance(saved_at, bool) or saved_at < 0:
+            raise ProtocolError("recovery.save_receipt savedAtUnix is invalid")
+        if action["paused"] is not True:
+            raise ProtocolError("recovery.save_receipt must attest a paused world")
+        sha = action["saveSha256"]
+        if not isinstance(sha, str) or len(sha) != 64 or not all(
+            character in "0123456789abcdef" for character in sha
+        ):
+            raise ProtocolError("recovery.save_receipt saveSha256 is not a sha-256 digest")
+        for field in ("coreDigest", "convergenceKey"):
+            value = action[field]
+            if not isinstance(value, str) or not value or len(value) > 128:
+                raise ProtocolError(f"recovery.save_receipt {field} is invalid")
     if action_type == "network.sync_fault":
         if set(action) != {"type", "scope", "errorCode"}:
             raise ProtocolError("network.sync_fault has unknown or missing fields")

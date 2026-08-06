@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import socket
@@ -32,6 +33,12 @@ from tpf2mp.recovery import (
     write_recovery_archive,
 )
 from tpf2mp.research import latest_research, render_markdown, write_report
+from tpf2mp.restore import (
+    analyse_restore_points,
+    build_restore_plan,
+    confirm_restore_readiness,
+    verify_restore_plan,
+)
 
 
 def wait_for(predicate, timeout: float = 5.0) -> bool:
@@ -1328,6 +1335,70 @@ class CheckpointTests(unittest.TestCase):
             self.assertEqual(analysis["modelReplay"]["portableChanges"], 1)
             self.assertEqual(analysis["finalModelDigest"], checksum(after_model))
 
+    def test_checkpoint_accepts_digest_bound_credit_state(self) -> None:
+        payload = self.checkpoint_payload()
+        accounts = {
+            "company:1": {
+                "balance": 4_900_000,
+                "loan": 0,
+                "insolventSettlements": 1,
+                "creditLimit": 500_000_000,
+            },
+            "company:2": {
+                "balance": 5_100_000,
+                "loan": 0,
+                "insolventSettlements": 0,
+                "creditLimit": 500_000_000,
+            },
+        }
+        payload["model"]["networkFinance"] = {
+            "version": 1,
+            "initialized": True,
+            "accounts": json.loads(json.dumps(accounts)),
+        }
+        payload["financial"]["companies"] = json.loads(json.dumps(accounts))
+        payload["modelDigest"] = checksum(payload["model"])
+        core = json.loads(json.dumps(payload["model"]))
+        core["canonical"] = payload["canonical"]
+        core["vehicleSynchronization"] = payload["vehicleSynchronization"]
+        payload["coreDigest"] = checksum(core)
+        payload["financialDigest"] = checksum(payload["financial"])
+        payload["convergenceKey"] = checksum({
+            "checkpointVersion": payload["checkpointVersion"],
+            "stateVersion": payload["stateVersion"],
+            "protocol": payload["protocol"],
+            "sessionId": payload["sessionId"],
+            "lastCommitSeq": payload["eventCursor"]["lastCommitSeq"],
+            "modelDigest": payload["modelDigest"],
+            "canonicalDigest": payload["canonicalDigest"],
+            "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
+            "coreDigest": payload["coreDigest"],
+            "financialDigest": payload["financialDigest"],
+        })
+        payload.pop("checkpointDigest", None)
+        payload["checkpointDigest"] = checksum(payload)
+        self.assertEqual(verify_checkpoint(payload)["financial"], payload["financial"])
+
+        tampered = json.loads(json.dumps(payload))
+        tampered["financial"]["companies"]["company:1"]["creditLimit"] += 1
+        tampered["financialDigest"] = checksum(tampered["financial"])
+        tampered["convergenceKey"] = checksum({
+            "checkpointVersion": tampered["checkpointVersion"],
+            "stateVersion": tampered["stateVersion"],
+            "protocol": tampered["protocol"],
+            "sessionId": tampered["sessionId"],
+            "lastCommitSeq": tampered["eventCursor"]["lastCommitSeq"],
+            "modelDigest": tampered["modelDigest"],
+            "canonicalDigest": tampered["canonicalDigest"],
+            "vehicleSynchronizationDigest": tampered["vehicleSynchronizationDigest"],
+            "coreDigest": tampered["coreDigest"],
+            "financialDigest": tampered["financialDigest"],
+        })
+        tampered.pop("checkpointDigest", None)
+        tampered["checkpointDigest"] = checksum(tampered)
+        with self.assertRaises(ProtocolError):
+            verify_checkpoint(tampered)
+
     def test_internally_tampered_checkpoint_is_rejected_even_when_resigned(self) -> None:
         payload = self.checkpoint_payload()
         payload["model"]["autonomyFrozen"] = True
@@ -1682,6 +1753,165 @@ class ResearchReportTests(unittest.TestCase):
             output = root / "report.md"
             write_report(bridge.root, "research-session", output)
             self.assertIn("abc123", output.read_text(encoding="utf-8"))
+
+
+class RestorePointTests(unittest.TestCase):
+    SESSION = "restore-test"
+
+    def _audit(self, root: Path, entries: list[dict]) -> Path:
+        path = root / "audit.ndjson"
+        with path.open("w", encoding="utf-8") as handle:
+            for entry in entries:
+                handle.write(json.dumps(sign(entry)) + "\n")
+        return path
+
+    def _checkpoint(self, seq: int, boundary: int, core: str = "core-1") -> dict:
+        return {
+            "protocol": 1, "session": self.SESSION, "peer": "player1",
+            "seq": seq, "kind": "control", "tick": seq,
+            "payload": {"action": {
+                "type": "network.checkpoint_outcome", "boundarySeq": boundary,
+                "success": True, "convergenceKey": f"key-{boundary}", "coreDigest": core,
+            }},
+        }
+
+    def _receipt(self, seq: int, peer: str, boundary: int, sha: str, core: str = "core-1") -> dict:
+        return {
+            "protocol": 1, "session": self.SESSION, "peer": peer,
+            "origin_peer": peer, "seq": seq, "kind": "commit", "tick": seq,
+            "payload": {"action": {
+                "type": "recovery.save_receipt", "boundarySeq": boundary,
+                "savedAtUnix": 1000 + seq, "saveSha256": sha,
+                "coreDigest": core, "convergenceKey": f"key-{boundary}", "paused": True,
+            }},
+        }
+
+    def _commit(self, seq: int, peer: str = "player2") -> dict:
+        return {
+            "protocol": 1, "session": self.SESSION, "peer": peer, "origin_peer": peer,
+            "seq": seq, "kind": "commit", "tick": seq,
+            "payload": {"action": {"type": "world.freeze", "freeze": True}},
+        }
+
+    def test_restore_point_requires_every_peer_to_have_saved(self) -> None:
+        sha_a = "a" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit = self._audit(root, [
+                self._checkpoint(1, 4),
+                self._receipt(2, "player1", 4, sha_a),
+            ])
+            analysis = analyse_restore_points(audit, self.SESSION, ("player1", "player2"))
+            point = analysis["points"][0]
+            self.assertFalse(point["ready"])
+            self.assertIn("missing save receipts: player2", point["reasons"])
+            self.assertIsNone(analysis["latestReady"])
+            with self.assertRaisesRegex(ProtocolError, "no restore point is ready"):
+                build_restore_plan(audit, self.SESSION, required_peers=("player1", "player2"))
+
+    def test_a_save_taken_after_later_commits_is_refused(self) -> None:
+        # The save would contain work past the boundary, so resuming from it
+        # would silently start the peers from different worlds.
+        sha_a, sha_b = "a" * 64, "b" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit = self._audit(root, [
+                self._checkpoint(1, 4),
+                self._receipt(2, "player1", 4, sha_a),
+                self._commit(3),
+                self._receipt(4, "player2", 4, sha_b),
+            ])
+            point = analyse_restore_points(audit, self.SESSION, ("player1", "player2"))["points"][0]
+            self.assertFalse(point["ready"])
+            self.assertTrue(
+                any("saved after 1 ordered commit" in reason for reason in point["reasons"]),
+                point["reasons"],
+            )
+
+    def test_peers_attesting_different_state_is_refused(self) -> None:
+        sha_a, sha_b = "a" * 64, "b" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit = self._audit(root, [
+                self._checkpoint(1, 4),
+                self._receipt(2, "player1", 4, sha_a, core="core-1"),
+                self._receipt(3, "player2", 4, sha_b, core="core-DIFFERENT"),
+            ])
+            point = analyse_restore_points(audit, self.SESSION, ("player1", "player2"))["points"][0]
+            self.assertFalse(point["ready"])
+            self.assertIn(
+                "peers attested different world state for this boundary", point["reasons"]
+            )
+
+    def test_ready_restore_point_builds_a_plan_and_verifies_saves_on_disk(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            saves = root / "saves"
+            saves.mkdir()
+            player1 = saves / "player1.sav"
+            player2 = saves / "player2.sav"
+            player1.write_bytes(b"world-at-boundary-4-player1")
+            player2.write_bytes(b"world-at-boundary-4-player2")
+            sha1 = hashlib.sha256(player1.read_bytes()).hexdigest()
+            sha2 = hashlib.sha256(player2.read_bytes()).hexdigest()
+
+            audit = self._audit(root, [
+                self._checkpoint(1, 2),
+                self._commit(2),
+                self._checkpoint(3, 4),
+                self._receipt(4, "player1", 4, sha1),
+                self._receipt(5, "player2", 4, sha2),
+            ])
+            analysis = analyse_restore_points(audit, self.SESSION, ("player1", "player2"))
+            self.assertEqual(analysis["latestReady"]["boundarySeq"], 4)
+            # Boundary 2 has no receipts and must not be offered.
+            self.assertFalse(analysis["points"][0]["ready"])
+
+            plan = build_restore_plan(audit, self.SESSION, required_peers=("player1", "player2"))
+            verified = verify_restore_plan(plan)
+            self.assertEqual(verified["boundarySeq"], 4)
+            self.assertEqual(verified["resumeSession"], f"{self.SESSION}-r4")
+            self.assertEqual(verified["peerSaves"]["player1"]["saveSha256"], sha1)
+
+            ready = confirm_restore_readiness(plan, {"player1": player1, "player2": player2})
+            self.assertTrue(ready["ready"], ready["problems"])
+            self.assertEqual(ready["resumeSession"], f"{self.SESSION}-r4")
+
+            # An edited save must be refused rather than resumed.
+            player2.write_bytes(b"tampered")
+            drifted = confirm_restore_readiness(plan, {"player1": player1, "player2": player2})
+            self.assertFalse(drifted["ready"])
+            self.assertFalse(drifted["peers"]["player2"]["ok"])
+            self.assertTrue(
+                any("no longer matches" in problem for problem in drifted["problems"])
+            )
+
+            missing = confirm_restore_readiness(plan, {"player1": player1})
+            self.assertFalse(missing["ready"])
+            self.assertIn("player2 save was not supplied", missing["problems"])
+
+    def test_save_receipt_action_is_strictly_validated(self) -> None:
+        base = {
+            "type": "recovery.save_receipt", "boundarySeq": 4, "savedAtUnix": 10,
+            "saveSha256": "a" * 64, "coreDigest": "core-1",
+            "convergenceKey": "key-4", "paused": True,
+        }
+        validate_action(base)
+        for mutation in (
+            {"paused": False},
+            {"boundarySeq": 0},
+            {"saveSha256": "nothex" * 10},
+            {"savedAtUnix": -1},
+            {"coreDigest": ""},
+        ):
+            broken = dict(base)
+            broken.update(mutation)
+            with self.assertRaises(ProtocolError):
+                validate_action(broken)
+        extra = dict(base)
+        extra["unexpected"] = 1
+        with self.assertRaises(ProtocolError):
+            validate_action(extra)
 
 
 class RecoveryArchiveTests(unittest.TestCase):
