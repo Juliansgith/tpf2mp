@@ -144,6 +144,14 @@ function M.read(options)
     operationalCapture = operationalCapture,
     -- Agent presentation policy is match content; the label and its
     -- fingerprint travel into state so peers can compare them.
+    -- Loss conditions are match settings; the defaults come from the mod
+    -- parameters and any of them can be switched off for a build-together
+    -- session that only compares company value at the end.
+    bankruptcyEnabled = source.bankruptcyEnabled ~= false,
+    insolventSettlements = util.integer(source.insolventSettlements, 3),
+    creditBaseLimitCents = util.integer(source.creditBaseLimitCents, 500000000),
+    creditRevenueMultiple = util.integer(source.creditRevenueMultiple, 4),
+    creditInterestPermille = util.integer(source.creditInterestPermille, 15),
     agentMode = tostring(readEnvironment("TPF2MP_AGENT_MODE") or source.agentMode or "skeleton"),
     agentPolicyFingerprint = tostring(source.agentPolicyFingerprint or ""),
     operationalSampleTicks = math.max(30, util.integer(

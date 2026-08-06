@@ -149,28 +149,42 @@ M.CREDIT = {
 -- A company may borrow against its established earning power, not its
 -- ambitions: the limit follows settled revenue, so a player who has not yet
 -- earned anything cannot leverage into a corridor war.
-function M.creditLimit(ledgerCompany, settlementCount)
+-- Match rules override the defaults; absent rules keep them.
+function M.creditRules(rules)
+  rules = type(rules) == "table" and rules or {}
+  return {
+    baseLimitCents = util.integer(rules.creditBaseLimitCents, M.CREDIT.baseLimitCents),
+    revenueMultiple = util.integer(rules.creditRevenueMultiple, M.CREDIT.revenueMultiple),
+    interestPermille = util.integer(rules.creditInterestPermille, M.CREDIT.interestPermille),
+    insolventSettlements = util.integer(rules.insolventSettlements, M.CREDIT.insolventSettlements),
+    bankruptcyEnabled = rules.bankruptcyEnabled ~= false,
+  }
+end
+
+function M.creditLimit(ledgerCompany, settlementCount, rules)
+  local credit = M.creditRules(rules)
   local settled = math.max(0, util.integer(ledgerCompany and ledgerCompany.revenueCents, 0))
   local settlements = math.max(1, util.integer(settlementCount, 1))
   local perSettlement = math.floor(settled / settlements)
-  return M.CREDIT.baseLimitCents + perSettlement * M.CREDIT.revenueMultiple
+  return credit.baseLimitCents + perSettlement * credit.revenueMultiple
 end
 
 -- Charges interest on drawn credit and advances (or clears) each company's
 -- insolvency countdown. Returns a per-company report plus the cid of any
 -- company that has now failed.
-function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, context)
+function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, context, rules)
   local ledger = M.ensureNetworkAccounts(state)
+  local credit = M.creditRules(rules)
   local ledgerCompanies = economyLedger and economyLedger.companies or {}
   local settlementCount = economyLedger and economyLedger.settlementCount or 1
   local report, bankruptCid = {}, nil
   for _, companyCid in ipairs(companyCids or {}) do
     local account = ledger.accounts[companyCid]
     if account then
-      local limit = M.creditLimit(ledgerCompanies[companyCid], settlementCount)
+      local limit = M.creditLimit(ledgerCompanies[companyCid], settlementCount, rules)
       local balance = util.integer(account.balance, 0)
       local drawn = balance < 0 and -balance or 0
-      local interest = math.floor(drawn * M.CREDIT.interestPermille / 1000)
+      local interest = math.floor(drawn * credit.interestPermille / 1000)
       if interest > 0 then
         M.applyNetworkDelta(state, companyCid, -interest, {
           kind = "credit-interest", drawn = drawn, reason = context and context.reason or nil,
@@ -183,7 +197,12 @@ function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, cont
       account.insolventSettlements = breached
         and (util.integer(account.insolventSettlements, 0) + 1) or 0
       account.creditLimit = limit
-      if account.insolventSettlements >= M.CREDIT.insolventSettlements and not bankruptCid then
+      -- Elimination is opt-out. With bankruptcy disabled, or the breach
+      -- threshold set to zero, debt still charges interest and still limits
+      -- what a company can afford, but nobody is removed from the match.
+      if credit.bankruptcyEnabled and credit.insolventSettlements > 0
+        and account.insolventSettlements >= credit.insolventSettlements
+        and not bankruptCid then
         bankruptCid = companyCid
       end
       report[companyCid] = {

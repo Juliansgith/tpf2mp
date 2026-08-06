@@ -73,6 +73,11 @@ function data()
         { key = "startingCash", name = "Company starting cash", values = { "5 million", "10 million", "20 million" }, defaultIndex = 0 },
         { key = "epochLimit", name = "Match length (settlement epochs)", values = { "Unlimited", "12", "24", "48" }, defaultIndex = 2 },
         { key = "valuationTarget", name = "Victory model value", values = { "Disabled", "$250k", "$500k", "$1m" }, defaultIndex = 2 },
+        { key = "bankruptcy", name = "Bankruptcy elimination",
+          values = { "On (3 insolvent settlements)", "Off (build together)", "Harsh (1 settlement)" },
+          defaultIndex = 0 },
+        { key = "credit", name = "Competitive credit",
+          values = { "Standard", "Tight", "Generous" }, defaultIndex = 0 },
         { key = "agentMode", name = "Native crowd simulation",
           values = {
             "Skeleton crew (recommended)",
@@ -156,6 +161,23 @@ function data()
       -- A paused simulation can stop engine-script updates on some builds. The
       -- unattended validator therefore keeps the disposable test game moving.
       if cfg.autoValidate then cfg.pauseOnSwitch = false end
+
+      -- Loss conditions are a match setting. "Off" keeps credit and interest
+      -- meaningful but never eliminates anyone, which is the build-together
+      -- session people ask for.
+      local bankruptcyChoice = tonumber(selected.bankruptcy) or 0
+      cfg.bankruptcyEnabled = bankruptcyChoice ~= 1
+      cfg.insolventSettlements = bankruptcyChoice == 2 and 1 or 3
+      local creditChoice = tonumber(selected.credit) or 0
+      local creditProfiles = {
+        [0] = { base = 500000000, multiple = 4, interest = 15 },
+        [1] = { base = 150000000, multiple = 2, interest = 30 },
+        [2] = { base = 1500000000, multiple = 8, interest = 8 },
+      }
+      local creditProfile = creditProfiles[creditChoice] or creditProfiles[0]
+      cfg.creditBaseLimitCents = creditProfile.base
+      cfg.creditRevenueMultiple = creditProfile.multiple
+      cfg.creditInterestPermille = creditProfile.interest
 
       -- Agent presentation policy. The competitive model owns demand and
       -- score; native crowds are decoration whose cost the player chooses.

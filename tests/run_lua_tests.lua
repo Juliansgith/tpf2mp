@@ -2018,6 +2018,45 @@ test("credit charges interest and bankruptcy takes three consecutive breaches", 
   equal(finance.networkAccount(state, "company:2").balance, 0)
 end)
 
+test("loss conditions are match rules and elimination can be switched off", function()
+  local function overdrawn(rules)
+    local state = finance.newState()
+    finance.initialiseNetworkAccounts(state, { "company:1" }, 0, { reason = "test" })
+    truthy(finance.applyNetworkDelta(state, "company:1",
+      -(finance.CREDIT.baseLimitCents * 4), { kind = "test" }))
+    local ledger = { settlementCount = 1, companies = {} }
+    local report, bankrupt
+    for _ = 1, 6 do
+      report, bankrupt = finance.chargeCreditAndAssessSolvency(
+        state, { "company:1" }, ledger, {}, rules)
+    end
+    return report["company:1"], bankrupt
+  end
+
+  local defaultReport, defaultBankrupt = overdrawn(nil)
+  equal(defaultBankrupt, "company:1", "the default ruleset still eliminates")
+
+  local offReport, offBankrupt = overdrawn({ bankruptcyEnabled = false })
+  equal(offBankrupt, nil, "bankruptcy off must never eliminate a company")
+  truthy(offReport.breached, "debt is still recorded as a breach")
+  truthy(offReport.interestCents > 0, "credit still costs interest when elimination is off")
+
+  local zeroReport, zeroBankrupt = overdrawn({ insolventSettlements = 0 })
+  equal(zeroBankrupt, nil, "a zero threshold also disables elimination")
+  truthy(zeroReport.interestCents > 0)
+
+  local harsh = overdrawn({ insolventSettlements = 1 })
+  truthy(harsh.insolventSettlements >= 1)
+  local _, harshBankrupt = overdrawn({ insolventSettlements = 1 })
+  equal(harshBankrupt, "company:1", "a one-settlement threshold eliminates immediately")
+
+  -- Credit profiles are rules too: a tighter line means a smaller limit.
+  local tight = finance.creditLimit({ revenueCents = 0 }, 1, { creditBaseLimitCents = 1000 })
+  equal(tight, 1000)
+  truthy(tight < finance.creditLimit({ revenueCents = 0 }, 1, nil),
+    "a tightened credit rule must reduce the available line")
+end)
+
 test("recovering before the third breach clears the countdown", function()
   local state = finance.newState()
   finance.initialiseNetworkAccounts(state, { "company:1" }, 0, { reason = "test" })

@@ -584,13 +584,32 @@ local function repairCompanyStartingCash()
   }
 end
 
+-- Loss and victory conditions are match rules, not architecture. A group
+-- that wants to build side by side and compare company value at the end
+-- should be able to switch elimination off entirely; a group that wants a
+-- knife fight should be able to make credit tight. Both are the same code
+-- with different numbers, and the numbers are authored match state so both
+-- peers judge by identical rules.
 local function normaliseMatchRules(rules)
   rules = type(rules) == "table" and rules or {}
   local cfg = config()
+  local bankruptcyEnabled = rules.bankruptcyEnabled
+  if bankruptcyEnabled == nil then bankruptcyEnabled = cfg.bankruptcyEnabled end
   return {
     startingCash = math.max(0, util.integer(rules.startingCash, cfg.startingCash)),
     maxEpochs = math.max(0, util.integer(rules.maxEpochs, cfg.maxEpochs)),
     valuationTargetCents = math.max(0, util.integer(rules.valuationTargetCents, cfg.valuationTargetCents)),
+    bankruptcyEnabled = bankruptcyEnabled ~= false,
+    -- Zero keeps credit available but never eliminates anyone: debt still
+    -- costs interest and still constrains what you can buy.
+    insolventSettlements = math.max(0, util.integer(rules.insolventSettlements,
+      cfg.insolventSettlements)),
+    creditBaseLimitCents = math.max(0, util.integer(rules.creditBaseLimitCents,
+      cfg.creditBaseLimitCents)),
+    creditRevenueMultiple = math.max(0, util.integer(rules.creditRevenueMultiple,
+      cfg.creditRevenueMultiple)),
+    creditInterestPermille = math.max(0, util.integer(rules.creditInterestPermille,
+      cfg.creditInterestPermille)),
   }
 end
 
@@ -1586,7 +1605,7 @@ handlers["economy.settle"] = function(action, eventId)
   if state.networkMode == "network" then
     local solvency, bankruptCid = finance.chargeCreditAndAssessSolvency(
       state.finance, state.companyOrder, state.economy.ledger,
-      { reason = "economy-settlement", eventId = eventId })
+      { reason = "economy-settlement", eventId = eventId }, state.match.rules)
     state.probes.solvency = solvency
     state.probes.bankruptCid = bankruptCid
   end
