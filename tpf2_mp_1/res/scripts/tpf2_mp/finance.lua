@@ -116,6 +116,9 @@ function M.networkDigestView(state)
     accounts[companyCid] = {
       balance = util.integer(account.balance, 0),
       loan = util.integer(account.loan, 0),
+      -- Solvency state decides who is still in the match, so it converges.
+      insolventSettlements = util.integer(account.insolventSettlements, 0),
+      creditLimit = util.integer(account.creditLimit, 0),
     }
   end
   return {
@@ -123,6 +126,77 @@ function M.networkDigestView(state)
     initialized = ledger.initialized == true,
     accounts = accounts,
   }
+end
+
+-- Competitive credit and insolvency.
+--
+-- The concept names "no bankruptcy pressure" as a defect of the vanilla
+-- economy, so the competitive ruleset has to supply it: capital committed to
+-- a contested corridor must be able to cost a player the match. Credit is
+-- sized from what a company has actually earned, interest is charged every
+-- settlement, and a company that cannot cover its debt gets a countdown
+-- rather than an instant loss - a bad quarter should hurt, not end you.
+--
+-- Every value is deterministic integer arithmetic over authored state, so
+-- both peers reach the same verdict from the same ordered settlement.
+M.CREDIT = {
+  baseLimitCents = 500000000,      -- credit available before any trading
+  revenueMultiple = 4,             -- plus this many settlements of revenue
+  interestPermille = 15,           -- charged per settlement on drawn credit
+  insolventSettlements = 3,        -- consecutive breaches before bankruptcy
+}
+
+-- A company may borrow against its established earning power, not its
+-- ambitions: the limit follows settled revenue, so a player who has not yet
+-- earned anything cannot leverage into a corridor war.
+function M.creditLimit(ledgerCompany, settlementCount)
+  local settled = math.max(0, util.integer(ledgerCompany and ledgerCompany.revenueCents, 0))
+  local settlements = math.max(1, util.integer(settlementCount, 1))
+  local perSettlement = math.floor(settled / settlements)
+  return M.CREDIT.baseLimitCents + perSettlement * M.CREDIT.revenueMultiple
+end
+
+-- Charges interest on drawn credit and advances (or clears) each company's
+-- insolvency countdown. Returns a per-company report plus the cid of any
+-- company that has now failed.
+function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, context)
+  local ledger = M.ensureNetworkAccounts(state)
+  local ledgerCompanies = economyLedger and economyLedger.companies or {}
+  local settlementCount = economyLedger and economyLedger.settlementCount or 1
+  local report, bankruptCid = {}, nil
+  for _, companyCid in ipairs(companyCids or {}) do
+    local account = ledger.accounts[companyCid]
+    if account then
+      local limit = M.creditLimit(ledgerCompanies[companyCid], settlementCount)
+      local balance = util.integer(account.balance, 0)
+      local drawn = balance < 0 and -balance or 0
+      local interest = math.floor(drawn * M.CREDIT.interestPermille / 1000)
+      if interest > 0 then
+        M.applyNetworkDelta(state, companyCid, -interest, {
+          kind = "credit-interest", drawn = drawn, reason = context and context.reason or nil,
+        })
+        account = ledger.accounts[companyCid]
+        balance = util.integer(account.balance, 0)
+        drawn = balance < 0 and -balance or 0
+      end
+      local breached = drawn > limit
+      account.insolventSettlements = breached
+        and (util.integer(account.insolventSettlements, 0) + 1) or 0
+      account.creditLimit = limit
+      if account.insolventSettlements >= M.CREDIT.insolventSettlements and not bankruptCid then
+        bankruptCid = companyCid
+      end
+      report[companyCid] = {
+        balance = balance,
+        drawn = drawn,
+        limit = limit,
+        interestCents = interest,
+        breached = breached,
+        insolventSettlements = account.insolventSettlements,
+      }
+    end
+  end
+  return report, bankruptCid
 end
 
 function M.applyNetworkDelta(state, companyCid, amount, context)

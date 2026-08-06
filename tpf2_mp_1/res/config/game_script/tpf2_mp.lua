@@ -835,7 +835,15 @@ local function evaluateMatchEnd()
   local winnerCid, ranked = rankedWinner()
   local leader = ranked[1]
   local reason
-  if util.integer(rules.valuationTargetCents, 0) > 0
+  -- Bankruptcy outranks the scoring conditions: a company that cannot fund
+  -- itself has lost regardless of who was ahead on model value.
+  local bankruptCid = state.probes.bankruptCid
+  if bankruptCid then
+    reason = "bankruptcy"
+    for _, candidate in ipairs(state.companyOrder or {}) do
+      if candidate ~= bankruptCid then winnerCid = candidate; break end
+    end
+  elseif util.integer(rules.valuationTargetCents, 0) > 0
     and leader and leader.modelValueCents >= util.integer(rules.valuationTargetCents, 0) then
     reason = "valuation-target"
   elseif util.integer(rules.maxEpochs, 0) > 0 and state.economy.epoch >= util.integer(rules.maxEpochs, 0) then
@@ -1572,6 +1580,16 @@ handlers["economy.settle"] = function(action, eventId)
   -- verifies convergence. Fail-soft and recorded, never digest material.
   local grew, growth = pcall(world.applyTownGrowth, state.canonical, state.economy, results)
   state.probes.townGrowth = grew and growth or { errors = { tostring(growth) } }
+  -- Credit interest and solvency are part of settling, so capital committed
+  -- to a losing corridor eventually costs the match rather than merely
+  -- costing money. Deterministic over authored state on every peer.
+  if state.networkMode == "network" then
+    local solvency, bankruptCid = finance.chargeCreditAndAssessSolvency(
+      state.finance, state.companyOrder, state.economy.ledger,
+      { reason = "economy-settlement", eventId = eventId })
+    state.probes.solvency = solvency
+    state.probes.bankruptCid = bankruptCid
+  end
   local ok, errors = true, {}
   local nativeReconciliation
   if state.networkMode == "network" then

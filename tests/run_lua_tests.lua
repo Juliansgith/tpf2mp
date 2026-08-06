@@ -1968,6 +1968,89 @@ test("the vanilla policy leaves an existing world untouched", function()
   truthy(outcome.skipped ~= nil, "the vanilla policy must explain why it did nothing")
 end)
 
+test("credit limits follow earned revenue, not ambition", function()
+  local fresh = finance.creditLimit(nil, 1)
+  equal(fresh, finance.CREDIT.baseLimitCents, "an untraded company gets only the base line")
+  -- 4 settlements averaging 250000 cents each, at a 4x multiple.
+  local earned = finance.creditLimit({ revenueCents = 1000000 }, 4)
+  equal(earned, finance.CREDIT.baseLimitCents + 250000 * 4)
+  truthy(earned > fresh, "trading successfully must extend credit")
+end)
+
+test("credit charges interest and bankruptcy takes three consecutive breaches", function()
+  local state = finance.newState()
+  finance.initialiseNetworkAccounts(state, { "company:1", "company:2" }, 0, { reason = "test" })
+  local ledger = { settlementCount = 1, companies = {} }
+
+  -- Solvent companies pay nothing and never approach a countdown.
+  local report, bankrupt = finance.chargeCreditAndAssessSolvency(
+    state, { "company:1", "company:2" }, ledger, {})
+  equal(bankrupt, nil)
+  equal(report["company:1"].interestCents, 0)
+  equal(report["company:1"].breached, false)
+
+  -- Draw well past the limit and the countdown starts, with interest.
+  local overdrawn = -(finance.CREDIT.baseLimitCents * 2)
+  truthy(finance.applyNetworkDelta(state, "company:1", overdrawn, { kind = "test" }))
+  local first
+  first, bankrupt = finance.chargeCreditAndAssessSolvency(
+    state, { "company:1", "company:2" }, ledger, {})
+  equal(bankrupt, nil, "one bad settlement must not end a match")
+  equal(first["company:1"].breached, true)
+  equal(first["company:1"].insolventSettlements, 1)
+  truthy(first["company:1"].interestCents > 0, "drawn credit must cost interest")
+  equal(first["company:2"].insolventSettlements, 0, "a solvent rival is untouched")
+
+  local second
+  second, bankrupt = finance.chargeCreditAndAssessSolvency(
+    state, { "company:1", "company:2" }, ledger, {})
+  equal(bankrupt, nil)
+  equal(second["company:1"].insolventSettlements, 2)
+  local third
+  third, bankrupt = finance.chargeCreditAndAssessSolvency(
+    state, { "company:1", "company:2" }, ledger, {})
+  equal(third["company:1"].insolventSettlements, 3)
+  equal(bankrupt, "company:1", "the third consecutive breach is bankruptcy")
+
+  -- Interest compounds against the debtor, never against the rival.
+  truthy(finance.networkAccount(state, "company:1").balance < overdrawn,
+    "interest must accumulate on drawn credit")
+  equal(finance.networkAccount(state, "company:2").balance, 0)
+end)
+
+test("recovering before the third breach clears the countdown", function()
+  local state = finance.newState()
+  finance.initialiseNetworkAccounts(state, { "company:1" }, 0, { reason = "test" })
+  local ledger = { settlementCount = 1, companies = {} }
+  truthy(finance.applyNetworkDelta(state, "company:1",
+    -(finance.CREDIT.baseLimitCents * 2), { kind = "test" }))
+  local report = finance.chargeCreditAndAssessSolvency(state, { "company:1" }, ledger, {})
+  equal(report["company:1"].insolventSettlements, 1)
+  -- Repay everything; the very next settlement must forgive the countdown.
+  local account = finance.networkAccount(state, "company:1")
+  truthy(finance.applyNetworkDelta(state, "company:1", -account.balance, { kind = "test" }))
+  local recovered, bankrupt = finance.chargeCreditAndAssessSolvency(
+    state, { "company:1" }, ledger, {})
+  equal(recovered["company:1"].insolventSettlements, 0, "solvency must be forgiving")
+  equal(recovered["company:1"].breached, false)
+  equal(bankrupt, nil)
+end)
+
+test("solvency state is digest-projected so peers agree on who is failing", function()
+  local state = finance.newState()
+  finance.initialiseNetworkAccounts(state, { "company:1" }, 0, { reason = "test" })
+  truthy(finance.applyNetworkDelta(state, "company:1",
+    -(finance.CREDIT.baseLimitCents * 2), { kind = "test" }))
+  local before = hash.value(finance.networkDigestView(state))
+  finance.chargeCreditAndAssessSolvency(state, { "company:1" },
+    { settlementCount = 1, companies = {} }, {})
+  local after = hash.value(finance.networkDigestView(state))
+  truthy(before ~= after, "advancing a countdown must change the authored digest")
+  local view = finance.networkDigestView(state)
+  equal(view.accounts["company:1"].insolventSettlements, 1)
+  truthy(view.accounts["company:1"].creditLimit > 0)
+end)
+
 test("crowd icons bucket by magnitude", function()
   equal(guiView.crowdIcons(0), "")
   equal(guiView.crowdIcons(15), "·")
