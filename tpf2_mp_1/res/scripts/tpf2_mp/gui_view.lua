@@ -92,17 +92,20 @@ function M.render(gui, snapshot, options)
     )
     local capture = gui.nativeBuildCapture or {}
     lines[#lines + 1] = string.format(
-      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | construction previews %d/%d projected/skipped",
-      gui.pendingNetworkBuildSuppression and "settling click"
+      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",
+      gui.proposalReplayQuarantine and "replay settling"
+        or (gui.pendingNetworkBuildSuppression and "settling click"
         or (gui.pendingNetworkBuildExact and "exact click latched"
-          or (gui.pendingNetworkBuildPreview and "preview armed" or "idle")),
+          or (gui.pendingNetworkBuildPreview and "preview armed" or "idle"))),
       tonumber(capture.captured) or 0,
       tonumber(capture.exactCaptures) or 0,
       tonumber(capture.previewFallbacks) or 0,
       tonumber(capture.duplicates) or 0,
       tonumber(capture.orphaned) or 0,
       tonumber(capture.constructionPreviewsProjected) or 0,
-      tonumber(capture.constructionPreviewsSkipped) or 0
+      tonumber(capture.constructionPreviewsSkipped) or 0,
+      tonumber(capture.replayPreviewsQuarantined) or 0,
+      tonumber(capture.replayAppliesRejected) or 0
     )
     local clock = snapshot.networkClock or {}
     lines[#lines + 1] = string.format(
@@ -113,6 +116,25 @@ function M.render(gui, snapshot, options)
       tostring(clock.reason or "waiting for host"))
     local hostClock = companion.clock or {}
     local rendezvous = hostClock.rendezvous or clock.rendezvous
+    lines[#lines + 1] = string.format(
+      -- A player should never have to reason about quiescence: either the
+      -- companion says a save right now becomes a restore point, or it says
+      -- exactly what is in the way.
+      "Restore points: %s | anchor now: %s%s",
+      (function()
+        local points = companion.restorePoints
+        if type(points) ~= "table" or #points == 0 then return "none yet" end
+        return "boundary " .. tostring(points[#points]) .. " (" .. tostring(#points) .. " total)"
+      end)(),
+      companion.anchorReady == true and "READY - just save the game"
+        or (companion.anchorBoundarySeq and "not yet" or "waiting for a checkpoint"),
+      (function()
+        local reasons = companion.anchorReasons
+        if companion.anchorReady == true or type(reasons) ~= "table" or #reasons == 0 then
+          return ""
+        end
+        return " | " .. tostring(reasons[1])
+      end)())
     lines[#lines + 1] = string.format(
       "Clock convergence: skew %s | rendezvous %s | target %s",
       hostClock.gameTimeSkew and string.format("%.3f", hostClock.gameTimeSkew) or "-",

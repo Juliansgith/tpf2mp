@@ -14,6 +14,7 @@ from .consensus import (
     operation_completion_payload,
     proposal_completion_payload,
 )
+from .anchor import AnchorCoordinator
 from .synchronization import SynchronizationCoordinator
 from .protocol import (
     PROTOCOL_VERSION,
@@ -98,6 +99,10 @@ class CommitHost:
         self.checkpoint_consensus = self.consensus.checkpoints
         self.clock_controls = self.consensus.clock_controls
         self.synchronization = SynchronizationCoordinator(self)
+        self.anchor = AnchorCoordinator(self)
+        # Locally originated attestations need their own monotonic sequence
+        # so they can never collide with the game's intent stream.
+        self._next_local_seq = 1_000_000_000
         self.last_agreed_checkpoint: dict[str, Any] | None = None
         self.session_fault: str | None = None
         self.status = "starting"
@@ -148,6 +153,7 @@ class CommitHost:
                 "vehiclePhaseDivergenceStreak": self.vehicle_phase_divergence_streak,
                 "vehiclePhaseState": self.vehicle_phase_state,
                 **self.synchronization.status(),
+                **self.anchor.status(),
             }
         )
 
@@ -344,6 +350,27 @@ class CommitHost:
 
     def _pending_checkpoint(self) -> dict[str, Any] | None:
         return self.consensus.pending(self.checkpoint_consensus)
+
+    def emit_local_intent(self, action: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Order an action the host companion itself originated.
+
+        Used for attestations the companion is uniquely able to make - it
+        knows the pause state, the ordered history, and the save on disk -
+        rather than round-tripping a question through the game.
+        """
+
+        with self.order_lock:
+            local_seq = self._next_local_seq
+            self._next_local_seq += 1
+        return self._commit(sign({
+            "protocol": PROTOCOL_VERSION,
+            "session": self.bridge.session,
+            "peer": self.bridge.peer,
+            "local_seq": local_seq,
+            "tick": 0,
+            "kind": "intent",
+            "payload": {"action": dict(action)},
+        }))
 
     def _commit(self, intent: Mapping[str, Any]) -> dict[str, Any] | None:
         validate_envelope(intent, self.bridge.session)

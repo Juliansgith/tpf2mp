@@ -1914,6 +1914,134 @@ class RestorePointTests(unittest.TestCase):
             validate_action(extra)
 
 
+class AnchorCoordinatorTests(unittest.TestCase):
+    def _host(self, root: Path) -> CommitHost:
+        bridge = GameBridge(root / "host", "anchor-test", "player1")
+        return CommitHost(
+            bridge, "127.0.0.1", 0, root / "audit.ndjson", require_connected_peers=False
+        )
+
+    def _converge(self, host: CommitHost, boundary: int) -> None:
+        host.last_agreed_checkpoint = {
+            "boundarySeq": boundary, "convergenceKey": f"key-{boundary}",
+            "coreDigest": "core-1",
+        }
+        host.commits[boundary] = sign({
+            "protocol": 1, "session": "anchor-test", "peer": "player1",
+            "seq": boundary, "kind": "commit", "tick": 0,
+            "payload": {"action": {
+                "type": "network.checkpoint_outcome", "boundarySeq": boundary,
+                "success": True, "convergenceKey": f"key-{boundary}", "coreDigest": "core-1",
+            }},
+        })
+
+    def test_anchor_refuses_while_running_or_faulted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = self._host(root)
+            save = root / "world.sav"
+            save.write_bytes(b"world")
+
+            # No converged boundary and no acknowledged pause.
+            state = host.anchor.readiness()
+            self.assertFalse(state["ready"])
+            self.assertIn("no checkpoint boundary has converged yet", state["reasons"])
+            with self.assertRaisesRegex(ProtocolError, "save cannot be anchored"):
+                host.anchor.anchor_save(save, 1000)
+
+            self._converge(host, 4)
+            self.assertIn(
+                "the shared clock is not paused on every peer",
+                host.anchor.readiness()["reasons"],
+            )
+
+            host.clock_pause_acknowledged = True
+            self.assertTrue(host.anchor.readiness()["ready"])
+
+            host.session_fault = "operation-consensus-failed"
+            self.assertIn(
+                "the session has already faulted; restore instead of anchoring",
+                host.anchor.readiness()["reasons"],
+            )
+
+    def test_work_ordered_after_the_boundary_blocks_anchoring(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = self._host(root)
+            self._converge(host, 4)
+            host.clock_pause_acknowledged = True
+            self.assertTrue(host.anchor.readiness()["ready"])
+
+            host.commits[9] = sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player2",
+                "origin_peer": "player2", "seq": 9, "kind": "commit", "tick": 0,
+                "payload": {"action": {"type": "world.freeze", "freeze": True}},
+            })
+            self.assertIn(
+                "work has been ordered since the last converged checkpoint",
+                host.anchor.readiness()["reasons"],
+            )
+
+    def test_anchoring_files_one_ordered_receipt_and_reports_restorability(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = self._host(root)
+            self._converge(host, 4)
+            host.clock_pause_acknowledged = True
+            save = root / "world.sav"
+            save.write_bytes(b"world-at-boundary-4")
+            expected = hashlib.sha256(save.read_bytes()).hexdigest()
+
+            result = host.anchor.anchor_save(save, 1717171717)
+            self.assertTrue(result["filed"])
+            self.assertEqual(result["saveSha256"], expected)
+            self.assertEqual(result["boundarySeq"], 4)
+            self.assertTrue(result["paused"])
+
+            receipts = [
+                message for message in host.commits.values()
+                if (message.get("payload") or {}).get("action", {}).get("type")
+                == "recovery.save_receipt"
+            ]
+            self.assertEqual(len(receipts), 1)
+            self.assertEqual(receipts[0]["origin_peer"], "player1")
+
+            # A receipt is an attestation, not work: it must not block a
+            # second peer from anchoring the same boundary.
+            self.assertTrue(host.anchor.readiness()["ready"])
+            # Only this peer has filed, so nothing is restorable yet.
+            self.assertEqual(host.anchor.restorable(), [])
+
+            repeat = host.anchor.anchor_save(save, 1717171800)
+            self.assertFalse(repeat["filed"])
+            self.assertEqual(repeat["saveSha256"], expected)
+
+            # The other peer files for the same boundary.
+            host.commits[99] = sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player2",
+                "origin_peer": "player2", "seq": 99, "kind": "commit", "tick": 0,
+                "payload": {"action": {
+                    "type": "recovery.save_receipt", "boundarySeq": 4,
+                    "savedAtUnix": 1717171999, "saveSha256": "b" * 64,
+                    "coreDigest": "core-1", "convergenceKey": "key-4", "paused": True,
+                }},
+            })
+            self.assertEqual(host.anchor.restorable(), [4])
+            status = host.anchor.status()
+            self.assertEqual(status["restorePoints"], [4])
+            self.assertEqual(status["anchorsFiled"], [4])
+
+    def test_a_missing_save_is_refused_before_any_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = self._host(root)
+            self._converge(host, 4)
+            host.clock_pause_acknowledged = True
+            with self.assertRaisesRegex(ProtocolError, "is missing or is not a .sav"):
+                host.anchor.anchor_save(root / "absent.sav", 1000)
+            self.assertEqual(host.anchor.restorable(), [])
+
+
 class RecoveryArchiveTests(unittest.TestCase):
     def test_native_save_archive_is_signed_hashed_and_tamper_evident(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
