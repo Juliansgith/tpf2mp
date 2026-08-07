@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from .bridge import AuditLog, atomic_write
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
 from .protocol import PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_envelope, verify
+from .restore import verify_restore_plan
 
 RECOVERY_PLAN_VERSION = 1
 RECOVERY_ARCHIVE_VERSION = 1
@@ -215,12 +216,38 @@ def write_recovery_archive(
     if not session or peer not in {"player1", "player2"}:
         raise ProtocolError("recovery archive requires a session and numbered peer")
     verified_plan: dict[str, Any] | None = None
+    plan_kind: str | None = None
     if recovery_plan is not None:
-        verified_plan = verify_recovery_plan(recovery_plan)
+        try:
+            verified_plan = verify_restore_plan(recovery_plan)
+            plan_kind = "restore"
+        except ProtocolError:
+            verified_plan = verify_recovery_plan(recovery_plan)
+            plan_kind = "recovery"
         if verified_plan.get("session") != session:
             raise ProtocolError("recovery plan session differs from archive session")
         if peer not in verified_plan.get("requiredPeers", []):
             raise ProtocolError("recovery plan does not contain the archive peer")
+        if plan_kind == "restore":
+            expected_save = verified_plan["peerSaves"][peer]["saveSha256"]
+            if _sha256_file(source_save) != expected_save:
+                raise ProtocolError(
+                    f"native recovery save does not match {peer}'s receipt-bound restore plan"
+                )
+
+    restore_attestation = None
+    checkpoint_anchor = verified_plan.get("anchor") if verified_plan else None
+    if verified_plan and plan_kind == "restore":
+        restore_attestation = {
+            "peer": peer,
+            "requiredPeers": list(verified_plan["requiredPeers"]),
+            **dict(verified_plan["peerSaves"][peer]),
+        }
+        checkpoint_anchor = {
+            "boundarySeq": verified_plan["boundarySeq"],
+            "convergenceKey": verified_plan["convergenceKey"],
+            "coreDigest": verified_plan["coreDigest"],
+        }
 
     output = Path(output_directory).expanduser().resolve()
     if output.exists():
@@ -254,16 +281,19 @@ def write_recovery_archive(
             "peer": peer,
             "createdAtUtc": datetime.now(timezone.utc).isoformat(),
             "association": (
-                "agreed-checkpoint-native-save-candidate"
-                if verified_plan is not None
+                "coordinated-receipt-bound-restore-save"
+                if plan_kind == "restore"
+                else "agreed-checkpoint-native-save-candidate"
+                if plan_kind == "recovery"
                 else "unanchored-native-save"
             ),
             "save": {
                 "baseName": source_save.stem,
                 "files": files,
             },
-            "checkpointAnchor": verified_plan.get("anchor") if verified_plan else None,
+            "checkpointAnchor": checkpoint_anchor,
             "recoveryPlanChecksum": verified_plan.get("checksum") if verified_plan else None,
+            "restoreAttestation": restore_attestation,
             "limitations": [
                 "The archive proves the copied native bytes and, when linked, the authority checkpoint.",
                 "The game exposes no supported save-at-checkpoint command, so temporal association is not exact native-tick proof.",
@@ -292,6 +322,12 @@ def verify_recovery_archive(
         raise ProtocolError("recovery archive protocol mismatch")
     if manifest.get("peer") not in {"player1", "player2"} or not manifest.get("session"):
         raise ProtocolError("recovery archive identity is invalid")
+    association = manifest.get("association")
+    if association not in {
+        "unanchored-native-save", "agreed-checkpoint-native-save-candidate",
+        "coordinated-receipt-bound-restore-save",
+    }:
+        raise ProtocolError("recovery archive association is invalid")
     save = manifest.get("save")
     if not isinstance(save, dict) or not isinstance(save.get("files"), list):
         raise ProtocolError("recovery archive has no native save files")
@@ -313,4 +349,25 @@ def verify_recovery_archive(
             raise ProtocolError(f"recovery archive file size mismatch: {relative}")
         if _sha256_file(path) != item.get("sha256"):
             raise ProtocolError(f"recovery archive file hash mismatch: {relative}")
+    attestation = manifest.get("restoreAttestation")
+    if association == "coordinated-receipt-bound-restore-save":
+        if not isinstance(attestation, Mapping) or attestation.get("peer") != manifest["peer"]:
+            raise ProtocolError("receipt-bound recovery archive has no matching peer attestation")
+        required = attestation.get("requiredPeers")
+        if not isinstance(required, list) or manifest["peer"] not in required:
+            raise ProtocolError("receipt-bound recovery archive has an invalid peer roster")
+        save_entries = [item for item in save["files"] if item.get("role") == "save"]
+        if len(save_entries) != 1 or save_entries[0].get("sha256") != attestation.get("saveSha256"):
+            raise ProtocolError("receipt-bound recovery archive save differs from its attestation")
+        anchor = manifest.get("checkpointAnchor")
+        if not isinstance(anchor, Mapping) or any(
+            anchor.get(field) != attestation.get(field)
+            for field in ("boundarySeq", "coreDigest", "convergenceKey")
+        ):
+            raise ProtocolError("receipt-bound recovery archive names a different checkpoint")
+        if not isinstance(manifest.get("recoveryPlanChecksum"), str) \
+                or not manifest["recoveryPlanChecksum"]:
+            raise ProtocolError("receipt-bound recovery archive has no restore-plan checksum")
+    elif attestation is not None:
+        raise ProtocolError("non-receipted recovery archive contains a restore attestation")
     return manifest

@@ -1,9 +1,9 @@
 local util = require "tpf2_mp/util"
 local bridge = require "tpf2_mp/bridge"
+local clockHealth = require "tpf2_mp/network_clock_health"
 local world = require "tpf2_mp/world"
-
+local restoreBootstrapRuntime = require "tpf2_mp/restore_bootstrap_runtime"
 local M = {}
-
 function M.new(deps)
   assert(type(deps) == "table", "network clock runtime dependencies are required")
   local getState = assert(deps.getState, "getState dependency is required")
@@ -13,6 +13,10 @@ function M.new(deps)
   local awaitingOrder = assert(deps.awaitingOrder, "awaitingOrder dependency is required")
   local networkPendingBarrierReason =
     assert(deps.pendingBarrierReason, "pendingBarrierReason dependency is required")
+  local localWorkState = deps.localWorkState or function()
+    return { pending = awaitingOrder() ~= nil or networkPendingBarrierReason() ~= nil,
+      deferredCount = 0 }
+  end
   local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
   local commandFactory = deps.commandFactory or util.commandFactory
   local sendCommand = deps.sendCommand or util.sendCommand
@@ -41,6 +45,13 @@ function M.new(deps)
     manualBootstrap = { nextAttemptTick = 240, attempts = 0, submitted = false },
     pausedHealth = { calls = 0, lastWall = nil },
   }
+  -- Native clocks are not saved; their process-local rearm need is never serialized.
+  local nativeRearmPending = false
+  local restoreBootstrap = restoreBootstrapRuntime.new({
+    getState = getState, config = config, diagnosticLog = diagnosticLog,
+    submitIntent = submitIntent, awaitingOrder = awaitingOrder,
+    pendingBarrierReason = networkPendingBarrierReason,
+  })
 
   local function issueSpeed(speed, callback, origin)
     local factory = commandFactory("setGameSpeed")
@@ -98,18 +109,17 @@ function M.new(deps)
 
   local function freezeNetworkGame()
     if state.networkMode ~= "network" then return true end
-    local current, observed = state.world.networkClock, clockSnapshot() or {}
+    local current = state.world.networkClock
+    -- Build 35924 compares duplicate game-script states during startup. A
+    -- first-init native readback can differ in the second state and abort
+    -- StartGameSim, so keep the authored request identical and defer readback
+    -- until update(), after the engine's initial equality boundary.
     current.startupPause = {
-      requested = true, confirmed = tonumber(observed.gameSpeed) == 0,
-      observedBefore = tonumber(observed.gameSpeed), tick = state.tick,
+      requested = true, confirmed = false, tick = state.tick,
     }
     current.requestedSpeed, current.effectiveSpeed = 0, 0
-    if current.startupPause.confirmed then return true end
-    local sent, sendError = issueSpeed(0, function(_, success)
-      current.lastNativeSuccess = success == true
-      current.startupPause.confirmed = success == true
-      if success ~= true then current.startupPause.requested, current.startupPause.error = false, "native startup pause was rejected" end
-    end, "mod.network.startup-pause")
+    -- An init callback in only one duplicate state causes the same race.
+    local sent, sendError = issueSpeed(0, nil, "mod.network.startup-pause")
     if not sent then
       current.startupPause.requested, current.startupPause.error, current.lastError =
         false, tostring(sendError), tostring(sendError)
@@ -146,6 +156,12 @@ function M.new(deps)
   function networkClock.update()
     if state.networkMode ~= "network" then return false end
     local current = state.world.networkClock
+    if nativeRearmPending then
+      -- A normal update runs after Build 35924 compares duplicate ScriptSave() values.
+      current.startupPause = { requested = false, confirmed = false }
+      state.probes.networkCalendar = { frozen = false, requested = false }
+      nativeRearmPending = false
+    end
     -- app.loadGame restores native clocks after init(); re-arm them after each load.
     local startup = current.startupPause
     if type(startup) ~= "table" or startup.requested ~= true then
@@ -154,7 +170,10 @@ function M.new(deps)
       startup = current.startupPause
     elseif startup.confirmed ~= true then
       local observed = clockSnapshot() or {}
-      if tonumber(observed.gameSpeed) == 0 then startup.confirmed = true end
+      if tonumber(observed.gameSpeed) == 0 then
+        startup.confirmed = true
+        current.lastNativeSuccess = true
+      end
     end
     local calendar = state.probes.networkCalendar
     if type(calendar) ~= "table" or calendar.requested ~= true
@@ -268,30 +287,12 @@ function M.new(deps)
     networkClock.update()
     return true, util.deepCopy(current.rendezvous)
   end
-
   emitHealth = function(force)
     if state.networkMode ~= "network" or not state.initialized
       or (force ~= true and state.tick % 15 ~= 0) then return false end
     local observed, clock = clockSnapshot(), state.world.networkClock
-    local proposalPending = false
-    for _, record in pairs(state.world.proposalConsensus.byId or {}) do
-      if record.status == "pending" then proposalPending = true; break end
-    end
-    local rendezvous = clock.rendezvous
-    local ok, envelope = emit("clock_health", {
-      schemaVersion = 2,
-      requestedSpeed = util.integer(clock.requestedSpeed, 0),
-      effectiveSpeed = util.integer(clock.effectiveSpeed, 0),
-      generation = util.integer(clock.generation, 0),
-      observedSpeed = tonumber(observed.gameSpeed),
-      gameTime = tonumber(observed.time),
-      engineTick = state.tick,
-      lastCommitSeq = math.max(0, util.integer((state.bridge.nextInSeq or 1) - 1, 0)),
-      proposalPending = proposalPending,
-      rendezvousGeneration = rendezvous and util.integer(rendezvous.generation, 0) or 0,
-      rendezvousState = rendezvous and tostring(rendezvous.status or "armed") or "idle",
-      rendezvousTargetTime = rendezvous and tonumber(rendezvous.targetGameTime) or 0,
-    }, state.tick)
+    local payload = clockHealth.payload(state, observed, clock, localWorkState() or {})
+    local ok, envelope = emit("clock_health", payload, state.tick)
     if ok then
       clock.healthEmitted = (clock.healthEmitted or 0) + 1
       clock.lastHealthLocalSeq = envelope.local_seq
@@ -338,8 +339,10 @@ function M.new(deps)
     if launcherReady == true then bootstrap.launcherReady = true end
     local bootstrapReady = cfg.manualBootstrapReady == true or bootstrap.launcherReady == true
     if not cfg.manualNetwork or not bootstrapReady or state.networkMode ~= "network"
-      or state.initialized or state.bridge.peerId ~= "player1"
+      or state.bridge.peerId ~= "player1"
       or state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
+    if restoreBootstrap.maintain(bootstrap) then return end
+    if state.initialized then return end
     if awaitingOrder() or networkPendingBarrierReason() then return end
     local authority = state.probes.networkAuthority or {}
     if authority.ready ~= true then bootstrap.nextAttemptTick = state.tick + 30; return end
@@ -362,13 +365,7 @@ function M.new(deps)
       nextAttemptTick = 240, attempts = 0, submitted = false, launcherReady = false,
     }
     networkClock.pausedHealth = { calls = 0, lastWall = nil }
-    local current = state.world and state.world.networkClock or nil
-    if type(current) == "table" then
-      current.startupPause = { requested = false, confirmed = false }
-    end
-    if type(state.probes) == "table" then
-      state.probes.networkCalendar = { frozen = false, requested = false }
-    end
+    nativeRearmPending = true
   end
   return networkClock
 end

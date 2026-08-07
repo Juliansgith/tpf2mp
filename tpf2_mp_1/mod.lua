@@ -5,7 +5,7 @@
 local presentationOk, presentation = pcall(require, "tpf2_mp/presentation")
 
 function data()
-  local minorVersion = 22
+  local minorVersion = 23
   local agentModeKeys = { "skeleton", "vanilla", "empty" }
   local peerValues = { "player1 (host)", "player2 (client)" }
   local peerIds = { "player1", "player2" }
@@ -45,6 +45,9 @@ function data()
     if not tostring(result.sessionId or ""):match("^[%w_.%-]+$") then return {} end
     if tostring(result.bridgeDir or "") == "" then return {} end
     result.startNetwork = tostring(result.startNetwork):lower() == "true"
+    if result.townDevelopment ~= nil then
+      result.townDevelopment = tostring(result.townDevelopment):lower() == "true"
+    end
     return result
   end
 
@@ -85,7 +88,7 @@ function data()
           values = {
             "Skeleton crew (recommended)",
             "Full vanilla population",
-            "None (fastest)",
+            "Minimum safe crowd (fastest)",
           }, defaultIndex = 0 },
         { key = "liveValidator", name = "Developer disposable-world validator", values = { "Off", "Run once" }, defaultIndex = 0 },
       },
@@ -168,7 +171,15 @@ function data()
       -- Loss conditions are a match setting. "Off" keeps credit and interest
       -- meaningful but never eliminates anyone, which is the build-together
       -- session people ask for.
-      cfg.townDevelopment = tonumber(selected.townDevelopment) == 1
+      local townDevelopmentEnvironment = env("TPF2MP_TOWN_DEVELOPMENT", nil)
+      if townDevelopmentEnvironment ~= nil then
+        cfg.townDevelopment = tostring(townDevelopmentEnvironment):lower() == "1"
+          or tostring(townDevelopmentEnvironment):lower() == "true"
+      elseif launched.townDevelopment ~= nil then
+        cfg.townDevelopment = launched.townDevelopment == true
+      else
+        cfg.townDevelopment = tonumber(selected.townDevelopment) == 1
+      end
       local bankruptcyChoice = tonumber(selected.bankruptcy) or 0
       cfg.bankruptcyEnabled = bankruptcyChoice ~= 1
       cfg.insolventSettlements = bankruptcyChoice == 2 and 1 or 3
@@ -195,7 +206,9 @@ function data()
         return
       end
       local agentModeKey = env("TPF2MP_AGENT_MODE",
-        agentModeKeys[(tonumber(selected.agentMode) or 0) + 1] or presentation.DEFAULT_MODE)
+        launched.agentMode
+          or agentModeKeys[(tonumber(selected.agentMode) or 0) + 1]
+          or presentation.DEFAULT_MODE)
       local policy = presentation.mode(agentModeKey)
       cfg.agentMode = policy.label
       cfg.agentPolicyFingerprint = presentation.fingerprint(policy)

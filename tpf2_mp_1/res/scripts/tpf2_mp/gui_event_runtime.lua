@@ -7,11 +7,10 @@ local operationCodec = require "tpf2_mp/operation_codec"
 local runtimeConfig = require "tpf2_mp/runtime_config"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
+local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 local guiVehicleCaptureRuntimeModule = require "tpf2_mp/gui_vehicle_capture_runtime"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
-
 local M = {}
-
 function M.new(deps)
   assert(type(deps) == "table", "GUI event runtime dependencies are required")
   local getState = assert(deps.getState, "getState dependency is required")
@@ -20,21 +19,19 @@ function M.new(deps)
   local queueAction = assert(deps.queueAction, "queueAction dependency is required")
   local renderGui = assert(deps.renderGui, "renderGui dependency is required")
   local ensureWindow = assert(deps.ensureWindow, "ensureWindow dependency is required")
-  local installMultiplayerEntryPoints =
-    assert(deps.installMultiplayerEntryPoints, "installMultiplayerEntryPoints dependency is required")
-  local enforceProxyGuiLocks =
-    assert(deps.enforceProxyGuiLocks, "enforceProxyGuiLocks dependency is required")
+  local installMultiplayerEntryPoints = assert(
+    deps.installMultiplayerEntryPoints, "installMultiplayerEntryPoints dependency is required")
+  local enforceProxyGuiLocks = assert(deps.enforceProxyGuiLocks, "enforceProxyGuiLocks dependency is required")
   local componentEntitySet = assert(deps.componentEntitySet, "componentEntitySet dependency is required")
   local balanceOf = assert(deps.balanceOf, "balanceOf dependency is required")
   local nativeHookStatus = assert(deps.nativeHookStatus, "nativeHookStatus dependency is required")
   local markNativeContext = assert(deps.markNativeContext, "markNativeContext dependency is required")
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
-  local projectNetworkSpeedIndicator = assert(deps.projectNetworkSpeedIndicator,
-    "projectNetworkSpeedIndicator dependency is required")
+  local projectNetworkSpeedIndicator = assert(
+    deps.projectNetworkSpeedIndicator, "projectNetworkSpeedIndicator dependency is required")
   local EVENT_ID = tostring(deps.eventId or "tpf2mp")
   local SCRIPT_FILE = tostring(deps.scriptFile or "tpf2_mp.lua")
   local setDifference = util.setDifference
-
   local state = setmetatable({}, {
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
@@ -43,7 +40,6 @@ function M.new(deps)
     queueAction = queueAction,
     maxStops = operationCodec.MAX_STOPS,
   })
-
   local proposalCost
   local guiCapture = guiCaptureModule.install(gui, {
     proposalCost = function(param)
@@ -70,7 +66,6 @@ function M.new(deps)
       tostring(first.localId or "?"), tostring(ownerName), suffix
     )
   end
-  
   local ENTITY_EVENT_FIELDS = {
     entity = true, entityId = true, vehicle = true, vehicleEntity = true,
     line = true, lineEntity = true, station = true, stationEntity = true,
@@ -82,7 +77,6 @@ function M.new(deps)
     lines = true, lineEntities = true, stations = true, stationEntities = true,
     depots = true, depotEntities = true, constructions = true, constructionEntities = true,
   }
-  
   local function mutatingEntityEvent(id, name)
     local text = (tostring(id or "") .. "." .. tostring(name or "")):lower()
     for _, token in ipairs({
@@ -1023,6 +1017,7 @@ function M.new(deps)
   end
   
   local function guiInit()
+      replayQuarantine.reset(gui)
       local lineTypes = api.type and api.type.ComponentType or {}
       local initialLines = componentEntitySet(lineTypes.LINE)
       if initialLines then gui.nativeLineKnownIds = initialLines end
@@ -1195,6 +1190,8 @@ function M.new(deps)
         local eventName = tostring(name or "")
         local isProposalCreate = eventName:find("builder.proposalCreate", 1, true) ~= nil
         local isProposalApply = eventName:find("builder.apply", 1, true) ~= nil
+        local quarantined, quarantineResult = replayQuarantine.handleBuilderEvent(gui, id, isProposalCreate, isProposalApply, diagnosticLog)
+        if quarantined then return quarantineResult end
         if config().operationalCapture and not isProposalCreate and not isProposalApply
           and operationalGuiMutation(id, name) then
           local envelope = expandedCommandEnvelope(param)

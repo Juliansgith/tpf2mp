@@ -5,7 +5,7 @@ TPF2MP is an executable research prototype for competitive Transport Fever 2. It
 1. A playable local hot-seat mode with two native companies, separate wallets, separate logical assets, a turn-desk proxy, contested demand, fares, scoring, match rules, save state, and checkpoints.
 2. A simultaneous-networking laboratory with a TCP commit sequencer, canonical identities, an exact-build native command gate, and canonical road/track, edge-object, and construction replay.
 
-The second item is not yet finished same-world multiplayer. Prototype `0.22`, state schema `22`, checkpoint format `3`, edge proposal schema `5`, and construction proposal schema `7` converge from the same populated save, give pre-existing assets the same canonical ownership, replay bounded construction transactions, reconcile canonical finance, compare direct passenger telemetry, and establish all-peer checkpoints without putting engine-local IDs on the wire. Schema 5 adds named signals/waypoints and preserves them across track replacement. Schema 7 adds portable named construction payloads for depots, ordinary constructions, `ASSET_GROUP`-only assets, observable upgrades, modular station edits, and removal. The ordinary-UI localhost construction matrix now passes for signals/waypoints, depot placement/use, stock modular-station placement/edit/removal, bench placement/removal with rival denial, and lamp/fence placement. Construction uses an all-peer prepare/commit barrier: geometry and named resources must resolve everywhere before either world mutates. Shared-clock v2 uses future simulation-time rendezvous, paused heartbeats, catch-up rounds, a slowest-peer cap, and an explicit connected-but-modal pause state that protects timeout budgets without pretending the missing game acknowledged. Assigned canonical trains are held until both copies report the same vehicle/line/stop/leg; ordinary lines then receive a short guarded release, while registered competitive services reserve their authored departure slot. Exact two-process runs prove both modes, including four prompt ordinary-line rounds with zero faults and matching core/model/structure/mobility state. Two-computer latency, disconnect recovery, and unsupported command families remain open. See [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md), [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md), and [the schedule/barrier-load investigation](investigation/STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md) for the precise boundary.
+The second item is not yet finished same-world multiplayer. Prototype `0.23`, state schema `23`, checkpoint format `3`, edge proposal schema `5`, and construction proposal schema `7` now cover canonical construction, lines, stock train purchase/assignment, station-leg synchronization, authored town development, and receipt-bound coordinated restore. Exact two-process runs converge the canonical/model/structural domains, while unsupported command families and the first true two-computer usability gate remain open. See [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md), [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md), and [the investigation index](investigation/README.md) for the precise evidence boundary.
 
 ## What works now
 
@@ -31,6 +31,18 @@ The second item is not yet finished same-world multiplayer. Prototype `0.22`, st
 - A one-window multiplayer launcher (`LAUNCH_TPF2MP.cmd`) with Host, Join, automated Localhost Test, exact fingerprinting, connection/recovery status, logs, evidence collection, and exact-session stop controls. Normal Host/Join installs a real `MULTIPLAYER` title-screen entry and waits for the player to select it before loading the pinned save.
 - A second all-peer checkpoint barrier after match start, every successful physical action, and every unanimously rejected no-mutation proposal. Later commands stay blocked until both peers attest the same core, structure, and finances. The host recovery watcher links a later stable native save to the latest verified boundary, hashes and archives its save triplet, and reports it in the launcher. It explicitly does not claim exact-tick capture or automatic geometry repair.
 - A distributable ZIP with a standalone companion executable, auto-detecting installer, verifier, recoverable uninstaller, match-manifest tool, and host/client/native launchers.
+- A one-button coordinated restore boundary: pause/quiescence preparation,
+  distinct peer save receipts, schema-2 restore-plan verification, peer-local
+  reload, `recovery.resume` admission, and a mandatory fresh checkpoint all
+  pass on two exact processes before train service resumes.
+- Optional host-authored physical town development. Points and placement
+  cursors are digest-projected/replayed, every ordered batch is strict and
+  atomic, and three eight-call rounds converge at every intermediate
+  structural checkpoint on two exact processes.
+- Match-bound native crowd policies. Skeleton is the default; minimum-safe is
+  the fastest supported choice. Fresh-world controls prove the data modifier
+  reduces town capacity materially, while literal zero capacity is an exact
+  Build 35924 fatal and is no longer shipped.
 
 ## Install from the development tree
 
@@ -49,7 +61,7 @@ Run PowerShell from this directory:
 .\tools\package_release.ps1
 ```
 
-This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.22.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
+This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.23.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
 
 An extracted package installs with:
 
@@ -222,7 +234,7 @@ The plan names the exact convergence boundary and new session ID. Host sessions 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - runtime layers, module ownership,
   authority invariants, and the supported path for adding command families.
 
-- `tpf2_mp_1/` — installable prototype 0.22; state schema 22, checkpoint format 3, edge schema 5, and construction schema 7.
+- `tpf2_mp_1/` — installable prototype 0.23; state schema 23, checkpoint format 3, edge schema 5, and construction schema 7.
 - `companion/tpf2mp/` — dependency-free protocol, bridge, host/client sequencer, manifests, replay, and reports.
 - `native/` — pinned Build 35924 DLL/injector, signatures, MinHook pin, tests, and documentation.
 - `tests/` — Lua unit/integration/replay tests and Python protocol/TCP tests.

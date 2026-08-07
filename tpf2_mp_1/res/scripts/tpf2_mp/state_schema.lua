@@ -77,6 +77,57 @@ local function startingAutonomyFreeze(saved)
   return util.deepCopy(result)
 end
 
+local function restoreResumeValidation(saved, cfg)
+  local request = cfg.restoreResume
+  local savedWorld = type(saved.world) == "table" and saved.world or {}
+  if type(request) ~= "table" or request.requested ~= true or request.valid ~= true then
+    return false, type(request) == "table" and request.error
+      or "launcher restore attestation is unavailable"
+  end
+  local priorBridge = type(saved.bridge) == "table" and saved.bridge or {}
+  if saved.networkMode ~= "network" or saved.initialized ~= true then
+    return false, "restore source is not an initialized network match"
+  end
+  if tostring(priorBridge.sessionId or "") ~= tostring(request.fromSession)
+    or tostring(priorBridge.peerId or "") ~= tostring(cfg.peerId) then
+    return false, "restore source session or peer does not match the attested save"
+  end
+  if tostring(cfg.sessionId) ~= tostring(request.fromSession) .. "-r"
+      .. tostring(request.boundarySeq) then
+    return false, "restore resume session does not match its attested boundary"
+  end
+  local consensus = savedWorld.checkpointConsensus
+  local anchor = consensus and consensus.byBoundary
+    and consensus.byBoundary[tostring(request.boundarySeq)] or nil
+  local preparation = saved.recovery and saved.recovery.anchorPreparation or nil
+  if type(anchor) ~= "table" or anchor.status ~= "complete" or anchor.success ~= true
+    or tostring(anchor.coreDigest or "") ~= tostring(request.coreDigest)
+    or tostring(anchor.convergenceKey or "") ~= tostring(request.convergenceKey) then
+    return false, "saved checkpoint does not match the restore plan"
+  end
+  if type(preparation) ~= "table" or preparation.status ~= "ready"
+    or util.integer(preparation.boundarySeq, 0) ~= request.boundarySeq then
+    return false, "saved world was not at a prepared restore boundary"
+  end
+  for _, records in ipairs({
+    savedWorld.proposalConsensus and savedWorld.proposalConsensus.byId or {},
+    savedWorld.operationConsensus and savedWorld.operationConsensus.byId or {},
+    consensus and consensus.byBoundary or {},
+  }) do
+    for _, record in pairs(records) do
+      if type(record) == "table" and record.status == "pending" then
+        return false, "saved world contains an unfinished consensus barrier"
+      end
+    end
+  end
+  if savedWorld.proposalConsensus and savedWorld.proposalConsensus.sessionFault
+    or savedWorld.operationConsensus and savedWorld.operationConsensus.sessionFault
+    or util.tableCount(savedWorld.originResidueCustody or {}) > 0 then
+    return false, "saved world contains a fault or unowned native residue"
+  end
+  return true, util.deepCopy(anchor)
+end
+
 function M.new(cfg, versions)
   local STATE_VERSION = assert(versions and versions.stateVersion, "stateVersion is required")
   local CHECKPOINT_VERSION = assert(versions and versions.checkpointVersion, "checkpointVersion is required")
@@ -113,6 +164,12 @@ function M.new(cfg, versions)
       proxyMode = false,
       pauseOnSwitch = cfg.pauseOnSwitch,
       autonomyFrozen = false,
+      townDevelopment = {
+        schemaVersion = 1,
+        enabled = cfg.townDevelopment == true,
+        points = {},
+        cursor = {},
+      },
       logicalOwners = {},
       logicalOwnershipAuthoritative = false,
       initialNetworkOwnership = nil,
@@ -331,7 +388,40 @@ function M.migrate(saved, context)
   -- canonical state and merely rebinds the machine-local bridge/peer below.
   local priorSessionId = saved.bridge and saved.bridge.sessionId or nil
   local networkSessionChanged = tostring(priorSessionId or "") ~= tostring(cfg.sessionId)
-  if cfg.startNetwork
+  if cfg.startNetwork and networkSessionChanged
+    and type(cfg.restoreResume) == "table" and cfg.restoreResume.requested == true then
+    local valid, anchorOrError = restoreResumeValidation(saved, cfg)
+    if not valid then
+      local fresh = newState()
+      fresh.recovery.restoreResume = {
+        status = "failed",
+        fromSession = cfg.restoreResume.fromSession,
+        sessionId = cfg.sessionId,
+        boundarySeq = cfg.restoreResume.boundarySeq,
+        planChecksum = cfg.restoreResume.planChecksum,
+        error = tostring(anchorOrError),
+      }
+      fresh.lastError = "restore refused: " .. tostring(anchorOrError)
+      return fresh
+    end
+    saved.recovery = saved.recovery or { schemaVersion = 1 }
+    saved.recovery.restoreResume = {
+      status = "validated",
+      fromSession = cfg.restoreResume.fromSession,
+      sessionId = cfg.sessionId,
+      boundarySeq = cfg.restoreResume.boundarySeq,
+      coreDigest = cfg.restoreResume.coreDigest,
+      convergenceKey = cfg.restoreResume.convergenceKey,
+      planChecksum = cfg.restoreResume.planChecksum,
+      sourceAnchor = anchorOrError,
+    }
+    saved.recovery.anchorPreparation = nil
+    -- These controls are numbered within one sequencer session. Retaining the
+    -- old boundary table could make resume commit 1 look already complete;
+    -- retaining its clock generation would reject the new host's generation 1.
+    saved.world.checkpointConsensus = nil
+    saved.world.networkClock = nil
+  elseif cfg.startNetwork
     and (saved.networkMode ~= "network" or networkSessionChanged) then
     local ownershipHints = startingOwnershipHints(saved)
     local autonomyFreeze = startingAutonomyFreeze(saved)
@@ -408,6 +498,18 @@ function M.migrate(saved, context)
     saved.world.logicalOwnershipAuthoritative = saved.networkMode == "network"
   end
   saved.world.pinnedCustody = saved.world.pinnedCustody or {}
+  local legacyTownPoints = type(saved.world.townDevelopmentPoints) == "table"
+    and saved.world.townDevelopmentPoints or nil
+  saved.world.townDevelopment = saved.world.townDevelopment
+    or util.deepCopy(defaults.world.townDevelopment)
+  saved.world.townDevelopment.schemaVersion = 1
+  if type(saved.world.townDevelopment.enabled) ~= "boolean" then
+    saved.world.townDevelopment.enabled = defaults.world.townDevelopment.enabled
+  end
+  saved.world.townDevelopment.points = saved.world.townDevelopment.points
+    or legacyTownPoints or {}
+  saved.world.townDevelopment.cursor = saved.world.townDevelopment.cursor or {}
+  saved.world.townDevelopmentPoints = nil
   saved.world.originResidueCustody = saved.world.originResidueCustody or {}
   saved.world.originResidueNextToken = math.max(1,
     util.integer(saved.world.originResidueNextToken, 1))
@@ -531,8 +633,14 @@ function M.migrate(saved, context)
     saved.validation = util.deepCopy(defaults.validation)
   end
   saved.validation.kind = saved.validation.kind or defaults.validation.kind
-  saved.validation.sessionId = saved.validation.sessionId or cfg.sessionId
-  saved.validation.peerId = saved.validation.peerId or cfg.peerId
+  if saved.recovery and saved.recovery.restoreResume
+    and saved.recovery.restoreResume.status == "validated" then
+    saved.validation.sessionId = cfg.sessionId
+    saved.validation.peerId = cfg.peerId
+  else
+    saved.validation.sessionId = saved.validation.sessionId or cfg.sessionId
+    saved.validation.peerId = saved.validation.peerId or cfg.peerId
+  end
   saved.validation.checks = saved.validation.checks or {}
   saved.validation.values = saved.validation.values or {}
   if (config().autoValidate or config().networkAutoValidate)

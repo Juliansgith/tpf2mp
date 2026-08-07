@@ -11,17 +11,32 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\config\game_script\tpf2_mp.lua' = 3400
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_followup_queue.lua' = 170
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_bridge_consumer.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_runtime.lua' = 360
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_health.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\network_speed_indicator.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_runtime.lua' = 420
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_state.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\native_ownership_projection.lua' = 180
+    'tpf2_mp_1\res\scripts\tpf2_mp\match_runtime.lua' = 120
+    'tpf2_mp_1\res\scripts\tpf2_mp\authored_followup_runtime.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\recovery_prepare_runtime.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_clock.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\validation_town_development.lua' = 180
+    'tpf2_mp_1\res\scripts\tpf2_mp\operational_capture_runtime.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_entry_points.lua' = 90
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_quarantine.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_network_bootstrap.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_runtime.lua' = 650
     'companion\tpf2mp\network.py' = 1450
+    'companion\tpf2mp\client.py' = 200
+    'companion\tpf2mp\anchor.py' = 300
+    'companion\tpf2mp\anchor_prepare.py' = 260
+    'companion\tpf2mp\anchor_io.py' = 300
+    'companion\tpf2mp\restore.py' = 400
     'companion\tpf2mp\consensus.py' = 400
     'companion\tpf2mp\synchronization.py' = 700
     'companion\tpf2mp\vehicle_barrier.py' = 390
@@ -31,6 +46,7 @@ $budgets = [ordered]@{
     'native\src\native_hook_status.cpp' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2100
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
 }
 
 foreach ($relative in $budgets.Keys) {
@@ -50,16 +66,21 @@ $entryPoint = Get-Content -LiteralPath `
 $requiredModules = @(
     'tpf2_mp/runtime_config',
     'tpf2_mp/state_schema',
+    'tpf2_mp/match_runtime',
     'tpf2_mp/checkpoint_runtime',
     'tpf2_mp/public_snapshot',
     'tpf2_mp/proposal_runtime',
     'tpf2_mp/operation_runtime',
     'tpf2_mp/network_intent_runtime',
     'tpf2_mp/network_clock_runtime',
+    'tpf2_mp/authored_followup_runtime',
+    'tpf2_mp/recovery_prepare_runtime',
     'tpf2_mp/network_speed_indicator',
     'tpf2_mp/vehicle_sync_runtime',
     'tpf2_mp/validation_runtime',
+    'tpf2_mp/operational_capture_runtime',
     'tpf2_mp/gui_state',
+    'tpf2_mp/gui_entry_points',
     'tpf2_mp/gui_capture',
     'tpf2_mp/gui_view',
     'tpf2_mp/gui_event_runtime',
@@ -81,6 +102,8 @@ foreach ($movedDefinition in @(
     'local function validationTransition',
     'local function processSuppressedNativeBuildCapture',
     'local function processGuiOperationQueue',
+    'local function sampleOperationalCapture',
+    'local function operationalAccountSnapshot',
     'local gui = {'
 )) {
     if ($entryPoint.Contains($movedDefinition)) {
@@ -97,6 +120,14 @@ $worldSource = Get-Content -LiteralPath `
 if (-not $worldSource.Contains('require "tpf2_mp/native_ownership_projection"')) {
     throw 'World runtime no longer composes the native ownership projection boundary.'
 }
+if (-not $worldSource.Contains('require "tpf2_mp/world_operational_telemetry"')) {
+    throw 'World runtime no longer composes the operational telemetry boundary.'
+}
+$validationSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua') -Raw
+if (-not $validationSource.Contains('require "tpf2_mp/validation_town_development"')) {
+    throw 'Validation runtime no longer composes the town-development validation boundary.'
+}
 
 $hostSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\network.py') -Raw
 if ($hostSource -match '(?m)^class CommitClient:') {
@@ -109,6 +140,23 @@ if (-not $hostSource.Contains('from .client import CommitClient') `
 }
 if (-not $hostSource.Contains('from .synchronization import SynchronizationCoordinator')) {
     throw 'Companion host no longer composes the clock/vehicle synchronization boundary.'
+}
+if (-not $hostSource.Contains('from .anchor_io import AnchorRequestStore')) {
+    throw 'Companion host no longer composes the native-save request boundary.'
+}
+if (-not $hostSource.Contains('from .anchor_prepare import AnchorPreparationCoordinator')) {
+    throw 'Companion host no longer composes the one-action anchor preparation boundary.'
+}
+$clientSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\client.py') -Raw
+if (-not $clientSource.Contains('from .anchor_io import AnchorRequestStore')) {
+    throw 'Companion client no longer composes the native-save request boundary.'
+}
+$intentSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua') -Raw
+foreach ($requiredModule in @('network_followup_queue', 'network_bridge_consumer')) {
+    if (-not $intentSource.Contains($requiredModule)) {
+        throw "Network intent runtime no longer composes $requiredModule."
+    }
 }
 $syncSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\synchronization.py') -Raw
 if (-not $syncSource.Contains('from .vehicle_barrier import VehicleStationBarrier')) {

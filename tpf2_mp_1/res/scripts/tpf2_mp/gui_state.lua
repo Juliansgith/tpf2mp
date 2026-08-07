@@ -19,6 +19,11 @@ function M.new()
   proposalIssued = {},
   proposalResults = {},
   pendingProposalCaptures = {},
+  -- A delayed canonical BuildProposal can replace the edge underneath the
+  -- origin's still-open road/track/signal ghost.  While its native callback
+  -- and wallet samples settle, GUI builder userdata may refer to the removed
+  -- edge and must not be traversed (Build 35924 raises an internal error).
+  proposalReplayQuarantine = nil,
   operationIssued = {},
   operationResults = {},
   pendingOperationCaptures = {},
@@ -42,6 +47,8 @@ function M.new()
     constructionPreviewsSkipped = 0,
     constructionPreviewsArmed = 0,
     coalescedConstructionSuppressions = 0,
+    replayPreviewsQuarantined = 0,
+    replayAppliesRejected = 0,
   },
   nativeClockCapture = {
     captured = 0,

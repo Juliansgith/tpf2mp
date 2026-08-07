@@ -56,6 +56,30 @@ local function playerIdList(value)
   return result
 end
 
+local function restoreResumeConfig(readEnvironment, enabled)
+  if not enabled then return nil end
+  local sourceSession = tostring(readEnvironment("TPF2MP_RESTORE_FROM_SESSION") or "")
+  local boundarySeq = tonumber(readEnvironment("TPF2MP_RESTORE_BOUNDARY"))
+  local coreDigest = tostring(readEnvironment("TPF2MP_RESTORE_CORE_DIGEST") or "")
+  local convergenceKey = tostring(readEnvironment("TPF2MP_RESTORE_CONVERGENCE_KEY") or "")
+  local planChecksum = tostring(readEnvironment("TPF2MP_RESTORE_PLAN_CHECKSUM") or "")
+  local valid = sourceSession:match("^[%w][%w_.%-]*$") ~= nil and #sourceSession <= 64
+    and boundarySeq and boundarySeq >= 1 and boundarySeq == math.floor(boundarySeq)
+    and coreDigest:match("^[0-9a-f]+$") ~= nil and #coreDigest == 8
+    and convergenceKey:match("^[0-9a-f]+$") ~= nil and #convergenceKey == 8
+    and planChecksum:match("^[0-9a-f]+$") ~= nil and #planChecksum == 8
+  return {
+    requested = true,
+    valid = valid and true or false,
+    fromSession = sourceSession,
+    boundarySeq = boundarySeq,
+    coreDigest = coreDigest,
+    convergenceKey = convergenceKey,
+    planChecksum = planChecksum,
+    error = valid and nil or "launcher restore attestation is malformed",
+  }
+end
+
 function M.writeBridgeMarker(root, name, content)
   if not (io and io.open) then return false, "Lua file IO is unavailable" end
   if type(root) ~= "string" or root == "" or type(name) ~= "string"
@@ -104,6 +128,8 @@ function M.read(options)
   local networkValidationRequested = source.networkAutoValidate == true
     or environmentEnabled("TPF2MP_NETWORK_AUTOTEST")
   local networkRuntimeRequested = networkValidationRequested or manualNetwork
+  local restoreResume = restoreResumeConfig(readEnvironment,
+    environmentEnabled("TPF2MP_RESTORE_RESUME"))
   -- The two-process validator and the human lab use the same exact processes.
   -- Once PowerShell has independently accepted both validation records it
   -- writes this per-peer marker. Both Lua states then leave validator-only GUI
@@ -141,6 +167,7 @@ function M.read(options)
     networkManualHandoff = networkManualHandoff,
     manualNetwork = manualNetwork,
     manualBootstrapReady = manualBootstrapReady,
+    restoreResume = restoreResume,
     operationalCapture = operationalCapture,
     -- Agent presentation policy is match content; the label and its
     -- fingerprint travel into state so peers can compare them.
@@ -150,7 +177,8 @@ function M.read(options)
     -- Physical town development is an experiment: it lets vanilla choose
     -- lots and relies on the structural digest to say whether the two
     -- worlds agreed. Off by default until a live run answers that.
-    townDevelopment = source.townDevelopment == true,
+    townDevelopment = source.townDevelopment == true
+      or environmentEnabled("TPF2MP_TOWN_DEVELOPMENT"),
     bankruptcyEnabled = source.bankruptcyEnabled ~= false,
     insolventSettlements = util.integer(source.insolventSettlements, 3),
     creditBaseLimitCents = util.integer(source.creditBaseLimitCents, 500000000),

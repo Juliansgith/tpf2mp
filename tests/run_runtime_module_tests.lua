@@ -6,20 +6,64 @@ local stateSchema = require "tpf2_mp/state_schema"
 local nativeHook = require "tpf2_mp/native_hook"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
+local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local authoredFollowupRuntimeModule = require "tpf2_mp/authored_followup_runtime"
 local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
+local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local economyModule = require "tpf2_mp/economy"
 local financeModule = require "tpf2_mp/finance"
+local bridgeModule = require "tpf2_mp/bridge"
 local util = require "tpf2_mp/util"
+
+do
+  local previousApi = rawget(_G, "api")
+  local registry, hudItems, pauseItems = {}, {}, {}
+  local function layout(items)
+    return { addItem = function(_, value) items[#items + 1] = value end }
+  end
+  registry["gameInfo.layout"] = layout(hudItems)
+  local pauseLayout = layout(pauseItems)
+  registry["ingameMenu.quitButton"] = {
+    getParent = function()
+      return { getLayout = function() return pauseLayout end }
+    end,
+  }
+  api = { gui = {
+    util = { getById = function(id) return registry[id] end },
+    comp = {
+      TextView = { new = function(value) return { text = value } end },
+      Button = { new = function(label)
+        local button = { label = label }
+        function button:setId(id) self.id = id; registry[id] = self end
+        function button:onClick(callback) self.callback = callback end
+        return button
+      end },
+    },
+  } }
+  local state, opened = {}, 0
+  assert(guiEntryPointsModule.install(state, function() opened = opened + 1 end) == true
+      and state.entryPointsInstalled == true
+      and #hudItems == 1 and hudItems[1].id == "tpf2mp.hudEntry"
+      and #pauseItems == 1 and pauseItems[1].id == "tpf2mp.pauseEntry",
+    "multiplayer entry points did not bind the stock HUD layout and pause-button parent")
+  hudItems[1].callback()
+  assert(opened == 1, "multiplayer HUD entry did not reopen its window")
+  assert(guiEntryPointsModule.install(state, function() end) == true
+      and #hudItems == 1 and #pauseItems == 1,
+    "multiplayer entry-point installation was not idempotent")
+  api = previousApi
+end
 
 do
   local observerCalls, marked, gameCalls, calendarCalls = 0, nil, 0, 0
@@ -119,7 +163,7 @@ end
 
 do
   local current = stateSchema.new(baseConfig(), {
-    stateVersion = 22,
+    stateVersion = 23,
     checkpointVersion = 3,
   })
   current.initialized = true
@@ -279,6 +323,361 @@ do
   controller.reset()
   assert(controller.awaitingOrder() == nil and #controller.deferredIntents() == 0,
     "network intent controller reset did not clear machine-local state")
+end
+
+do
+  local current = {
+    networkMode = "network", tick = 12, bridge = { nextInSeq = 10 }, recovery = {},
+  }
+  local emitted, barriers = 0, {}
+  local runtime = recoveryPrepareRuntimeModule.new({
+    getState = function() return current end,
+    emitCheckpoint = function(reason) emitted = emitted + 1; return true, reason end,
+    exportCheckpointBarrier = function(boundary, reason)
+      barriers[#barriers + 1] = { boundary = boundary, reason = reason }
+      return true, barriers[#barriers]
+    end,
+  })
+  local prepared, preparation = runtime.prepare({}, nil, 7)
+  assert(prepared and preparation.preparationSeq == 7
+      and current.recovery.anchorPreparation.status == "requested",
+    "ordered recovery preparation did not enter game-side state")
+  local requested, checkpoint = runtime.checkpointRequest({
+    preparationSeq = 7, reason = "recovery-prepare:7",
+  }, nil, 8)
+  assert(requested and checkpoint.boundary == 8 and checkpoint.reason == "recovery-prepare:7",
+    "host checkpoint request did not export its exact ordered boundary")
+  runtime.checkpointOutcome({ boundarySeq = 8 }, true,
+    { reason = "recovery-prepare:7" })
+  assert(current.recovery.anchorPreparation.status == "ready",
+    "checkpoint consensus did not complete persisted preparation state")
+  assert(runtime.checkpointRequest({ preparationSeq = 7, reason = "wrong" }, nil, 8) == false,
+    "malformed host checkpoint request was accepted")
+  local manual, manualResult = runtime.manualCheckpoint({ reason = "manual-ui" })
+  assert(manual and manualResult.boundary == 9 and emitted == 0,
+    "network manual checkpoint did not use a consensus barrier at the inbox tip")
+  current.networkMode = "standalone"
+  assert(runtime.manualCheckpoint({ reason = "debug" }) == true and emitted == 1,
+    "standalone debug checkpoint no longer uses the direct exporter")
+end
+
+do
+  -- Lua must accept and reject exactly the same authored follow-up payloads
+  -- as the Python protocol validator.  In particular, a canonical-looking
+  -- town id is not enough: every peer must have a manifest binding before
+  -- the first native development call is made.
+  local current = {
+    initialized = true,
+    canonical = {
+      byCanonical = {
+        ["town:pre:bound"] = {
+          canonicalId = "town:pre:bound", kind = "town", localId = 17,
+        },
+      },
+      byLocal = { ["town:17"] = "town:pre:bound" },
+    },
+  }
+  local valid, validationError = authoredFollowupRuntimeModule.validateTownBatch(
+    current, { ["town:pre:bound"] = 8 }, true)
+  assert(valid == true and validationError == nil,
+    "a valid bound town-development batch was rejected")
+  local invalidBatches = {
+    {},
+    { ["city:pre:bound"] = 1 },
+    { ["town:pre:bound"] = 0 },
+    { ["town:pre:bound"] = 9 },
+    { ["town:pre:bound"] = 1.5 },
+    { ["town:pre:missing"] = 1 },
+  }
+  for _, batch in ipairs(invalidBatches) do
+    assert(authoredFollowupRuntimeModule.validateTownBatch(current, batch, true) == false,
+      "Lua accepted a town-development batch Python rejects")
+  end
+
+  local receipt = {
+    type = "recovery.save_receipt", boundarySeq = 4, savedAtUnix = 1717171717,
+    saveSha256 = string.rep("a", 64), coreDigest = "core-1",
+    convergenceKey = "key-4", paused = true,
+  }
+  local acknowledged, receiptResult = authoredFollowupRuntimeModule.acknowledgeSaveReceipt(
+    current, receipt)
+  assert(acknowledged == true and receiptResult.boundarySeq == 4,
+    "valid save receipt was not acknowledged by the game")
+  local receiptMutations = {
+    { field = "paused", value = false },
+    { field = "boundarySeq", value = 0 },
+    { field = "savedAtUnix", value = -1 },
+    { field = "saveSha256", value = "not-a-hash" },
+    { field = "coreDigest", value = "" },
+  }
+  for _, mutation in ipairs(receiptMutations) do
+    local broken = util.deepCopy(receipt)
+    broken[mutation.field] = mutation.value
+    assert(authoredFollowupRuntimeModule.acknowledgeSaveReceipt(current, broken) == false,
+      "Lua accepted a save receipt Python rejects: " .. mutation.field)
+  end
+  local tooLarge = util.deepCopy(receipt)
+  tooLarge.boundarySeq = 9007199254740992
+  assert(authoredFollowupRuntimeModule.acknowledgeSaveReceipt(current, tooLarge) == false,
+    "Lua accepted an integer outside the shared exact-safe range")
+  local extra = util.deepCopy(receipt)
+  extra.unexpected = true
+  assert(authoredFollowupRuntimeModule.acknowledgeSaveReceipt(current, extra) == false,
+    "Lua accepted an unknown save-receipt field")
+end
+
+do
+  -- Commit-derived work must never emit recursively. Repeated registrations
+  -- to one line collapse into one eventual action.
+  local current = {
+    networkMode = "network", initialized = false, tick = 20,
+    bridge = { peerId = "player1" },
+    probes = { networkAuthority = { ready = true } },
+    world = {
+      proposalConsensus = { byId = {} },
+      operationConsensus = { byId = {} },
+      checkpointConsensus = { byBoundary = {} },
+    },
+    finance = {},
+  }
+  local emitted = {}
+  local originalEmit = bridgeModule.emit
+  local ok, failure = xpcall(function()
+    bridgeModule.emit = function(_, kind, payload)
+      emitted[#emitted + 1] = { kind = kind, payload = util.deepCopy(payload) }
+      return true, { local_seq = #emitted }
+    end
+    local controller = networkIntentRuntimeModule.new({
+      getState = function() return current end,
+      normaliseForNetwork = function(action) return util.deepCopy(action) end,
+      normaliseOperationCapture = function(action) return action end,
+      applyCommitted = function() return true, {} end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function() end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+    for _ = 1, 8 do
+      local queued, result = controller.scheduleFollowup({
+        type = "line.register", lineCid = "line:event:storm:1",
+        companyCid = "company:1",
+      })
+      assert(queued == true and result.deferred == true,
+        "auto-registration storm lost a derived line registration")
+    end
+    assert(#emitted == 0 and #controller.deferredFollowups() == 1
+        and controller.deferredFollowups()[1].coalesced == 7,
+      "auto-registration storm emitted reentrantly or failed to coalesce")
+    local work = controller.localWorkState()
+    assert(work.pending == true and work.followupCount == 1 and work.deferredCount == 1,
+      "anchor health cannot see a queued authored follow-up")
+    assert(controller.processDeferred() == true and #emitted == 1
+        and emitted[1].payload.action.type == "line.register"
+        and #controller.deferredFollowups() == 0,
+      "coalesced registration did not drain in one ordered round")
+
+    controller.reset()
+    emitted = {}
+    controller.scheduleFollowup({
+      type = "town.develop", batch = { ["town:event:1"] = 6 },
+    })
+    controller.scheduleFollowup({
+      type = "town.develop", batch = { ["town:event:1"] = 6 },
+    })
+    assert(#emitted == 0 and controller.deferredFollowups()[1].action.batch["town:event:1"] == 12,
+      "nested town-development commits did not accumulate without reentrant emission")
+    controller.processDeferred()
+    assert(emitted[1].payload.action.batch["town:event:1"] == 8
+        and controller.deferredFollowups()[1].action.batch["town:event:1"] == 4,
+      "town-development follow-up was not split into protocol-valid chunks")
+  end, debug.traceback)
+  bridgeModule.emit = originalEmit
+  if not ok then error(failure, 0) end
+end
+
+do
+  -- The extracted live validator must retain the exact three-round protocol:
+  -- development checkpoint, native settle window, then an ordered structural
+  -- checkpoint before the generic drift soak begins.
+  local townCid = "town:pre:validation"
+  local state = {
+    tick = 0,
+    bridge = { peerId = "player1" },
+    canonical = { byCanonical = {
+      [townCid] = { canonicalId = townCid, kind = "town", localId = 41 },
+    } },
+    companies = {}, world = {},
+    probes = { structural = {
+      digest = "initial", towns = { { cid = townCid, totalCapacity = 10 } },
+    } },
+    validation = { values = {} },
+  }
+  local stage, checkpointRecord, soakBoundary
+  local submissions, checks, snapshotIndex = {}, {}, 0
+  local runtime = townDevelopmentValidationModule.new({
+    getState = function() return state end,
+    transition = function(value) stage = value end,
+    check = function(name, passed)
+      assert(passed, "town validator check failed: " .. tostring(name))
+      checks[name] = true
+    end,
+    submit = function(action)
+      submissions[#submissions + 1] = util.deepCopy(action)
+      return { local_seq = #submissions }
+    end,
+    checkpoint = function(predicate)
+      return checkpointRecord and predicate(checkpointRecord) and checkpointRecord or nil
+    end,
+    structuralSnapshot = function()
+      snapshotIndex = snapshotIndex + 1
+      return {
+        digest = "physical-" .. tostring(snapshotIndex),
+        towns = { { cid = townCid, totalCapacity = 10 + snapshotIndex } },
+      }
+    end,
+    beginSoak = function(boundary) soakBoundary = boundary end,
+  })
+  runtime.begin(5)
+  assert(stage == "wait-for-town-development-checkpoint"
+      and submissions[1].type == "town.develop"
+      and submissions[1].batch[townCid] == 8,
+    "town validator did not queue its first bounded development round")
+  for round = 1, 3 do
+    checkpointRecord = {
+      reason = "town-development", boundarySeq = 5 + round, success = true,
+    }
+    state.probes.townDevelopment = {
+      towns = 1, calls = 8, activated = 1, refrozen = 1, errors = {},
+    }
+    assert(runtime.maintain(stage) == true
+        and stage == "wait-for-town-development-settle",
+      "town validator did not accept round checkpoint " .. tostring(round))
+    state.tick = state.tick + 90
+    assert(runtime.maintain(stage) == true,
+      "town validator did not finish native settle round " .. tostring(round))
+    if round < 3 then
+      assert(stage == "wait-for-town-development-checkpoint"
+          and submissions[#submissions].type == "town.develop",
+        "town validator did not queue the next development round")
+    else
+      assert(stage == "wait-for-post-town-structural-checkpoint"
+          and submissions[#submissions].type == "probe.structural",
+        "town validator skipped its final ordered structural sample")
+    end
+  end
+  checkpointRecord = { reason = "structural-probe", boundarySeq = 9, success = true }
+  assert(runtime.maintain(stage) == true and soakBoundary == 9
+      and checks["ordered-town-development-changed-native-world"] == true
+      and #submissions == 4,
+    "town validator did not close the physical experiment at a shared boundary")
+end
+
+do
+  -- Model the actual eight-assignment burst: one operation is in flight,
+  -- seven fit in the physical FIFO, and all eight commit-derived registration
+  -- requests coalesce behind that FIFO into one final ordered action.
+  local current = {
+    networkMode = "network", initialized = false, tick = 40,
+    bridge = { peerId = "player1" },
+    probes = { networkAuthority = { ready = true } },
+    world = {
+      proposalConsensus = { byId = {} },
+      operationConsensus = { byId = {} },
+      checkpointConsensus = { byBoundary = {} },
+    },
+    finance = {},
+  }
+  local envelopes, pollQueue, controller = {}, {}
+  local originalEmit, originalPoll = bridgeModule.emit, bridgeModule.poll
+  local ok, failure = xpcall(function()
+    local sequence = 0
+    bridgeModule.emit = function(_, kind, payload)
+      sequence = sequence + 1
+      local envelope = {
+        kind = kind, payload = util.deepCopy(payload), local_seq = sequence,
+      }
+      envelopes[#envelopes + 1] = envelope
+      return true, envelope
+    end
+    bridgeModule.poll = function()
+      local result = pollQueue
+      pollQueue = {}
+      return result
+    end
+    controller = networkIntentRuntimeModule.new({
+      getState = function() return current end,
+      normaliseForNetwork = function(action) return util.deepCopy(action) end,
+      normaliseOperationCapture = function(action) return action end,
+      applyCommitted = function(action)
+        if action.type == "operation.execute" then
+          local registered = controller.scheduleFollowup({
+            type = "line.register", lineCid = "line:event:storm:1",
+            companyCid = "company:1",
+          })
+          assert(registered == true, "commit-derived registration was dropped")
+        end
+        return true, {}, { postDigest = "00000000" }
+      end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function() end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+    local operation = {
+      type = "operation.execute",
+      transaction = { companyCid = "company:1", kind = "vehicle.assign" },
+    }
+    for index = 1, 8 do
+      local submitted, result = controller.submit(util.deepCopy(operation))
+      assert(submitted == true, "assignment burst rejected item " .. tostring(index))
+      if index > 1 then
+        assert(result.deferred == true and result.queuePosition == index - 1,
+          "assignment burst did not enter FIFO order")
+      end
+    end
+    assert(#controller.deferredIntents() == 7,
+      "eight assignments overflowed or bypassed the 32-entry physical FIFO")
+
+    for authoritySeq = 1, 8 do
+      local intent
+      for index = #envelopes, 1, -1 do
+        if envelopes[index].kind == "intent"
+          and envelopes[index].payload.action.type == "operation.execute" then
+          intent = envelopes[index]
+          break
+        end
+      end
+      assert(intent, "assignment operation was not emitted")
+      pollQueue = { {
+        kind = "commit", seq = authoritySeq, origin_peer = "player1",
+        origin_local_seq = intent.local_seq,
+        payload = { action = util.deepCopy(operation) },
+      } }
+      controller.consume()
+      if authoritySeq < 8 then assert(controller.processDeferred() == true) end
+    end
+    assert(#controller.deferredIntents() == 0
+        and #controller.deferredFollowups() == 1
+        and controller.deferredFollowups()[1].coalesced == 7,
+      "assignment storm did not drain FIFO-first into one registration")
+    assert(controller.processDeferred() == true,
+      "coalesced registration did not emit after the assignment FIFO")
+    local intentCount, registrationCount = 0, 0
+    for _, envelope in ipairs(envelopes) do
+      if envelope.kind == "intent" then
+        intentCount = intentCount + 1
+        if envelope.payload.action.type == "line.register" then
+          registrationCount = registrationCount + 1
+        end
+      end
+    end
+    assert(intentCount == 9 and registrationCount == 1,
+      "eight assignments produced redundant registration consensus rounds")
+  end, debug.traceback)
+  bridgeModule.emit, bridgeModule.poll = originalEmit, originalPoll
+  if not ok then error(failure, 0) end
 end
 
 do
@@ -542,6 +941,35 @@ do
 end
 
 do
+  local submitted
+  local current = {
+    networkMode = "network", initialized = true, tick = 240,
+    bridge = { peerId = "player1" },
+    recovery = { restoreResume = { status = "validated" } },
+    probes = { networkAuthority = { ready = true } },
+  }
+  local clock = networkClockRuntimeModule.new({
+    getState = function() return current end,
+    config = function()
+      return { manualNetwork = true, manualBootstrapReady = true,
+        restoreResume = { requested = true } }
+    end,
+    diagnosticLog = function() end,
+    submitIntent = function(action) submitted = action; return true, { local_seq = 3 } end,
+    awaitingOrder = function() return nil end,
+    pendingBarrierReason = function() return nil end,
+  })
+  clock.maintainManualBootstrap()
+  assert(submitted and submitted.type == "recovery.resume",
+    "loaded initialized match did not submit its restore handshake")
+  current.recovery.restoreResume.status = "failed"
+  submitted = nil
+  clock.reset()
+  clock.maintainManualBootstrap()
+  assert(submitted == nil, "failed restore silently fell back to new-match initialisation")
+end
+
+do
   local gameTime, gameSpeed = 10, 1
   local wall = 100
   local commands, emitted = {}, {}
@@ -651,8 +1079,25 @@ do
   gameSpeed = 3
   local startupPaused = clock.freezeGame()
   assert(startupPaused == true and gameSpeed == 0
-      and current.world.networkClock.startupPause.confirmed == true,
-    "network startup did not pause the loaded native world immediately")
+      and current.world.networkClock.startupPause.confirmed == false,
+    "network startup did not issue a deterministic native pause request")
+  clock.update()
+  assert(current.world.networkClock.startupPause.confirmed == true,
+    "network startup pause was not confirmed by post-init readback")
+
+  -- Fresh-world init is evaluated against duplicate script states.  The
+  -- first pause can change native speed before the second state initializes;
+  -- both authored records must nevertheless serialize identically.
+  gameSpeed = 3
+  local firstState = util.deepCopy(current.world.networkClock)
+  clock.freezeGame()
+  firstState = util.deepCopy(current.world.networkClock.startupPause)
+  clock.freezeGame()
+  local secondState = util.deepCopy(current.world.networkClock.startupPause)
+  assert(require("tpf2_mp/hash").value(firstState)
+      == require("tpf2_mp/hash").value(secondState)
+      and firstState.confirmed == false and firstState.observedBefore == nil,
+    "startup pause persisted native pre-pause readback across duplicate init states")
   gameTime = nil
   assert(clock.arm({
     type = "clock.rendezvous", requestedSpeed = 1, approachSpeed = 1,
@@ -695,6 +1140,12 @@ do
     TPF2MP_STARTING_CASH = "75000000",
     TPF2MP_NETWORK_CLOCK_RUN_TICKS = "900",
     TPF2MP_STARTING_COMPANY_PLAYER_IDS = "9478,9479,9478",
+    TPF2MP_RESTORE_RESUME = "1",
+    TPF2MP_RESTORE_FROM_SESSION = "saved-session",
+    TPF2MP_RESTORE_BOUNDARY = "7",
+    TPF2MP_RESTORE_CORE_DIGEST = "1234abcd",
+    TPF2MP_RESTORE_CONVERGENCE_KEY = "2345bcde",
+    TPF2MP_RESTORE_PLAN_CHECKSUM = "3456cdef",
   }
   local cfg = runtimeConfig.read({
     source = {
@@ -720,6 +1171,10 @@ do
   assert(cfg.localProxy == false, "network mode must disable the local proxy")
   assert(cfg.manualBootstrapReady == false,
     "manual network bootstrap ignored the launcher world-ready boundary")
+  assert(cfg.restoreResume and cfg.restoreResume.valid == true
+      and cfg.restoreResume.fromSession == "saved-session"
+      and cfg.restoreResume.boundarySeq == 7,
+    "launcher restore attestation was not parsed")
   local armed = runtimeConfig.read({
     source = {},
     environment = function(name) return environment[name] end,
@@ -732,13 +1187,13 @@ do
 end
 
 do
-  local versions = { stateVersion = 22, checkpointVersion = 3 }
+  local versions = { stateVersion = 23, checkpointVersion = 3 }
   local cfg = baseConfig()
   local first = stateSchema.new(cfg, versions)
   local second = stateSchema.new(cfg, versions)
   first.world.logicalOwners.test = "company:1"
   assert(second.world.logicalOwners.test == nil, "new states share mutable nested tables")
-  assert(first.version == 22 and first.checkpoint.version == 3,
+  assert(first.version == 23 and first.checkpoint.version == 3,
     "new state did not retain its schema versions")
   assert(first.networkMode == "network" and first.bridge.peerId == "player1",
     "new state did not retain its runtime identity")
@@ -749,10 +1204,10 @@ do
   local migrated = stateSchema.migrate(first, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 22,
+    stateVersion = 23,
     checkpointVersion = 3,
   })
-  assert(migrated.version == 22 and migrated.world.networkClock.generation == 0,
+  assert(migrated.version == 23 and migrated.world.networkClock.generation == 0,
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
@@ -782,7 +1237,7 @@ do
   local fresh = stateSchema.migrate(prior, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 22,
+    stateVersion = 23,
     checkpointVersion = 3,
   })
   local hints = fresh.world.startingOwnershipHints
@@ -806,7 +1261,7 @@ do
   local cleanRetry = stateSchema.migrate(prior, {
     newState = function() return stateSchema.new(cfg, versions) end,
     config = function() return cfg end,
-    stateVersion = 22,
+    stateVersion = 23,
     checkpointVersion = 3,
   })
   assert(cleanRetry.initialized == false
@@ -815,6 +1270,59 @@ do
       and cleanRetry.world.proposalConsensus.sessionFault == nil
       and cleanRetry.recovery.freshNetworkBootstrap ~= nil,
     "a faulted uninitialised state leaked across a new network session")
+
+  local function restoreSource()
+    local sourceCfg = baseConfig({ sessionId = "saved-network" })
+    local source = stateSchema.new(sourceCfg, versions)
+    source.initialized = true
+    source.canonical.byCanonical["company:1"] = {
+      canonicalId = "company:1", kind = "company", localId = 7,
+    }
+    source.world.checkpointConsensus.byBoundary["7"] = {
+      boundarySeq = 7, status = "complete", success = true,
+      coreDigest = "1234abcd", convergenceKey = "2345bcde",
+    }
+    source.world.checkpointConsensus.lastAgreed =
+      util.deepCopy(source.world.checkpointConsensus.byBoundary["7"])
+    source.recovery.anchorPreparation = {
+      status = "ready", preparationSeq = 6, boundarySeq = 7,
+    }
+    source.bridge.nextInSeq, source.bridge.nextOutSeq = 9, 11
+    return source
+  end
+  local resumeCfg = baseConfig({
+    sessionId = "saved-network-r7",
+    restoreResume = {
+      requested = true, valid = true, fromSession = "saved-network",
+      boundarySeq = 7, coreDigest = "1234abcd",
+      convergenceKey = "2345bcde", planChecksum = "3456cdef",
+    },
+  })
+  local resumed = stateSchema.migrate(restoreSource(), {
+    newState = function() return stateSchema.new(resumeCfg, versions) end,
+    config = function() return resumeCfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(resumed.initialized == true
+      and resumed.canonical.byCanonical["company:1"].localId == 7
+      and resumed.bridge.sessionId == "saved-network-r7"
+      and resumed.bridge.nextInSeq == 1 and resumed.bridge.nextOutSeq == 1
+      and resumed.recovery.restoreResume.status == "validated"
+      and resumed.recovery.anchorPreparation == nil
+      and next(resumed.world.checkpointConsensus.byBoundary) == nil
+      and resumed.world.networkClock.generation == 0,
+    "attested restore did not preserve canonical state and reset only bridge identity")
+
+  local refusedCfg = util.deepCopy(resumeCfg)
+  refusedCfg.restoreResume.coreDigest = "ffffffff"
+  local refused = stateSchema.migrate(restoreSource(), {
+    newState = function() return stateSchema.new(refusedCfg, versions) end,
+    config = function() return refusedCfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(refused.initialized == false and refused.recovery.restoreResume.status == "failed"
+      and refused.lastError:find("restore refused", 1, true),
+    "mismatched restore plan did not fail closed")
 end
 
 do
@@ -923,17 +1431,32 @@ do
     companyOrder = { "company:1" },
     economy = model,
     finance = financeModule.newState(),
-    world = { autonomyFrozen = true },
+    world = {
+      autonomyFrozen = true,
+      townDevelopment = {
+        schemaVersion = 1, enabled = true,
+        points = { ["town:digest"] = 7 },
+        cursor = { ["town:digest"] = 3 },
+      },
+    },
   }
   local runtime = checkpointRuntimeModule.new({
     getState = function() return current end,
     maxEvents = function() return 100 end,
-    stateVersion = 22,
+    stateVersion = 23,
     checkpointVersion = 3,
     eventRecordVersion = 1,
   })
   local original = util.deepCopy(model)
   local baseline = runtime.authoredDigest()
+  current.world.townDevelopment.points["town:digest"] = 8
+  assert(runtime.authoredDigest() ~= baseline,
+    "authored digest hides town-development point remainder")
+  current.world.townDevelopment.points["town:digest"] = 7
+  current.world.townDevelopment.cursor["town:digest"] = 4
+  assert(runtime.authoredDigest() ~= baseline,
+    "authored digest hides town-development position cursor")
+  current.world.townDevelopment.cursor["town:digest"] = 3
   local mutations = {
     { "params.alphaUpPm", function(value) value.params.alphaUpPm = value.params.alphaUpPm + 1 end },
     { "params.alphaDownPm", function(value) value.params.alphaDownPm = value.params.alphaDownPm + 1 end },

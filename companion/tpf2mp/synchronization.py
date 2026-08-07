@@ -33,6 +33,8 @@ class SynchronizationCoordinator:
         host.clock_rendezvous = None
         host.clock_last_rendezvous = None
         host.clock_game_time_skew = None
+        host.clock_projected_game_time_skew = None
+        host.clock_skew_samples_comparable = False
         host.clock_pause_acknowledged = False
         host.clock_pause_acknowledged_at = None
         host.clock_pause_acknowledged_generation = 0
@@ -51,6 +53,8 @@ class SynchronizationCoordinator:
                 "pendingSeq": self.host.consensus.pending_clock_seq(),
                 "healthPeers": sorted(self.host.clock_health),
                 "gameTimeSkew": self.host.clock_game_time_skew,
+                "projectedGameTimeSkew": self.host.clock_projected_game_time_skew,
+                "skewSamplesComparable": self.host.clock_skew_samples_comparable,
                 "pauseAcknowledged": self.shared_pause_acknowledged(),
                 "pauseAcknowledgedGeneration": self.host.clock_pause_acknowledged_generation,
                 **self.pause.status(),
@@ -184,6 +188,30 @@ class SynchronizationCoordinator:
             projected.append(float(sample["gameTime"]) + rate * age)
         return projected
 
+    def _skew_samples_match_authority(
+        self, samples: list[Mapping[str, Any]] | None
+    ) -> bool:
+        """Return whether every peer sample describes the current clock order.
+
+        Clock health arrives independently.  Immediately after a rendezvous or
+        release, one peer can already report the new running generation while
+        the other peer's latest sample still describes the previous paused
+        generation.  Those values are individually valid but are not a clock
+        skew measurement; comparing them created a self-sustaining sequence of
+        unnecessary rendezvous orders in the first restore/resume live run.
+
+        Older synthetic tests and restored in-memory records can omit the
+        generation.  Treat an omitted value as the current generation, while
+        production health payloads continue to be checked strictly.
+        """
+        if samples is None or len(samples) != len(self.host.required_peers):
+            return False
+        generation = int(self.host.clock_generation)
+        return all(
+            int(sample.get("generation", generation)) == generation
+            for sample in samples
+        )
+
     def prepare_clock_request(self, requested_speed: int, origin: str) -> dict[str, Any]:
         requested = max(0, min(4, int(requested_speed)))
         samples = self._fresh_samples()
@@ -247,19 +275,21 @@ class SynchronizationCoordinator:
         validated = validate_action(dict(action))
         seq = self.host.next_seq
         self.host.next_seq += 1
+        local_seq = self.host._allocate_host_local_seq()
         message = sign({
             "protocol": PROTOCOL_VERSION,
             "session": self.host.bridge.session,
             "seq": seq,
             "kind": "commit",
             "origin_peer": self.host.bridge.peer,
-            "origin_local_seq": -seq,
+            "origin_local_seq": local_seq,
             marker: True,
             "tick": 0,
             "payload": {"action": validated},
         })
         self.host.audit.append(message)
         self.host.commits[seq] = message
+        self.host.seen.add((self.host.bridge.peer, local_seq))
         if validated["type"] in {"clock.set", "clock.rendezvous"}:
             self.track_clock(message, correction_count=correction_count)
         elif validated["type"] == "vehicle.sync_release":
@@ -523,7 +553,12 @@ class SynchronizationCoordinator:
             if sample is not None and sample.get("gameTime") is not None
         ]
         times = self._projected_game_times(timed_samples, now)
-        self.host.clock_game_time_skew = max(times) - min(times) if len(times) >= 2 else None
+        projected_skew = max(times) - min(times) if len(times) >= 2 else None
+        self.host.clock_projected_game_time_skew = projected_skew
+        fresh_samples = self._fresh_samples(now)
+        comparable = self._skew_samples_match_authority(fresh_samples)
+        self.host.clock_skew_samples_comparable = comparable
+        self.host.clock_game_time_skew = projected_skew if comparable else None
         if self.host.session_fault:
             self._retire_pause_fence("faulted-session")
             observed_running = any(
@@ -627,6 +662,19 @@ class SynchronizationCoordinator:
             self.host.clock_rendezvous = None
         if self.host.clock_effective_speed != 0 or self.host.clock_requested_speed != 0:
             self.emit_clock_set(self.host.clock_requested_speed, 0, reason + ":resync-pause")
+
+    def fault_session(self, scope: str, reason: str) -> None:
+        """Order one durable fault and fence simulation after an unsafe rejection."""
+        reason = str(reason)[:512]
+        self.host.session_fault = self.host.session_fault or reason
+        self.host.last_error = reason
+        if not self.host.sync_fault_emitted:
+            self.host.sync_fault_emitted = True
+            self._emit_action({
+                "type": "network.sync_fault", "scope": str(scope),
+                "errorCode": reason,
+            }, "synchronization_fault")
+        self.emergency_pause(reason)
 
     def record_vehicle_sync(self, message: Mapping[str, Any], restoring: bool = False) -> None:
         self.vehicle.record(message, restoring=restoring)

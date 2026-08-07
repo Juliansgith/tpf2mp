@@ -15,6 +15,7 @@ local stateSchema = require "tpf2_mp/state_schema"
 local nativeHook = require "tpf2_mp/native_hook"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
+local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
@@ -25,12 +26,16 @@ local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
+local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
+local authoredFollowupRuntime = require "tpf2_mp/authored_followup_runtime"
+local operationalCaptureRuntimeModule = require "tpf2_mp/operational_capture_runtime"
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 22
+local STATE_VERSION = 23
 local CHECKPOINT_VERSION = 3
 local EVENT_RECORD_VERSION = 1
 
@@ -176,6 +181,12 @@ local trimEvents = checkpointRuntime.trimEvents
 local emitCheckpoint = checkpointRuntime.emitCheckpoint
 local exportCheckpointBarrier = checkpointRuntime.exportCheckpointBarrier
 local emitEventRecord = checkpointRuntime.emitEventRecord
+local recoveryPrepareRuntime = recoveryPrepareRuntimeModule.new({
+  getState = function() return state end,
+  emitCheckpoint = emitCheckpoint,
+  exportCheckpointBarrier = exportCheckpointBarrier,
+})
+local restoreResumeRuntime = restoreResumeRuntimeModule.new({ getState = function() return state end, coreDigest = coreDigest })
 local balanceOf
 local accountOf
 
@@ -699,10 +710,10 @@ local function initialiseMatch(rules)
   }
   state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)
   if config().autoFreeze and not state.world.autonomyFrozen then world.freezeAutonomy(state.world, true) end
-  -- The data modifier only reaches buildings created after it loads, so an
-  -- existing save keeps its original crowd. Apply the policy to the towns
-  -- already here, verify by readback, and record the outcome: one live match
-  -- then reports whether runtime scaling works on this build.
+  -- Build 35924's live probe proved setTownInfo is not a safe runtime capacity
+  -- scaler. Record that result without issuing native mutations here; the
+  -- loadConstruction modifier remains the policy surface for buildings while
+  -- their resources/world are loaded.
   presentation.applyConfiguredPolicy(state, config(),
     { listTowns = world.listTowns, townCapacity = world.townCapacity }, diagnosticLog)
   state.match = {
@@ -1432,6 +1443,7 @@ handlers["network.checkpoint_outcome"] = function(action)
   record.outcomeTick = state.tick
   consensus.byBoundary[key] = record
   consensus.lastOutcome = util.deepCopy(record)
+  recoveryPrepareRuntime.checkpointOutcome(action, success, record)
   if success then
     consensus.completed = (consensus.completed or 0) + 1
     consensus.lastAgreed = util.deepCopy(record)
@@ -1452,23 +1464,21 @@ end
 
 autoRegisterLineFor = function(transaction, outputCid)
   return world.autoRegisterLine(state, transaction, outputCid, {
-    activeCompany = activeCompany, submit = submitIntent, log = diagnosticLog,
+    activeCompany = activeCompany,
+    submit = function(action)
+      if state.networkMode == "network" and networkIntentController then
+        return networkIntentController.scheduleFollowup(action)
+      end
+      return submitIntent(action)
+    end,
+    log = diagnosticLog,
   })
 end
 
--- Ordered physical town growth. The batch is computed by the host from the
--- settlement it just ordered and carried on this action, so both peers make
--- the identical development calls. Whether the native results then agree is
--- exactly what the structural digest already measures.
-handlers["town.develop"] = function(action)
-  local running, runningError = requireRunningMatch()
-  if not running then return false, runningError end
-  return true, util.deepCopy(world.runOrderedDevelopment(
-    state, type(action.batch) == "table" and action.batch or {},
-    function()
-      return world.structuralSnapshot(state.canonical, state.world, state.companies)
-    end, diagnosticLog))
-end
+authoredFollowupRuntime.installHandlers(handlers, {
+  getState = function() return state end; requireRunningMatch = requireRunningMatch;
+  world = world; diagnosticLog = diagnosticLog,
+})
 
 handlers["line.register"] = function(action)
   local running, runningError = requireRunningMatch()
@@ -1539,7 +1549,13 @@ handlers["economy.settle"] = function(action, eventId)
   -- native calls; whether the results agree is what the structural digest
   -- measures. Only the host emits, and only when something is actually due.
   world.settleDevelopment(state, results, state.economy, config(),
-    submitIntent, function(...) return applyCommitted(...) end)
+    function(developmentAction)
+      if state.networkMode == "network" and networkIntentController then
+        return networkIntentController.scheduleFollowup(developmentAction)
+      end
+      return submitIntent(developmentAction)
+    end,
+    function(...) return applyCommitted(...) end)
   -- Credit interest and solvency are part of settling, so capital committed
   -- to a losing corridor eventually costs the match rather than merely
   -- costing money. Deterministic over authored state on every peer.
@@ -1876,6 +1892,21 @@ handlers["probe.mobility"] = function(_, eventId)
   }
 end
 
+-- Refreshes the native structural projection at an ordered boundary. Unlike
+-- probe.run this is intentionally not machine-local: delayed engine commands
+-- (notably developTown) need a later, shared observation point before their
+-- physical result can be trusted by recovery or validation.
+handlers["probe.structural"] = function()
+  state.probes.structural = world.structuralSnapshot(
+    state.canonical, state.world, state.companies)
+  return true, {
+    digest = state.probes.structural.digest,
+    townCount = #(state.probes.structural.towns or {}),
+    vehicleCount = state.probes.structural.vehicleCount,
+    constructionCount = state.probes.structural.constructionCount,
+  }
+end
+
 handlers["probe.export_research"] = function()
   local report = world.researchSnapshot(state.world, state.canonical, state.companies)
   report.tick = state.tick
@@ -1895,9 +1926,9 @@ handlers["probe.export_research"] = function()
   report.networkAccounts = util.deepCopy(state.finance.networkAccounts)
   report.validation = util.deepCopy(state.validation)
   report.checkpoint = util.deepCopy(state.checkpoint)
-  report.match = util.deepCopy(state.match)
-  report.modelDigest = authoredDigest()
-  report.coreDigest = coreDigest()
+  report.match = util.deepCopy(state.match); report.agentPolicy = util.deepCopy(state.probes.agentPolicy)
+  report.modelDigest = authoredDigest(); report.townDevelopment = util.deepCopy(state.probes.townDevelopment)
+  report.coreDigest = coreDigest(); report.townDevelopmentQueue = util.deepCopy(state.probes.townDevelopmentQueue)
   report.proposals = {
     queued = state.world.proposals.queued or 0,
     applied = state.world.proposals.applied or 0,
@@ -2107,8 +2138,10 @@ handlers["snapshot.export"] = function()
 end
 
 handlers["checkpoint.export"] = function(action)
-  return emitCheckpoint(action and action.reason or "manual")
+  return recoveryPrepareRuntime.manualCheckpoint(action)
 end
+handlers["recovery.prepare"], handlers["network.checkpoint_request"], handlers["recovery.resume"] =
+  recoveryPrepareRuntime.prepare, recoveryPrepareRuntime.checkpointRequest, restoreResumeRuntime.apply
 
 handlers["native.observed"] = function(action, eventId)
   local capture = state.probes.capture
@@ -2615,6 +2648,21 @@ local function normaliseForNetwork(action)
       return nil, "clock.request requires a speed from 0 through 4"
     end
     copy = { type = "clock.request", requestedSpeed = requestedSpeed }
+  elseif copy.type == "recovery.prepare" then
+    for key in pairs(copy) do
+      if key ~= "type" then return nil, "recovery.prepare has an unknown field: " .. tostring(key) end
+    end
+    copy = { type = "recovery.prepare" }
+  elseif copy.type == "recovery.resume" then
+    local restoreError; copy, restoreError = restoreResumeRuntime.normalise(copy)
+    if not copy then return nil, restoreError end
+  elseif copy.type == "network.checkpoint_request" then
+    local preparationSeq = util.integer(copy.preparationSeq, 0)
+    if preparationSeq < 1 or tostring(copy.reason or "") ~= "recovery-prepare:" .. tostring(preparationSeq) then
+      return nil, "network checkpoint request is malformed"
+    end
+    copy = { type = "network.checkpoint_request", preparationSeq = preparationSeq,
+      reason = "recovery-prepare:" .. tostring(preparationSeq) }
   elseif copy.type == "operation.execute" then
     local valid, operationError = operationCodec.validate(copy.transaction)
     if not valid then return nil, operationError end
@@ -2662,11 +2710,24 @@ local function normaliseForNetwork(action)
     copy.results = economy.evaluateAll(preview)
   elseif copy.type == "town.develop" then
     if state.bridge.peerId ~= "player1" then return nil, "only the host peer can order town development" end
-    if type(copy.batch) ~= "table" or next(copy.batch) == nil then
-      return nil, "town development order carries no towns"
+    for key in pairs(copy) do
+      if key ~= "type" and key ~= "batch" then
+        return nil, "town development order has an unknown field: " .. tostring(key)
+      end
     end
-  elseif copy.type == "probe.mobility" then
-    if state.bridge.peerId ~= "player1" then return nil, "only the host peer can request an ordered mobility sample" end
+    local valid, developmentError = authoredFollowupRuntime.validateTownBatch(state, copy.batch, true)
+    if not valid then return nil, developmentError end
+    copy = { type = "town.develop", batch = util.deepCopy(copy.batch) }
+  elseif copy.type == "probe.mobility" or copy.type == "probe.structural" then
+    if state.bridge.peerId ~= "player1" then
+      return nil, "only the host peer can request an ordered native-world sample"
+    end
+    for key in pairs(copy) do
+      if key ~= "type" then
+        return nil, tostring(copy.type) .. " has an unknown field: " .. tostring(key)
+      end
+    end
+    copy = { type = copy.type }
   end
   return copy
 end
@@ -2710,13 +2771,9 @@ applyCommitted = function(action, actor, commitSeq)
   if not recorded then
     diagnosticLog("event-record-error", { type = action.type, tick = state.tick, error = tostring(recordError) })
   end
-  if success and action.type == "match.initialise" then
-    local checkpointed, checkpointError
-    if state.networkMode == "network" and authoritySeq then
-      checkpointed, checkpointError = exportCheckpointBarrier(authoritySeq, "match-initialised")
-    else
-      checkpointed, checkpointError = emitCheckpoint("match-initialised")
-    end
+  if success and (action.type == "match.initialise" or action.type == "recovery.resume") then
+    local checkpointed, checkpointError =
+      checkpointRuntime.initialActionCheckpoint(action, authoritySeq)
     if not checkpointed then
       diagnosticLog("checkpoint-error", { tick = state.tick, error = tostring(checkpointError) })
     end
@@ -2753,6 +2810,19 @@ applyCommitted = function(action, actor, commitSeq)
         error = tostring(checkpointError),
       })
     end
+  elseif success and action.type == "probe.structural" and authoritySeq then
+    local checkpointed, checkpointError = exportCheckpointBarrier(
+      authoritySeq, "structural-probe")
+    if not checkpointed then
+      diagnosticLog("checkpoint-barrier-error", {
+        tick = state.tick,
+        boundarySeq = authoritySeq,
+        error = tostring(checkpointError),
+      })
+    end
+  else
+    authoredFollowupRuntime.afterCommit(state, action, success, authoritySeq,
+      exportCheckpointBarrier, diagnosticLog)
   end
   state.lastAction = util.deepCopy(action)
   state.lastResult = util.deepCopy(result)
@@ -2784,6 +2854,7 @@ networkIntentController = networkIntentRuntimeModule.new({
   coreDigest = coreDigest,
   proposalPreparation = proposalPreparation,
   maxDeferredIntents = MAX_DEFERRED_NETWORK_INTENTS,
+  maxDeferredFollowups = networkIntentRuntimeModule.MAX_DEFERRED_FOLLOWUPS,
   physicalPrerequisite = function(action)
     return networkClock and networkClock.operationPrerequisite(action) or nil
   end,
@@ -2800,6 +2871,7 @@ networkClock = networkClockRuntimeModule.new({
   submitIntent = submitIntent,
   awaitingOrder = networkIntentController.awaitingOrder,
   pendingBarrierReason = networkPendingBarrierReason,
+  localWorkState = networkIntentController.localWorkState,
 })
 freezeNetworkGame = networkClock.freezeGame
 freezeNetworkCalendar = networkClock.freezeCalendar
@@ -3027,7 +3099,7 @@ local function ensureWindow()
     { "Sample Pax / Cargo", function() return { type = "probe.mobility" } end },
     { "Export Research", function() return { type = "probe.export_research" } end },
     { "Export Snapshot", function() return { type = "snapshot.export" } end },
-    { "Export Checkpoint", function() return { type = "checkpoint.export", reason = "manual-ui" } end },
+    { "Prepare Restore Point", function() return { type = "recovery.prepare" } end },
     { "Refresh", function() return { type = "snapshot.request", localOnly = true } end },
   })
   rootLayout:addItem(gui.details)
@@ -3044,30 +3116,7 @@ local function ensureWindow()
 end
 
 local function installMultiplayerEntryPoints()
-  if gui.entryPointsInstalled then return true end
-  local utilGui = api and api.gui and api.gui.util
-  if not (utilGui and type(utilGui.getById) == "function") then return false end
-  local installed = 0
-  local function addEntry(parentId, label, componentId)
-    local existingOk, existing = pcall(utilGui.getById, componentId)
-    if existingOk and existing then return true end
-    local parentOk, parent = pcall(utilGui.getById, parentId)
-    if not parentOk or not parent or type(parent.getLayout) ~= "function" then return false end
-    local layoutOk, layout = pcall(parent.getLayout, parent)
-    if not layout or not layoutOk or type(layout.addItem) ~= "function" then return false end
-    local value = api.gui.comp.Button.new(api.gui.comp.TextView.new(label), true)
-    if type(value.setId) == "function" then pcall(value.setId, value, componentId) end
-    value:onClick(function() ensureWindow() end)
-    local added = pcall(layout.addItem, layout, value)
-    if added then installed = installed + 1 end
-    return added
-  end
-  -- gameInfo is the always-visible bottom HUD strip. ingameMenu is the ESC
-  -- menu. Either entry can reopen the hidden window; both use public UI APIs.
-  addEntry("gameInfo", "MULTIPLAYER", "tpf2mp.hudEntry")
-  addEntry("ingameMenu", "Multiplayer", "tpf2mp.pauseEntry")
-  gui.entryPointsInstalled = installed > 0
-  return gui.entryPointsInstalled
+  return guiEntryPointsModule.install(gui, ensureWindow)
 end
 
 local guiEventRuntime = guiEventRuntimeModule.new({
@@ -3093,145 +3142,17 @@ local guiEventRuntime = guiEventRuntimeModule.new({
 })
 
 
-local function operationalAccountSnapshot()
-  local accounts = { companies = {} }
-  for _, companyCid in ipairs(state.companyOrder or {}) do
-    local company = state.companies[companyCid]
-    if company and company.playerId then
-      accounts.companies[companyCid] = accountOf(company.playerId)
-    end
-  end
-  if state.world.controlPlayerId then
-    accounts.control = accountOf(state.world.controlPlayerId)
-  end
-  local activeCid = activeCompany()
-  accounts.activeCompanyCid = activeCid
-  return accounts
-end
-
-local function sampleOperationalCapture(reason)
-  local operational = state.probes.operational
-  if not (operational and operational.enabled) then return false, "operational capture is disabled" end
-  local sampled, runtimeOrError = xpcall(function()
-    return world.operationalSnapshot(
-      state.canonical, state.world, state.companies, operational.lastJournalTimeMs)
-  end, debug.traceback)
-  if not sampled then
-    operational.lastError = tostring(runtimeOrError)
-    return false, operational.lastError
-  end
-  local runtime = runtimeOrError
-  runtime.tick = state.tick
-  runtime.reason = tostring(reason or "interval")
-  runtime.scope = "local-operational-observation-only"
-  runtime.peerId = state.bridge.peerId
-  runtime.sessionId = state.bridge.sessionId
-  runtime.initialized = state.initialized == true
-  runtime.matchStatus = state.match and state.match.status or nil
-  runtime.activeCompanyCid = activeCompany()
-  runtime.accounts = operationalAccountSnapshot()
-  runtime.digests = {
-    model = authoredDigest(),
-    core = coreDigest(),
-    structural = runtime.structural and runtime.structural.digest or nil,
-    mobility = runtime.mobility and runtime.mobility.digest or nil,
-    autonomy = runtime.autonomy and runtime.autonomy.digest or nil,
-    journal = runtime.journal and runtime.journal.digest or nil,
-    accounts = hash.value(runtime.accounts),
-  }
-  state.probes.nativeHook = nativeHookStatus()
-  runtime.nativePipeline = {
-    hook = util.deepCopy(state.probes.nativeHook),
-    observedSendCommands = state.probes.capture.nativeCommandCount or 0,
-    observedGuiActions = state.probes.capture.operationalGuiCount or 0,
-    origins = util.deepCopy(state.probes.capture.nativeCommandOrigins or {}),
-  }
-  runtime.digest = hash.value({
-    tick = runtime.tick,
-    initialized = runtime.initialized,
-    clock = runtime.clock,
-    digests = runtime.digests,
-    commandCount = runtime.nativePipeline.observedSendCommands,
-    guiActionCount = runtime.nativePipeline.observedGuiActions,
-    commandOrigins = runtime.nativePipeline.origins,
-  })
-
-  state.probes.structural = runtime.structural
-  state.probes.mobility = runtime.mobility
-  if runtime.journal and runtime.journal.toTimeMs then
-    operational.lastJournalTimeMs = runtime.journal.toTimeMs
-  end
-  operational.sampleCount = (operational.sampleCount or 0) + 1
-  local summary = {
-    sequence = operational.sampleCount,
-    tick = state.tick,
-    reason = runtime.reason,
-    initialized = runtime.initialized,
-    activeCompanyCid = runtime.activeCompanyCid,
-    gameSpeed = runtime.clock and runtime.clock.gameSpeed or nil,
-    gameTime = runtime.clock and runtime.clock.time or nil,
-    paused = runtime.clock and runtime.clock.paused or nil,
-    townCount = runtime.structural and #(runtime.structural.towns or {}) or 0,
-    industryCount = runtime.structural and runtime.structural.industryCount or 0,
-    lineCount = runtime.structural and #(runtime.structural.lines or {}) or 0,
-    vehicleCount = runtime.structural and runtime.structural.vehicleCount or 0,
-    mobilityTotals = util.deepCopy(runtime.mobility and runtime.mobility.totals or {}),
-    mobilityAvailability = util.deepCopy(runtime.mobility and runtime.mobility.availability or {}),
-    autonomyTotals = util.deepCopy(runtime.autonomy and runtime.autonomy.totals or {}),
-    journalScalars = util.deepCopy(runtime.journal and runtime.journal.scalars or {}),
-    accounts = util.deepCopy(runtime.accounts),
-    digests = util.deepCopy(runtime.digests),
-    commandCount = runtime.nativePipeline.observedSendCommands,
-    guiActionCount = runtime.nativePipeline.observedGuiActions,
-    commandOrigins = util.deepCopy(runtime.nativePipeline.origins),
-    digest = runtime.digest,
-  }
-  operational.lastSample = util.deepCopy(summary)
-  operational.samples[#operational.samples + 1] = util.deepCopy(summary)
-  while #operational.samples > 64 do table.remove(operational.samples, 1) end
-  local emitted, outbound = bridge.emit(state.bridge, "operational", runtime, state.tick)
-  if emitted then
-    operational.emittedCount = (operational.emittedCount or 0) + 1
-    operational.lastError = nil
-  else operational.lastError = tostring(outbound) end
-  return emitted, emitted and summary or operational.lastError
-end
-
-local function maintainOperationalCapture()
-  local cfg = config()
-  local operational = state.probes.operational
-  if not cfg.operationalCapture then return end
-  operational.enabled = true
-  operational.mode = "local-observation-only"
-  operational.intervalTicks = cfg.operationalSampleTicks
-  if not operational.autoInitAttempted and (state.initialized or state.tick >= 60) then
-    operational.autoInitAttempted = true
-    if state.initialized then
-      operational.autoInit = {
-        tick = state.tick, invoked = true, success = true, alreadyInitialized = true,
-      }
-    else
-      local invoked, success, result = xpcall(function()
-        return applyCommitted({ type = "match.initialise" }, "operational-capture:auto-init", nil)
-      end, debug.traceback)
-      operational.autoInit = {
-        tick = state.tick,
-        invoked = invoked == true,
-        success = invoked == true and success == true,
-        result = invoked and util.deepCopy(result) or nil,
-        error = not invoked and tostring(success)
-          or (success ~= true and tostring(type(result) == "table" and result.error or result) or nil),
-      }
-    end
-    operational.nextSampleTick = state.tick
-  end
-  if state.tick >= math.max(1, tonumber(operational.nextSampleTick) or 1) then
-    local reason = operational.sampleCount == 0 and "capture-ready" or "interval"
-    local ok, err = sampleOperationalCapture(reason)
-    if not ok then operational.lastError = tostring(err) end
-    operational.nextSampleTick = state.tick + cfg.operationalSampleTicks
-  end
-end
+local operationalCaptureRuntime = operationalCaptureRuntimeModule.new({
+  getState = function() return state end,
+  config = config,
+  accountOf = accountOf,
+  activeCompany = activeCompany,
+  authoredDigest = authoredDigest,
+  coreDigest = coreDigest,
+  nativeHookStatus = nativeHookStatus,
+  applyCommitted = function(...) return applyCommitted(...) end,
+})
+local maintainOperationalCapture = operationalCaptureRuntime.maintain
 
 -- Human multiplayer sessions need the same ordered company/account bootstrap
 -- as the validator, but none of the validator's synthetic infrastructure.
@@ -3281,14 +3202,6 @@ local script = {
     local authorityReady, authorityError = configureNativeAuthority(state.networkMode)
     if not authorityReady then
       state.lastError = authorityError
-    elseif state.networkMode == "network" then
-      local gameReady, gameError = freezeNetworkGame()
-      local calendarReady, calendarError = freezeNetworkCalendar()
-      if not gameReady or not calendarReady then
-        state.probes.networkAuthority.ready = false
-        state.probes.networkAuthority.error = tostring(gameError or calendarError)
-        state.lastError = state.probes.networkAuthority.error
-      end
     end
   end,
 

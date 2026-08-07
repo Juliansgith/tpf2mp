@@ -42,15 +42,25 @@ if ($RecoveryPlanPath) {
 elseif ($state -and $state.bridgePath) {
     $audit = Join-Path ([string]$state.bridgePath) "audit\$safeSession.ndjson"
     if (Test-Path -LiteralPath $audit -PathType Leaf) {
-        $candidatePlan = Join-Path $recoveryRoot "recovery-plan-$stamp.json"
+        $candidatePlan = Join-Path $recoveryRoot "restore-plan-$stamp.json"
         try {
-            Invoke-RecoveryCompanion -Arguments @('recovery-plan', $audit, '--session', $safeSession, '--output', $candidatePlan)
+            Invoke-RecoveryCompanion -Arguments @('restore-plan', $audit, '--session', $safeSession, '--output', $candidatePlan)
             $resolvedPlan = $candidatePlan
         }
         catch {
-            Write-Warning "No agreed all-peer checkpoint could be linked; creating an explicitly unanchored archive: $($_.Exception.Message)"
             if (Test-Path -LiteralPath $candidatePlan -PathType Leaf) {
                 Remove-Item -LiteralPath $candidatePlan -Force
+            }
+            $candidatePlan = Join-Path $recoveryRoot "recovery-plan-$stamp.json"
+            try {
+                Invoke-RecoveryCompanion -Arguments @('recovery-plan', $audit, '--session', $safeSession, '--output', $candidatePlan)
+                $resolvedPlan = $candidatePlan
+            }
+            catch {
+                Write-Warning "No agreed all-peer checkpoint could be linked; creating an explicitly unanchored archive: $($_.Exception.Message)"
+                if (Test-Path -LiteralPath $candidatePlan -PathType Leaf) {
+                    Remove-Item -LiteralPath $candidatePlan -Force
+                }
             }
         }
     }

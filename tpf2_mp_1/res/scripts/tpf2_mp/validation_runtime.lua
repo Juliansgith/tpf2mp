@@ -5,6 +5,7 @@ local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local validationClockModule = require "tpf2_mp/validation_clock"
+local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 
 local M = {}
 
@@ -334,6 +335,25 @@ function M.new(deps)
     return true
   end
 
+  local function networkValidationBeginSoak(boundarySeq)
+    state.probes.structural = world.structuralSnapshot(
+      state.canonical, state.world, state.companies)
+    state.validation.values.soakStartTick = state.tick
+    state.validation.values.soakStartStructuralDigest = state.probes.structural.digest
+    state.validation.values.soakStartFinanceDigest = validationNetworkFinanceEvidence().digest
+    state.validation.values.postProposalCheckpointBoundary = boundarySeq
+    validationTransition("soak-structural-drift")
+  end
+
+  local townDevelopmentValidation = townDevelopmentValidationModule.new({
+    getState = getState,
+    transition = validationTransition,
+    check = validationCheck,
+    submit = networkValidationSubmit,
+    checkpoint = networkValidationCheckpoint,
+    beginSoak = networkValidationBeginSoak,
+  })
+
   local function runAutomatedNetworkValidation()
     local validation = state.validation
     if not (config().networkAutoValidate and validation and validation.enabled) then return end
@@ -599,12 +619,13 @@ function M.new(deps)
       if not agreed then return end
       validationCheck("client-origin-post-proposal-checkpoint-consensus", agreed.success == true, agreed)
       state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)
-      validation.values.soakStartTick = state.tick
-      validation.values.soakStartStructuralDigest = state.probes.structural.digest
-      validation.values.soakStartFinanceDigest = validationNetworkFinanceEvidence().digest
-      validation.values.postProposalCheckpointBoundary = agreed.boundarySeq
-      validationTransition("soak-structural-drift")
-  
+      if config().townDevelopment then
+        townDevelopmentValidation.begin(agreed.boundarySeq)
+      else
+        networkValidationBeginSoak(agreed.boundarySeq)
+      end
+
+    elseif townDevelopmentValidation.maintain(stage) then
     elseif stage == "soak-structural-drift" then
       if state.tick - validation.values.soakStartTick < config().networkSoakTicks then return end
       state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)

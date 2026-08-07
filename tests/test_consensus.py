@@ -111,6 +111,13 @@ class ConsensusTrackerTests(unittest.TestCase):
             "rendezvousTargetTime": 120.5,
         }
         self.assertEqual(clock_health_payload(health_v2), health_v2)
+        health_v3 = {
+            **health_v2,
+            "schemaVersion": 3,
+            "localWorkPending": False,
+            "deferredIntentCount": 0,
+        }
+        self.assertEqual(clock_health_payload(health_v3), health_v3)
         reached = {
             "schemaVersion": 1,
             "generation": 2,
@@ -135,6 +142,10 @@ class ConsensusTrackerTests(unittest.TestCase):
         self.assertEqual(vehicle_sync_payload(vehicle), vehicle)
         with self.assertRaises(ProtocolError):
             clock_health_payload({**health, "engineTick": True})
+        with self.assertRaises(ProtocolError):
+            clock_health_payload({**health_v3, "deferredIntentCount": -1})
+        with self.assertRaises(ProtocolError):
+            clock_health_payload({**health_v3, "localWorkPending": 0})
         with self.assertRaises(ProtocolError):
             vehicle_sync_payload({**vehicle, "stopIndex": 256})
 

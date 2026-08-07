@@ -3,14 +3,61 @@ local hash = require "tpf2_mp/hash"
 local canonical = require "tpf2_mp/canonical"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
+local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
 
 local M = {}
 
+local function entityNumber(value)
+  local number = tonumber(value)
+  if number then return number end
+  local valueType = type(value)
+  if valueType == "table" or valueType == "userdata" then
+    for _, key in ipairs({ "id", "entity", "entityId", 1, 0 }) do
+      local ok, nested = pcall(function() return value[key] end)
+      number = ok and tonumber(nested) or nil
+      if number then return number end
+    end
+  end
+  return nil
+end
+
 local function sortedNumbers(values)
   local result, seen = {}, {}
-  for _, raw in pairs(values or {}) do
-    local value = type(raw) == "table" and (raw.id or raw.entity or raw[1]) or raw
-    value = tonumber(value)
+  local rawValues = {}
+  if type(values) == "table" then
+    for _, raw in pairs(values) do rawValues[#rawValues + 1] = raw end
+  elseif type(values) == "userdata" then
+    local lengthOk, length = pcall(function() return #values end)
+    length = lengthOk and tonumber(length) or nil
+    if length and length >= 0 and length == math.floor(length) then
+      -- Engine containers are not consistent about exposing zero- or
+      -- one-based indexing. Probe both bounded ranges and deduplicate below.
+      for _, base in ipairs({ 0, 1 }) do
+        for offset = 0, math.min(length, 100000) - 1 do
+          local index = base + offset
+          local itemOk, raw = pcall(function() return values[index] end)
+          if itemOk and raw ~= nil then rawValues[#rawValues + 1] = raw end
+        end
+      end
+    end
+    -- Some Build 35924 wrappers expose numeric indexing but no useful length
+    -- operator. A bounded contiguous probe is safe for engine entity lists.
+    if not length or length == 0 then
+      local misses, found = 0, false
+      for index = 0, 1023 do
+        local itemOk, raw = pcall(function() return values[index] end)
+        if itemOk and raw ~= nil then
+          rawValues[#rawValues + 1] = raw
+          misses, found = 0, true
+        else
+          misses = misses + 1
+          if found and misses >= 8 then break end
+        end
+      end
+    end
+  end
+  for _, raw in ipairs(rawValues) do
+    local value = entityNumber(raw)
     if value and not seen[value] then seen[value] = true; result[#result + 1] = value end
   end
   table.sort(result)
@@ -260,6 +307,148 @@ end
 
 local function positionOfEntity(entity)
   return resolvedPositionOfEntity(entity) or { 0, 0 }
+end
+
+-- Canonical fingerprints quantize positions to tenths of a metre. Native
+-- DevelopTown instead takes an actual Vec2f world position, so keep that unit
+-- conversion explicit at the dependency boundary.
+local function developmentPositionOfEntity(entity)
+  local position = resolvedPositionOfEntity(entity)
+  if not position then return nil end
+  return { position[1] / 10, position[2] / 10 }
+end
+
+local function developmentPositionOfTownBuilding(buildingId)
+  local direct = developmentPositionOfEntity(buildingId)
+  if direct then return direct, "direct" end
+  local getConstructionEntity = game and game.interface
+    and game.interface.getConstructionEntity or nil
+  if util.isCallable(getConstructionEntity) then
+    local ok, constructionId = pcall(getConstructionEntity, buildingId)
+    constructionId = ok and tonumber(constructionId) or nil
+    if constructionId and constructionId >= 0 then
+      local position = developmentPositionOfEntity(constructionId)
+      if position then return position, "construction" end
+    end
+  end
+  local entity = safeEntity(buildingId)
+  if entity then
+    for _, field in ipairs({ "construction", "constructionId" }) do
+      local constructionId = tonumber(entity[field])
+      if constructionId and constructionId >= 0 then
+        local position = developmentPositionOfEntity(constructionId)
+        if position then return position, "entity-" .. field end
+      end
+    end
+    for _, parcelId in ipairs(sortedNumbers(entity.parcels or {})) do
+      local position = developmentPositionOfEntity(parcelId)
+      if position then return position, "parcel" end
+      if util.isCallable(getConstructionEntity) then
+        local ok, constructionId = pcall(getConstructionEntity, parcelId)
+        constructionId = ok and tonumber(constructionId) or nil
+        position = constructionId and developmentPositionOfEntity(constructionId) or nil
+        if position then return position, "parcel-construction" end
+      end
+    end
+  end
+  return nil, "unresolved"
+end
+
+local function developmentPositionsOfTown(townId)
+  local positions, seen = {}, {}
+  local diagnostics = {
+    mapAvailable = false, mapType = "nil", lookupType = "nil",
+    buildingIds = 0, usedFallback = false,
+  }
+  local function addResolvedPosition(position)
+    if not position then return false end
+    local key = tostring(position[1]) .. ":" .. tostring(position[2])
+    if seen[key] then return false end
+    seen[key] = true
+    positions[#positions + 1] = position
+    return true
+  end
+  local function addPosition(entityId)
+    return addResolvedPosition(developmentPositionOfEntity(entityId))
+  end
+  local townBuildingSystem = api and api.engine and api.engine.system
+    and api.engine.system.townBuildingSystem or nil
+  local townMap
+  if townBuildingSystem and util.isCallable(townBuildingSystem.getTown2BuildingMap) then
+    local ok, value = pcall(townBuildingSystem.getTown2BuildingMap)
+    if ok and (type(value) == "table" or type(value) == "userdata") then
+      townMap = value
+      diagnostics.mapAvailable = true
+      diagnostics.mapType = type(value)
+    end
+  end
+  local buildings
+  if townMap then
+    local lookupOk, value = pcall(function() return townMap[townId] end)
+    if lookupOk then buildings = value end
+    -- Ordinary Lua maps may have numeric entity ids serialized as strings.
+    if buildings == nil and type(townMap) == "table" then
+      for key, candidate in pairs(townMap) do
+        if tonumber(key) == tonumber(townId) then buildings = candidate; break end
+      end
+    end
+  end
+  diagnostics.lookupType = type(buildings)
+  if type(buildings) == "userdata" then
+    local lengthOk, length = pcall(function() return #buildings end)
+    diagnostics.lookupLengthOk = lengthOk and true or false
+    diagnostics.lookupLength = lengthOk and tonumber(length) or nil
+    for _, index in ipairs({ 0, 1 }) do
+      local itemOk, item = pcall(function() return buildings[index] end)
+      diagnostics["probe" .. tostring(index)] = {
+        readable = itemOk and item ~= nil,
+        valueType = itemOk and type(item) or "error",
+        entityNumber = itemOk and entityNumber(item) or nil,
+      }
+    end
+  end
+  local buildingIds = sortedNumbers(buildings)
+  diagnostics.buildingIds = #buildingIds
+  for _, buildingId in ipairs(buildingIds) do addPosition(buildingId) end
+  -- Build 35924 returns town -> building sets as length-bearing userdata that
+  -- do not expose numeric indexing. The documented TOWN_BUILDING component
+  -- and vanilla getEntity().town field provide a stable read-only fallback.
+  diagnostics.componentScanAvailable = false
+  diagnostics.componentScanVisited = 0
+  diagnostics.componentScanMatched = 0
+  diagnostics.componentPositionSources = {}
+  local componentType = api and api.type and api.type.ComponentType
+    and api.type.ComponentType.TOWN_BUILDING or nil
+  local forEach = api and api.engine and api.engine.forEachEntityWithComponent or nil
+  if #positions == 0 and componentType and util.isCallable(forEach) then
+    diagnostics.componentScanAvailable = true
+    local scanOk, scanError = pcall(function()
+      forEach(function(entityId)
+        diagnostics.componentScanVisited = diagnostics.componentScanVisited + 1
+        local entity = safeEntity(entityId)
+        local entityTown = entity and entity.town or nil
+        if tonumber(entityTown) == tonumber(townId) then
+          diagnostics.componentScanMatched = diagnostics.componentScanMatched + 1
+          local position, source = developmentPositionOfTownBuilding(entityId)
+          diagnostics.componentPositionSources[source] =
+            (diagnostics.componentPositionSources[source] or 0) + 1
+          addResolvedPosition(position)
+        end
+      end, componentType)
+    end)
+    diagnostics.componentScanOk = scanOk and true or false
+    if not scanOk then diagnostics.componentScanError = tostring(scanError) end
+  end
+  if #positions == 0 then
+    local fallback = developmentPositionOfEntity(townId)
+    if fallback then positions[1] = fallback; diagnostics.usedFallback = true end
+  end
+  table.sort(positions, function(a, b)
+    if a[1] ~= b[1] then return a[1] < b[1] end
+    return a[2] < b[2]
+  end)
+  diagnostics.positions = #positions
+  return positions, diagnostics
 end
 
 local function boundedComponentValues(values, maximum)
@@ -856,7 +1045,16 @@ function M.initialiseCompanies(worldState, registry, desiredCount, options)
         return game.interface.setPlayer(entityId, playerId)
       end,
     })
-    if not projected then return false, result end
+    if not projected then
+      if type(result) == "table" and type(result.failures) == "table" then
+        local details = {}
+        for _, failure in ipairs(result.failures) do
+          details[#details + 1] = tostring(failure.kind) .. ":" .. tostring(failure.error)
+        end
+        result.error = "native company projection failed: " .. table.concat(details, ",")
+      end
+      return false, result
+    end
     ownershipProjection = result
     worldState.nativeOwnershipProjection = {
       schemaVersion = 1,
@@ -1407,6 +1605,8 @@ local corridorBinding = corridorBindingModule.new({
   nameOf = nameOf,
   safeEntity = safeEntity,
   positionOfEntity = resolvedPositionOfEntity,
+  developmentPositionOfEntity = developmentPositionOfEntity,
+  developmentPositionsOfTown = developmentPositionsOfTown,
   resolveLocal = function(registry, cid) return canonical.resolveLocal(registry, cid) end,
 })
 M.computedServiceFacts = corridorBinding.computedServiceFacts
@@ -1878,193 +2078,17 @@ function M.mobilitySnapshot(registry, worldState)
   return snapshot
 end
 
-local safeField = safeComponentField
-
-local function primitive(value)
-  local valueType = type(value)
-  if valueType == "nil" or valueType == "boolean" or valueType == "string" then return value end
-  if valueType == "number" then return tonumber(value) end
-  return nil
-end
-
--- Read back both halves of the autonomy policy. Town development has a public
--- boolean; the industry command is public but its component layout is not, so
--- retain only a bounded set of primitive fields and explicitly report unknown
--- fields instead of inferring that a successfully issued command took effect.
-function M.autonomySnapshot(registry, worldState)
-  local towns, industries = {}, {}
-  local townActive, townFrozen = 0, 0
-  for _, townId in ipairs(M.listTowns()) do
-    local town = component(townId, api.type.ComponentType.TOWN)
-    local active = primitive(safeField(town, "developmentActive"))
-    if active == true then townActive = townActive + 1
-    elseif active == false then townFrozen = townFrozen + 1 end
-    towns[#towns + 1] = {
-      cid = M.bindExisting(registry, townId, "town", { name = nameOf(townId) }),
-      developmentActive = active,
-    }
-  end
-  table.sort(towns, function(a, b) return tostring(a.cid) < tostring(b.cid) end)
-
-  local manualTrue, manualFalse, manualUnknown = 0, 0, 0
-  local industryFields = {
-    "manualDevelopment", "closureTimeStamp", "level", "productionLevel",
-    "production", "active", "enabled",
-  }
-  for _, industryId in ipairs(M.listIndustries()) do
-    local simBuilding = component(industryId, api.type.ComponentType.SIM_BUILDING)
-    local fields = {}
-    for _, field in ipairs(industryFields) do
-      local value = primitive(safeField(simBuilding, field))
-      if value ~= nil then fields[field] = value end
-    end
-    local manual = fields.manualDevelopment
-    if manual == true then manualTrue = manualTrue + 1
-    elseif manual == false then manualFalse = manualFalse + 1
-    else manualUnknown = manualUnknown + 1 end
-    industries[#industries + 1] = {
-      fingerprint = M.fingerprint(industryId, "industry"),
-      fields = fields,
-    }
-  end
-  table.sort(industries, function(a, b)
-    if a.fingerprint == b.fingerprint then return hash.value(a.fields) < hash.value(b.fields) end
-    return tostring(a.fingerprint) < tostring(b.fingerprint)
-  end)
-
-  local view = {
-    requestedFrozen = worldState and worldState.autonomyFrozen == true or false,
-    towns = towns,
-    industries = industries,
-    totals = {
-      towns = #towns,
-      townDevelopmentActive = townActive,
-      townDevelopmentFrozen = townFrozen,
-      industries = #industries,
-      industryManualTrue = manualTrue,
-      industryManualFalse = manualFalse,
-      industryManualUnknown = manualUnknown,
-    },
-    lastFreezeResult = util.deepCopy(worldState and worldState.lastFreezeResult or nil),
-  }
-  view.digest = hash.value({
-    requestedFrozen = view.requestedFrozen,
-    towns = towns,
-    industries = industries,
-    totals = view.totals,
-  })
-  return view
-end
-
-function M.clockSnapshot()
-  local result = {
-    gameSpeedAvailable = game and game.interface
-      and type(game.interface.getGameSpeed) == "function" or false,
-    gameTimeAvailable = game and game.interface
-      and type(game.interface.getGameTime) == "function" or false,
-  }
-  if result.gameSpeedAvailable then
-    local ok, value = pcall(game.interface.getGameSpeed)
-    if ok then result.gameSpeed = tonumber(value) else result.gameSpeedError = tostring(value) end
-  end
-  if result.gameTimeAvailable then
-    local ok, value = pcall(game.interface.getGameTime)
-    if ok and (type(value) == "table" or type(value) == "userdata") then
-      result.time = tonumber(safeField(value, "time"))
-      local date = safeField(value, "date")
-      if type(date) == "table" or type(date) == "userdata" then
-        result.date = {
-          year = tonumber(safeField(date, "year")),
-          month = tonumber(safeField(date, "month")),
-          day = tonumber(safeField(date, "day")),
-        }
-      end
-    else result.gameTimeError = tostring(value) end
-  end
-  result.paused = result.gameSpeed == 0
-  return result
-end
-
-local function journalScalars(value, path, output, budget, depth, seen)
-  if budget.remaining <= 0 or depth > 6 then return end
-  local valueType = type(value)
-  if valueType == "number" then
-    output[path ~= "" and path or "value"] = tonumber(value)
-    budget.remaining = budget.remaining - 1
-    return
-  end
-  if valueType ~= "table" or seen[value] then return end
-  seen[value] = true
-  for _, key in ipairs(util.sortedKeys(value)) do
-    if budget.remaining <= 0 then break end
-    local keyType = type(key)
-    if keyType == "string" or keyType == "number" then
-      local child = path == "" and tostring(key) or (path .. "." .. tostring(key))
-      journalScalars(value[key], child, output, budget, depth + 1, seen)
-    end
-  end
-  seen[value] = nil
-end
-
--- getPlayerJournal is scoped to the currently controlled native player. The
--- caller records every company's account separately; this range digest covers
--- the actual operational income/expense stream visible on the active desk.
-function M.journalSnapshot(previousTimeMs)
-  local interface = game and game.interface or {}
-  local result = {
-    available = type(interface.getPlayerJournal) == "function"
-      and type(interface.getGameTime) == "function",
-    previousTimeMs = tonumber(previousTimeMs),
-  }
-  if not result.available then return result end
-  local timeOk, gameTime = pcall(interface.getGameTime)
-  local seconds = timeOk and tonumber(safeField(gameTime, "time")) or nil
-  if not seconds then
-    result.error = "game time unavailable: " .. tostring(gameTime)
-    return result
-  end
-  result.toTimeMs = math.floor(seconds * 1000)
-  result.fromTimeMs = result.previousTimeMs and (result.previousTimeMs + 1)
-    or math.max(0, result.toTimeMs - 60000)
-  if result.toTimeMs < result.fromTimeMs then
-    result.unchanged = true
-    result.scalars = {}
-    result.digest = hash.value(result.scalars)
-    return result
-  end
-  local ok, journal = pcall(
-    interface.getPlayerJournal, result.fromTimeMs, result.toTimeMs, false)
-  if not ok or type(journal) ~= "table" then
-    result.error = "journal read failed: " .. tostring(journal)
-    return result
-  end
-  result.scalars = {}
-  local budget = { remaining = 192 }
-  journalScalars(journal, "", result.scalars, budget, 0, {})
-  result.truncated = budget.remaining <= 0
-  result.digest = hash.value(result.scalars)
-  if type(interface.getPlayer) == "function" then
-    local playerOk, player = pcall(interface.getPlayer)
-    if playerOk then result.activePlayerId = tonumber(player) end
-  end
-  return result
-end
-
-function M.operationalSnapshot(registry, worldState, companies, previousJournalTimeMs)
-  local structural = M.structuralSnapshot(registry, worldState, companies)
-  local mobility = M.mobilitySnapshot(registry)
-  local autonomy = M.autonomySnapshot(registry, worldState)
-  local clock = M.clockSnapshot()
-  local journal = M.journalSnapshot(previousJournalTimeMs)
-  return {
-    schemaVersion = 1,
-    clock = clock,
-    structural = structural,
-    mobility = mobility,
-    autonomy = autonomy,
-    journal = journal,
-  }
-end
+-- Inject only the private native queries required by read-only telemetry.
+local operationalTelemetry = operationalTelemetryModule.new({
+  component = component, safeField = safeComponentField,
+  listTowns = M.listTowns, listIndustries = M.listIndustries,
+  bindExisting = M.bindExisting, nameOf = nameOf, fingerprint = M.fingerprint,
+  structuralSnapshot = M.structuralSnapshot, mobilitySnapshot = M.mobilitySnapshot,
+})
+M.autonomySnapshot, M.clockSnapshot = operationalTelemetry.autonomySnapshot,
+  operationalTelemetry.clockSnapshot
+M.journalSnapshot, M.operationalSnapshot = operationalTelemetry.journalSnapshot,
+  operationalTelemetry.operationalSnapshot
 
 function M.capabilityProbe()
   local interface = game and game.interface or {}

@@ -269,13 +269,17 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
     rendezvous = {
         "rendezvousGeneration", "rendezvousState", "rendezvousTargetTime",
     }
+    local_work = {"localWorkPending", "deferredIntentCount"}
     allowed = required | {"observedSpeed", "gameTime"}
-    if schema == 2:
+    if schema in {2, 3}:
         required |= rendezvous
         allowed |= rendezvous
+    if schema == 3:
+        required |= local_work
+        allowed |= local_work
     if not required <= set(payload) or set(payload) - allowed:
         raise ProtocolError("clock health payload has unknown or missing fields")
-    if schema not in {1, 2}:
+    if schema not in {1, 2, 3}:
         raise ProtocolError("unsupported clock health schema")
     for field in (
         "requestedSpeed", "effectiveSpeed", "generation", "engineTick", "lastCommitSeq"
@@ -284,6 +288,12 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
             raise ProtocolError(f"clock health {field} must be an integer")
     if not isinstance(payload.get("proposalPending"), bool):
         raise ProtocolError("clock health proposalPending must be boolean")
+    if schema == 3:
+        if not isinstance(payload.get("localWorkPending"), bool):
+            raise ProtocolError("clock health localWorkPending must be boolean")
+        deferred = payload.get("deferredIntentCount")
+        if not isinstance(deferred, int) or isinstance(deferred, bool) or deferred < 0:
+            raise ProtocolError("clock health deferredIntentCount must be non-negative")
     for field in ("observedSpeed", "gameTime"):
         value = payload.get(field)
         if value is not None and (
@@ -299,7 +309,7 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
     game_time = payload.get("gameTime")
     if game_time is not None and float(game_time) < 0:
         raise ProtocolError("clock health gameTime must be non-negative")
-    if schema == 2:
+    if schema in {2, 3}:
         generation = payload.get("rendezvousGeneration")
         if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
             raise ProtocolError("clock health rendezvousGeneration must be non-negative")

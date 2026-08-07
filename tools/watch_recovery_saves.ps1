@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$Session,
-    [Parameter(Mandatory = $true)][ValidateSet('player1')][string]$Peer,
+    [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer,
     [Parameter(Mandatory = $true)][string]$BridgePath,
     [Parameter(Mandatory = $true)][string]$SaveDirectory,
     [Parameter(Mandatory = $true)][int]$GameProcessId,
@@ -28,28 +28,36 @@ $expectedStart = [DateTime]::Parse($GameStartedAtUtc).ToUniversalTime()
 $sessionRoot = Get-Tpf2mpSessionRoot $safeSession $Peer
 $recoveryRoot = Join-Path $sessionRoot 'recovery'
 $statusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
-$auditPath = Join-Path $bridge "audit\$safeSession.ndjson"
 $companionStatusPath = Join-Path $bridge 'companion_state\companion_status.json'
+$requestRoot = Join-Path $bridge 'companion_state\anchor_requests'
+$resultRoot = Join-Path $bridge 'companion_state\anchor_results'
+$auditPath = Join-Path $bridge "audit\$safeSession.ndjson"
 $companion = Get-Tpf2mpCompanionCommand $bundle
 $deadline = (Get-Date).AddHours($LifetimeHours)
-New-Item -ItemType Directory -Force -Path $recoveryRoot | Out-Null
+$expectedSavePrefix = "tpf2mp_${safeSession}_${Peer}"
+New-Item -ItemType Directory -Force -Path $recoveryRoot, $requestRoot, $resultRoot | Out-Null
 
 $watch = [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     session = $safeSession
     peer = $Peer
     status = 'starting'
     gameProcessId = $GameProcessId
     saveDirectory = $saveRoot
-    auditPath = $auditPath
-    lastAgreedBoundary = $null
-    boundaryObservedAtUtc = $null
+    expectedSavePrefix = $expectedSavePrefix
+    auditPath = if ($Peer -eq 'player1') { $auditPath } else { $null }
+    anchorBoundary = $null
+    anchorReadyObservedAtUtc = $null
     candidateSave = $null
     candidateStableSinceUtc = $null
+    requestId = $null
+    receiptStatus = $null
+    receiptError = $null
     lastArchivedBoundary = $null
     latestArchivePointer = $null
+    latestRecoveryPlan = $null
     archiveCount = 0
-    limitation = 'Archives are linked to an agreed authority checkpoint and a later stable native save; no supported exact-tick save command exists.'
+    limitation = 'A restore point is valid only after both independently saved peers file ordered receipts for the same READY boundary.'
     error = $null
     startedAtUtc = [DateTime]::UtcNow.ToString('o')
     updatedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -60,7 +68,7 @@ function Write-RecoveryWatcherStatus([string]$Status, [string]$ErrorText = $null
     $watch.error = $ErrorText
     $watch.updatedAtUtc = [DateTime]::UtcNow.ToString('o')
     $temporary = $statusPath + '.tmp-' + [guid]::NewGuid().ToString('N')
-    [IO.File]::WriteAllText($temporary, ($watch | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($temporary, ($watch | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $temporary -Destination $statusPath -Force
 }
 
@@ -77,19 +85,20 @@ function Get-ExactRecoveryGame {
     return $game
 }
 
-function Get-LatestAgreedBoundary {
+function Get-CompanionStatus {
     if (-not (Test-Path -LiteralPath $companionStatusPath -PathType Leaf)) { return $null }
     try { $status = Get-Content -LiteralPath $companionStatusPath -Raw | ConvertFrom-Json }
     catch { return $null }
-    if ($status.session -ne $safeSession -or $status.peer -ne $Peer -or $status.role -ne 'host') {
-        return $null
+    if ($status.session -ne $safeSession -or $status.peer -ne $Peer) { return $null }
+    return $status
+}
+
+function Test-ContainsInteger([object]$Values, [int]$Expected) {
+    foreach ($value in @($Values)) {
+        $parsed = 0
+        if ([int]::TryParse([string]$value, [ref]$parsed) -and $parsed -eq $Expected) { return $true }
     }
-    if (-not $status.PSObject.Properties['lastAgreedCheckpointSeq']) { return $null }
-    $boundary = 0
-    if (-not [int]::TryParse([string]$status.lastAgreedCheckpointSeq, [ref]$boundary) -or $boundary -lt 1) {
-        return $null
-    }
-    return $boundary
+    return $false
 }
 
 function Get-StableCandidateSignature([IO.FileInfo]$Save) {
@@ -107,70 +116,105 @@ function Get-StableCandidateSignature([IO.FileInfo]$Save) {
 }
 
 function Get-NewRecoverySave([DateTime]$AfterUtc) {
-    $candidates = @(Get-ChildItem -LiteralPath $saveRoot -File -Filter '*.sav' -ErrorAction SilentlyContinue |
+    return @(Get-ChildItem -LiteralPath $saveRoot -File -Filter '*.sav' -ErrorAction SilentlyContinue |
         Where-Object {
-            -not $_.Name.StartsWith('tpf2mp_', [StringComparison]::OrdinalIgnoreCase) `
+            $_.BaseName.StartsWith($expectedSavePrefix, [StringComparison]::OrdinalIgnoreCase) `
                 -and $_.LastWriteTimeUtc -ge $AfterUtc `
                 -and (Test-Path -LiteralPath ($_.FullName + '.lua') -PathType Leaf)
         } |
-        Sort-Object LastWriteTimeUtc -Descending)
-    return $candidates | Select-Object -First 1
+        Sort-Object LastWriteTimeUtc -Descending) | Select-Object -First 1
 }
 
-function New-VerifiedRecoveryPlan([int]$Boundary) {
-    if (-not (Test-Path -LiteralPath $auditPath -PathType Leaf)) {
-        throw 'Host audit is not available yet.'
+function Submit-AnchorRequest([object]$CompanionStatus, [IO.FileInfo]$Save) {
+    $requestId = [guid]::NewGuid().ToString('N').ToLowerInvariant()
+    $request = [ordered]@{
+        schemaVersion = 1
+        session = $safeSession
+        peer = $Peer
+        requestId = $requestId
+        boundarySeq = [int]$CompanionStatus.anchorBoundarySeq
+        coreDigest = [string]$CompanionStatus.anchorCoreDigest
+        convergenceKey = [string]$CompanionStatus.anchorConvergenceKey
+        savePath = $Save.FullName
+        savedAtUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     }
+    if (-not $request.coreDigest -or -not $request.convergenceKey) {
+        throw 'READY companion status omitted the checkpoint digest or convergence key.'
+    }
+    $path = Join-Path $requestRoot ($requestId + '.json')
+    $temporary = $path + '.tmp-' + [guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($temporary, ($request | ConvertTo-Json -Depth 6 -Compress), [Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temporary -Destination $path
+    return $requestId
+}
+
+function New-VerifiedRestorePlan([int]$Boundary) {
+    if ($Peer -ne 'player1') { throw 'Only the host audit can produce a restore plan.' }
+    if (-not (Test-Path -LiteralPath $auditPath -PathType Leaf)) { throw 'Host audit is not available yet.' }
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
-    $planPath = Join-Path $recoveryRoot "auto-recovery-plan-$Boundary-$stamp.json"
+    $planPath = Join-Path $recoveryRoot "auto-restore-plan-$Boundary-$stamp.json"
     $previousPythonPath = $env:PYTHONPATH
     if ($companion.Mode -eq 'source') { $env:PYTHONPATH = Join-Path $bundle 'companion' }
     try {
-        $arguments = @('recovery-plan', $auditPath, '--session', $safeSession, '--output', $planPath)
+        $arguments = @(
+            'restore-plan', $auditPath, '--session', $safeSession,
+            '--boundary', [string]$Boundary, '--output', $planPath
+        )
         $output = @(& $companion.FilePath @($companion.Prefix + $arguments) 2>&1)
         foreach ($line in $output) { Write-Host $line }
         if ($LASTEXITCODE -ne 0) { throw "Recovery-plan companion exited $LASTEXITCODE" }
     }
     finally { $env:PYTHONPATH = $previousPythonPath }
     $plan = Get-Content -LiteralPath $planPath -Raw | ConvertFrom-Json
-    if ([int]$plan.anchor.boundarySeq -ne $Boundary) {
+    if ([int]$plan.boundarySeq -ne $Boundary) {
         Remove-Item -LiteralPath $planPath -Force -ErrorAction SilentlyContinue
-        throw "Latest verified recovery boundary moved from $Boundary to $($plan.anchor.boundarySeq)."
+        throw "Latest verified restore boundary moved from $Boundary to $($plan.boundarySeq)."
     }
     return $planPath
 }
 
-$observedBoundary = $null
-$boundaryObservedAt = $null
+$readyObservedAt = $null
 $candidateSignature = $null
 $candidateStableSince = $null
+$candidate = $null
+$requestId = $null
+$requestBoundary = 0
 
 try {
-    Write-RecoveryWatcherStatus 'waiting-for-checkpoint'
+    Write-RecoveryWatcherStatus 'waiting-for-ready-boundary'
     while ((Get-Date) -lt $deadline) {
         if (-not (Get-ExactRecoveryGame)) {
             Write-RecoveryWatcherStatus 'stopped-game-exited'
             break
         }
-
-        $boundary = Get-LatestAgreedBoundary
-        if ($boundary -and $boundary -ne $observedBoundary) {
-            $observedBoundary = $boundary
-            $boundaryObservedAt = [DateTime]::UtcNow
-            $candidateSignature = $null
-            $candidateStableSince = $null
-            $watch.lastAgreedBoundary = $boundary
-            $watch.boundaryObservedAtUtc = $boundaryObservedAt.ToString('o')
-            $watch.candidateSave = $null
-            $watch.candidateStableSinceUtc = $null
-            Write-RecoveryWatcherStatus 'waiting-for-native-save'
+        $status = Get-CompanionStatus
+        $readyBoundary = 0
+        if ($status -and $status.anchorReady -eq $true) {
+            [void][int]::TryParse([string]$status.anchorBoundarySeq, [ref]$readyBoundary)
         }
 
-        if ($observedBoundary -and $observedBoundary -ne $watch.lastArchivedBoundary) {
-            $candidate = Get-NewRecoverySave $boundaryObservedAt
-            if ($candidate) {
-                $signature = Get-StableCandidateSignature $candidate
+        if ($readyBoundary -gt 0 -and $readyBoundary -ne $watch.lastArchivedBoundary `
+            -and -not $requestId -and $requestBoundary -ne $readyBoundary) {
+            $readyObservedAt = [DateTime]::UtcNow
+            $requestBoundary = $readyBoundary
+            $candidateSignature = $null
+            $candidateStableSince = $null
+            $candidate = $null
+            $watch.anchorBoundary = $readyBoundary
+            $watch.anchorReadyObservedAtUtc = $readyObservedAt.ToString('o')
+            $watch.candidateSave = $null
+            $watch.candidateStableSinceUtc = $null
+            $watch.receiptStatus = $null
+            $watch.receiptError = $null
+            Write-RecoveryWatcherStatus 'ready-save-now'
+        }
+
+        if ($readyObservedAt -and -not $requestId) {
+            $newCandidate = Get-NewRecoverySave $readyObservedAt
+            if ($newCandidate) {
+                $signature = Get-StableCandidateSignature $newCandidate
                 if ($signature -and $signature -ne $candidateSignature) {
+                    $candidate = $newCandidate
                     $candidateSignature = $signature
                     $candidateStableSince = [DateTime]::UtcNow
                     $watch.candidateSave = $candidate.FullName
@@ -179,20 +223,73 @@ try {
                 }
                 elseif ($signature -and $candidateStableSince `
                     -and ([DateTime]::UtcNow - $candidateStableSince).TotalSeconds -ge $StableSeconds) {
-                    Write-RecoveryWatcherStatus 'archiving'
-                    $planPath = New-VerifiedRecoveryPlan $observedBoundary
-                    & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $Peer `
-                        -SavePath $candidate.FullName -RecoveryPlanPath $planPath -BundleRoot $bundle
-                    if ($LASTEXITCODE -ne 0) { throw "Recovery archive exited $LASTEXITCODE" }
-                    $pointerPath = Join-Path $sessionRoot 'latest-recovery-archive.json'
-                    $pointer = Get-Content -LiteralPath $pointerPath -Raw | ConvertFrom-Json
-                    if (-not $pointer.recoveryPlanPath) {
-                        throw 'Automatic recovery archive was not linked to its verified plan.'
+                    $latest = Get-CompanionStatus
+                    if (-not $latest -or $latest.anchorReady -ne $true `
+                        -or [int]$latest.anchorBoundarySeq -ne $requestBoundary) {
+                        $readyObservedAt = $null
+                        $requestBoundary = 0
+                        Write-RecoveryWatcherStatus 'boundary-left-ready-state-resave-required'
                     }
-                    $watch.lastArchivedBoundary = $observedBoundary
-                    $watch.latestArchivePointer = $pointerPath
-                    $watch.archiveCount = [int]$watch.archiveCount + 1
-                    Write-RecoveryWatcherStatus 'archived-awaiting-next-checkpoint'
+                    else {
+                        $requestId = Submit-AnchorRequest $latest $candidate
+                        $watch.requestId = $requestId
+                        $watch.receiptStatus = 'pending'
+                        Write-RecoveryWatcherStatus 'filing-ordered-receipt'
+                    }
+                }
+            }
+        }
+
+        if ($requestId) {
+            $resultPath = Join-Path $resultRoot ($requestId + '.json')
+            if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+                try { $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json }
+                catch { $result = $null }
+                if ($result -and $result.status -eq 'rejected') {
+                    $watch.receiptStatus = 'rejected'
+                    $watch.receiptError = [string]$result.error
+                    Write-RecoveryWatcherStatus 'receipt-rejected-resave-required' $watch.receiptError
+                    $requestId = $null
+                    $requestBoundary = 0
+                    $readyObservedAt = $null
+                }
+                elseif ($result -and $result.status -eq 'accepted') {
+                    $watch.receiptStatus = 'accepted'
+                    $watch.receiptError = $null
+                    if ($Peer -eq 'player2') {
+                        Write-RecoveryWatcherStatus 'archiving-local-receipt-save'
+                        & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $Peer `
+                            -SavePath $candidate.FullName -BundleRoot $bundle
+                        if ($LASTEXITCODE -ne 0) { throw "Recovery archive exited $LASTEXITCODE" }
+                        $watch.lastArchivedBoundary = $requestBoundary
+                        $watch.latestArchivePointer = Join-Path $sessionRoot 'latest-recovery-archive.json'
+                        $watch.archiveCount = [int]$watch.archiveCount + 1
+                        Write-RecoveryWatcherStatus 'receipt-filed-awaiting-next-boundary'
+                        $requestId = $null
+                        $requestBoundary = 0
+                        $readyObservedAt = $null
+                    }
+                    else {
+                        $latest = Get-CompanionStatus
+                        if ($latest -and (Test-ContainsInteger $latest.restorePoints $requestBoundary)) {
+                            Write-RecoveryWatcherStatus 'building-verified-restore-plan'
+                            $planPath = New-VerifiedRestorePlan $requestBoundary
+                            & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $Peer `
+                                -SavePath $candidate.FullName -RecoveryPlanPath $planPath -BundleRoot $bundle
+                            if ($LASTEXITCODE -ne 0) { throw "Recovery archive exited $LASTEXITCODE" }
+                            $watch.lastArchivedBoundary = $requestBoundary
+                            $watch.latestRecoveryPlan = $planPath
+                            $watch.latestArchivePointer = Join-Path $sessionRoot 'latest-recovery-archive.json'
+                            $watch.archiveCount = [int]$watch.archiveCount + 1
+                            Write-RecoveryWatcherStatus 'restore-point-ready-awaiting-next-boundary'
+                            $requestId = $null
+                            $requestBoundary = 0
+                            $readyObservedAt = $null
+                        }
+                        else {
+                            Write-RecoveryWatcherStatus 'receipt-filed-waiting-for-peer'
+                        }
+                    }
                 }
             }
         }
@@ -208,4 +305,3 @@ catch {
 }
 
 Write-Host "Recovery watcher status: $statusPath"
-

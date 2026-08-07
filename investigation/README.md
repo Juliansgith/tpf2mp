@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-06 (Europe/Amsterdam), prototype `0.22.0-alpha`, state schema `22`, checkpoint format `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
+Last updated: 2026-08-07 (Europe/Amsterdam), prototype `0.23.0-alpha`, state schema `23`, checkpoint format `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
 
 This directory distinguishes four things that must not be blurred together:
 
@@ -43,6 +43,31 @@ The unanimous `Too much curvature` rejection, the old fatal-session response,
 and the strict reject-and-continue no-mutation predicate are recorded in
 [RECOVERABLE_NATIVE_PROPOSAL_REJECTION_2026-08-06.md](RECOVERABLE_NATIVE_PROPOSAL_REJECTION_2026-08-06.md).
 
+The origin-only delayed signal-replay failure, stale builder-userdata lifetime,
+fail-closed timeout evidence, and replay quarantine are recorded in
+[SIGNAL_REPLAY_STALE_BUILDER_2026-08-06.md](SIGNAL_REPLAY_STALE_BUILDER_2026-08-06.md).
+
+The authored credit-field checkpoint mismatch, backwards-compatible strict
+account shapes, cross-language settlement replay, and match-runtime extraction
+are recorded in
+[CREDIT_CHECKPOINT_REPLAY_PARITY_2026-08-06.md](CREDIT_CHECKPOINT_REPLAY_PARITY_2026-08-06.md).
+
+The registration-storm/reentrancy defects, canonical bankruptcy verdict,
+negative companion sequence namespace, strict anchor readiness and restore
+plan, town-development checkpoint, and working two-peer save-receipt path are
+recorded in
+[ADVERSARIAL_AUDIT_ROUND3_2026-08-06.md](ADVERSARIAL_AUDIT_ROUND3_2026-08-06.md).
+
+The exact physical-town convergence run, stock-wizard fresh-world automation,
+skeleton/vanilla/minimum-safe population controls, literal-zero fatal negative,
+and manifest-bound policy profile are recorded in
+[AUTOMATED_NATIVE_WORLD_AND_POLICY_EVIDENCE_2026-08-07.md](AUTOMATED_NATIVE_WORLD_AND_POLICY_EVIDENCE_2026-08-07.md).
+
+The duplicate-ScriptSave startup assertion and deferred native rearm, stale-PID
+hook-status cleanup, fatal-dialog detection, and exact passing startup receipt
+are recorded in
+[NATIVE_STARTUP_AND_LAUNCHER_HARDENING_2026-08-07.md](NATIVE_STARTUP_AND_LAUNCHER_HARDENING_2026-08-07.md).
+
 ## Pinned build
 
 - Executable: `F:\SteamLibrary\steamapps\common\Transport Fever 2\TransportFever2.exe`
@@ -56,7 +81,37 @@ The native component additionally requires 17 unique signatures at the pinned lo
 
 ## Current strongest live evidence
 
+`runtime/localhost-live/round3-town-construction-pos-20260807` is the current
+physical-autonomy proof. Two exact Build 35924 processes applied three rounds
+of eight ordered town-development calls and matched Northfleet capacity and
+structure after every round (`633 → 657 → 687 → 704`; final structure
+`2de890d4`). The final ordered boundary was 22, with matching core `b418e90f`
+and model `ca0582b4` and no fault.
+
+Fresh-world observation runs compare skeleton, vanilla, literal-zero, and
+minimum-safe crowd policies through the stock Free Game wizard. Skeleton and
+minimum-safe worlds held roughly one capacity slot per town construction;
+vanilla held 3.38-3.77. Literal zero raised an exact `PersonCapacity` fatal, so
+the compatibility key now uses a floor of one and passes both worlds. See
+[AUTOMATED_NATIVE_WORLD_AND_POLICY_EVIDENCE_2026-08-07.md](AUTOMATED_NATIVE_WORLD_AND_POLICY_EVIDENCE_2026-08-07.md).
+
 ### Two real localhost game processes
+
+`runtime/manual-network-evidence/anchor-button-20260806-2211-r6-20260807-000538`
+is the current coordinated-durability proof. Two distinct receipt-bound native
+saves reloaded under fresh session `anchor-button-20260806-2211-r6`, accepted
+`recovery.resume` first, and converged a mandatory fresh checkpoint at core
+`22db9d70`, structure `84a886c5`, and convergence key `c64f6b75` before play.
+The loaded trains then completed two station releases and returned to a shared
+pause without a session fault. Independent replay reports 21 commits, one
+control, 858 telemetry records, 21 converged commit digests, and no pending
+physical/checkpoint work. The run also exposed a safe but noisy adjacent-clock-
+generation resync loop; source and regression coverage now exclude such mixed
+samples from actionable skew. The exact-save recheck at
+`runtime/manual-network-evidence/anchor-button-20260806-2211-r6-20260807-001633`
+then ran four station releases with zero absolute-skew corrections and ended in
+an acknowledged shared pause without a fault. Full details are
+in [COORDINATED_RESTORE_POINTS_2026-08-06.md](COORDINATED_RESTORE_POINTS_2026-08-06.md).
 
 `runtime/localhost-live/train-prompt-barrier-state22-20260806-105918` is the
 current strongest ordinary-line proof. Two exact Build 35924 processes loaded
@@ -223,7 +278,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 22 maps pre-existing shared-save assets to authoritative canonical owners, maps each machine's original native player to its assigned canonical company, persists canonical accounts, and retains construction/asset/edge-object manifests plus shared-clock, train-release authority, and line-stop departure-slot reservations. Public base nodes/edges can be lazily rebound by exact canonical geometry when a town-road junction was not in the original local map. The companion requires unanimous no-mutation prepare acknowledgements before a build, then matching two-peer physical completion records before it emits `proposal.build`. A failed prepare is non-fatal. The canonical builder quote is authoritative; the ordered outcome charges the canonical account and reconciles peer-local native wallet caches before the financial checkpoint. Match start and each physical success require matching format-3 model/canonical/structural/financial/train-release checkpoints before another gameplay intent can commit. Post-build mismatch, missing-peer timeout, native failure, or an unchanged upgrade postcondition faults closed. Host clock/train controls may bypass gameplay barriers so authority can rendezvous, slow, pause, or release a fully matched station round.
+State schema 23 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts and authored town-development progress, and retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-3 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, or an unchanged upgrade postcondition faults closed.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two
@@ -262,6 +317,8 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [CREDIT_CHECKPOINT_REPLAY_PARITY_2026-08-06.md](CREDIT_CHECKPOINT_REPLAY_PARITY_2026-08-06.md) - credit/insolvency checkpoint fields, strict legacy/current shapes, Python settlement parity, tamper proof, and match-runtime extraction.
+- [SIGNAL_REPLAY_STALE_BUILDER_2026-08-06.md](SIGNAL_REPLAY_STALE_BUILDER_2026-08-06.md) - origin-only signal-ghost lifetime failure after delayed edge replacement, exact minidump/consensus evidence, no-dereference replay quarantine, and fresh-session regression contract.
 - [TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md](TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md) - projected future-time clock barriers, paused telemetry, station-leg holds/releases, format-3 durability, automated fault/restart proof, and four-round populated localhost acceptance.
 - [GUI_PLAYER_ENTITY_LOAD_CRASH_2026-08-06.md](GUI_PLAYER_ENTITY_LOAD_CRASH_2026-08-06.md) - deterministic post-init native entity-view crash, GUI-safe load projection, and clean replacement bootstrap.
 - [PROPOSAL_PREPARE_IDENTITY_PURITY_2026-08-05.md](PROPOSAL_PREPARE_IDENTITY_PURITY_2026-08-05.md) - origin-only station-throat canonical mutation, read-only pre-consensus identity resolver, automated purity checks, and passing two-station track receipt.
@@ -298,7 +355,7 @@ Relevant documented behavior used by the implementation:
 
 - Does every vanilla builder route pass through the captured Lua call and tag-15 visitor gate?
 - How long can two independently running Build 35924 worlds remain equivalent after schema-5/7 transactions when autonomous systems and real services are introduced?
-- What automatic native-save boundary and reload mechanism can turn a consensus fault into a coordinated recovery instead of a manual restart?
+- Can a future supported engine hook replace the one remaining manual Save-dialog step without weakening receipt-bound restore safety? Coordinated peer-local reload and mandatory post-load convergence now pass live.
 - What station-barrier latency and signaling interactions appear with two or more real trains on one populated line? Long-pause/speed-3 and deliberate slow-peer recovery now pass with one train.
 - Do two populated stops retain their order and alternate-terminal selections through the actual widgets from both origins? Basic stock create/rename/color/delete/add/remove now passes.
 - Which canonical payload, reference-translation, replay, and postcondition formats are required to turn each gated vehicle category into playable synchronized actions?

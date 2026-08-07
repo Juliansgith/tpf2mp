@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
+local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 
 local M = {}
 
@@ -165,7 +166,7 @@ function M.new(deps)
   local function queueGuiProposalResult(payload)
     gui.proposalResults[#gui.proposalResults + 1] = payload
   end
-  
+
   local function processPendingProposalCaptures()
     for index = #gui.pendingProposalCaptures, 1, -1 do
       local pending = gui.pendingProposalCaptures[index]
@@ -204,8 +205,17 @@ function M.new(deps)
     if #gui.proposalResults > 0 then
       local payload = table.remove(gui.proposalResults, 1)
       sendToEngine("proposal.result", payload)
+      -- Keep the origin's builder ghost quarantined until the native result has
+      -- crossed back into engine state.  Clearing this in the command callback
+      -- is too early: Build 35924 can emit stale signal/track previews while
+      -- the post-build wallet sample is still settling.
+      replayQuarantine.finish(gui, payload.proposalId)
       return true
     end
+    -- Physical authority permits one proposal at a time.  If a malformed save
+    -- or future caller exposes another queued record, do not overlap its native
+    -- replay with the proposal whose builder userdata is being quarantined.
+    if gui.proposalReplayQuarantine then return true end
     local proposals = state and state.world and state.world.proposals and state.world.proposals.byId or {}
     for _, proposalId in ipairs(util.sortedKeys(proposals)) do
       local record = proposals[proposalId]
@@ -271,6 +281,7 @@ function M.new(deps)
             return true
           end
         end
+        replayQuarantine.begin(gui, proposalId)
         gui.issuingCanonicalProposal = proposalId
         local sent, sendError = util.sendCommand(commandOrError, function(_, success)
             if success ~= true then

@@ -120,13 +120,17 @@ function M.render(gui, snapshot, options)
       -- A player should never have to reason about quiescence: either the
       -- companion says a save right now becomes a restore point, or it says
       -- exactly what is in the way.
-      "Restore points: %s | anchor now: %s%s",
+      "Restore points: %s | preparation: %s | anchor now: %s%s",
       (function()
         local points = companion.restorePoints
         if type(points) ~= "table" or #points == 0 then return "none yet" end
         return "boundary " .. tostring(points[#points]) .. " (" .. tostring(#points) .. " total)"
       end)(),
-      companion.anchorReady == true and "READY - just save the game"
+      tostring(companion.anchorPreparationStatus or "idle"),
+      companion.anchorReady == true and string.format(
+        "READY - save as tpf2mp_%s_%s_<name>",
+        tostring(snapshot.sessionId or "session"),
+        tostring(snapshot.peerId or "peer"))
         or (companion.anchorBoundarySeq and "not yet" or "waiting for a checkpoint"),
       (function()
         local reasons = companion.anchorReasons

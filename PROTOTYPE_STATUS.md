@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-06 for prototype `0.22.0-alpha`, state schema `22`,
+Last updated: 2026-08-07 for prototype `0.23.0-alpha`, state schema `23`,
 checkpoint format `3`, edge proposal schema `5`, construction proposal schema
 `7`, and native hook `0.13.0`.
 
@@ -26,7 +26,7 @@ TPF2MP contains two usable but differently mature modes:
   two-process purchase/assignment/movement proof. Shared-clock v2 and a
   canonical per-station train hold/release barrier now pass a populated
   two-process run with four releases, zero faults, and matching final state.
-  State 22 additionally makes an enabled demand service the barrier's one
+  State 23 retains an enabled demand service as the barrier's one
   timetable, removes its native hold bit from lifecycle authority, persists
   host-reserved slots, prunes completed rounds, and exposes load telemetry.
   Ordinary lines use the same barrier with a short guarded release and no
@@ -39,6 +39,16 @@ The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
 
 ## Strongest current evidence
+
+State 23 adds two newer gates. `round3-town-construction-pos-20260807` ran
+three eight-call physical-town rounds on two exact processes and converged
+Northfleet at capacities `633 → 657 → 687 → 704`, ending at core/model/
+structure `b418e90f`/`ca0582b4`/`2de890d4`. The receipt-bound restore session
+`anchor-button-20260806-2211-r6` loaded distinct peer saves, admitted
+`recovery.resume` first, converged its mandatory fresh checkpoint, resumed the
+real train, and returned to a shared pause without a fault. Fresh native-world
+controls also prove skeleton/minimum-safe construction scaling; literal zero
+person capacity is an exact Build 35924 fatal and is no longer shipped.
 
 `runtime/localhost-live/train-prompt-barrier-state22-20260806-105918` is the
 strongest ordinary-line receipt. Two exact Build 35924 processes loaded the
@@ -118,7 +128,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   stations/groups, depots, lines, and railway vehicles.
 - Machine-local numeric IDs remain in per-peer binding maps and do not enter the
   portable transaction/checkpoint digest.
-- State schema 22 makes shared-save ownership authoritative, persists the
+- State schema 23 makes shared-save ownership authoritative, persists the
   generation-numbered shared clock and canonical train-release rounds, and includes constructions, assets, and
   edge objects in the stable world manifest. The same
   pre-existing network no longer becomes Company 1 on one peer and Company 2 on

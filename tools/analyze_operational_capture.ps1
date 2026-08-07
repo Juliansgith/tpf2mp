@@ -53,6 +53,14 @@ function Max-Number($Values) {
     return ($numbers | Measure-Object -Maximum).Maximum
 }
 
+function Town-Capacity($Sample) {
+    $towns = Get-Nested $Sample @('structural', 'towns')
+    if ($null -eq $towns) { return $null }
+    $capacities = @($towns | ForEach-Object { $_.totalCapacity } | Where-Object { $null -ne $_ })
+    if ($capacities.Count -eq 0) { return 0 }
+    return [double](($capacities | Measure-Object -Sum).Sum)
+}
+
 function Digest-Changes($Samples, [string]$Domain) {
     $changes = 0
     for ($index = 1; $index -lt $Samples.Count; $index++) {
@@ -156,6 +164,10 @@ function Summarize-Peer([string]$Peer) {
         maxima = [ordered]@{
             lines = Max-Number ($samples | ForEach-Object { @($_.structural.lines).Count })
             vehicles = Max-Number ($samples | ForEach-Object { Get-Nested $_ @('structural', 'vehicleCount') })
+            constructions = Max-Number ($samples | ForEach-Object {
+                Get-Nested $_ @('structural', 'constructionCount')
+            })
+            townCapacity = Max-Number ($samples | ForEach-Object { Town-Capacity $_ })
             totalPersons = Max-Number ($samples | ForEach-Object { Get-Nested $_ @('mobility', 'totalPersons') })
             passengerLineUses = Max-Number ($samples | ForEach-Object {
                 Get-Nested $_ @('mobility', 'totals', 'passengerLineUses')
@@ -212,6 +224,8 @@ function Summarize-Peer([string]$Peer) {
         }
         autonomyFirst = $first.autonomy
         autonomyLast = $last.autonomy
+        agentPolicyFirst = $first.agentPolicy
+        agentPolicyLast = $last.agentPolicy
         firstDigests = $first.digests
         lastDigests = $last.digests
     }
@@ -253,7 +267,10 @@ foreach ($peer in @($peer1, $peer2)) {
         continue
     }
     $lines.Add("- Samples: $($peer.sampleCount) ($($peer.preInitializationSamples) before initialization), initialized ticks $($peer.firstTick) to $($peer.lastTick); captured commands: $($peer.commandCount); GUI mutation envelopes: $($peer.guiActionCount).")
-    $lines.Add("- Operational maxima: lines $($peer.maxima.lines), vehicles $($peer.maxima.vehicles), people $($peer.maxima.totalPersons), passenger line uses $($peer.maxima.passengerLineUses), cargo line uses $($peer.maxima.cargoLineUses).")
+    $lines.Add("- Operational maxima: constructions $($peer.maxima.constructions), town capacity $($peer.maxima.townCapacity), lines $($peer.maxima.lines), vehicles $($peer.maxima.vehicles), people $($peer.maxima.totalPersons), passenger line uses $($peer.maxima.passengerLineUses), cargo line uses $($peer.maxima.cargoLineUses).")
+    if ($peer.agentPolicyLast) {
+        $lines.Add("- Agent policy: mode=$($peer.agentPolicyLast.mode), construction scaling=$($peer.agentPolicyLast.constructionScalingActive), runtime scaling=$($peer.agentPolicyLast.runtimeScalingWorks), fingerprint=$($peer.agentPolicyLast.configuredFingerprint).")
+    }
     $lines.Add("- Documented mobility helpers ever available: persons=$($peer.mobilityAvailabilityEver.totalPersons), line passengers=$($peer.mobilityAvailabilityEver.linePassengers), line cargo=$($peer.mobilityAvailabilityEver.lineCargo), terminal info/free places=$($peer.mobilityAvailabilityEver.terminalInfo)/$($peer.mobilityAvailabilityEver.terminalFreePlaces).")
     $lines.Add("- Direct ECS readers ever available: persons=$($peer.mobilityAvailabilityEver.directPersonEntities), cargo=$($peer.mobilityAvailabilityEver.directCargoEntities), at vehicle=$($peer.mobilityAvailabilityEver.directEntitiesAtVehicle), at terminal=$($peer.mobilityAvailabilityEver.directEntitiesAtTerminal).")
     $lines.Add("- Direct maxima: people $($peer.maxima.directPersons), cargo entities $($peer.maxima.directCargoEntities), aboard pax/cargo $($peer.maxima.passengersOnVehicle)/$($peer.maxima.cargoOnVehicle), waiting pax/cargo $($peer.maxima.passengersWaiting)/$($peer.maxima.cargoWaiting).")

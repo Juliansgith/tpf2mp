@@ -173,7 +173,10 @@ M.TOWN_DEVELOPMENT = {
 -- a busy one does not grow without bound.
 function M.accumulateDevelopment(worldState, carriedByTown)
   local constants = M.TOWN_DEVELOPMENT
-  local pending = worldState.townDevelopmentPoints or {}
+  worldState.townDevelopment = worldState.townDevelopment or {
+    schemaVersion = 1, enabled = true, points = {}, cursor = {},
+  }
+  local pending = worldState.townDevelopment.points or {}
   local due = {}
   for _, townCid in ipairs(util.sortedKeys(carriedByTown or {})) do
     local total = math.min(constants.maxPointsCarried,
@@ -186,7 +189,7 @@ function M.accumulateDevelopment(worldState, carriedByTown)
     end
     pending[townCid] = total
   end
-  worldState.townDevelopmentPoints = pending
+  worldState.townDevelopment.points = pending
   return due
 end
 
@@ -257,6 +260,8 @@ function M.new(deps)
   local nameOf = assert(deps.nameOf, "nameOf dependency is required")
   local safeEntity = assert(deps.safeEntity, "safeEntity dependency is required")
   local positionOfEntity = assert(deps.positionOfEntity, "positionOfEntity dependency is required")
+  local developmentPositionsOfTown = assert(
+    deps.developmentPositionsOfTown, "developmentPositionsOfTown dependency is required")
   local resolveLocal = assert(deps.resolveLocal, "resolveLocal dependency is required")
 
   local binding = {}
@@ -269,8 +274,17 @@ function M.new(deps)
   -- call sequence; the structural probe then decides whether the native
   -- results agreed. Fail-soft with a recorded outcome, because an
   -- unavailable factory must not fault a session that is otherwise healthy.
-  function binding.applyTownDevelopment(registry, batch)
-    local outcome = { towns = 0, calls = 0, errors = {} }
+  function binding.applyTownDevelopment(registry, batch, worldState)
+    worldState = worldState or {}
+    worldState.townDevelopment = worldState.townDevelopment or {
+      schemaVersion = 1, enabled = true, points = {}, cursor = {},
+    }
+    worldState.townDevelopment.cursor = worldState.townDevelopment.cursor or {}
+    local outcome = {
+      towns = 0, calls = 0, activated = 0, refrozen = 0,
+      candidatePositions = {}, positionDiagnostics = {},
+      selectedPositions = {}, errors = {},
+    }
     local factory = util.commandFactory("developTown")
     if not factory then
       outcome.errors[#outcome.errors + 1] = "developTown command factory is unavailable"
@@ -281,15 +295,67 @@ function M.new(deps)
       if not localId then
         outcome.errors[#outcome.errors + 1] = "town is not mapped locally: " .. tostring(townCid)
       else
-        outcome.towns = outcome.towns + 1
-        for _ = 1, math.max(0, util.integer(batch[townCid], 0)) do
-          local made, commandOrError = pcall(factory, localId)
-          local ok, err = false, commandOrError
-          if made then
-            ok, err = util.sendCommand(commandOrError, nil, "mod.world.town-development")
+        -- Cursor movement belongs to the committed authored action, not to
+        -- machine-local command success. This keeps Lua state identical to
+        -- portable checkpoint replay even when a native command later faults
+        -- (the handler then suppresses the boundary checkpoint).
+        local requested = math.max(0, util.integer(batch[townCid], 0))
+        local cursor = math.max(0,
+          util.integer(worldState.townDevelopment.cursor[townCid], 0))
+        worldState.townDevelopment.cursor[townCid] = cursor + requested
+        local positions, positionDiagnostics = developmentPositionsOfTown(localId)
+        outcome.positionDiagnostics[townCid] = positionDiagnostics
+        local vec2Factory = api and api.type and api.type.Vec2f
+          and api.type.Vec2f.new or nil
+        if #positions == 0 or not vec2Factory then
+          outcome.errors[#outcome.errors + 1] =
+            "town development position is unavailable: " .. tostring(townCid)
+        else
+          outcome.candidatePositions[townCid] = #positions
+          -- The match keeps autonomous growth disabled. DevelopTown is a
+          -- no-op while that per-town switch is false, even when the command
+          -- itself reports success. Open it only inside this ordered engine
+          -- callback, issue the immediate native command(s), and close it
+          -- again before the action can be checkpointed.
+          local setDevelopmentActive = game and game.interface
+            and game.interface.setTownDevelopmentActive or nil
+          local activated, activateError = false, "setTownDevelopmentActive is unavailable"
+          if type(setDevelopmentActive) == "function" then
+            activated, activateError = pcall(setDevelopmentActive, localId, true)
           end
-          if ok then outcome.calls = outcome.calls + 1
-          else outcome.errors[#outcome.errors + 1] = tostring(err) end
+          if not activated then
+            outcome.errors[#outcome.errors + 1] = tostring(activateError)
+          else
+            outcome.activated = outcome.activated + 1
+            outcome.towns = outcome.towns + 1
+            for callIndex = 1, requested do
+              local positionIndex = ((cursor + callIndex - 1) % #positions) + 1
+              local position = positions[positionIndex]
+              outcome.selectedPositions[#outcome.selectedPositions + 1] = {
+                townCid = townCid, index = positionIndex,
+                x = position[1], y = position[2],
+              }
+              local madePosition, nativePosition = pcall(
+                vec2Factory, position[1], position[2])
+              local made, commandOrError = false, nativePosition
+              if madePosition then made, commandOrError = pcall(factory, nativePosition) end
+              local ok, err = false, commandOrError
+              if made then
+                ok, err = util.sendCommand(commandOrError, nil, "mod.world.town-development")
+              end
+              if ok then
+                outcome.calls = outcome.calls + 1
+              else
+                outcome.errors[#outcome.errors + 1] = tostring(err)
+              end
+            end
+            local refrozen, refreezeError = pcall(setDevelopmentActive, localId, false)
+            if refrozen then
+              outcome.refrozen = outcome.refrozen + 1
+            else
+              outcome.errors[#outcome.errors + 1] = tostring(refreezeError)
+            end
+          end
         end
       end
     end
@@ -319,20 +385,23 @@ function M.new(deps)
     -- applies the ordered result, exactly like a manual registration.
     if state.networkMode == "network" and deps.activeCompany() ~= companyCid then return end
     if not resolveLocal(state.canonical, lineCid) then return end
-    local queued, queueError = pcall(deps.submit, {
+    local called, queued, queueResult = pcall(deps.submit, {
       type = "line.register", lineCid = lineCid, companyCid = companyCid,
     })
-    if not queued and deps.log then
+    if (not called or queued ~= true) and deps.log then
       deps.log("auto-register-failed", {
-        lineCid = lineCid, error = tostring(queueError), tick = state.tick,
+        lineCid = lineCid,
+        error = tostring(not called and queued or queueResult), tick = state.tick,
       })
     end
+    return called and queued == true, called and queueResult or queued
   end
 
   -- Applies an ordered batch and refreshes the structural probe so the next
   -- checkpoint compares the world these calls produced, not the one before.
   function binding.runOrderedDevelopment(state, batch, structuralSnapshot, log)
-    local applied, outcome = pcall(binding.applyTownDevelopment, state.canonical, batch)
+    local applied, outcome = pcall(
+      binding.applyTownDevelopment, state.canonical, batch, state.world)
     state.probes.townDevelopment = applied and outcome or { errors = { tostring(outcome) } }
     state.probes.townDevelopment.batch = util.deepCopy(batch)
     state.probes.structural = structuralSnapshot()
@@ -358,7 +427,20 @@ function M.new(deps)
     if next(due) == nil then return nil end
     if state.networkMode == "network" then
       if state.bridge.peerId ~= "player1" then return nil end
-      pcall(submit, { type = "town.develop", batch = due })
+      local called, queued, queueResult = pcall(
+        submit, { type = "town.develop", batch = due })
+      if not called or queued ~= true then
+        state.probes.townDevelopmentQueue = {
+          success = false,
+          error = tostring(not called and queued or queueResult),
+          batch = util.deepCopy(due),
+          tick = state.tick,
+        }
+        return due, state.probes.townDevelopmentQueue.error
+      end
+      state.probes.townDevelopmentQueue = {
+        success = true, batch = util.deepCopy(due), tick = state.tick,
+      }
     else
       apply({ type = "town.develop", batch = due }, state.bridge.peerId, nil)
     end

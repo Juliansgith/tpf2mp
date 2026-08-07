@@ -418,6 +418,21 @@ int wmain(int argc, wchar_t** argv) {
     if (!validation.valid) return 2;
   }
 
+  // PID-specific status is authoritative, but Windows may reuse a PID after a
+  // prior hook/dll-load test. A stale rejected JSON would otherwise make the
+  // activation wait fail before the freshly injected DLL can replace it.
+  // Preserve status only when this exact target is already hooked; in that
+  // case it is live evidence and reinjection is intentionally idempotent.
+  if (!ModuleAlreadyLoaded(*process_id, *dll_path)) {
+    std::error_code remove_error;
+    std::filesystem::remove(tpf2mp::NativeStatusPath(*process_id), remove_error);
+    if (remove_error) {
+      std::cerr << "cannot clear stale hook status: " << remove_error.message() << "\n";
+      if (launched) TerminateProcess(created_process.value, 5);
+      return 5;
+    }
+  }
+
   std::wstring injection_error;
   if (!Inject(*process_id, *dll_path, injection_error)) {
     std::wcerr << L"injection failed: " << injection_error << L"\n";

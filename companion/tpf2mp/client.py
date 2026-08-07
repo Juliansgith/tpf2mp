@@ -5,6 +5,7 @@ import threading
 import time
 
 from .bridge import GameBridge
+from .anchor_io import AnchorRequestStore, validate_anchor_state
 from .protocol import ProtocolError, hello, validate_envelope
 from .transport import read_frame as _read_frame, send as _send
 
@@ -25,10 +26,13 @@ class CommitClient:
         self.connected = False
         self.last_error: str | None = None
         self.next_host_seq: int | None = None
+        self.anchor_state: dict[str, object] | None = None
+        self.anchor_requests = AnchorRequestStore(self.bridge)
 
     def _write_status(self, status: str | None = None) -> None:
         if status is not None:
             self.status = status
+        anchor = self.anchor_state or {}
         self.bridge.write_status(
             {
                 "role": "client",
@@ -41,6 +45,16 @@ class CommitClient:
                 "lastCommitSeq": self._last_commit(),
                 "lastError": self.last_error,
                 "matchFingerprint": self.match_fingerprint,
+                "anchorReady": anchor.get("ready") is True,
+                "anchorBoundarySeq": anchor.get("boundarySeq"),
+                "anchorReasons": anchor.get("reasons", ["host readiness has not arrived"]),
+                "anchorCoreDigest": anchor.get("coreDigest"),
+                "anchorConvergenceKey": anchor.get("convergenceKey"),
+                "anchorPreparationStatus": anchor.get("preparationStatus", "idle"),
+                "anchorPreparationSeq": anchor.get("preparationSeq"),
+                "anchorPreparationCheckpointSeq": anchor.get("preparationCheckpointSeq"),
+                "anchorPreparationDetail": anchor.get("preparationDetail"),
+                **self.anchor_requests.status(),
             }
         )
 
@@ -84,11 +98,19 @@ class CommitClient:
                     validate_envelope(message, self.bridge.session)
                     if message.get("kind") in {"commit", "control"}:
                         self.bridge.write_inbound(message)
+                    elif message.get("kind") == "anchor_state":
+                        self.anchor_state = validate_anchor_state(message)
                     elif message.get("kind") == "receipt":
                         if str(message.get("recipient")) != self.bridge.peer:
                             raise ProtocolError("receipt was addressed to another peer")
                         local_seq = int(message.get("local_seq", 0))
-                        self.bridge.acknowledge_outbound(local_seq)
+                        if local_seq < 0:
+                            self.anchor_requests.record_receipt(
+                                local_seq, message.get("accepted") is True,
+                                str(message.get("reason") or "") or None,
+                            )
+                        else:
+                            self.bridge.acknowledge_outbound(local_seq)
                         if not message.get("accepted"):
                             print(f"host rejected local sequence {local_seq}: {message.get('reason')}")
             except BaseException as exc:  # surfaced in the owning reconnect loop
@@ -101,6 +123,12 @@ class CommitClient:
             while not self.stop.is_set() and not receiver_error:
                 had_work = False
                 for local_seq, message in self.bridge.pending_outbound():
+                    if local_seq not in sent_pending:
+                        _send(sock, message, send_lock)
+                        sent_pending.add(local_seq)
+                        had_work = True
+                for message in self.anchor_requests.client_intents(self.anchor_state):
+                    local_seq = int(message["local_seq"])
                     if local_seq not in sent_pending:
                         _send(sock, message, send_lock)
                         sent_pending.add(local_seq)
@@ -143,4 +171,3 @@ class CommitClient:
             self.stop.set()
             self.connected = False
             self._write_status("stopped")
-

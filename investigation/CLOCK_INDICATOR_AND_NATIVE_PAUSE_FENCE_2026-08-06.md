@@ -231,3 +231,39 @@ after fresh healthy telemetry reaches the retained requested speed; the audit
 still preserves the historical timeout. Promoting in-flight running-control
 quiescence into a pre-timeout pause fence remains optional latency polish, not
 a correctness gate.
+
+## Adjacent-generation skew correction (2026-08-07)
+
+The coordinated-restore gameplay proof exposed a different source of command
+churn. Raw health showed the two worlds repeatedly at the same game time (or
+within 0.4), yet seven `absolute-skew-rendezvous` rounds were ordered with
+reported spans from 2.4 to 3.2. The audit makes the ordering window explicit:
+for example, Player 2 reported generation 8 running at `3124.8` while Player
+1's latest retained sample still described generation 7 paused at `3122.2`.
+Player 1's generation-8 `3124.8` sample arrived immediately after the false
+order. The same shape repeated after every resulting release.
+
+Health reports are asynchronous, so samples from adjacent authority
+generations are not a meaningful clock-skew pair. The host now maintains two
+values: `projectedGameTimeSkew` remains a raw diagnostic, while actionable
+`gameTimeSkew` is populated only when every required peer has a fresh sample
+for the host's current clock generation. Station release and adaptive
+correction consume only the actionable value. Missing or stale samples still
+flow through the existing fail-closed health governor; this change cannot hide
+a peer that genuinely stops reporting.
+
+Automated coverage reproduces the live generation-8/generation-7 transition,
+asserts that its projected span exceeds the two-second threshold without
+emitting a control, then advances the second sample to generation 8 and proves
+zero actionable skew. The existing same-generation staggered-heartbeat and
+real three-second-skew tests continue to pass.
+
+Live re-acceptance passed in the exact-build restored session archived at
+`runtime/manual-network-evidence/anchor-button-20260806-2211-r6-20260807-001633`.
+After the requested resume, 35 seconds of service produced no absolute-skew
+control at all. The only clock actions were generations 1/2 for requested
+resume and generations 3/4 for requested pause. Comparable actionable skew
+fell from approximately `0.127` to `0.031`; four station barriers released;
+the final pause reached acknowledged generation 4 with zero pending rounds,
+no companion error, and no session fault. Audit replay passed, and both game
+processes were removed after evidence capture.

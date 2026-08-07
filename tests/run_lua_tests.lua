@@ -15,6 +15,7 @@ local world = require "tpf2_mp/world"
 local guiView = require "tpf2_mp/gui_view"
 local presentation = require "tpf2_mp/presentation"
 local nativeHook = require "tpf2_mp/native_hook"
+local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
 
 local tests, passed = {}, 0
@@ -66,7 +67,8 @@ test("match runtime preserves ranking and bankruptcy precedence", function()
       companies = { ["company:1"] = {}, ["company:2"] = {} },
       companyOrder = { "company:1", "company:2" },
       economy = { epoch = 0 },
-      probes = { bankruptCid = "company:2" },
+      finance = { networkAccounts = { bankruptCid = "company:2" } },
+      probes = { bankruptCid = "company:1" },
     }
     local runtime = matchRuntimeModule.new({ getState = function() return state end })
     local winnerCid, ranked = runtime.rankedWinner()
@@ -79,6 +81,8 @@ test("match runtime preserves ranking and bankruptcy precedence", function()
     local running, runningError = runtime.requireRunning()
     equal(running, false)
     equal(runningError, "match is not running")
+    equal(state.probes.bankruptCid, "company:1",
+      "diagnostic probe was unexpectedly treated as authored bankruptcy state")
   end, debug.traceback)
   economy.scoreboard = originalScoreboard
   if not ok then error(failure, 0) end
@@ -1922,7 +1926,10 @@ test("agent presentation policy scales capacity deterministically per mode", fun
   equal(presentation.scaledCapacity(30, skeleton), 1, "a small building keeps one inhabitant")
   equal(presentation.scaledCapacity(0, skeleton), 0, "an empty building stays empty")
   -- Empty removes the crowd entirely.
-  equal(presentation.scaledCapacity(640, empty), 0)
+  equal(presentation.scaledCapacity(640, empty), 1,
+    "Build 35924 requires a PersonCapacity component on populated town buildings")
+  equal(presentation.scaledCapacity(0, empty), 0,
+    "a natively empty building stays empty in minimum-safe mode")
 
   truthy(presentation.fingerprint(skeleton) ~= presentation.fingerprint(vanilla)
     and presentation.fingerprint(skeleton) ~= presentation.fingerprint(empty),
@@ -2007,6 +2014,33 @@ test("the vanilla policy leaves an existing world untouched", function()
   api, game = previousApi, previousGame
   equal(outcome.applied, 0)
   truthy(outcome.skipped ~= nil, "the vanilla policy must explain why it did nothing")
+end)
+
+test("configured agent policy never runtime-mutates an existing network world", function()
+  local previousApi, previousGame = api, game
+  api = { cmd = {
+    make = { setTownInfo = function() error("configured policy must not construct setTownInfo") end },
+    sendCommand = function() error("configured policy must not issue native commands") end,
+  } }
+  game = { interface = { getTowns = function() return { 71, 72 } end } }
+  local state = { world = {}, probes = {}, tick = 4 }
+  local outcome = presentation.applyConfiguredPolicy(state, {
+    agentMode = "skeleton", agentPolicyFingerprint = "agents:skeleton:test",
+  }, {
+    listTowns = function() return { 71, 72 } end,
+    townCapacity = function() error("configured policy must not read back unsafe writes") end,
+  })
+  api, game = previousApi, previousGame
+
+  equal(outcome.towns, 2)
+  equal(outcome.applied, 0)
+  equal(outcome.verified, 0)
+  equal(outcome.runtimeScalingWorks, false)
+  equal(outcome.constructionScalingActive, true)
+  truthy(outcome.skipped:find("unsafe", 1, true) ~= nil,
+    "the probe should preserve the live engine finding")
+  equal(state.world.agentPolicy.mode, "skeleton")
+  equal(state.probes.agentPolicy.configuredFingerprint, "agents:skeleton:test")
 end)
 
 test("credit limits follow earned revenue, not ambition", function()
@@ -2131,22 +2165,39 @@ test("solvency state is digest-projected so peers agree on who is failing", func
   truthy(view.accounts["company:1"].creditLimit > 0)
 end)
 
+test("bankruptcy verdict is authored and digest-projected", function()
+  local state = finance.newState()
+  finance.initialiseNetworkAccounts(state, { "company:1" }, 0, { reason = "test" })
+  truthy(finance.applyNetworkDelta(state, "company:1",
+    -(finance.CREDIT.baseLimitCents * 2), { kind = "test" }))
+  local before = hash.value(finance.networkDigestView(state))
+  local bankrupt
+  for _ = 1, finance.CREDIT.insolventSettlements do
+    _, bankrupt = finance.chargeCreditAndAssessSolvency(
+      state, { "company:1" }, { settlementCount = 1, companies = {} }, {})
+  end
+  equal(bankrupt, "company:1")
+  equal(finance.networkDigestView(state).bankruptCid, "company:1")
+  truthy(hash.value(finance.networkDigestView(state)) ~= before,
+    "bankruptcy verdict did not change the authored digest")
+end)
+
 test("development points accumulate, spend in whole buildings, and stay bounded", function()
   local worldState = {}
   local constants = world.TOWN_DEVELOPMENT
   -- A quiet corridor banks progress instead of losing it.
   local none = world.accumulateDevelopment(worldState, { ["town:a"] = 150 })
   equal(next(none), nil, "a trickle of demand must not yet buy a building")
-  equal(worldState.townDevelopmentPoints["town:a"], 150)
+  equal(worldState.townDevelopment.points["town:a"], 150)
 
   local due = world.accumulateDevelopment(worldState, { ["town:a"] = 300 })
   equal(due["town:a"], 1, "accumulated points buy exactly one building")
-  equal(worldState.townDevelopmentPoints["town:a"], 50, "the remainder carries forward")
+  equal(worldState.townDevelopment.points["town:a"], 50, "the remainder carries forward")
 
   -- A boom is capped so one settlement cannot flood a town.
   local boom = world.accumulateDevelopment(worldState, { ["town:a"] = 100000 })
   equal(boom["town:a"], constants.maxCallsPerSettle)
-  truthy(worldState.townDevelopmentPoints["town:a"] <= constants.maxPointsCarried,
+  truthy(worldState.townDevelopment.points["town:a"] <= constants.maxPointsCarried,
     "the accumulator must stay bounded")
 
   local repeated = world.accumulateDevelopment({}, { ["town:a"] = 800 })
@@ -2155,24 +2206,83 @@ end)
 
 test("ordered town development issues one native call per due building", function()
   local previousApi, previousGame = api, game
-  local calls = {}
-  api = { cmd = {
-    make = { developTown = function(townId) return { townId = townId } end },
+  local calls, toggles = {}, {}
+  local buildingVector = newproxy(true)
+  local buildingVectorMeta = getmetatable(buildingVector)
+  buildingVectorMeta.__len = function() return 2 end
+  buildingVectorMeta.__index = function() return nil end
+  api = {
+    type = {
+      Vec2f = { new = function(x, y) return { x = x, y = y } end },
+      ComponentType = { TOWN_BUILDING = 91 },
+    },
+    engine = {
+      system = { townBuildingSystem = {
+        getTown2BuildingMap = setmetatable({}, { __call = function()
+          return { [71] = buildingVector }
+        end }),
+      } },
+      forEachEntityWithComponent = function(visitor, componentType)
+        equal(componentType, 91)
+        visitor(701); visitor(999); visitor(702)
+      end,
+    },
+    cmd = {
+    make = { developTown = function(position) return { position = position } end },
     sendCommand = function(command, callback)
-      calls[#calls + 1] = command.townId
+      calls[#calls + 1] = command.position
       if callback then callback(command, true) end
     end,
   } }
-  game = { interface = {} }
+  game = { interface = {
+    getEntity = function(id)
+      if id == 71 then return { id = id, position = { 123.4, -56.7 } } end
+      if id == 701 then return { id = id, town = 71 } end
+      if id == 702 then return { id = id, town = 71 } end
+      if id == 999 then return { id = id, town = 72, position = { 50, 60 } } end
+      if id == 1701 then return { id = id, position = { 30, 40 } } end
+      if id == 1702 then return { id = id, position = { 10, 20 } } end
+    end,
+    getConstructionEntity = function(id)
+      if id == 701 then return 1701 end
+      if id == 702 then return 1702 end
+      return -1
+    end,
+    setTownDevelopmentActive = function(id, active)
+      toggles[#toggles + 1] = { id = id, active = active }
+    end,
+  } }
   local registry = canonical.newState()
   registry.byCanonical["town:pre:alpha"] = { localId = 71, kind = "town" }
   registry.byLocal["71"] = "town:pre:alpha"
-  local outcome = world.applyTownDevelopment(registry, { ["town:pre:alpha"] = 2 })
+  local worldState = {
+    townDevelopment = {
+      schemaVersion = 1, enabled = true, points = {},
+      cursor = { ["town:pre:alpha"] = 3 },
+    },
+  }
+  local outcome = world.applyTownDevelopment(
+    registry, { ["town:pre:alpha"] = 2 }, worldState)
   api, game = previousApi, previousGame
   equal(outcome.towns, 1)
   equal(outcome.calls, 2, "two due buildings means two native calls")
   equal(#calls, 2)
-  equal(calls[1], 71)
+  equal(calls[1].x, 30)
+  equal(calls[1].y, 40)
+  equal(calls[2].x, 10)
+  equal(calls[2].y, 20)
+  equal(outcome.candidatePositions["town:pre:alpha"], 2)
+  equal(outcome.positionDiagnostics["town:pre:alpha"].buildingIds, 0)
+  equal(outcome.positionDiagnostics["town:pre:alpha"].componentScanVisited, 3)
+  equal(outcome.positionDiagnostics["town:pre:alpha"].componentScanMatched, 2)
+  equal(outcome.positionDiagnostics["town:pre:alpha"].componentPositionSources.construction, 2)
+  equal(outcome.positionDiagnostics["town:pre:alpha"].usedFallback, false)
+  equal(outcome.activated, 1)
+  equal(outcome.refrozen, 1)
+  equal(toggles[1].active, true)
+  equal(toggles[2].active, false)
+  equal(worldState.townDevelopment.cursor["town:pre:alpha"], 5,
+    "the committed batch advances the authored position cursor")
   equal(#outcome.errors, 0)
 end)
 
@@ -2424,6 +2534,22 @@ test("fresh network bootstrap rehomes saved manager entities to each peer compan
   equal(clientWorld.logicalOwners["10"], "company:1")
   equal(hash.value(canonical.digestView(hostRegistry)), hash.value(canonical.digestView(clientRegistry)),
     "save/load native projection changed the canonical company digest")
+end)
+
+test("native company projection retains signals under logical custody", function()
+  local ok, report = nativeOwnershipProjection.apply({
+    logicalOwners = { ["11"] = "company:1" },
+  }, { 100, 200 }, {
+    listOwned = function() return { 11 } end,
+    ownerOf = function() return 100 end,
+    kindOf = function() return "edge_object" end,
+    setPlayer = function() error("Build 35924 edge-object setter must not be called") end,
+  })
+  truthy(ok, report)
+  equal(report.required, 1)
+  equal(report.retainedEdges, 1)
+  equal(report.projected, 0)
+  equal(#report.failures, 0)
 end)
 
 local function financeHarness(failPlayer)

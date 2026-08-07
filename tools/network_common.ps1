@@ -80,6 +80,8 @@ function Write-Tpf2mpLauncherConfig {
         [Parameter(Mandatory = $true)][string]$Session,
         [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer,
         [Parameter(Mandatory = $true)][string]$BridgePath,
+        [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
+        [bool]$TownDevelopment = $false,
         [ValidateRange(5, 1440)][int]$LifetimeMinutes = 360
     )
     $safeSession = Assert-Tpf2mpSessionId $Session
@@ -94,10 +96,29 @@ function Write-Tpf2mpLauncherConfig {
         "sessionId=$safeSession",
         "peerId=$Peer",
         "bridgeDir=$BridgePath",
-        'startNetwork=true'
+        'startNetwork=true',
+        "agentMode=$AgentMode",
+        ('townDevelopment=' + $TownDevelopment.ToString().ToLowerInvariant())
     )
     [IO.File]::WriteAllLines($path, $lines, [Text.UTF8Encoding]::new($false))
     return $path
+}
+
+function Write-Tpf2mpMatchContentProfile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
+        [bool]$TownDevelopment = $false
+    )
+    $resolved = [IO.Path]::GetFullPath($Path)
+    $parent = Split-Path -Parent $resolved
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    # Explicit byte spelling keeps the manifest component identical across
+    # PowerShell editions, machines, roles, and peer-local directory names.
+    $payload = '{"schemaVersion":1,"agentMode":"' + $AgentMode `
+        + '","townDevelopment":' + $TownDevelopment.ToString().ToLowerInvariant() + "}`n"
+    [IO.File]::WriteAllText($resolved, $payload, [Text.UTF8Encoding]::new($false))
+    return $resolved
 }
 
 function Read-Tpf2mpSessionState {

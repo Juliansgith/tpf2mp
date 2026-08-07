@@ -50,8 +50,17 @@ for diagnostics but do not enter cross-peer convergence.
 
 `BASE_EDGE` is deliberately excluded from physical projection. Build 35924's
 legacy player setter asserts on base edges; their canonical logical owner and
-pinned custody remain authoritative. The projection therefore fixes native
-stock-manager semantics without reopening the previously measured edge crash.
+pinned custody remain authoritative. A later reverse-direction replay (a
+Company-1-selected save loaded as Player 2) proved that the same setter also
+asserts on edge objects such as signals and waypoints. Those are now retained
+logically for the same reason. Neither category appears in a stock company
+manager, so this preserves manager semantics without invoking an unsafe native
+mutation.
+
+The follow-up session `projection-diag2-20260806-030087` replayed the exact
+Company-1-selected two-train save into host and Player 2 after that exclusion.
+Both peers accepted match initialisation and converged checkpoint boundary 1;
+the audit ended with no pending or faulted physical work.
 
 ## Coverage and live evidence
 

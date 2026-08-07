@@ -9,6 +9,9 @@ param(
     [string]$GameExecutable,
     [string]$LocalModsPath,
     [string]$StartingSave,
+    [string]$RestorePlan,
+    [string]$Player1StartingSave,
+    [string]$Player2StartingSave,
     [switch]$RequireVehicleSyncRound,
     [switch]$SkipTests,
     [switch]$SkipInstall,
@@ -20,6 +23,9 @@ param(
     [ValidateRange(30, 3600)][int]$OperationalSampleTicks = 120,
     [ValidateRange(5000000, 1000000000)][long]$OperationalStartingCash = 50000000,
     [ValidateRange(0, 3600)][int]$UnattendedOperationalSeconds = 0,
+    [switch]$NativeFreshWorld,
+    [switch]$TownDevelopment,
+    [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [switch]$KeepGamesOpen
 )
 
@@ -27,8 +33,35 @@ $ErrorActionPreference = 'Stop'
 if ($ManualOnly -and $OperationalCaptureLab) {
     throw 'ManualOnly and OperationalCaptureLab are mutually exclusive.'
 }
+if ($NativeFreshWorld -and -not $OperationalCaptureLab) {
+    throw 'NativeFreshWorld is an observer-only capture mode; use it with OperationalCaptureLab.'
+}
+if ($NativeFreshWorld -and ($StartingSave -or $Player1StartingSave -or $Player2StartingSave -or $RestorePlan)) {
+    throw 'NativeFreshWorld cannot be combined with a starting save or restore plan.'
+}
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
+$restorePlanPath = $null
+$restorePlanData = $null
+if ($RestorePlan) {
+    if (-not $ManualOnly) { throw 'RestorePlan requires ManualOnly so no validator mutates the restored match.' }
+    if ($StartingSave -or -not $Player1StartingSave -or -not $Player2StartingSave) {
+        throw 'RestorePlan requires Player1StartingSave and Player2StartingSave, and cannot use StartingSave.'
+    }
+    $restorePlanPath = Resolve-Tpf2mpFullPath $RestorePlan
+    if (-not (Test-Path -LiteralPath $restorePlanPath -PathType Leaf)) {
+        throw "Restore plan is missing: $restorePlanPath"
+    }
+    $restorePlanData = Get-Content -LiteralPath $restorePlanPath -Raw | ConvertFrom-Json
+    if (-not $restorePlanData.resumeSession) { throw 'Restore plan has no resumeSession.' }
+    if ($Session -and $Session -ne [string]$restorePlanData.resumeSession) {
+        throw 'Session must equal the restore plan resumeSession.'
+    }
+    $Session = [string]$restorePlanData.resumeSession
+}
+elseif ($Player1StartingSave -or $Player2StartingSave) {
+    throw 'Peer-specific starting saves require RestorePlan.'
+}
 if (-not $Session) { $Session = 'localhost-' + (Get-Date -Format 'yyyyMMdd-HHmmss') }
 if ($Session -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw "Unsafe session name: $Session" }
 
@@ -60,12 +93,14 @@ $peer1Bridge = Join-Path $bridgeBase 'player1'
 $peer2Bridge = Join-Path $bridgeBase 'player2'
 $settingsBackup = Join-Path $runRoot 'settings-original.lua'
 $manifestPath = Join-Path $runRoot 'match-manifest.json'
+$matchContentProfilePath = Join-Path $runRoot 'match-content-profile.json'
 $statusPath = Join-Path $runRoot 'run-status.json'
-$usingNativeSaveLoader = -not [string]::IsNullOrWhiteSpace($StartingSave)
-$bootstrapFileName = if ($usingNativeSaveLoader) {
+$usingNativeSaveLoader = -not [string]::IsNullOrWhiteSpace($StartingSave) -or $null -ne $restorePlanData
+$usingNativeMenuBootstrap = $usingNativeSaveLoader -or $NativeFreshWorld
+$bootstrapFileName = if ($usingNativeMenuBootstrap) {
     'tpf2mp_multiplayer_menu_bootstrap.lua'
 } else { 'tpf2mp_localhost_bootstrap.lua' }
-$bootstrapSource = Join-Path $PSScriptRoot $(if ($usingNativeSaveLoader) {
+$bootstrapSource = Join-Path $PSScriptRoot $(if ($usingNativeMenuBootstrap) {
     'multiplayer_menu_bootstrap.lua'
 } else { 'localhost_bootstrap.lua' })
 $bootstrapTarget = Join-Path $gameRoot "res\scripts\$bootstrapFileName"
@@ -80,6 +115,8 @@ $hostProcess = $null
 $clientProcess = $null
 $peer1Game = $null
 $peer2Game = $null
+$peer1RecoveryWatcher = $null
+$peer2RecoveryWatcher = $null
 $createdSteamMarker = $false
 $preexistingSteamMarker = Test-Path -LiteralPath $steamAppIdPath -PathType Leaf
 $preexistingSteamMarkerContent = if ($preexistingSteamMarker) { Get-Content -LiteralPath $steamAppIdPath -Raw } else { $null }
@@ -98,6 +135,10 @@ $operationalAnalysisError = $null
 $startingSaveCopy = $null
 $startingSaveManifest = $null
 $stagedStartingSave = $null
+$peerStartingSaveCopies = @{}
+$peerStartingSaveManifests = @{}
+$peerStagedStartingSaves = @{}
+$peerStartingCompanyPlayerIds = @{}
 $stagedStartingFiles = @()
 $startingCompanyPlayerIds = ''
 
@@ -185,10 +226,34 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
     $env:TPF2MP_STARTING_CASH = if ($OperationalCaptureLab -or $ManualOnly) {
         [string]$OperationalStartingCash
     } else { '5000000' }
-    $env:TPF2MP_STAGED_SAVE_NAME = if ($script:stagedStartingSave) {
-        [IO.Path]::GetFileNameWithoutExtension([string]$script:stagedStartingSave)
+    $peerStagedSave = if ($script:peerStagedStartingSaves.ContainsKey($Peer)) {
+        [string]$script:peerStagedStartingSaves[$Peer]
+    } else { [string]$script:stagedStartingSave }
+    $env:TPF2MP_STAGED_SAVE_NAME = if ($peerStagedSave) {
+        [IO.Path]::GetFileNameWithoutExtension($peerStagedSave)
     } else { '' }
-    $env:TPF2MP_STARTING_COMPANY_PLAYER_IDS = [string]$script:startingCompanyPlayerIds
+    $peerCompanyPlayerIds = if ($script:peerStartingCompanyPlayerIds.ContainsKey($Peer)) {
+        [string]$script:peerStartingCompanyPlayerIds[$Peer]
+    } else { [string]$script:startingCompanyPlayerIds }
+    $env:TPF2MP_STARTING_COMPANY_PLAYER_IDS = $peerCompanyPlayerIds
+    $env:TPF2MP_TOWN_DEVELOPMENT = if ($TownDevelopment) { '1' } else { '0' }
+    $env:TPF2MP_AGENT_MODE = $AgentMode
+    $env:TPF2MP_RESTORE_RESUME = if ($script:restorePlanData) { '1' } else { '0' }
+    $env:TPF2MP_RESTORE_FROM_SESSION = if ($script:restorePlanData) {
+        [string]$script:restorePlanData.session
+    } else { '' }
+    $env:TPF2MP_RESTORE_BOUNDARY = if ($script:restorePlanData) {
+        [string]$script:restorePlanData.boundarySeq
+    } else { '' }
+    $env:TPF2MP_RESTORE_CORE_DIGEST = if ($script:restorePlanData) {
+        [string]$script:restorePlanData.coreDigest
+    } else { '' }
+    $env:TPF2MP_RESTORE_CONVERGENCE_KEY = if ($script:restorePlanData) {
+        [string]$script:restorePlanData.convergenceKey
+    } else { '' }
+    $env:TPF2MP_RESTORE_PLAN_CHECKSUM = if ($script:restorePlanData) {
+        [string]$script:restorePlanData.checksum
+    } else { '' }
     # Build 35924's Vulkan/UI startup can enter its Internal error path when
     # created minimized, while a hidden window has no targetable main handle.
     # Use an ordinary window; the exact-PID helper may foreground it briefly.
@@ -196,13 +261,36 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
         -ArgumentList @('--script', $bootstrapRelative)
 }
 
+function Start-RecoveryWatcher([string]$Peer, [string]$BridgePath, [Diagnostics.Process]$GameProcess) {
+    $stdout = Join-Path $runRoot "$Peer-recovery-watcher.stdout.log"
+    $stderr = Join-Path $runRoot "$Peer-recovery-watcher.stderr.log"
+    $arguments = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'watch_recovery_saves.ps1'),
+        '-Session', $Session, '-Peer', $Peer, '-BridgePath', $BridgePath,
+        '-SaveDirectory', $saveDirectory, '-GameProcessId', [string]$GameProcess.Id,
+        '-GameExecutable', $game,
+        '-GameStartedAtUtc', $GameProcess.StartTime.ToUniversalTime().ToString('o'),
+        '-BundleRoot', $projectRoot
+    )
+    $watcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+        -ArgumentList (ConvertTo-Tpf2mpCommandLine $arguments) -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    Start-Sleep -Milliseconds 300
+    $watcher.Refresh()
+    if ($watcher.HasExited) {
+        $errorText = if (Test-Path -LiteralPath $stderr -PathType Leaf) {
+            Get-Content -LiteralPath $stderr -Raw
+        } else { '' }
+        throw "$Peer recovery watcher exited during startup: $errorText"
+    }
+    return $watcher
+}
+
 function Wait-GameWindow([Diagnostics.Process]$GameProcess, [int]$WaitSeconds = 120) {
     $deadline = (Get-Date).AddSeconds($WaitSeconds)
     while ((Get-Date) -lt $deadline) {
-        $GameProcess.Refresh()
-        if ($GameProcess.HasExited) {
-            throw "Game PID $($GameProcess.Id) exited before its menu window opened (exit $($GameProcess.ExitCode))."
-        }
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context 'before its menu window opened')
         if ($GameProcess.MainWindowHandle -ne 0) { return }
         Start-Sleep -Milliseconds 250
     }
@@ -211,7 +299,13 @@ function Wait-GameWindow([Diagnostics.Process]$GameProcess, [int]$WaitSeconds = 
 
 function Wait-MenuBootstrap([Diagnostics.Process]$GameProcess, [string]$Peer, [string]$BridgePath) {
     Wait-GameWindow $GameProcess
-    if ($usingNativeSaveLoader) {
+    if ($NativeFreshWorld) {
+        [void](Wait-Tpf2mpMainMenuEntry -GameProcess $GameProcess -BridgePath $BridgePath `
+            -Session $Session -Peer $Peer -TimeoutSeconds 120)
+        Write-Host "$Peer game PID $($GameProcess.Id) reached the stock Free Game menu."
+        return
+    }
+    elseif ($usingNativeSaveLoader) {
         [void](Wait-Tpf2mpMenuStage -GameProcess $GameProcess -BridgePath $BridgePath `
             -Session $Session -Peer $Peer -Stage @('ready-to-click-load-game') -TimeoutSeconds 120)
         Write-Host "$Peer game PID $($GameProcess.Id) reached its native pinned-save loader."
@@ -220,10 +314,8 @@ function Wait-MenuBootstrap([Diagnostics.Process]$GameProcess, [string]$Peer, [s
     $statusPath = Join-Path $BridgePath 'launcher\game_bootstrap.json'
     $deadline = (Get-Date).AddSeconds(120)
     while ((Get-Date) -lt $deadline) {
-        $GameProcess.Refresh()
-        if ($GameProcess.HasExited) {
-            throw "$Peer game PID $($GameProcess.Id) exited before its menu bootstrap became ready."
-        }
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context "before $Peer menu bootstrap became ready")
         if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
             try {
                 $status = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
@@ -320,6 +412,75 @@ function Test-NativeWorldReady($Status) {
     catch { return $false }
 }
 
+function Start-NativeFreshWorld(
+    [Diagnostics.Process]$GameProcess,
+    [string]$Peer,
+    [string]$BridgePath
+) {
+    $evidence = Join-Path $runRoot "native-fresh-world-$Peer"
+    New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+    # The game remembers a window rectangle that may extend beyond a changed
+    # monitor/DPI layout. Keep stock new-game controls inside the physical
+    # desktop before relying on their published live rectangles.
+    Invoke-GameInput $GameProcess 'maximize'
+    $deadline = (Get-Date).AddSeconds(120)
+    $menu = $null
+    while ((Get-Date) -lt $deadline) {
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context "before the $Peer native Free Game page opened")
+        $menu = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
+        if ($menu -and $menu.error) { throw "Menu bootstrap failed: $($menu.error)" }
+        if ($menu -and $menu.components.createNewGameRect -and $menu.components.menuRect) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $menu -or -not $menu.components.createNewGameRect) {
+        throw "$Peer did not expose the stock Free Game button."
+    }
+    Invoke-Tpf2mpUiRectangleClick $GameProcess $menu.components.createNewGameRect `
+        $menu.components.menuRect (Join-Path $evidence 'click-free-game.json')
+
+    $deadline = (Get-Date).AddSeconds(120)
+    $wizard = $null
+    while ((Get-Date) -lt $deadline) {
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context "before the $Peer native Free Game wizard was ready")
+        $wizard = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
+        if ($wizard -and $wizard.error) { throw "Menu bootstrap failed: $($wizard.error)" }
+        if ($wizard -and $wizard.components.menuRect `
+            -and ($wizard.components.nextGameRect -or $wizard.components.startGameRect)) { break }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $wizard -or (-not $wizard.components.nextGameRect -and -not $wizard.components.startGameRect)) {
+        throw "$Peer did not expose the stock Free Game Next/Start control."
+    }
+    if ($wizard.components.nextGameRect) {
+        Invoke-Tpf2mpUiRectangleClick $GameProcess $wizard.components.nextGameRect `
+            $wizard.components.menuRect (Join-Path $evidence 'click-next-game.json')
+        Start-Sleep -Milliseconds 500
+        $deadline = (Get-Date).AddSeconds(120)
+        $start = $null
+        while ((Get-Date) -lt $deadline) {
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+                -Context "before the $Peer native Free Game Start button was ready")
+            $start = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
+            if ($start -and $start.error) { throw "Menu bootstrap failed: $($start.error)" }
+            if ($start -and $start.components.startGameRect -and $start.components.menuRect) { break }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    else { $start = $wizard }
+    if (-not $start -or -not $start.components.startGameRect) {
+        throw "$Peer did not expose the stock Free Game Start button after Next."
+    }
+    Invoke-Tpf2mpUiRectangleClick $GameProcess $start.components.startGameRect `
+        $start.components.menuRect (Join-Path $evidence 'click-start-game.json')
+
+    $nativePath = Join-Path $nativeStatusRoot "status-$($GameProcess.Id).json"
+    [void](Wait-Tpf2mpNativeWorld -GameProcess $GameProcess -NativeStatusPath $nativePath `
+        -RequireGameScriptObserver -TimeoutSeconds 240)
+    Write-Host "$Peer game PID $($GameProcess.Id) generated a native Free Game world with active modifiers."
+}
+
 function Start-GameWorldViaConsole(
     [Diagnostics.Process]$GameProcess,
     [string]$Peer,
@@ -346,6 +507,12 @@ function Start-GameWorldViaConsole(
         Write-Host "$Peer game PID $($GameProcess.Id) loaded its pinned native world without console re-entry."
         return
     }
+    elseif ($NativeFreshWorld) {
+        Start-NativeFreshWorld $GameProcess $Peer $(if ($Peer -eq 'player1') {
+                $peer1Bridge
+            } else { $peer2Bridge })
+        return
+    }
     else {
         # Normalize a potentially stale synthetic Return state left by an
         # earlier interrupted/crashed empty-world lab.
@@ -357,10 +524,8 @@ function Start-GameWorldViaConsole(
     try {
         $deadline = (Get-Date).AddSeconds(180)
         while ((Get-Date) -lt $deadline) {
-            $GameProcess.Refresh()
-            if ($GameProcess.HasExited) {
-                throw "$Peer game PID $($GameProcess.Id) exited while loading its disposable world."
-            }
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+                -Context "while loading the $Peer disposable world")
             if (Test-NativeWorldReady (Read-NativeStatus $GameProcess)) {
                 $ready = $true
                 break
@@ -426,29 +591,14 @@ function Copy-StartingSaveTriplet([string]$Source, [string]$DestinationDirectory
     return [pscustomobject]@{ Save = $destinationSave; Manifest = $manifest }
 }
 
-function Read-StartingCompanyPlayerIds([string]$SavePath) {
-    $metadataPath = $SavePath + '.lua'
-    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { return '' }
-    $content = [IO.File]::ReadAllText($metadataPath)
-    $marker = $content.IndexOf('["tpf2_mp.lua"]', [StringComparison]::Ordinal)
-    if ($marker -lt 0) { return '' }
-    $tail = $content.Substring($marker)
-    $ids = [Collections.Generic.List[string]]::new()
-    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
-    foreach ($match in [regex]::Matches($tail, '(?m)^\s*playerId\s*=\s*(\d+)\s*,')) {
-        $value = $match.Groups[1].Value
-        if ($seen.Add($value)) { $ids.Add($value) }
-        if ($ids.Count -ge 2) { break }
-    }
-    if ($ids.Count -ne 2) { return '' }
-    return [string]::Join(',', $ids)
-}
-
-function Stage-StartingSaveForConsole([string]$SourceSave, [string]$DestinationDirectory) {
+function Stage-StartingSaveForConsole(
+    [string]$SourceSave, [string]$DestinationDirectory, [string]$Label = ''
+) {
     if (-not (Test-Path -LiteralPath $DestinationDirectory -PathType Container)) {
         throw "Game save directory is missing: $DestinationDirectory"
     }
-    $safeBaseName = 'tpf2mp_lab_' + $Session
+    $safeLabel = if ($Label) { '_' + ($Label -replace '[^A-Za-z0-9_-]', '_') } else { '' }
+    $safeBaseName = 'tpf2mp_lab_' + $Session + $safeLabel
     $destinationSave = [IO.Path]::GetFullPath((Join-Path $DestinationDirectory ($safeBaseName + '.sav')))
     $savePrefix = [IO.Path]::GetFullPath($DestinationDirectory).TrimEnd('\') + '\'
     if (-not $destinationSave.StartsWith($savePrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -473,6 +623,13 @@ function Stage-StartingSaveForConsole([string]$SourceSave, [string]$DestinationD
         throw 'The console staging copy is incomplete.'
     }
     return $destinationSave
+}
+
+function Get-StagedStartingSave([string]$Peer) {
+    if ($script:peerStagedStartingSaves.ContainsKey($Peer)) {
+        return [string]$script:peerStagedStartingSaves[$Peer]
+    }
+    return $script:stagedStartingSave
 }
 
 function Request-GameQuit([Diagnostics.Process]$GameProcess, [string]$Peer) {
@@ -549,10 +706,45 @@ function Stop-ExactProcess([Diagnostics.Process]$Process, [string]$Label, [int]$
 
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
 try {
-    if ($StartingSave) {
+    if ($restorePlanData) {
+        $p1Source = Resolve-Tpf2mpFullPath $Player1StartingSave
+        $p2Source = Resolve-Tpf2mpFullPath $Player2StartingSave
+        Invoke-Companion -Arguments @(
+            'verify-restore-plan', $restorePlanPath,
+            '--save', "player1=$p1Source", '--save', "player2=$p2Source"
+        )
+        foreach ($entry in @(
+            @{ Peer = 'player1'; Source = $p1Source },
+            @{ Peer = 'player2'; Source = $p2Source }
+        )) {
+            $copy = Copy-StartingSaveTriplet $entry.Source `
+                (Join-Path $runRoot "starting-save-$($entry.Peer)")
+            $peerStartingSaveCopies[$entry.Peer] = $copy.Save
+            $peerStartingSaveManifests[$entry.Peer] = $copy.Manifest
+            $copy.Manifest | ConvertTo-Json -Depth 8 | Set-Content `
+                -LiteralPath (Join-Path $runRoot "starting-save-manifest-$($entry.Peer).json") -Encoding UTF8
+            $peerStagedStartingSaves[$entry.Peer] = Stage-StartingSaveForConsole `
+                $copy.Save $saveDirectory $entry.Peer
+        }
+        Invoke-Companion -Arguments @(
+            'verify-restore-plan', $restorePlanPath,
+            '--save', "player1=$($peerStartingSaveCopies.player1)",
+            '--save', "player2=$($peerStartingSaveCopies.player2)"
+        )
+        $peerOwners = Get-Tpf2mpPeerStartingCompanyPlayerIds `
+            -Player1Save $peerStartingSaveCopies.player1 `
+            -Player2Save $peerStartingSaveCopies.player2
+        # Native player entity IDs are local-world identities. Each restored
+        # peer must retain the mapping saved in its own world; the two lists
+        # are intentionally not required to match across machines.
+        $peerStartingCompanyPlayerIds.player1 = $peerOwners.player1
+        $peerStartingCompanyPlayerIds.player2 = $peerOwners.player2
+        Write-Host "Verified and staged both peer-specific saves for restore boundary $($restorePlanData.boundarySeq)."
+    }
+    elseif ($StartingSave) {
         $startingCopy = Copy-StartingSaveTriplet $StartingSave (Join-Path $runRoot 'starting-save')
         $startingSaveCopy = $startingCopy.Save
-        $startingCompanyPlayerIds = Read-StartingCompanyPlayerIds $startingSaveCopy
+        $startingCompanyPlayerIds = Read-Tpf2mpStartingCompanyPlayerIds $startingSaveCopy
         $startingSaveManifest = $startingCopy.Manifest
         $startingSaveManifest | ConvertTo-Json -Depth 8 | Set-Content `
             -LiteralPath (Join-Path $runRoot 'starting-save-manifest.json') -Encoding UTF8
@@ -617,7 +809,7 @@ try {
     $libraryEntry = $overlay | Where-Object { $_.target -eq $injectedLibrary } | Select-Object -First 1
     $gameScriptInjected = $null -ne $gameScriptEntry -and $gameScriptEntry.created -eq $true
     $libraryInjected = $null -ne $libraryEntry -and $libraryEntry.created -eq $true
-    if ($usingNativeSaveLoader) {
+    if ($usingNativeMenuBootstrap) {
         $bootstrapInstall = Install-Tpf2mpMenuBootstrap -BundleRoot $projectRoot -GameExecutable $game
         $injectedBootstrap = $bootstrapInstall.created -eq $true
     }
@@ -641,11 +833,15 @@ try {
 
     $installedMod = Assert-Tpf2mpModTarget (Join-Path $mods 'tpf2_mp_1') $mods
     $fingerprintSource = Join-Path $projectRoot 'companion\tpf2mp'
+    [void](Write-Tpf2mpMatchContentProfile -Path $matchContentProfilePath `
+        -AgentMode $AgentMode -TownDevelopment $TownDevelopment.IsPresent)
     $fingerprintArguments = @(
         'fingerprint', '--game-exe', $game, '--mod-dir', $installedMod,
-        '--companion-dir', $fingerprintSource, '--extra', $nativeRoot, '--output', $manifestPath
+        '--companion-dir', $fingerprintSource, '--extra', $nativeRoot,
+        '--extra', $matchContentProfilePath, '--output', $manifestPath
     )
     if ($startingSaveCopy) { $fingerprintArguments += @('--save', $startingSaveCopy) }
+    if ($restorePlanPath) { $fingerprintArguments += @('--extra', $restorePlanPath) }
     Invoke-Companion -Arguments $fingerprintArguments
 
     if ($OperationalCaptureLab) {
@@ -664,15 +860,15 @@ try {
         foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
             [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\start'), 'start', [Text.UTF8Encoding]::new($false))
         }
-        Start-GameWorldViaConsole $peer1Game 'player1' $stagedStartingSave
-        Start-GameWorldViaConsole $peer2Game 'player2' $stagedStartingSave
+        Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+        Start-GameWorldViaConsole $peer2Game 'player2' (Get-StagedStartingSave 'player2')
 
         $captureDeadline = (Get-Date).AddSeconds(240)
         do {
-            $peer1Game.Refresh(); $peer2Game.Refresh()
-            if ($peer1Game.HasExited -or $peer2Game.HasExited) {
-                throw 'A capture-lab game exited before its first initialized operational sample.'
-            }
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+                -Context 'before the player1 capture-lab sample')
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+                -Context 'before the player2 capture-lab sample')
             $peer1Capture = Read-OperationalCapture $peer1Bridge 'player1'
             $peer2Capture = Read-OperationalCapture $peer2Bridge 'player2'
             if ($peer1Capture -and $peer2Capture) { break }
@@ -756,6 +952,10 @@ try {
         while ((Get-Date) -lt $interactiveDeadline) {
             $peer1Game.Refresh(); $peer2Game.Refresh()
             if ($peer1Game.HasExited -or $peer2Game.HasExited) { break }
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+                -Context 'during the player1 operational lab')
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+                -Context 'during the player2 operational lab')
             if ((Test-Path -LiteralPath (Join-Path $peer1Bridge 'launcher\stop')) `
                 -or (Test-Path -LiteralPath (Join-Path $peer2Bridge 'launcher\stop'))) { break }
             Start-Sleep -Seconds 1
@@ -773,6 +973,7 @@ try {
         '--completion-timeout', [string]$ConsensusTimeoutSeconds,
         '--manifest', $manifestPath
     )
+    if ($restorePlanPath) { $hostArgs += @('--restore-plan', $restorePlanPath) }
     $clientArgs = @(
         'client', '127.0.0.1', '--session', $Session, '--peer', 'player2',
         '--port', [string]$Port, '--bridge', $peer2Bridge, '--manifest', $manifestPath
@@ -809,9 +1010,12 @@ try {
         [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\start'), 'start', [Text.UTF8Encoding]::new($false))
     }
     Write-Host 'Both hooks are active; both menu bootstraps received their peer-specific launcher marker.'
-    Start-GameWorldViaConsole $peer1Game 'player1' $stagedStartingSave
-    Start-GameWorldViaConsole $peer2Game 'player2' $stagedStartingSave
-    if ($startingSaveCopy) {
+    Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+    Start-GameWorldViaConsole $peer2Game 'player2' (Get-StagedStartingSave 'player2')
+    if ($restorePlanData) {
+        Write-Host 'Both exact processes loaded their own plan-attested save; awaiting restore checkpoint consensus.'
+    }
+    elseif ($startingSaveCopy) {
         Write-Host 'Both exact processes loaded the same pinned populated save with native authority active.'
     }
     else { Write-Host 'Both exact processes are running disposable app.startGame worlds with native authority active.' }
@@ -835,15 +1039,22 @@ try {
         $bootstrapDeadline = (Get-Date).AddSeconds([Math]::Min($TimeoutSeconds, 240))
         $bootstrapReady = $false
         do {
-            $peer1Game.Refresh(); $peer2Game.Refresh()
-            if ($peer1Game.HasExited -or $peer2Game.HasExited) {
-                throw 'A game process exited before manual-network bootstrap completed.'
-            }
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+                -Context 'before player1 manual-network bootstrap completed')
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+                -Context 'before player2 manual-network bootstrap completed')
             $hostStatus = Read-CompanionStatus $peer1Bridge
             $clientStatus = Read-CompanionStatus $peer2Bridge
+            if ($hostStatus -and $hostStatus.sessionFault) {
+                throw "Manual bootstrap faulted before checkpoint: $($hostStatus.sessionFault)"
+            }
             $bootstrapReady = (Test-CompanionConnected $hostStatus) `
                 -and (Test-CompanionConnected $clientStatus) `
                 -and [int64]($hostStatus.lastAgreedCheckpointSeq) -ge 1
+            if ($bootstrapReady -and $restorePlanData) {
+                $bootstrapReady = $hostStatus.restoreStatus -eq 'complete' `
+                    -and [int64]$hostStatus.restoreCommitSeq -ge 1
+            }
             if (-not $bootstrapReady) { Start-Sleep -Milliseconds 500 }
         } while (-not $bootstrapReady -and (Get-Date) -lt $bootstrapDeadline)
         if (-not $bootstrapReady) {
@@ -867,8 +1078,15 @@ try {
             Copy-Item -LiteralPath $nativePath `
                 -Destination (Join-Path $runRoot "native-$($gameProcess.Id).json") -Force
         }
+        $peer1RecoveryWatcher = Start-RecoveryWatcher 'player1' $peer1Bridge $peer1Game
+        $peer2RecoveryWatcher = Start-RecoveryWatcher 'player2' $peer2Bridge $peer2Game
         $finalPassed = $true
-        Write-Host 'PASS manual network bootstrap: both peers accepted match.initialise and checkpoint consensus.'
+        if ($restorePlanData) {
+            Write-Host 'PASS coordinated restore: both attested saves accepted recovery.resume and a fresh checkpoint.'
+        }
+        else {
+            Write-Host 'PASS manual network bootstrap: both peers accepted match.initialise and checkpoint consensus.'
+        }
     }
     else {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -879,8 +1097,9 @@ try {
             @{ Peer = 'player2'; Bridge = $peer2Bridge; Game = $peer2Game }
         )) {
             $entry.Game.Refresh()
-            if ($entry.Game.HasExited -and -not $peerResults[$entry.Peer]) {
-                throw "$($entry.Peer) game PID $($entry.Game.Id) exited before validation completed (exit $($entry.Game.ExitCode))."
+            if (-not $peerResults[$entry.Peer] -or -not $entry.Game.HasExited) {
+                [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $entry.Game `
+                    -Context "before $($entry.Peer) validation completed")
             }
             $result = Read-ValidationResult $entry.Bridge $entry.Peer
             if ($result) {
@@ -974,11 +1193,10 @@ try {
         }
         $handoffDeadline = (Get-Date).AddSeconds(45)
         while ((Get-Date) -lt $handoffDeadline) {
-            $peer1Game.Refresh()
-            $peer2Game.Refresh()
-            if ($peer1Game.HasExited -or $peer2Game.HasExited) {
-                throw 'A game process exited during validator-to-human authority handoff.'
-            }
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+                -Context 'during the player1 validator-to-human authority handoff')
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+                -Context 'during the player2 validator-to-human authority handoff')
             $player1Ready = Test-Path -LiteralPath (Join-Path $peer1Bridge 'launcher\manual-handoff-ready') -PathType Leaf
             $player2Ready = Test-Path -LiteralPath (Join-Path $peer2Bridge 'launcher\manual-handoff-ready') -PathType Leaf
             if ($player1Ready -and $player2Ready) { break }
@@ -1024,6 +1242,10 @@ try {
             $peer1Game.Refresh()
             $peer2Game.Refresh()
             if ($peer1Game.HasExited -or $peer2Game.HasExited) { break }
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+                -Context 'during the player1 post-validation lab')
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+                -Context 'during the player2 post-validation lab')
             if ((Test-Path -LiteralPath (Join-Path $peer1Bridge 'launcher\stop')) `
                 -or (Test-Path -LiteralPath (Join-Path $peer2Bridge 'launcher\stop'))) { break }
             Start-Sleep -Seconds 1
@@ -1053,6 +1275,8 @@ finally {
             @{ Process = $peer1Game; Label = 'player1 game' }
         )) { Stop-ExactProcess $entry.Process $entry.Label 1 }
     }
+    Stop-ExactProcess $peer2RecoveryWatcher 'player2 recovery watcher' 1
+    Stop-ExactProcess $peer1RecoveryWatcher 'player1 recovery watcher' 1
     Stop-ExactProcess $clientProcess 'client companion' 1
     Stop-ExactProcess $hostProcess 'host companion' 1
     foreach ($name in @('SteamAppId', 'SteamGameId', 'TPF2MP_PEER_ID', 'TPF2MP_SESSION_ID',
@@ -1061,7 +1285,11 @@ finally {
         'TPF2MP_NETWORK_SOAK_TICKS', 'TPF2MP_NETWORK_CLOCK_RUN_TICKS',
         'TPF2MP_OPERATIONAL_CAPTURE',
         'TPF2MP_OPERATIONAL_SAMPLE_TICKS', 'TPF2MP_STARTING_CASH',
-        'TPF2MP_STAGED_SAVE_NAME')) {
+        'TPF2MP_TOWN_DEVELOPMENT', 'TPF2MP_AGENT_MODE',
+        'TPF2MP_STAGED_SAVE_NAME', 'TPF2MP_STARTING_COMPANY_PLAYER_IDS',
+        'TPF2MP_RESTORE_RESUME', 'TPF2MP_RESTORE_FROM_SESSION',
+        'TPF2MP_RESTORE_BOUNDARY', 'TPF2MP_RESTORE_CORE_DIGEST',
+        'TPF2MP_RESTORE_CONVERGENCE_KEY', 'TPF2MP_RESTORE_PLAN_CHECKSUM')) {
         Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     }
     if ($injectedBootstrap -and (Test-Path -LiteralPath $bootstrapTarget)) {
@@ -1168,13 +1396,24 @@ $runStatus = [ordered]@{
     manualOnly = $ManualOnly.IsPresent
     interactiveMinutes = $InteractiveMinutes
     operationalCaptureLab = $OperationalCaptureLab.IsPresent
+    townDevelopment = $TownDevelopment.IsPresent
+    agentMode = $AgentMode
+    matchContentProfile = $matchContentProfilePath
     operationalSampleTicks = $OperationalSampleTicks
     operationalStartingCash = $OperationalStartingCash
     unattendedOperationalSeconds = $UnattendedOperationalSeconds
+    nativeFreshWorld = $NativeFreshWorld.IsPresent
     startingSave = $StartingSave
     startingSaveCopy = $startingSaveCopy
     stagedStartingSave = $stagedStartingSave
     startingSaveManifest = $startingSaveManifest
+    restorePlan = $restorePlanPath
+    restoreBoundarySeq = if ($restorePlanData) { $restorePlanData.boundarySeq } else { $null }
+    player1StartingSave = $Player1StartingSave
+    player2StartingSave = $Player2StartingSave
+    peerStartingSaveCopies = $peerStartingSaveCopies
+    peerStagedStartingSaves = $peerStagedStartingSaves
+    peerStartingCompanyPlayerIds = $peerStartingCompanyPlayerIds
     interactiveEvidenceCollected = $interactiveEvidenceCollected
     interactiveEvidenceError = $interactiveEvidenceError
     operationalAnalysisPath = $operationalAnalysisPath

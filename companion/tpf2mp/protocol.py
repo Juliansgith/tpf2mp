@@ -20,12 +20,16 @@ NETWORK_ACTIONS = {
     "economy.settle",
     "probe.run",
     "probe.mobility",
+    "probe.structural",
     "finance.toggle_neutralizer",
     "clock.request",
     "clock.set",
     "clock.rendezvous",
     "vehicle.sync_release",
     "network.sync_fault",
+    "network.checkpoint_request",
+    "recovery.prepare",
+    "recovery.resume",
     "recovery.save_receipt",
     "town.develop",
     "proposal.prepare",
@@ -1274,8 +1278,8 @@ def validate_action(action: Any) -> dict[str, Any]:
     if action_type == "match.finish":
         if not isinstance(action.get("winnerCid"), str) or not isinstance(action.get("reason"), str):
             raise ProtocolError("match.finish requires a canonical winnerCid and reason")
-    if action_type == "probe.mobility" and set(action) - {"type"}:
-        raise ProtocolError("probe.mobility has no client-supplied fields")
+    if action_type in {"probe.mobility", "probe.structural"} and set(action) - {"type"}:
+        raise ProtocolError(f"{action_type} has no client-supplied fields")
     if action_type == "clock.request":
         if set(action) != {"type", "requestedSpeed"}:
             raise ProtocolError("clock.request has unknown or missing fields")
@@ -1360,6 +1364,37 @@ def validate_action(action: Any) -> dict[str, Any]:
                 raise ProtocolError("town.develop batch has an invalid town id")
             if not isinstance(calls, int) or isinstance(calls, bool) or not 1 <= calls <= 8:
                 raise ProtocolError("town.develop call count is out of range")
+    if action_type == "recovery.prepare":
+        if set(action) != {"type"}:
+            raise ProtocolError("recovery.prepare has client-supplied fields")
+    if action_type == "recovery.resume":
+        expected = {
+            "type", "fromSession", "boundarySeq", "coreDigest",
+            "convergenceKey", "planChecksum",
+        }
+        if set(action) != expected:
+            raise ProtocolError("recovery.resume has unknown or missing fields")
+        source = action.get("fromSession")
+        boundary = _protocol_int(action.get("boundarySeq"), "restore boundarySeq")
+        if not isinstance(source, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", source):
+            raise ProtocolError("recovery.resume source session is invalid")
+        if boundary < 1 or boundary > MAX_EXACT_INTEGER:
+            raise ProtocolError("recovery.resume boundarySeq is invalid")
+        for field in ("coreDigest", "convergenceKey", "planChecksum"):
+            value = action.get(field)
+            if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{8}", value):
+                raise ProtocolError(f"recovery.resume {field} is invalid")
+    if action_type == "network.checkpoint_request":
+        if set(action) != {"type", "preparationSeq", "reason"}:
+            raise ProtocolError("network.checkpoint_request has unknown or missing fields")
+        preparation = _protocol_int(
+            action.get("preparationSeq"), "checkpoint request preparationSeq"
+        )
+        reason = action.get("reason")
+        if preparation < 1 or preparation > MAX_EXACT_INTEGER:
+            raise ProtocolError("network checkpoint request preparationSeq is invalid")
+        if not isinstance(reason, str) or reason != f"recovery-prepare:{preparation}":
+            raise ProtocolError("network checkpoint request reason is invalid")
     if action_type == "recovery.save_receipt":
         # A peer declaring "I wrote a native save of this exact agreed
         # boundary, while paused, with nothing ordered since". The claim is
@@ -1372,10 +1407,12 @@ def validate_action(action: Any) -> dict[str, Any]:
         if set(action) - allowed or not allowed - {"type"} <= set(action):
             raise ProtocolError("recovery.save_receipt has unknown or missing fields")
         boundary = action["boundarySeq"]
-        if not isinstance(boundary, int) or isinstance(boundary, bool) or boundary < 1:
+        if not isinstance(boundary, int) or isinstance(boundary, bool) \
+                or not 1 <= boundary <= 9_007_199_254_740_991:
             raise ProtocolError("recovery.save_receipt boundarySeq is invalid")
         saved_at = action["savedAtUnix"]
-        if not isinstance(saved_at, int) or isinstance(saved_at, bool) or saved_at < 0:
+        if not isinstance(saved_at, int) or isinstance(saved_at, bool) \
+                or not 0 <= saved_at <= 9_007_199_254_740_991:
             raise ProtocolError("recovery.save_receipt savedAtUnix is invalid")
         if action["paused"] is not True:
             raise ProtocolError("recovery.save_receipt must attest a paused world")
@@ -1391,7 +1428,7 @@ def validate_action(action: Any) -> dict[str, Any]:
     if action_type == "network.sync_fault":
         if set(action) != {"type", "scope", "errorCode"}:
             raise ProtocolError("network.sync_fault has unknown or missing fields")
-        if action.get("scope") not in {"clock", "vehicle"}:
+        if action.get("scope") not in {"authored", "clock", "vehicle"}:
             raise ProtocolError("network.sync_fault scope is invalid")
         error_code = action.get("errorCode")
         if not isinstance(error_code, str) or not error_code or len(error_code) > 512:

@@ -91,6 +91,9 @@ function M.new(env)
       economy = economyDigestView(),
       networkFinance = finance.networkDigestView(currentState().finance),
       autonomyFrozen = currentState().world.autonomyFrozen,
+      townDevelopment = util.deepCopy(currentState().world.townDevelopment or {
+        schemaVersion = 1, enabled = false, points = {}, cursor = {},
+      }),
     }
   end
   
@@ -119,7 +122,9 @@ function M.new(env)
     local actionType = action.type
     if actionType == "world.freeze" or actionType == "fare.adjust"
       or actionType == "economy.seed_demo" or actionType == "economy.settle"
-      or actionType == "match.finish" or actionType == "probe.mobility" then
+      or actionType == "match.finish" or actionType == "probe.mobility"
+      or actionType == "probe.structural"
+      or actionType == "recovery.resume" or actionType == "town.develop" then
       return action.localLineId == nil
     end
     if actionType == "line.register" then
@@ -323,6 +328,16 @@ function M.new(env)
     if not ok then currentState().checkpoint.lastError = tostring(result) end
     return ok, result
   end
+
+  local function initialActionCheckpoint(action, authoritySeq)
+    local restored = action.type == "recovery.resume"
+    local reason = restored and "restore-resume:" .. tostring(action.planChecksum)
+      or "match-initialised"
+    if currentState().networkMode == "network" and authoritySeq then
+      return exportCheckpointBarrier(authoritySeq, reason)
+    end
+    return emitCheckpoint(reason)
+  end
   
 
   return {
@@ -332,6 +347,7 @@ function M.new(env)
     emitCheckpoint = emitCheckpoint,
     exportCheckpointBarrier = exportCheckpointBarrier,
     emitEventRecord = emitEventRecord,
+    initialActionCheckpoint = initialActionCheckpoint,
   }
 end
 

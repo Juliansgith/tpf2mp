@@ -180,15 +180,38 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
         if set(financial) != {"companies"}:
             raise ProtocolError("checkpoint financial state must contain exactly companies")
         accounts = _mapping(financial.get("companies"), "checkpoint company accounts")
+        network_finance_value = model.get("networkFinance")
+        network_finance = dict(network_finance_value) if isinstance(network_finance_value, Mapping) else {}
+        model_accounts_value = network_finance.get("accounts")
+        model_accounts = dict(model_accounts_value) if isinstance(model_accounts_value, Mapping) else {}
+        legacy_account_fields = {"balance", "loan"}
+        credit_account_fields = legacy_account_fields | {"insolventSettlements", "creditLimit"}
+        network_accounts_initialized = network_finance.get("initialized") is True
+        if network_accounts_initialized and set(accounts) != set(model_accounts):
+            raise ProtocolError("checkpoint financial companies disagree with authored network finance")
         for company_cid, account_value in accounts.items():
             if not isinstance(company_cid, str) or not company_cid.startswith("company:"):
                 raise ProtocolError("checkpoint financial state has an invalid company id")
             account = _mapping(account_value, f"checkpoint account {company_cid}")
-            if set(account) != {"balance", "loan"}:
+            account_fields = set(account)
+            valid_account_fields = (legacy_account_fields, credit_account_fields) \
+                if network_accounts_initialized else (legacy_account_fields,)
+            if account_fields not in valid_account_fields:
                 raise ProtocolError(f"checkpoint account {company_cid} has invalid fields")
-            for field in ("balance", "loan"):
+            for field in account_fields:
                 if not isinstance(account[field], int) or isinstance(account[field], bool):
                     raise ProtocolError(f"checkpoint account {company_cid} {field} is not an integer")
+            if "insolventSettlements" in account:
+                _positive_int(account["insolventSettlements"], "checkpoint insolventSettlements")
+                _positive_int(account["creditLimit"], "checkpoint creditLimit")
+            if network_accounts_initialized:
+                model_account = _mapping(
+                    model_accounts.get(company_cid), f"checkpoint model account {company_cid}"
+                )
+                if model_account != account:
+                    raise ProtocolError(
+                        f"checkpoint account {company_cid} disagrees with authored network finance"
+                    )
         actual_financial = checksum(financial)
         if checkpoint.get("financialDigest") != actual_financial:
             raise ProtocolError(
@@ -810,6 +833,78 @@ def _record_settlement(economy: dict[str, Any], results: Mapping[str, Any]) -> N
             companies[best_company]["wins"] = int(companies[best_company].get("wins", 0)) + 1
 
 
+_TOWN_DEVELOPMENT_POINTS_PER_BUILDING = 400
+_TOWN_DEVELOPMENT_MAX_CALLS_PER_SETTLE = 2
+_TOWN_DEVELOPMENT_MAX_POINTS_CARRIED = 4_000
+
+
+def _advance_town_development_points(
+    model: dict[str, Any], economy: Mapping[str, Any], results: Mapping[str, Any]
+) -> dict[str, int]:
+    """Replay Lua's carried-demand accumulator and return the consumed batch.
+
+    The returned batch is diagnostic only: the later ordered ``town.develop``
+    action advances the position cursor. Points are consumed during settlement
+    on every peer, exactly where ``corridor_binding.accumulateDevelopment``
+    consumes them in the game script.
+    """
+    town_development = model.get("townDevelopment")
+    if not isinstance(town_development, dict) or town_development.get("enabled") is not True:
+        return {}
+    points = town_development.setdefault("points", {})
+    if not isinstance(points, dict):
+        raise ProtocolError("replay town-development points are malformed")
+    carried_by_town: dict[str, int] = {}
+    result_markets = _mapping(results.get("markets"), "settlement result markets")
+    economy_markets = _mapping(economy.get("markets"), "replay economy markets")
+    for market_cid in sorted(result_markets):
+        market_result = _mapping(result_markets[market_cid], "settlement result market")
+        market = economy_markets.get(market_cid)
+        metadata = market.get("metadata", {}) if isinstance(market, Mapping) else {}
+        if not isinstance(metadata, Mapping):
+            metadata = {}
+        town_a, town_b = metadata.get("townA"), metadata.get("townB")
+        if not isinstance(town_a, str) or not isinstance(town_b, str):
+            continue
+        services = _mapping(market_result.get("services"), "settlement result services")
+        carried = sum(
+            int(_mapping(service, "settlement service").get("allocated", 0))
+            for service in services.values()
+        )
+        half = carried // 2
+        carried_by_town[town_a] = carried_by_town.get(town_a, 0) + half
+        carried_by_town[town_b] = carried_by_town.get(town_b, 0) + carried - half
+    due: dict[str, int] = {}
+    for town_cid in sorted(carried_by_town):
+        total = min(
+            _TOWN_DEVELOPMENT_MAX_POINTS_CARRIED,
+            int(points.get(town_cid, 0)) + carried_by_town[town_cid],
+        )
+        calls = min(
+            _TOWN_DEVELOPMENT_MAX_CALLS_PER_SETTLE,
+            total // _TOWN_DEVELOPMENT_POINTS_PER_BUILDING,
+        )
+        if calls:
+            due[town_cid] = calls
+            total -= calls * _TOWN_DEVELOPMENT_POINTS_PER_BUILDING
+        points[town_cid] = total
+    return due
+
+
+def _advance_town_development_cursor(
+    model: dict[str, Any], batch_value: Any
+) -> None:
+    town_development = model.get("townDevelopment")
+    if not isinstance(town_development, dict):
+        raise ProtocolError("portable town.develop lacks authored cursor state")
+    cursor = town_development.setdefault("cursor", {})
+    if not isinstance(cursor, dict):
+        raise ProtocolError("replay town-development cursor is malformed")
+    batch = _mapping(batch_value, "town.develop batch")
+    for town_cid in sorted(batch):
+        cursor[town_cid] = int(cursor.get(town_cid, 0)) + int(batch[town_cid])
+
+
 def _scoreboard(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     economy = model["economy"]
     markets_by_company: dict[str, set[str]] = {}
@@ -871,7 +966,18 @@ def _evaluate_match_end(model: dict[str, Any], event_tick: int | None = None) ->
     target = int(rules.get("valuationTargetCents", 0))
     max_epochs = int(rules.get("maxEpochs", 0))
     reason: str | None = None
-    if target > 0 and leader is not None and int(leader["modelValueCents"]) >= target:
+    finance_value = model.get("networkFinance")
+    bankrupt_cid = (
+        finance_value.get("bankruptCid")
+        if isinstance(finance_value, Mapping) else None
+    )
+    if bankrupt_cid:
+        reason = "bankruptcy"
+        for candidate in model.get("companyOrder", []):
+            if str(candidate) != bankrupt_cid:
+                winner_cid = str(candidate)
+                break
+    elif target > 0 and leader is not None and int(leader["modelValueCents"]) >= target:
         reason = "valuation-target"
     elif max_epochs > 0 and int(model["economy"].get("epoch", 0)) >= max_epochs:
         reason = "epoch-limit"
@@ -879,6 +985,62 @@ def _evaluate_match_end(model: dict[str, Any], event_tick: int | None = None) ->
         match["status"] = "finished"
         match["finishReason"] = reason
         match["winnerCid"] = winner_cid
+
+
+def _charge_credit_and_assess_solvency(
+    model: Mapping[str, Any], network_finance: dict[str, Any]
+) -> str | None:
+    """Mirror finance.lua's integer-only settlement credit transition."""
+    rules_value = model.get("match", {}).get("rules", {})
+    rules = dict(rules_value) if isinstance(rules_value, Mapping) else {}
+    base_limit = int(rules.get("creditBaseLimitCents", 500_000_000))
+    revenue_multiple = int(rules.get("creditRevenueMultiple", 4))
+    interest_permille = int(rules.get("creditInterestPermille", 15))
+    insolvent_limit = int(rules.get("insolventSettlements", 3))
+    bankruptcy_enabled = rules.get("bankruptcyEnabled") is not False
+    economy_value = model.get("economy")
+    economy = dict(economy_value) if isinstance(economy_value, Mapping) else {}
+    ledger_value = economy.get("ledger")
+    ledger = dict(ledger_value) if isinstance(ledger_value, Mapping) else {}
+    ledger_companies_value = ledger.get("companies")
+    ledger_companies = (
+        dict(ledger_companies_value) if isinstance(ledger_companies_value, Mapping) else {}
+    )
+    settlement_count = max(1, int(ledger.get("settlementCount", 1)))
+    accounts = _mapping(network_finance.get("accounts"), "replay network finance accounts")
+    bankrupt_cid: str | None = None
+    for company_value in model.get("companyOrder", []):
+        company_cid = str(company_value)
+        account = accounts.get(company_cid)
+        if not isinstance(account, dict):
+            continue
+        ledger_company_value = ledger_companies.get(company_cid)
+        ledger_company = (
+            dict(ledger_company_value) if isinstance(ledger_company_value, Mapping) else {}
+        )
+        settled = max(0, int(ledger_company.get("revenueCents", 0)))
+        limit = base_limit + (settled // settlement_count) * revenue_multiple
+        balance = int(account.get("balance", 0))
+        drawn = -balance if balance < 0 else 0
+        interest = (drawn * interest_permille) // 1000
+        if interest > 0:
+            balance -= interest
+            account["balance"] = balance
+            drawn = -balance if balance < 0 else 0
+        breached = drawn > limit
+        account["insolventSettlements"] = (
+            int(account.get("insolventSettlements", 0)) + 1 if breached else 0
+        )
+        account["creditLimit"] = limit
+        if bankruptcy_enabled and insolvent_limit > 0 \
+                and int(account["insolventSettlements"]) >= insolvent_limit \
+                and bankrupt_cid is None:
+            bankrupt_cid = company_cid
+    if bankrupt_cid is None:
+        network_finance.pop("bankruptCid", None)
+    else:
+        network_finance["bankruptCid"] = bankrupt_cid
+    return bankrupt_cid
 
 
 def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], event_tick: int | None = None) -> None:
@@ -1017,11 +1179,13 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         else:
             results = _evaluate_all(economy)
         _record_settlement(economy, results)
+        _advance_town_development_points(model, economy, results)
         # Network checkpoints include the canonical cash ledger in their
         # authored model. Native journal commands are deliberately excluded;
         # replay applies only the deterministic ordered payout amounts.
         network_finance = model.get("networkFinance")
         if isinstance(network_finance, dict) and network_finance.get("initialized") is True:
+            _charge_credit_and_assess_solvency(model, network_finance)
             accounts = _mapping(network_finance.get("accounts"), "replay network finance accounts")
             result_companies = _mapping(results.get("companies"), "settlement result companies")
             for company_cid in sorted(result_companies):
@@ -1031,6 +1195,8 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
                 revenue_cents = int(result_companies[company_cid].get("revenueCents", 0))
                 account["balance"] = int(account.get("balance", 0)) + revenue_cents // 100
         _evaluate_match_end(model, event_tick)
+    elif action_type == "town.develop":
+        _advance_town_development_cursor(model, action.get("batch"))
     elif action_type == "match.finish":
         match = model.get("match")
         if not isinstance(match, dict):

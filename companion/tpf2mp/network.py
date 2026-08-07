@@ -15,7 +15,11 @@ from .consensus import (
     proposal_completion_payload,
 )
 from .anchor import AnchorCoordinator
+from .anchor_prepare import AnchorPreparationCoordinator
+from .anchor_io import AnchorRequestStore
+from .host_status import write_host_status
 from .synchronization import SynchronizationCoordinator
+from .restore_session import RestoreSessionCoordinator
 from .protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -25,7 +29,6 @@ from .protocol import (
 )
 from .client import CommitClient
 from .transport import ConnectedPeer, read_frame as _read_frame, send as _send
-
 HOST_AUTHORITY_ACTIONS = {
     "match.initialise",
     "match.finish",
@@ -33,13 +36,13 @@ HOST_AUTHORITY_ACTIONS = {
     "economy.seed_demo",
     "economy.settle",
     "probe.mobility",
+    "probe.structural",
     "finance.toggle_neutralizer",
+    "town.develop",
+    "recovery.resume",
 }
 
-# Actions any peer may originate for its own company. line.register is
-# company-bound rather than host-authority so a client's line can enter the
-# competitive economy at all: registration is now automatic, and only the
-# owning peer computes and carries its own service facts.
+# Company-bound actions may originate on either peer; owners carry their service facts.
 COMPANY_BOUND_ACTIONS = {"proposal.prepare", "operation.execute", "line.register"}
 
 
@@ -54,6 +57,7 @@ class CommitHost:
         required_peers: tuple[str, ...] | None = None,
         completion_timeout: float = 45.0,
         require_connected_peers: bool = True,
+        restore_plan: Mapping[str, Any] | None = None,
     ) -> None:
         self.bridge = bridge
         self.bind = bind
@@ -91,18 +95,19 @@ class CommitHost:
             self.required_peers,
             self.completion_timeout,
         )
-        # Compatibility aliases are intentionally retained for status readers,
-        # tests, and recovery tooling that inspect CommitHost directly.
+        # Compatibility aliases remain for status and recovery readers.
         self.proposal_prepares = self.consensus.proposal_prepares
         self.proposal_consensus = self.consensus.proposals
         self.operation_consensus = self.consensus.operations
         self.checkpoint_consensus = self.consensus.checkpoints
         self.clock_controls = self.consensus.clock_controls
         self.synchronization = SynchronizationCoordinator(self)
+        self.restore_session = RestoreSessionCoordinator(self, restore_plan)
         self.anchor = AnchorCoordinator(self)
-        # Locally originated attestations need their own monotonic sequence
-        # so they can never collide with the game's intent stream.
-        self._next_local_seq = 1_000_000_000
+        self.anchor_preparation = AnchorPreparationCoordinator(self)
+        self.anchor_requests = AnchorRequestStore(self.bridge)
+        # Negative host sequences stay disjoint from unbounded positive game sequences.
+        self._next_local_seq = -1
         self.last_agreed_checkpoint: dict[str, Any] | None = None
         self.session_fault: str | None = None
         self.status = "starting"
@@ -115,47 +120,7 @@ class CommitHost:
                 self._resolve_prepare_locked(tracker)
 
     def _write_status(self, status: str | None = None) -> None:
-        if status is not None:
-            self.status = status
-        with self.peers_lock:
-            connected = sorted(self.peers)
-        pending_proposal = self._pending_proposal()
-        pending_prepare = self._pending_prepare()
-        pending_operation = self._pending_operation()
-        pending_checkpoint = self._pending_checkpoint()
-        self.bridge.write_status(
-            {
-                "role": "host",
-                "status": self.status,
-                "listening": self.status == "running",
-                "connected": all(
-                    peer == self.bridge.peer or peer in connected
-                    for peer in self.required_peers
-                ),
-                "bind": self.bind,
-                "port": self.port,
-                "connectedPeers": connected,
-                "requiredPeers": list(self.required_peers),
-                "nextCommitSeq": self.next_seq,
-                "outboxCursor": self.bridge.outbox_cursor,
-                "pendingProposalPrepareSeq": pending_prepare and pending_prepare.get("prepareSeq"),
-                "pendingProposalSeq": pending_proposal and pending_proposal.get("commitSeq"),
-                "pendingOperationSeq": pending_operation and pending_operation.get("commitSeq"),
-                "pendingCheckpointSeq": pending_checkpoint and pending_checkpoint.get("boundarySeq"),
-                "lastAgreedCheckpointSeq": self.last_agreed_checkpoint
-                and self.last_agreed_checkpoint.get("boundarySeq"),
-                "sessionFault": self.session_fault,
-                "lastError": self.last_error,
-                "matchFingerprint": self.match_fingerprint,
-                "mobilityOutcomes": dict(self.mobility_outcomes),
-                "vehicleLifecycleOutcomes": dict(self.vehicle_lifecycle_outcomes),
-                "vehiclePhaseOutcomes": dict(self.vehicle_phase_outcomes),
-                "vehiclePhaseDivergenceStreak": self.vehicle_phase_divergence_streak,
-                "vehiclePhaseState": self.vehicle_phase_state,
-                **self.synchronization.status(),
-                **self.anchor.status(),
-            }
-        )
+        write_host_status(self, status)
 
     def _load_audit(self) -> None:
         for message in self.audit.messages():
@@ -166,7 +131,11 @@ class CommitHost:
                 self.commits[seq] = message
                 self.next_seq = max(self.next_seq, seq + 1)
                 if message.get("kind") == "commit":
-                    self.seen.add((str(message.get("origin_peer")), int(message.get("origin_local_seq", -1))))
+                    origin_peer = str(message.get("origin_peer"))
+                    origin_local_seq = int(message.get("origin_local_seq", -1))
+                    self.seen.add((origin_peer, origin_local_seq))
+                    if origin_peer == self.bridge.peer and origin_local_seq < 0:
+                        self._next_local_seq = min(self._next_local_seq, origin_local_seq - 1)
                     action = message.get("payload", {}).get("action", {})
                     if action.get("type") == "proposal.prepare":
                         self._track_proposal_prepare(message)
@@ -197,6 +166,12 @@ class CommitHost:
                         self._track_operation(message)
                     elif action.get("type") == "match.initialise":
                         self._track_checkpoint_boundary(seq, "match-initialised")
+                    elif action.get("type") == "town.develop":
+                        self._track_checkpoint_boundary(seq, "town-development")
+                    elif action.get("type") == "probe.structural":
+                        self._track_checkpoint_boundary(seq, "structural-probe")
+                    elif action.get("type") == "recovery.resume":
+                        self.restore_session.track_commit(message)
                 else:
                     action = message.get("payload", {}).get("action", {})
                     if action.get("type") == "network.proposal_prepare_outcome":
@@ -257,6 +232,8 @@ class CommitHost:
                             self.last_agreed_checkpoint = dict(action)
                         else:
                             self.session_fault = str(action.get("errorCode") or "checkpoint-consensus-failed")
+                        self.restore_session.observe_checkpoint_outcome(action)
+                self.anchor_preparation.observe_ordered(message, restoring=True)
             elif message.get("kind") == "record" and message.get("record_type") == "completion":
                 payload = message.get("payload", {})
                 commit_seq = int(payload.get("commitSeq", 0))
@@ -350,7 +327,6 @@ class CommitHost:
 
     def _pending_checkpoint(self) -> dict[str, Any] | None:
         return self.consensus.pending(self.checkpoint_consensus)
-
     def emit_local_intent(self, action: Mapping[str, Any]) -> dict[str, Any] | None:
         """Order an action the host companion itself originated.
 
@@ -358,10 +334,7 @@ class CommitHost:
         knows the pause state, the ordered history, and the save on disk -
         rather than round-tripping a question through the game.
         """
-
-        with self.order_lock:
-            local_seq = self._next_local_seq
-            self._next_local_seq += 1
+        local_seq = self._allocate_host_local_seq()
         return self._commit(sign({
             "protocol": PROTOCOL_VERSION,
             "session": self.bridge.session,
@@ -371,6 +344,15 @@ class CommitHost:
             "kind": "intent",
             "payload": {"action": dict(action)},
         }))
+
+    def _allocate_host_local_seq(self) -> int:
+        """Return a restart-stable identity disjoint from every game intent."""
+        with self.order_lock:
+            while (self.bridge.peer, self._next_local_seq) in self.seen:
+                self._next_local_seq -= 1
+            local_seq = self._next_local_seq
+            self._next_local_seq -= 1
+            return local_seq
 
     def _commit(self, intent: Mapping[str, Any]) -> dict[str, Any] | None:
         validate_envelope(intent, self.bridge.session)
@@ -386,8 +368,10 @@ class CommitHost:
                         return commit
                 return None
             action = validate_action(intent.get("payload", {}).get("action"))
+            self.restore_session.before_commit(action, origin)
             clock_request = action["type"] == "clock.request"
             emergency_pause = clock_request and action["requestedSpeed"] == 0
+            self.anchor_preparation.before_commit(action, origin, local_seq)
             if self.session_fault and not emergency_pause:
                 raise ProtocolError(f"session is faulted: {self.session_fault}")
             if not clock_request:
@@ -417,6 +401,7 @@ class CommitHost:
                 raise ProtocolError("proposal.build is host-generated; submit proposal.prepare first")
             if action["type"] in {
                 "clock.set", "clock.rendezvous", "vehicle.sync_release", "network.sync_fault",
+                "network.checkpoint_request",
             }:
                 raise ProtocolError(f"{action['type']} is host-generated")
             if clock_request and not emergency_pause and self.require_connected_peers:
@@ -428,16 +413,25 @@ class CommitHost:
                         "cannot resume the shared clock while peers are disconnected: "
                         + ", ".join(missing)
                     )
-            if action["type"] in {"match.initialise", "proposal.prepare", "operation.execute", "line.register"}:
+            if action["type"] in {
+                "match.initialise", "proposal.prepare", "operation.execute",
+                "line.register", "town.develop", "recovery.prepare", "recovery.resume",
+                "recovery.save_receipt",
+            }:
                 if self.require_connected_peers:
                     with self.peers_lock:
                         connected = set(self.peers)
                     missing = sorted(set(self.required_peers) - {self.bridge.peer} - connected)
                     if missing:
                         raise ProtocolError(
-                            "cannot commit a consensus-bound action while peers are disconnected: "
-                            + ", ".join(missing)
-                        )
+                        "cannot commit a consensus-bound action while peers are disconnected: "
+                        + ", ".join(missing)
+                    )
+            if action["type"] == "recovery.save_receipt":
+                existing_receipt = self.anchor.validate_receipt(action, origin)
+                if existing_receipt:
+                    self.seen.add(key)
+                    return existing_receipt
             if action["type"] == "proposal.prepare":
                 peer_number = re.fullmatch(r"player([1-9][0-9]*)", origin)
                 expected_company = f"company:{peer_number.group(1)}" if peer_number else None
@@ -503,8 +497,15 @@ class CommitHost:
                 self._track_operation(commit)
             elif action["type"] == "match.initialise":
                 self._track_checkpoint_boundary(seq, "match-initialised")
+            elif action["type"] == "town.develop":
+                self._track_checkpoint_boundary(seq, "town-development")
+            elif action["type"] == "probe.structural":
+                self._track_checkpoint_boundary(seq, "structural-probe")
+            elif action["type"] == "recovery.resume":
+                self.restore_session.track_commit(commit)
             elif action["type"] in {"clock.set", "clock.rendezvous"}:
                 self._track_clock(commit)
+            self.anchor_preparation.observe_ordered(commit)
             self.bridge.write_inbound(commit)
         self._broadcast(commit)
         return commit
@@ -1022,8 +1023,10 @@ class CommitHost:
             self.last_agreed_checkpoint = dict(action)
         else:
             self.session_fault = action["errorCode"]
+        self.restore_session.observe_checkpoint_outcome(action)
         self.audit.append(control)
         self.commits[seq] = control
+        self.anchor_preparation.observe_ordered(control)
         self.bridge.write_inbound(control)
         self._broadcast(control)
         if success:
@@ -1044,6 +1047,10 @@ class CommitHost:
         if not required <= set(checkpoints):
             return
         selected = [checkpoints[peer] for peer in tracker["requiredPeers"]]
+        restore_error = self.restore_session.checkpoint_error(tracker, selected)
+        if restore_error:
+            self._emit_checkpoint_outcome_locked(tracker, False, restore_error)
+            return
         if len({item["convergenceKey"] for item in selected}) != 1:
             self._emit_checkpoint_outcome_locked(
                 tracker, False, "checkpoint-convergence-key-mismatch"
@@ -1066,6 +1073,8 @@ class CommitHost:
             raise ProtocolError("checkpoint consensus requires network-mode checkpoints")
         boundary_seq = int(payload["eventCursor"]["lastCommitSeq"])
         tracker = self.checkpoint_consensus.get(boundary_seq)
+        if not tracker:
+            tracker = self.anchor_preparation.admit_manual_checkpoint(payload)
         if not tracker:
             self.audit.append(self._record_message(message))
             return
@@ -1219,6 +1228,20 @@ class CommitHost:
                     self._emit_operation_outcome_locked(
                         operation_tracker, False, f"operation-queue-rejected:{peer}"
                     )
+                action_type = str(
+                    self.commits.get(commit_seq, {}).get("payload", {})
+                    .get("action", {}).get("type", "")
+                )
+                specially_resolved = action_type in {
+                    "proposal.prepare", "proposal.build", "operation.execute",
+                    "clock.set", "clock.rendezvous", "vehicle.sync_release",
+                    "network.sync_fault",
+                }
+                if payload.get("success") is not True and not specially_resolved:
+                    detail = str(payload.get("error") or "handler returned false")[:240]
+                    self.synchronization.fault_session(
+                        "authored", f"ordered-action-rejected:{commit_seq}:{peer}:{detail}"
+                    )
             elif message.get("kind") == "clock_health":
                 self._record_clock_health_locked(message)
             elif message.get("kind") == "clock_reached":
@@ -1358,7 +1381,9 @@ class CommitHost:
                         self._record_non_intent(message)
                 except ProtocolError as exc:
                     accepted, reason = False, str(exc)
-                    rejection = self._reject_intent(message, reason)
+                    rejection = None
+                    if int(message.get("local_seq", 0)) > 0:
+                        rejection = self._reject_intent(message, reason)
                     commit_seq = rejection and rejection.get("seq")
                     print(f"rejected {peer_name} local sequence {message.get('local_seq')}: {reason}")
                 receipt = sign(
@@ -1427,7 +1452,11 @@ class CommitHost:
                         print(f"rejected local game sequence {local_seq}: {exc}")
                     self.bridge.acknowledge_outbound(local_seq)
                     had_work = True
+                if self.anchor_requests.process_host(self.anchor):
+                    had_work = True
                 self._expire_proposals()
+                if self.anchor_preparation.maintain():
+                    had_work = True
                 if time.monotonic() >= next_status:
                     self._write_status()
                     next_status = time.monotonic() + 0.5

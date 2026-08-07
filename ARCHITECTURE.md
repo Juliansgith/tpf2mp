@@ -33,7 +33,9 @@ Domain modules under `res/scripts/tpf2_mp`:
 - `canonical.lua` owns canonical/local identity bindings and canonical digests.
 - `economy.lua` owns deterministic demand, settlement, and scoring.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
-- `world.lua` owns native-world inventory, ownership, autonomy, and telemetry.
+- `world.lua` owns native-world inventory, ownership, and autonomy;
+  `world_operational_telemetry.lua` owns read-only clock, journal, autonomy,
+  and composed operational snapshots.
 - `corridor_binding.lua` derives line.register market/service facts (gravity
   demand, geometry/consist journey-headway-capacity), the per-peer station
   boards, settlement-coupled deterministic town growth, and the departure
@@ -51,7 +53,11 @@ Runtime-controller modules:
 - `state_schema.lua` exclusively creates and migrates persisted game state.
 - `checkpoint_runtime.lua` owns authored/core digests, event records, checkpoint
   payloads, and checkpoint export barriers.
+- `recovery_prepare_runtime.lua` owns game-side preparation/checkpoint handlers
+  and the persisted, non-digested preparation status shown after save/load.
 - `public_snapshot.lua` produces the read-only engine-to-GUI state projection.
+- `match_runtime.lua` owns deterministic ranking, match completion, bankruptcy
+  precedence, and running-match authorization.
 - `operation_runtime.lua` owns canonical operation authorization, native result
   binding, postconditions, completion reports, and finance deltas.
 - `proposal_runtime.lua` owns proposal prepare/build/finalize, construction
@@ -59,6 +65,11 @@ Runtime-controller modules:
   normalization.
 - `network_intent_runtime.lua` owns the local intent FIFO, host-order wait state,
   barrier back-pressure, bridge ingress, acknowledgement, and reset lifecycle.
+- `network_followup_queue.lua` owns non-reentrant, coalesced authored work
+  derived from commits; `network_bridge_consumer.lua` owns ordered inbox
+  application and acknowledgements.
+- `authored_followup_runtime.lua` owns strict town-development application,
+  save-receipt acknowledgement, and development checkpoint export.
 - `network_clock_runtime.lua` owns ordered native clock application, peer-health
   emission, future-time rendezvous/catch-up, paused heartbeats, physical
   line/vehicle pause prerequisites, calendar freeze, and manual-network match
@@ -69,10 +80,15 @@ Runtime-controller modules:
 - `validation_runtime.lua` owns both disposable standalone and two-process
   validation state machines. It has no production authority when validation is
   disabled.
+- `validation_town_development.lua` owns the bounded three-round physical-town
+  experiment and its final ordered structural checkpoint.
 - `validation_clock.lua` owns validator-only shared-clock readiness, settled
   state, ordered-event, and rendezvous acceptance predicates.
 - `validation_construction.lua` contains stock resources used only by disposable
   engine validation.
+- `operational_capture_runtime.lua` samples independent-world diagnostics and
+  emits policy, population, native-pipeline, account, and digest evidence; it
+  never participates in multiplayer authority.
 
 GUI/native-adapter modules:
 
@@ -82,8 +98,12 @@ GUI/native-adapter modules:
 - `gui_network_bootstrap.lua` re-arms native game/calendar pause authority in
   the GUI Lua state after a saved world replaces the pre-load engine state.
 - `gui_view.lua` formats the prototype overlay from a public snapshot.
+- `gui_entry_points.lua` idempotently mounts the overlay reopen controls into
+  the stock `gameInfo.layout` and the parent of the pause menu's quit button.
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer
   installation, bounded build/line/speed capture, and GUI callback lifecycle.
+- `gui_replay_quarantine.lua` owns the machine-local no-dereference window for
+  builder ghosts while a delayed canonical BuildProposal settles.
 - `gui_replay_runtime.lua` owns GUI-state proposal and line/vehicle command
   materialization, callback correlation, and result delivery to the engine.
 - `native_hook.lua` parses native status and validates the fail-closed authority
@@ -98,6 +118,13 @@ captured table reference would therefore mutate stale state after loading.
 - `protocol.py` defines canonical envelopes and strict portable action schemas.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
 - `client.py` owns client connection/retry and bridge forwarding.
+- `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;
+  `anchor_io.py` owns peer-local native-save requests, hashes, persistent
+  negative identities, and transient READY transport.
+- `anchor_prepare.py` owns the one-action pause/quiescence/checkpoint state
+  machine and fences new ordered work while it manufactures a save boundary.
+- `restore_session.py` owns receipt-bound resume admission and the mandatory
+  fresh-checkpoint fence; `host_status.py` owns the public companion projection.
 - `network.py` owns host ordering, prepare/physical/checkpoint consensus, and
   re-exports `CommitClient` for compatibility.
 - `consensus.py` owns tracker construction, deadlines, pending selection, and
@@ -106,8 +133,11 @@ captured table reference would therefore mutate stale state after loading.
 - `synchronization.py` owns the host's projected shared-clock policy,
   rendezvous/correction lifecycle, adaptive slowest-peer governor, canonical
   train station-round barrier, synchronization faults, and audit restoration.
-- `bridge.py`, `checkpoint.py`, and `recovery.py` own durable local transport,
-  independent replay, and recovery archives respectively.
+  Clock skew may drive authority only when all fresh health samples describe
+  the same current clock generation; mixed-generation projection is diagnostic.
+- `bridge.py`, `checkpoint.py`, `restore.py`, and `recovery.py` own durable local
+  transport, independent replay, all-peer restore plans, and native-save
+  archives respectively.
 
 ## Native modules
 

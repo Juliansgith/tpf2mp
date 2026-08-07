@@ -21,14 +21,15 @@ bound — so the crowd is a cost the player should be able to choose.
 |---|---|---|---|---|---|
 | `vanilla` | unchanged | native | on | 100% | full population, full cost |
 | `skeleton` (default) | ÷64, floor 1 | pinned | off | 25% | one inhabitant per building; platforms, streets and vehicles stay alive at roughly a tenth of the cost |
-| `empty` | 0 | pinned | off | 0% | no agents; the model and its boards are the only passenger story |
+| `empty` (compatibility key) | ÷1,000,000,000, floor 1 | pinned | off | 0% | minimum-safe crowd; every positive-capacity building keeps one native slot |
 
 Selected from the mod's own settings (`Native crowd simulation`) or
 `TPF2MP_AGENT_MODE`.
 
 **Skeleton is the default and the recommendation.** It answers the only real
-objection to agents-off — a dead-looking world — for almost nothing, and it
-is the same lever as `empty`, one integer apart.
+objection to agents-off — a dead-looking world — for almost nothing. The
+legacy `empty` key now means minimum-safe crowd: literal zero capacity crashes
+Build 35924 during fresh-world generation and is no longer offered.
 
 ## Implementation
 
@@ -57,49 +58,79 @@ native dwell varying by boarding, that was a systematic approximation. With
 load speed pinned, it describes the world exactly. The pivot does not only
 buy performance — it makes the model's own inputs true.
 
-## The probe is now the implementation
+## Probe semantics after live testing
 
-The data modifier only reaches buildings created after it loads, so a
-pre-existing save keeps its original population. `setTownInfo` is the runtime
-lever for those towns, and its exact effect on Build 35924 was one of the
-outstanding research probes.
+Build 35924 accepted `setTownInfo` against an existing world but did not change
+the relevant native capacities. Runtime mutation is therefore deliberately
+disabled. `runtimeScalingWorks=false` is the expected honest result, not a
+policy failure.
 
-Rather than schedule a separate session, `applyToWorld` runs at match
-initialisation: it scales each town's land-use capacities, **reads the value
-back**, and records what actually happened in `probes.agentPolicy` —
-`towns`, `applied`, `verified`, `unchanged`, `errors`, before/after totals,
-and a `runtimeScalingWorks` verdict. A build that silently ignores the write
-is reported as unverified, never assumed successful.
+`probes.agentPolicy` now distinguishes the two mechanisms:
 
-So the first live match with a non-vanilla policy answers:
+- `constructionScalingActive` says the selected `loadConstruction` modifier
+  was active while a fresh world loaded its town buildings;
+- `runtimeScalingWorks` remains false because existing-world capacity writes
+  are not used;
+- `mode` and `configuredFingerprint` identify the exact policy that produced
+  the observed native population.
 
-- does `setTownInfo` scale an existing world (`runtimeScalingWorks`)?
-- if not, do freshly generated saves carry scaled buildings (native sim
-  counts in the mobility probe)?
-- does anything destabilise at capacity 1 (errors, town UI, engine health)?
+Operational capture carries this object beside construction count, total town
+capacity, and direct person count so a small crowd is never accepted as proof
+without the configuration/readback evidence.
 
 ## Match content, not a local preference
 
 Building capacities feed the structural digest, so peers running different
-policies would build different worlds from identical commands. The policy
-label and a `fingerprint` covering every value travel in the runtime config
-alongside the pinned mod set, and the applied outcome carries the
-`configuredFingerprint` it was derived from.
+policies would build different worlds from identical commands. Launchers now
+write a deterministic `match-content-profile.json` containing `agentMode` and
+the town-development flag and include it in the match manifest. The launcher
+config is authoritative over stale mod-menu settings, and the applied outcome
+carries the `configuredFingerprint` it was derived from.
 
 ## Tests
 
-`tests/run_lua_tests.lua` (59/59): exact scaling per mode including the
-floor-of-one and the vanilla identity; distinct, stable fingerprints per
-policy; readback verification proving `runtimeScalingWorks` true on a
-cooperative build and **false** on one that ignores the write; the vanilla
-policy issuing no commands and touching no town.
+`tests/run_lua_tests.lua` (71/71): exact scaling per mode including the
+minimum-safe floor and vanilla identity; distinct stable fingerprints;
+readback behavior on cooperative and ignored writes; and the production rule
+that configured policies never runtime-mutate an existing network world.
 `tests/run_mod_launcher_config_tests.lua` now mirrors the game's module path
 so the harness exercises the real `require` rather than a stub.
 
+## Exact live evidence (2026-08-07)
+
+The native-world launcher follows the stock **Free Game → Next → Start**
+wizard, so these worlds actually load the selected mod modifiers. The earlier
+`app.startGame()` route is not valid policy evidence because it can bypass
+active mod data modifiers.
+
+- Skeleton:
+  `runtime/localhost-live/round3-skeleton-native-fresh-v4-20260807`.
+  Player 1 had 584 constructions, town capacity 563, and 267 persons; Player 2
+  had 409, 388, and 190. Capacity per construction was about 0.95.
+- Vanilla control:
+  `runtime/localhost-live/round3-vanilla-native-fresh-20260807`.
+  The two independent worlds reported 374/493 constructions,
+  1263/1857 town capacity, and 428/628 persons. Capacity per construction was
+  3.38-3.77, several times the reduced policies.
+- Literal zero negative:
+  `runtime/localhost-live/round3-empty-native-fresh-20260807`.
+  Build 35924 raised a fatal `PersonCapacity` component assertion for entity
+  20061 during world initialization; dump id
+  `5d1f7ac5-ac61-4b64-ac43-e298caf2ce76`.
+- Minimum-safe replacement:
+  `runtime/localhost-live/round3-minimum-native-fresh-20260807`.
+  Both worlds passed: 429/410 constructions, 408/389 capacity, and 208/193
+  persons. Both reported `mode=empty`,
+  `constructionScalingActive=true`, and the expected pinned fingerprint.
+
+These are independent local worlds, not a network-consensus claim. They prove
+that fresh-world construction scaling runs, that literal zero is unsafe, and
+that the replacement loads cleanly.
+
 ## Not done
 
-- No physical building placement, so towns still do not visibly grow
-  (that remains the schema-7 construction-event layer).
+- Physical town development now exists and passes an exact two-process
+  three-round convergence experiment; pacing and visual quality remain open.
 - `setMarker`/`setZone` world-anchored presentation is still unexercised.
 - Cosmetic native-state writes (fake occupants in vehicles) remain native
   hook work, with `Debug_SetSimPersonState` (tag 36) as the mapped lead.
@@ -109,8 +140,8 @@ so the harness exercises the real `require` rather than a stub.
 
 ## Suite status at time of writing
 
-My slice passes: 59/59 Lua, runtime module boundaries, game-script
-integration, and the launcher-config mod test under the suite's fixture. The
-full `run_tests.ps1` currently stops earlier on an unrelated in-flight edit
-to `gui_event_runtime.lua` exceeding its source budget by 34 lines; that file
-is untouched by this work.
+The complete `tools/run_tests.ps1` gate passes: 71 core Lua tests, 73
+cross-language economy vectors, game/GUI/launcher integrations, syntax and
+architecture ratchets, 99 Python tests, and both long replay reports. The
+native Release build and both CTest cases also pass against all 17 signatures
+of the pinned executable.

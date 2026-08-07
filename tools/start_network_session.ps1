@@ -6,12 +6,15 @@ param(
     [string]$BindAddress = '0.0.0.0',
     [ValidateRange(1, 65535)][int]$Port = 29742,
     [string]$StartingSave,
+    [string]$RestorePlan,
     [string]$ManifestPath,
     [string]$BundleRoot,
     [string]$GameExecutable,
     [string]$LocalModsPath,
     [string]$SaveDirectory,
     [ValidateRange(5, 600)][int]$CompletionTimeoutSeconds = 45,
+    [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
+    [switch]$TownDevelopment,
     [switch]$NoLaunchGame
 )
 
@@ -20,6 +23,19 @@ $ErrorActionPreference = 'Stop'
 
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
+$restorePlanPath = $null
+$restorePlanData = $null
+if ($RestorePlan) {
+    if (-not $StartingSave) { throw 'RestorePlan requires this peer''s attested StartingSave.' }
+    $restorePlanPath = Resolve-Tpf2mpFullPath $RestorePlan
+    if (-not (Test-Path -LiteralPath $restorePlanPath -PathType Leaf)) {
+        throw "Restore plan is missing: $restorePlanPath"
+    }
+    $restorePlanData = Get-Content -LiteralPath $restorePlanPath -Raw | ConvertFrom-Json
+    if ([string]$restorePlanData.resumeSession -ne $Session) {
+        throw 'Session must equal the restore plan resumeSession.'
+    }
+}
 $safeSession = Assert-Tpf2mpSessionId $Session
 $peer = if ($Role -eq 'Host') { 'player1' } else { 'player2' }
 if ($Role -eq 'Join' -and ($HostAddress -notmatch '^[A-Za-z0-9.:-]{1,253}$')) {
@@ -98,6 +114,7 @@ if ($staleTraffic -gt 0) {
 $startingSaveOriginal = $StartingSave
 $pinnedSave = $null
 $stagedSave = $null
+$startingCompanyPlayerIds = ''
 $gameProcess = $null
 $nativeStatusPath = $null
 $runtimeOverlay = $null
@@ -105,8 +122,22 @@ $menuBootstrap = $null
 $directLaunch = $null
 if ($StartingSave) {
     $startingSaveOriginal = Resolve-Tpf2mpFullPath $StartingSave
+    if ($restorePlanData) {
+        $verifyArguments = @($companion.Prefix) + @(
+            'verify-restore-save', $restorePlanPath, '--peer', $peer,
+            '--save', $startingSaveOriginal
+        )
+        & $companion.FilePath @verifyArguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "Restore save verification failed with exit code $LASTEXITCODE"
+        }
+    }
     $pinnedSave = Copy-Tpf2mpPinnedStartingSave $startingSaveOriginal (Join-Path $sessionRoot 'starting-save')
     $StartingSave = $pinnedSave.savePath
+    $startingCompanyPlayerIds = Read-Tpf2mpStartingCompanyPlayerIds $StartingSave
+    if ($restorePlanData -and -not $startingCompanyPlayerIds) {
+        throw 'The attested restore save does not expose exactly two native company-player identities.'
+    }
     $pinnedSave | ConvertTo-Json -Depth 8 | Set-Content `
         -LiteralPath (Join-Path $sessionRoot 'starting-save-manifest.json') -Encoding UTF8
 }
@@ -115,17 +146,23 @@ else {
 }
 if (-not $ManifestPath) { $ManifestPath = Join-Path $sessionRoot 'match-manifest.json' }
 $manifest = Resolve-Tpf2mpFullPath $ManifestPath
+$matchContentProfile = Write-Tpf2mpMatchContentProfile `
+    -Path (Join-Path $sessionRoot 'match-content-profile.json') `
+    -AgentMode $AgentMode -TownDevelopment $TownDevelopment.IsPresent
 $fingerprintArgs = @(
     'fingerprint', '--game-exe', $game, '--mod-dir', $installedMod,
-    '--companion-dir', $companionSource, '--extra', $native.Root, '--output', $manifest
+    '--companion-dir', $companionSource, '--extra', $native.Root,
+    '--extra', $matchContentProfile, '--output', $manifest
 )
-if ($StartingSave) { $fingerprintArgs += @('--save', $StartingSave) }
+if ($StartingSave -and -not $restorePlanData) { $fingerprintArgs += @('--save', $StartingSave) }
+if ($restorePlanPath) { $fingerprintArgs += @('--extra', $restorePlanPath) }
 $invokeFingerprint = @($companion.Prefix) + $fingerprintArgs
 & $companion.FilePath @invokeFingerprint
 if ($LASTEXITCODE -ne 0) { throw "Match fingerprint generation failed with exit code $LASTEXITCODE" }
 $fingerprint = [string](Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).fingerprint
 
-$launcherConfig = Write-Tpf2mpLauncherConfig -Session $safeSession -Peer $peer -BridgePath $bridge
+$launcherConfig = Write-Tpf2mpLauncherConfig -Session $safeSession -Peer $peer -BridgePath $bridge `
+    -AgentMode $AgentMode -TownDevelopment $TownDevelopment.IsPresent
 $stdout = Join-Path $sessionRoot 'companion.stdout.log'
 $stderr = Join-Path $sessionRoot 'companion.stderr.log'
 $companionArgs = if ($Role -eq 'Host') {
@@ -139,6 +176,9 @@ $companionArgs = if ($Role -eq 'Host') {
 else {
     @('client', $HostAddress, '--session', $safeSession, '--peer', $peer,
         '--port', $Port, '--bridge', $bridge, '--manifest', $manifest)
+}
+if ($Role -eq 'Host' -and $restorePlanPath) {
+    $companionArgs += @('--restore-plan', $restorePlanPath)
 }
 $companionCommandLine = ConvertTo-Tpf2mpCommandLine (@($companion.Prefix) + $companionArgs)
 $companionProcess = Start-Process -FilePath $companion.FilePath -ArgumentList $companionCommandLine `
@@ -154,6 +194,12 @@ $state = [ordered]@{
     port = $Port
     fingerprint = $fingerprint
     manifestPath = $manifest
+    matchContentProfile = $matchContentProfile
+    agentMode = $AgentMode
+    townDevelopment = $TownDevelopment.IsPresent
+    restorePlan = $restorePlanPath
+    restoreBoundarySeq = if ($restorePlanData) { $restorePlanData.boundarySeq } else { $null }
+    startingCompanyPlayerIds = $startingCompanyPlayerIds
     startingSave = $startingSaveOriginal
     pinnedStartingSave = if ($pinnedSave) { $pinnedSave.savePath } else { $null }
     pinnedStartingSaveManifest = if ($pinnedSave) { Join-Path $sessionRoot 'starting-save-manifest.json' } else { $null }
@@ -189,7 +235,7 @@ $state = [ordered]@{
 $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
 
 try {
-    if ($pinnedSave) {
+    if ($pinnedSave -and -not $restorePlanData) {
         & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $peer `
             -SavePath $pinnedSave.savePath -BundleRoot $bundle
         if ($LASTEXITCODE -ne 0) { throw "Initial recovery archive failed with exit code $LASTEXITCODE" }
@@ -248,7 +294,9 @@ try {
         $launch = Start-Tpf2mpDirectGame -GameExecutable $game -Session $safeSession -Peer $peer `
             -BridgePath $bridge -SessionRoot $sessionRoot `
             -StagedSaveBaseName $(if ($stagedSave) { $stagedSave.baseName } else { $null }) `
-            -RequireMenuEntry -StartNetwork
+            -StartingCompanyPlayerIds $startingCompanyPlayerIds `
+            -RestorePlan $restorePlanData -RequireMenuEntry -StartNetwork `
+            -ManualNetwork:([bool]$stagedSave)
         $gameProcess = $launch.process
         $state.gamePid = $gameProcess.Id
         $state.gameStartedAtUtc = $gameProcess.StartTime.ToUniversalTime().ToString('o')
@@ -272,6 +320,8 @@ try {
             $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
             [void](Wait-Tpf2mpNativeWorld -GameProcess $gameProcess -NativeStatusPath $nativeStatusPath `
                 -RequireGameScriptObserver -RequireAuthorityGates)
+            [IO.File]::WriteAllText((Join-Path $bridge 'launcher\manual-bootstrap-ready'),
+                'ready', [Text.UTF8Encoding]::new($false))
             Remove-Tpf2mpStagedStartingSave $stagedSave
             $state.stagedStartingSave = $null
             $state.status = if ($Role -eq 'Host') { 'hosting-world-ready' } else { 'joined-world-ready' }
@@ -300,42 +350,48 @@ try {
             $state.status = 'awaiting-world-selection'
         }
 
-        if ($Role -eq 'Host') {
-            $recoveryWatcherStdout = Join-Path $sessionRoot 'recovery-watcher.stdout.log'
-            $recoveryWatcherStderr = Join-Path $sessionRoot 'recovery-watcher.stderr.log'
-            $recoveryWatcherArguments = @(
-                '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'watch_recovery_saves.ps1'),
-                '-Session', $safeSession,
-                '-Peer', $peer,
-                '-BridgePath', $bridge,
-                '-SaveDirectory', $resolvedSaveDirectory,
-                '-GameProcessId', $gameProcess.Id,
-                '-GameExecutable', $game,
-                '-GameStartedAtUtc', $state.gameStartedAtUtc,
-                '-BundleRoot', $bundle
-            )
-            $recoveryWatcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
-                -ArgumentList (ConvertTo-Tpf2mpCommandLine $recoveryWatcherArguments) -PassThru -WindowStyle Hidden `
-                -RedirectStandardOutput $recoveryWatcherStdout -RedirectStandardError $recoveryWatcherStderr
-            Start-Sleep -Milliseconds 300
-            $recoveryWatcher.Refresh()
-            if ($recoveryWatcher.HasExited) {
-                $watcherError = if (Test-Path -LiteralPath $recoveryWatcherStderr -PathType Leaf) {
-                    Get-Content -LiteralPath $recoveryWatcherStderr -Raw
-                } else { '' }
-                throw "Automatic recovery watcher exited during startup: $watcherError"
-            }
-            $state.recoveryWatcherPid = $recoveryWatcher.Id
-            $state.recoveryWatcherStatusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
-            $state.recoveryWatcherStdout = $recoveryWatcherStdout
-            $state.recoveryWatcherStderr = $recoveryWatcherStderr
+        # Both peers must independently attest their own native save.  The
+        # client watcher hands the file to its authenticated companion; it
+        # never writes into the game's positive local-sequence namespace.
+        $recoveryWatcherStdout = Join-Path $sessionRoot 'recovery-watcher.stdout.log'
+        $recoveryWatcherStderr = Join-Path $sessionRoot 'recovery-watcher.stderr.log'
+        $recoveryWatcherArguments = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'watch_recovery_saves.ps1'),
+            '-Session', $safeSession,
+            '-Peer', $peer,
+            '-BridgePath', $bridge,
+            '-SaveDirectory', $resolvedSaveDirectory,
+            '-GameProcessId', $gameProcess.Id,
+            '-GameExecutable', $game,
+            '-GameStartedAtUtc', $state.gameStartedAtUtc,
+            '-BundleRoot', $bundle
+        )
+        $recoveryWatcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+            -ArgumentList (ConvertTo-Tpf2mpCommandLine $recoveryWatcherArguments) -PassThru -WindowStyle Hidden `
+            -RedirectStandardOutput $recoveryWatcherStdout -RedirectStandardError $recoveryWatcherStderr
+        Start-Sleep -Milliseconds 300
+        $recoveryWatcher.Refresh()
+        if ($recoveryWatcher.HasExited) {
+            $watcherError = if (Test-Path -LiteralPath $recoveryWatcherStderr -PathType Leaf) {
+                Get-Content -LiteralPath $recoveryWatcherStderr -Raw
+            } else { '' }
+            throw "Automatic recovery watcher exited during startup: $watcherError"
         }
+        $state.recoveryWatcherPid = $recoveryWatcher.Id
+        $state.recoveryWatcherStatusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
+        $state.recoveryWatcherStdout = $recoveryWatcherStdout
+        $state.recoveryWatcherStderr = $recoveryWatcherStderr
     }
     $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
     Write-Host "TPF2MP $Role session ready: $safeSession ($peer), fingerprint $fingerprint"
     Write-Host "Bridge: $bridge"
     if ($StartingSave -and -not $NoLaunchGame) {
-        Write-Host 'The pinned starting save was selected and loaded automatically; native authority gates are active.'
+        if ($restorePlanData) {
+            Write-Host 'The peer-specific attested save was loaded; gameplay remains paused until the restore checkpoint converges.'
+        }
+        else {
+            Write-Host 'The pinned starting save was selected and loaded automatically; native authority gates are active.'
+        }
     }
     else {
         Write-Host 'Select a TPF2MP-enabled world; the launcher has already selected Network mode and this peer/session.'

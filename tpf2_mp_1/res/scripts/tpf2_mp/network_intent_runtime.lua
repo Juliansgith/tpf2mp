@@ -1,9 +1,12 @@
 local util = require "tpf2_mp/util"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
+local bridgeConsumerModule = require "tpf2_mp/network_bridge_consumer"
+local followupQueueModule = require "tpf2_mp/network_followup_queue"
 
 local M = {
   MAX_DEFERRED_INTENTS = 32,
+  MAX_DEFERRED_FOLLOWUPS = 512,
 }
 
 function M.new(deps)
@@ -20,15 +23,35 @@ function M.new(deps)
   local physicalPrerequisite = deps.physicalPrerequisite
   local MAX_DEFERRED_NETWORK_INTENTS =
     tonumber(deps.maxDeferredIntents) or M.MAX_DEFERRED_INTENTS
+  local MAX_DEFERRED_FOLLOWUPS =
+    tonumber(deps.maxDeferredFollowups) or M.MAX_DEFERRED_FOLLOWUPS
 
   local state = setmetatable({}, {
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
   })
   local deferredNetworkIntents = {}
+  local followups = followupQueueModule.new({
+    getState = getState, diagnosticLog = diagnosticLog,
+    maximum = MAX_DEFERRED_FOLLOWUPS,
+  })
   local networkIntentAwaitingOrder = nil
+  local networkPendingBarrierReason
 
-  local function networkPendingBarrierReason()
+  local function localWorkState()
+    local barrierReason = networkPendingBarrierReason and networkPendingBarrierReason() or nil
+    return {
+      pending = networkIntentAwaitingOrder ~= nil or #deferredNetworkIntents > 0
+        or followups.count() > 0 or barrierReason ~= nil,
+      awaitingOrder = networkIntentAwaitingOrder ~= nil,
+      physicalCount = #deferredNetworkIntents,
+      followupCount = followups.count(),
+      deferredCount = #deferredNetworkIntents + followups.count(),
+      barrierReason = barrierReason,
+    }
+  end
+
+  networkPendingBarrierReason = function()
     local rendezvous = state.world.networkClock and state.world.networkClock.rendezvous
     if rendezvous then
       return "shared clock rendezvous is awaiting all-peer simulation time: "
@@ -58,7 +81,7 @@ function M.new(deps)
     end
     return nil
   end
-  
+
   local function emitNetworkIntent(action)
     local normalizeCalled, networkAction, err = pcall(normaliseForNetwork, action)
     if not normalizeCalled then
@@ -319,15 +342,23 @@ function M.new(deps)
   end
   
   local function processDeferredNetworkIntent()
+    local lane = "physical"
     local pending = deferredNetworkIntents[1]
+    if not pending then
+      lane = "followup"
+      pending = followups.head()
+    end
     if not pending then return false end
     local consensus = state.world.proposalConsensus or {}
     local operationConsensus = state.world.operationConsensus or {}
     if consensus.sessionFault or operationConsensus.sessionFault then
-      local count = #deferredNetworkIntents
+      local physicalCount = #deferredNetworkIntents
+      local authoredCount = followups.count()
       deferredNetworkIntents = {}
+      followups.clear()
       local fault = consensus.sessionFault or operationConsensus.sessionFault or {}
-      state.lastError = tostring(count) .. " queued multiplayer physical action(s) discarded because the session faulted: "
+      state.lastError = tostring(physicalCount) .. " queued multiplayer physical action(s) and "
+        .. tostring(authoredCount) .. " authored follow-up(s) discarded because the session faulted: "
         .. tostring(fault.errorCode or "consensus-failed")
       publishSnapshot()
       return true
@@ -340,7 +371,8 @@ function M.new(deps)
         diagnosticLog("network-intent-deferred-blocked", {
           type = pending.action and pending.action.type or nil,
           reason = pending.reason,
-          queueDepth = #deferredNetworkIntents,
+          queueDepth = #deferredNetworkIntents + followups.count(),
+          lane = lane,
           tick = state.tick,
         })
       end
@@ -354,121 +386,103 @@ function M.new(deps)
         diagnosticLog("network-intent-deferred-blocked", {
           type = pending.action and pending.action.type or nil,
           reason = pending.reason,
-          queueDepth = #deferredNetworkIntents,
+          queueDepth = #deferredNetworkIntents + followups.count(),
+          lane = lane,
           tick = state.tick,
         })
       end
       return false
     end
-    table.remove(deferredNetworkIntents, 1)
     if state.networkMode ~= "network" then
-      local discarded = 1 + #deferredNetworkIntents
+      local discarded = #deferredNetworkIntents + followups.count()
       deferredNetworkIntents = {}
+      followups.clear()
       state.lastError = tostring(discarded)
-        .. " deferred multiplayer physical action(s) discarded because network mode ended"
+        .. " deferred multiplayer action(s) discarded because network mode ended"
       publishSnapshot()
       return true
     end
-    local ok, result = emitNetworkIntent(pending.action)
+    if pending.nextAttemptTick and state.tick < pending.nextAttemptTick then return false end
+    local emissionAction = lane == "followup" and followups.emissionAction(pending)
+      or util.deepCopy(pending.action)
+    if not emissionAction then
+      if lane == "followup" then followups.dropHead()
+      else table.remove(deferredNetworkIntents, 1) end
+      state.lastError = "deferred multiplayer action became empty before emission"
+      publishSnapshot()
+      return true
+    end
+    if lane == "physical" then table.remove(deferredNetworkIntents, 1) end
+    local ok, result = emitNetworkIntent(emissionAction)
     if ok then
+      local retained = false
+      if lane == "followup" then retained = followups.consume(pending, emissionAction) end
       diagnosticLog("network-intent-deferred-emitted", {
-        type = pending.action and pending.action.type or nil,
+        type = emissionAction.type,
+        lane = lane,
         deferredFromTick = pending.queuedTick,
-        queueRemaining = #deferredNetworkIntents,
+        queueRemaining = #deferredNetworkIntents + followups.count(),
+        followupRetained = retained,
         localSeq = type(result) == "table" and result.local_seq or nil,
         tick = state.tick,
       })
       if type(state.lastResult) == "table" then
         state.lastResult.deferred = true
         state.lastResult.deferredFromTick = pending.queuedTick
-        state.lastResult.queueRemaining = #deferredNetworkIntents
+        state.lastResult.queueRemaining = #deferredNetworkIntents + followups.count()
       end
     else
       local failureText = tostring(type(result) == "table" and result.error or result)
-      if pending.action and pending.action.originCaptureToken then
+      if lane == "physical" and pending.action and pending.action.originCaptureToken then
         raiseOriginResidueFault("origin-applied-intent-emit-failed:" .. failureText, {
           actionType = tostring(pending.action.type or ""),
           originCaptureToken = tostring(pending.action.originCaptureToken),
         })
       end
-      state.lastError = "deferred multiplayer physical action failed: " .. failureText
+      if lane == "followup" then
+        -- No native mutation has happened for a follow-up yet, so retain it
+        -- across a transient bridge failure instead of losing authored work.
+        pending.failures = (pending.failures or 0) + 1
+        pending.lastError = failureText
+        pending.nextAttemptTick = state.tick + math.min(300, 15 * pending.failures)
+      end
+      state.lastError = "deferred multiplayer " .. lane .. " action failed: " .. failureText
     end
     publishSnapshot()
     return true
   end
   
-  local function consumeBridge()
-    if state.networkMode ~= "network" then return end
-    local authority = state.probes.networkAuthority or {}
-    if authority.ready ~= true then
-      state.lastError = "network authority is not ready: "
-        .. tostring(authority.error or "native gates unavailable")
-      return
-    end
-    for _, message in ipairs(bridge.poll(state.bridge, 16)) do
-      if message.kind == "commit" and message.payload and message.payload.action then
-        local originPeer = message.origin_peer or message.peer
-        if networkIntentAwaitingOrder and originPeer == state.bridge.peerId
-          and tonumber(message.origin_local_seq) == tonumber(networkIntentAwaitingOrder.localSeq) then
-          networkIntentAwaitingOrder = nil
-        end
-        local ok, result, event = applyCommitted(message.payload.action, originPeer, message.seq)
-        local acknowledgement = {
-          commitSeq = message.seq,
-          success = ok,
-          digest = event and event.postDigest or coreDigest(),
-        }
-        if not ok then
-          acknowledgement.error = tostring(type(result) == "table" and result.error or result)
-        end
-        bridge.emit(state.bridge, "ack", acknowledgement, state.tick)
-        publishSnapshot()
-      elseif message.kind == "control" and message.payload and message.payload.action then
-        local action = message.payload.action
-        if action.type == "network.intent_rejected" then
-          local matchesOrigin = tostring(action.originPeer or "") == tostring(state.bridge.peerId)
-            and networkIntentAwaitingOrder
-            and tonumber(action.originLocalSeq) == tonumber(networkIntentAwaitingOrder.localSeq)
-          local rejectedIntent = matchesOrigin and networkIntentAwaitingOrder or nil
-          if matchesOrigin then networkIntentAwaitingOrder = nil end
-          diagnosticLog("network-intent-rejected", {
-            originPeer = action.originPeer,
-            originLocalSeq = action.originLocalSeq,
-            actionType = action.actionType,
-            error = action.errorCode,
-            released = matchesOrigin == true,
-            tick = state.tick,
-          })
-          if matchesOrigin then
-            if rejectedIntent.originCaptureToken then
-              raiseOriginResidueFault(
-                "origin-applied-intent-rejected:" .. tostring(action.errorCode or "unknown"), {
-                  originLocalSeq = tonumber(action.originLocalSeq),
-                  actionType = tostring(action.actionType or rejectedIntent.type or ""),
-                  originCaptureToken = tostring(rejectedIntent.originCaptureToken),
-                })
-            else
-              state.lastError = "network intent rejected: " .. tostring(action.errorCode or "unknown")
-            end
-          end
-        else
-          applyCommitted(action, message.origin_peer or "host", message.seq)
-        end
-        publishSnapshot()
-      end
-    end
-  end
+  local consumeBridge = bridgeConsumerModule.new({
+    getState = getState,
+    takeAwaiting = function(originPeer, localSeq)
+      if tostring(originPeer or "") ~= tostring(state.bridge.peerId)
+        or not networkIntentAwaitingOrder
+        or tonumber(localSeq) ~= tonumber(networkIntentAwaitingOrder.localSeq) then return nil end
+      local result = networkIntentAwaitingOrder
+      networkIntentAwaitingOrder = nil
+      return result
+    end,
+    applyCommitted = applyCommitted,
+    coreDigest = coreDigest,
+    diagnosticLog = diagnosticLog,
+    raiseOriginResidueFault = raiseOriginResidueFault,
+    publishSnapshot = publishSnapshot,
+  })
 
   return {
     submit = submitIntent,
+    scheduleFollowup = followups.schedule,
     processDeferred = processDeferredNetworkIntent,
     consume = consumeBridge,
     pendingBarrierReason = networkPendingBarrierReason,
     raiseOriginResidueFault = raiseOriginResidueFault,
     awaitingOrder = function() return util.deepCopy(networkIntentAwaitingOrder) end,
     deferredIntents = function() return util.deepCopy(deferredNetworkIntents) end,
+    deferredFollowups = followups.copy,
+    localWorkState = function() return util.deepCopy(localWorkState()) end,
     reset = function()
       deferredNetworkIntents = {}
+      followups.clear()
       networkIntentAwaitingOrder = nil
     end,
   }

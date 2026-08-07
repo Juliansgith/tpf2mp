@@ -34,9 +34,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .bridge import atomic_write
-from .protocol import PROTOCOL_VERSION, ProtocolError, canonical_json, sign, verify
+from .protocol import (
+    PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_action, verify,
+)
 
-RESTORE_PLAN_VERSION = 1
+RESTORE_PLAN_VERSION = 2
 
 
 def _messages(audit_path: Path, session: str | None) -> list[dict[str, Any]]:
@@ -56,6 +58,12 @@ def _messages(audit_path: Path, session: str | None) -> list[dict[str, Any]]:
             if session and record.get("session") != session:
                 continue
             records.append(record)
+    sessions = {str(record.get("session") or "") for record in records}
+    sessions.discard("")
+    if session is None and len(sessions) > 1:
+        raise ProtocolError(
+            "audit log contains multiple sessions; select one explicitly before restoring"
+        )
     return records
 
 
@@ -80,7 +88,8 @@ def analyse_restore_points(
     resolved_session = session or str(records[0].get("session"))
 
     converged: dict[int, dict[str, Any]] = {}
-    receipts: dict[int, dict[str, dict[str, Any]]] = {}
+    receipts: dict[int, dict[str, list[dict[str, Any]]]] = {}
+    convergence_conflicts: dict[int, list[str]] = {}
     commit_seqs: list[int] = []
     peers: set[str] = set()
 
@@ -97,40 +106,76 @@ def analyse_restore_points(
         if action.get("type") == "network.checkpoint_outcome" and action.get("success") is True:
             boundary = int(action.get("boundarySeq", 0))
             if boundary > 0:
-                converged[boundary] = {
+                candidate = {
                     "boundarySeq": boundary,
                     "outcomeSeq": int(record.get("seq", 0)),
                     "convergenceKey": action.get("convergenceKey"),
                     "coreDigest": action.get("coreDigest"),
                 }
+                previous = converged.get(boundary)
+                if previous and any(
+                    previous.get(field) != candidate.get(field)
+                    for field in ("convergenceKey", "coreDigest")
+                ):
+                    convergence_conflicts.setdefault(boundary, []).append(
+                        "conflicting checkpoint outcomes name the same boundary"
+                    )
+                elif previous is None or candidate["outcomeSeq"] > previous["outcomeSeq"]:
+                    converged[boundary] = candidate
         if action.get("type") == "recovery.save_receipt":
+            if kind != "commit":
+                continue
+            if not record.get("origin_peer"):
+                raise ProtocolError("save receipt is not an origin-attributed ordered commit")
+            validate_action(action)
             boundary = int(action.get("boundarySeq", 0))
             if boundary > 0 and peer:
-                receipts.setdefault(boundary, {})[peer] = {
+                receipts.setdefault(boundary, {}).setdefault(peer, []).append({
                     "peer": peer,
                     "commitSeq": int(record.get("seq", 0)),
                     "savedAtUnix": int(action.get("savedAtUnix", 0)),
                     "saveSha256": action.get("saveSha256"),
                     "coreDigest": action.get("coreDigest"),
                     "convergenceKey": action.get("convergenceKey"),
-                }
+                })
 
-    expected = tuple(sorted(required_peers or peers or ("player1", "player2")))
+    if required_peers and len(set(required_peers)) != len(required_peers):
+        raise ProtocolError("required peer roster contains duplicates")
+    expected = tuple(sorted(set(required_peers or peers or ("player1", "player2"))))
+    if not expected or any(not peer for peer in expected):
+        raise ProtocolError("required peer roster is empty or invalid")
     points: list[dict[str, Any]] = []
     for boundary in sorted(converged):
         anchor = converged[boundary]
-        filed = receipts.get(boundary, {})
-        reasons: list[str] = []
+        receipt_lists = receipts.get(boundary, {})
+        filed = {peer: values[0] for peer, values in receipt_lists.items() if values}
+        reasons: list[str] = list(convergence_conflicts.get(boundary, ()))
 
         missing = [peer for peer in expected if peer not in filed]
         if missing:
             reasons.append("missing save receipts: " + ", ".join(missing))
+        unexpected = sorted(set(filed) - set(expected))
+        if unexpected:
+            reasons.append("save receipts came from peers outside the roster: " + ", ".join(unexpected))
+
+        for peer, values in sorted(receipt_lists.items()):
+            semantic = {
+                (
+                    item["savedAtUnix"], item["saveSha256"], item["coreDigest"],
+                    item["convergenceKey"],
+                )
+                for item in values
+            }
+            if len(semantic) > 1:
+                reasons.append(f"{peer} filed conflicting duplicate save receipts")
 
         # Quiescence: nothing may have been ordered between the checkpoint
         # outcome and a peer's save, or that peer's save contains more than
         # this boundary and the two worlds would resume out of step.
         for peer in sorted(filed):
             receipt = filed[peer]
+            if receipt["commitSeq"] <= anchor["outcomeSeq"]:
+                reasons.append(f"{peer} save receipt precedes its checkpoint outcome")
             intervening = [
                 seq for seq in commit_seqs
                 if anchor["outcomeSeq"] < seq < receipt["commitSeq"]
@@ -140,12 +185,16 @@ def analyse_restore_points(
                     f"{peer} saved after {len(intervening)} ordered commit(s) past the boundary"
                 )
 
-        digests = {receipt.get("coreDigest") for receipt in filed.values()}
-        keys = {receipt.get("convergenceKey") for receipt in filed.values()}
+        roster_filed = {peer: filed[peer] for peer in expected if peer in filed}
+        digests = {receipt.get("coreDigest") for receipt in roster_filed.values()}
+        keys = {receipt.get("convergenceKey") for receipt in roster_filed.values()}
         if filed and (len(digests) > 1 or len(keys) > 1):
             reasons.append("peers attested different world state for this boundary")
         if filed and anchor.get("coreDigest") and digests and anchor["coreDigest"] not in digests:
             reasons.append("save receipts do not match the agreed checkpoint core digest")
+        if filed and anchor.get("convergenceKey") and keys \
+                and anchor["convergenceKey"] not in keys:
+            reasons.append("save receipts do not match the agreed checkpoint convergence key")
 
         points.append({
             **anchor,
@@ -205,6 +254,10 @@ def build_restore_plan(
             peer: {
                 "saveSha256": receipt["saveSha256"],
                 "savedAtUnix": receipt["savedAtUnix"],
+                "receiptCommitSeq": receipt["commitSeq"],
+                "boundarySeq": boundary,
+                "coreDigest": point["coreDigest"],
+                "convergenceKey": point["convergenceKey"],
             }
             for peer, receipt in point["receipts"].items()
         },
@@ -224,12 +277,62 @@ def verify_restore_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ProtocolError("unsupported restore plan format")
     if int(plan.get("protocol", -1)) != PROTOCOL_VERSION:
         raise ProtocolError("restore plan protocol mismatch")
+    allowed = {
+        "format", "version", "protocol", "session", "resumeSession",
+        "generatedAtUtc", "boundarySeq", "convergenceKey", "coreDigest",
+        "requiredPeers", "peerSaves", "steps", "checksum",
+    }
+    if set(plan) != allowed:
+        raise ProtocolError("restore plan has unknown or missing fields")
+    session = plan.get("session")
+    boundary = plan.get("boundarySeq")
+    if not isinstance(session, str) or not session or len(session) > 160:
+        raise ProtocolError("restore plan session is invalid")
+    if not isinstance(boundary, int) or isinstance(boundary, bool) \
+            or not 1 <= boundary <= 9_007_199_254_740_991:
+        raise ProtocolError("restore plan boundary is invalid")
+    if plan.get("resumeSession") != f"{session}-r{boundary}":
+        raise ProtocolError("restore plan resume session does not match its boundary")
+    for field in ("convergenceKey", "coreDigest"):
+        value = plan.get(field)
+        if not isinstance(value, str) or not value or len(value) > 128:
+            raise ProtocolError(f"restore plan {field} is invalid")
+    if not isinstance(plan.get("generatedAtUtc"), str) or not plan["generatedAtUtc"]:
+        raise ProtocolError("restore plan generation timestamp is invalid")
+    if not isinstance(plan.get("steps"), list) or not plan["steps"] \
+            or any(not isinstance(step, str) or not step for step in plan["steps"]):
+        raise ProtocolError("restore plan steps are invalid")
+
     peers = plan.get("requiredPeers")
     saves = plan.get("peerSaves")
-    if not isinstance(peers, list) or not peers:
+    if not isinstance(peers, list) or not peers \
+            or any(not isinstance(peer, str) or not peer for peer in peers):
         raise ProtocolError("restore plan has no required peers")
-    if not isinstance(saves, Mapping) or any(peer not in saves for peer in peers):
+    if len(set(peers)) != len(peers):
+        raise ProtocolError("restore plan required peer roster contains duplicates")
+    if not isinstance(saves, Mapping) or set(saves) != set(peers):
         raise ProtocolError("restore plan is missing a peer save attestation")
+    expected_save_fields = {
+        "saveSha256", "savedAtUnix", "receiptCommitSeq", "boundarySeq",
+        "coreDigest", "convergenceKey",
+    }
+    for peer in peers:
+        save = saves[peer]
+        if not isinstance(save, Mapping) or set(save) != expected_save_fields:
+            raise ProtocolError(f"restore plan {peer} save attestation is malformed")
+        sha = save.get("saveSha256")
+        if not isinstance(sha, str) or len(sha) != 64 \
+                or any(character not in "0123456789abcdef" for character in sha):
+            raise ProtocolError(f"restore plan {peer} save hash is invalid")
+        for field, minimum in (("savedAtUnix", 0), ("receiptCommitSeq", 1)):
+            item = save.get(field)
+            if not isinstance(item, int) or isinstance(item, bool) \
+                    or not minimum <= item <= 9_007_199_254_740_991:
+                raise ProtocolError(f"restore plan {peer} {field} is invalid")
+        if save.get("boundarySeq") != boundary \
+                or save.get("coreDigest") != plan["coreDigest"] \
+                or save.get("convergenceKey") != plan["convergenceKey"]:
+            raise ProtocolError(f"restore plan {peer} save names a different boundary")
     return plan
 
 

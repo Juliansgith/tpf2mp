@@ -8,7 +8,6 @@ local PROJECTABLE = {
   station = true,
   depot = true,
   asset = true,
-  edge_object = true,
   line = true,
   vehicle = true,
 }
@@ -90,10 +89,11 @@ function M.apply(worldState, playerIds, context)
       local company = bucket(report, companyCid)
       report.required = report.required + 1
       company.required = company.required + 1
-      if entity.kind == "edge" then
-        -- Build 35924 asserts on game.interface.setPlayer(BASE_EDGE). Logical
-        -- custody remains authoritative and proposal replay chooses a safe
-        -- native owner for later replacements.
+      if entity.kind == "edge" or entity.kind == "edge_object" then
+        -- Build 35924 asserts on game.interface.setPlayer for BASE_EDGE and
+        -- for edge objects such as signals. Logical custody remains
+        -- authoritative and proposal replay chooses a safe native owner for
+        -- later replacements.
         report.retainedEdges = report.retainedEdges + 1
         company.retainedEdges = company.retainedEdges + 1
       elseif PROJECTABLE[entity.kind] then

@@ -4,6 +4,24 @@ Set-StrictMode -Version Latest
 
 $script:Tpf2mpMenuBootstrapRelative = 'res/scripts/tpf2mp_multiplayer_menu_bootstrap.lua'
 
+function Assert-Tpf2mpGameProcessHealthy {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.Process]$GameProcess,
+        [string]$Context = 'while waiting for Transport Fever 2'
+    )
+    try { $GameProcess.Refresh() }
+    catch { throw "Game PID $($GameProcess.Id) became unavailable $Context." }
+    if ($GameProcess.HasExited) {
+        throw "Game PID $($GameProcess.Id) exited $Context (exit $($GameProcess.ExitCode))."
+    }
+    $title = ''
+    try { $title = [string]$GameProcess.MainWindowTitle } catch { }
+    if ($title -match '(?i)^\s*fatal error\s*$|assertion.*failed') {
+        throw "Game PID $($GameProcess.Id) opened '$title' $Context."
+    }
+    return $GameProcess
+}
+
 function Find-Tpf2mpSaveDirectory {
     param([string]$SaveDirectory, [string]$LocalModsPath)
     if ($SaveDirectory) {
@@ -436,6 +454,42 @@ function Initialize-Tpf2mpMenuBridge {
     return $launcher
 }
 
+function Read-Tpf2mpStartingCompanyPlayerIds {
+    param([Parameter(Mandatory = $true)][string]$SavePath)
+    $metadataPath = (Resolve-Tpf2mpFullPath $SavePath) + '.lua'
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { return '' }
+    $content = [IO.File]::ReadAllText($metadataPath)
+    $marker = $content.IndexOf('["tpf2_mp.lua"]', [StringComparison]::Ordinal)
+    if ($marker -lt 0) { return '' }
+    $tail = $content.Substring($marker)
+    $ids = [Collections.Generic.List[string]]::new()
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($match in [regex]::Matches($tail, '(?m)^\s*playerId\s*=\s*(\d+)\s*,')) {
+        $value = $match.Groups[1].Value
+        if ($seen.Add($value)) { $ids.Add($value) }
+        if ($ids.Count -ge 2) { break }
+    }
+    if ($ids.Count -ne 2) { return '' }
+    return [string]::Join(',', $ids)
+}
+
+function Get-Tpf2mpPeerStartingCompanyPlayerIds {
+    param(
+        [Parameter(Mandatory = $true)][string]$Player1Save,
+        [Parameter(Mandatory = $true)][string]$Player2Save
+    )
+    $result = [pscustomobject][ordered]@{
+        player1 = Read-Tpf2mpStartingCompanyPlayerIds $Player1Save
+        player2 = Read-Tpf2mpStartingCompanyPlayerIds $Player2Save
+    }
+    if (-not $result.player1 -or -not $result.player2) {
+        throw 'Each restore save must expose exactly two native company-player identities.'
+    }
+    # These are local-world entity IDs. Their two ordered lists normally differ
+    # because each machine created its remote-company player independently.
+    return $result
+}
+
 function Start-Tpf2mpDirectGame {
     param(
         [Parameter(Mandatory = $true)][string]$GameExecutable,
@@ -444,8 +498,11 @@ function Start-Tpf2mpDirectGame {
         [Parameter(Mandatory = $true)][string]$BridgePath,
         [Parameter(Mandatory = $true)][string]$SessionRoot,
         [string]$StagedSaveBaseName,
+        [string]$StartingCompanyPlayerIds,
+        [object]$RestorePlan,
         [switch]$RequireMenuEntry,
-        [switch]$StartNetwork
+        [switch]$StartNetwork,
+        [switch]$ManualNetwork
     )
     $game = Resolve-Tpf2mpFullPath $GameExecutable
     $gameRoot = Split-Path -Parent $game
@@ -453,6 +510,10 @@ function Start-Tpf2mpDirectGame {
     $launcher = Initialize-Tpf2mpMenuBridge $BridgePath
     if ($StagedSaveBaseName -and -not $RequireMenuEntry) {
         [IO.File]::WriteAllText((Join-Path $launcher 'load-request'), 'load', [Text.UTF8Encoding]::new($false))
+    }
+    if ($ManualNetwork) {
+        [IO.File]::WriteAllText((Join-Path $launcher 'manual-bootstrap-ready'),
+            'waiting', [Text.UTF8Encoding]::new($false))
     }
     $stdout = Join-Path $SessionRoot 'game.stdout.log'
     $stderr = Join-Path $SessionRoot 'game.stderr.log'
@@ -463,8 +524,16 @@ function Start-Tpf2mpDirectGame {
         TPF2MP_SESSION_ID = $safeSession
         TPF2MP_BRIDGE_DIR = (Resolve-Tpf2mpFullPath $BridgePath)
         TPF2MP_START_NETWORK = if ($StartNetwork) { '1' } else { '0' }
+        TPF2MP_MANUAL_NETWORK = if ($ManualNetwork) { '1' } else { '0' }
         TPF2MP_STAGED_SAVE_NAME = [string]$StagedSaveBaseName
+        TPF2MP_STARTING_COMPANY_PLAYER_IDS = [string]$StartingCompanyPlayerIds
         TPF2MP_REQUIRE_MENU_ENTRY = if ($RequireMenuEntry) { '1' } else { '0' }
+        TPF2MP_RESTORE_RESUME = if ($RestorePlan) { '1' } else { '0' }
+        TPF2MP_RESTORE_FROM_SESSION = if ($RestorePlan) { [string]$RestorePlan.session } else { '' }
+        TPF2MP_RESTORE_BOUNDARY = if ($RestorePlan) { [string]$RestorePlan.boundarySeq } else { '' }
+        TPF2MP_RESTORE_CORE_DIGEST = if ($RestorePlan) { [string]$RestorePlan.coreDigest } else { '' }
+        TPF2MP_RESTORE_CONVERGENCE_KEY = if ($RestorePlan) { [string]$RestorePlan.convergenceKey } else { '' }
+        TPF2MP_RESTORE_PLAN_CHECKSUM = if ($RestorePlan) { [string]$RestorePlan.checksum } else { '' }
     }
     $previous = @{}
     try {
@@ -542,10 +611,8 @@ function Wait-Tpf2mpMenuStage {
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $GameProcess.Refresh()
-        if ($GameProcess.HasExited) {
-            throw "Game PID $($GameProcess.Id) exited before menu stage '$($Stage -join ',')'."
-        }
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context "before menu stage '$($Stage -join ',')'")
         $status = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
         if ($status -and $status.error) { throw "Menu bootstrap failed: $($status.error)" }
         if ($status -and $Stage -contains [string]$status.stage) { return $status }
@@ -564,10 +631,8 @@ function Wait-Tpf2mpMainMenuEntry {
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $GameProcess.Refresh()
-        if ($GameProcess.HasExited) {
-            throw "Game PID $($GameProcess.Id) exited before the TPF2MP main-menu entry was ready."
-        }
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context 'before the TPF2MP main-menu entry was ready')
         $status = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
         if ($status -and $status.error) { throw "Menu bootstrap failed: $($status.error)" }
         if ($status -and $status.stage -eq 'main-menu' -and $status.entryInstalled -eq $true `
@@ -671,8 +736,8 @@ function Wait-Tpf2mpNativeWorld {
     )
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
-        $GameProcess.Refresh()
-        if ($GameProcess.HasExited) { throw "Game PID $($GameProcess.Id) exited while loading its world." }
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context 'while loading its world')
         $status = $null
         if (Test-Path -LiteralPath $NativeStatusPath -PathType Leaf) {
             try { $status = Get-Content -LiteralPath $NativeStatusPath -Raw | ConvertFrom-Json } catch { }

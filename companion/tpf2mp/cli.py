@@ -14,6 +14,7 @@ from .network import CommitClient, CommitHost
 from .protocol import ProtocolError, validate_envelope
 from .recovery import verify_recovery_archive, write_recovery_archive, write_recovery_plan
 from .research import write_report
+from .restore import confirm_restore_readiness, verify_restore_plan, write_restore_plan
 
 
 def default_bridge(peer: str) -> Path:
@@ -32,6 +33,7 @@ def parser() -> argparse.ArgumentParser:
     host.add_argument("--bridge", type=Path)
     host.add_argument("--audit", type=Path)
     host.add_argument("--manifest", type=Path)
+    host.add_argument("--restore-plan", type=Path)
     host.add_argument("--required-peer", action="append", default=None,
                       help="pin a required physical-consensus peer (repeatable; defaults to player1/player2)")
     host.add_argument(
@@ -87,6 +89,29 @@ def parser() -> argparse.ArgumentParser:
     recovery.add_argument("audit", type=Path)
     recovery.add_argument("--session")
     recovery.add_argument("--output", type=Path, required=True)
+
+    restore = commands.add_parser(
+        "restore-plan", help="create a receipt-bound plan for a fully saved all-peer boundary"
+    )
+    restore.add_argument("audit", type=Path)
+    restore.add_argument("--session")
+    restore.add_argument("--boundary", type=int)
+    restore.add_argument("--output", type=Path, required=True)
+
+    verify_restore = commands.add_parser(
+        "verify-restore-plan", help="verify a receipt-bound plan and re-hash every peer save"
+    )
+    verify_restore.add_argument("plan", type=Path)
+    verify_restore.add_argument(
+        "--save", action="append", default=[], metavar="PEER=PATH",
+        help="peer save to verify; repeat once for every required peer",
+    )
+    verify_restore_save = commands.add_parser(
+        "verify-restore-save", help="verify this peer's save against a receipt-bound plan"
+    )
+    verify_restore_save.add_argument("plan", type=Path)
+    verify_restore_save.add_argument("--peer", required=True)
+    verify_restore_save.add_argument("--save", type=Path, required=True)
 
     archive = commands.add_parser(
         "archive-save", help="copy and attest a complete native save triplet for recovery"
@@ -312,6 +337,9 @@ def main(argv: list[str] | None = None) -> int:
             game_bridge = GameBridge(bridge_path, args.session, args.peer)
             audit = args.audit or (game_bridge.audit_dir / f"{args.session}.ndjson")
             fingerprint = load_manifest(args.manifest)["fingerprint"] if args.manifest else None
+            restore_plan = verify_restore_plan(json.loads(
+                args.restore_plan.read_text(encoding="utf-8-sig")
+            )) if args.restore_plan else None
             CommitHost(
                 game_bridge,
                 args.bind,
@@ -320,6 +348,7 @@ def main(argv: list[str] | None = None) -> int:
                 fingerprint,
                 required_peers=tuple(args.required_peer) if args.required_peer else None,
                 completion_timeout=args.completion_timeout,
+                restore_plan=restore_plan,
             ).run()
         elif args.command == "client":
             bridge_path = args.bridge or default_bridge(args.peer)
@@ -366,6 +395,37 @@ def main(argv: list[str] | None = None) -> int:
             print(f"resume_session={plan['resumeSession']}")
             print(f"checkpoint_boundary={plan['anchor']['boundarySeq']}")
             print(f"convergence_key={plan['anchor']['convergenceKey']}")
+        elif args.command == "restore-plan":
+            plan = write_restore_plan(args.audit, args.output, args.session, args.boundary)
+            print(f"restore_plan={args.output.resolve()}")
+            print(f"resume_session={plan['resumeSession']}")
+            print(f"checkpoint_boundary={plan['boundarySeq']}")
+            print(f"convergence_key={plan['convergenceKey']}")
+        elif args.command == "verify-restore-plan":
+            plan = verify_restore_plan(json.loads(args.plan.read_text(encoding="utf-8-sig")))
+            peer_saves: dict[str, Path] = {}
+            for item in args.save:
+                peer, separator, value = item.partition("=")
+                if not separator or not peer or not value or peer in peer_saves:
+                    raise ProtocolError("--save must be a unique PEER=PATH mapping")
+                peer_saves[peer] = Path(value)
+            readiness = confirm_restore_readiness(plan, peer_saves)
+            if not readiness["ready"]:
+                raise ProtocolError("restore is not ready: " + "; ".join(readiness["problems"]))
+            print(f"restore_plan_valid={args.plan.resolve()}")
+            print(f"resume_session={readiness['resumeSession']}")
+            print(f"checkpoint_boundary={readiness['boundarySeq']}")
+        elif args.command == "verify-restore-save":
+            plan = verify_restore_plan(json.loads(args.plan.read_text(encoding="utf-8-sig")))
+            if args.peer not in plan["requiredPeers"]:
+                raise ProtocolError("restore peer is not in the plan roster")
+            readiness = confirm_restore_readiness(plan, {args.peer: args.save})
+            peer = readiness["peers"][args.peer]
+            if peer.get("ok") is not True:
+                raise ProtocolError(f"{args.peer} restore save does not match its attestation")
+            print(f"restore_save_valid={Path(peer['path']).resolve()}")
+            print(f"peer={args.peer}")
+            print(f"resume_session={readiness['resumeSession']}")
         elif args.command == "archive-save":
             recovery_plan = None
             if args.recovery_plan:

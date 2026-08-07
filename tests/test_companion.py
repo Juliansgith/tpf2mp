@@ -12,7 +12,14 @@ from unittest import mock
 from pathlib import Path
 
 from tpf2mp.bridge import AuditLog, GameBridge, atomic_write
-from tpf2mp.checkpoint import analyse_bridge, verify_checkpoint, verify_event_record
+from tpf2mp.anchor_io import AnchorRequestStore, anchor_state_message, validate_anchor_state
+from tpf2mp.checkpoint import (
+    _advance_town_development_cursor,
+    _advance_town_development_points,
+    analyse_bridge,
+    verify_checkpoint,
+    verify_event_record,
+)
 from tpf2mp.cli import replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
 from tpf2mp.network import CommitClient, CommitHost
@@ -532,10 +539,12 @@ class ProtocolTests(unittest.TestCase):
                 }
             )
 
-    def test_mobility_sample_is_host_ordered_and_has_no_client_payload(self) -> None:
+    def test_native_samples_are_host_ordered_and_have_no_client_payload(self) -> None:
         self.assertEqual(validate_action({"type": "probe.mobility"}), {"type": "probe.mobility"})
-        with self.assertRaises(ProtocolError):
-            validate_action({"type": "probe.mobility", "sampleKey": "forged"})
+        self.assertEqual(validate_action({"type": "probe.structural"}), {"type": "probe.structural"})
+        for action_type in ("probe.mobility", "probe.structural"):
+            with self.assertRaises(ProtocolError):
+                validate_action({"type": action_type, "sampleKey": "forged"})
 
     def test_shared_clock_actions_are_strict_and_bounded(self) -> None:
         self.assertEqual(
@@ -599,6 +608,30 @@ class ProtocolTests(unittest.TestCase):
             })
         with self.assertRaisesRegex(ProtocolError, "pause mode"):
             validate_action({**scheduled, "releaseWhilePaused": True})
+
+    def test_restore_point_preparation_actions_are_strict(self) -> None:
+        self.assertEqual(validate_action({"type": "recovery.prepare"}), {"type": "recovery.prepare"})
+        request = validate_action({
+            "type": "network.checkpoint_request",
+            "preparationSeq": 7,
+            "reason": "recovery-prepare:7",
+        })
+        self.assertEqual(request["preparationSeq"], 7)
+        with self.assertRaisesRegex(ProtocolError, "client-supplied fields"):
+            validate_action({"type": "recovery.prepare", "boundarySeq": 9})
+        with self.assertRaisesRegex(ProtocolError, "reason is invalid"):
+            validate_action({**request, "reason": "recovery-prepare:8"})
+
+        resume = {
+            "type": "recovery.resume", "fromSession": "saved-session",
+            "boundarySeq": 9, "coreDigest": "1234abcd",
+            "convergenceKey": "2345bcde", "planChecksum": "3456cdef",
+        }
+        self.assertEqual(validate_action(resume), resume)
+        with self.assertRaisesRegex(ProtocolError, "unknown or missing"):
+            validate_action({key: value for key, value in resume.items() if key != "planChecksum"})
+        with self.assertRaisesRegex(ProtocolError, "coreDigest"):
+            validate_action({**resume, "coreDigest": "not-a-digest"})
 
     def test_canonical_proposal_transaction_is_strict_and_tamper_evident(self) -> None:
         transaction = proposal_transaction()
@@ -1170,6 +1203,84 @@ class BridgeTests(unittest.TestCase):
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_town_development_replay_matches_lua_accumulator_and_cursor(self) -> None:
+        model = {
+            "townDevelopment": {
+                "schemaVersion": 1,
+                "enabled": True,
+                "points": {"town:a": 100, "town:b": 350},
+                "cursor": {"town:a": 4},
+            }
+        }
+        economy = {
+            "markets": {
+                "market:a-b": {
+                    "metadata": {"townA": "town:a", "townB": "town:b"}
+                }
+            }
+        }
+        results = {
+            "markets": {
+                "market:a-b": {
+                    "services": {
+                        "line:1": {"allocated": 500},
+                        "line:2": {"allocated": 301},
+                    }
+                }
+            }
+        }
+        due = _advance_town_development_points(model, economy, results)
+        self.assertEqual(due, {"town:a": 1, "town:b": 1})
+        self.assertEqual(
+            model["townDevelopment"]["points"],
+            {"town:a": 100, "town:b": 351},
+        )
+        _advance_town_development_cursor(model, {"town:a": 2, "town:b": 1})
+        self.assertEqual(
+            model["townDevelopment"]["cursor"],
+            {"town:a": 6, "town:b": 1},
+        )
+
+    def test_town_development_replay_is_disabled_and_bounded(self) -> None:
+        disabled = {
+            "townDevelopment": {
+                "schemaVersion": 1, "enabled": False, "points": {}, "cursor": {}
+            }
+        }
+        economy = {
+            "markets": {
+                "market:a-b": {
+                    "metadata": {"townA": "town:a", "townB": "town:b"}
+                }
+            }
+        }
+        results = {
+            "markets": {
+                "market:a-b": {"services": {"line:1": {"allocated": 100_000}}}
+            }
+        }
+        self.assertEqual(
+            _advance_town_development_points(disabled, economy, results), {}
+        )
+        self.assertEqual(disabled["townDevelopment"]["points"], {})
+
+        bounded = {
+            "townDevelopment": {
+                "schemaVersion": 1,
+                "enabled": True,
+                "points": {"town:a": 3_900, "town:b": 3_900},
+                "cursor": {},
+            }
+        }
+        self.assertEqual(
+            _advance_town_development_points(bounded, economy, results),
+            {"town:a": 2, "town:b": 2},
+        )
+        self.assertEqual(
+            bounded["townDevelopment"]["points"],
+            {"town:a": 3_200, "town:b": 3_200},
+        )
+
     @staticmethod
     def checkpoint_payload() -> dict:
         model = {
@@ -1843,6 +1954,42 @@ class RestorePointTests(unittest.TestCase):
                 "peers attested different world state for this boundary", point["reasons"]
             )
 
+    def test_conflicting_duplicate_receipt_and_pre_outcome_receipt_are_refused(self) -> None:
+        sha_a, sha_b, sha_c = "a" * 64, "b" * 64, "c" * 64
+        with tempfile.TemporaryDirectory() as directory:
+            audit = self._audit(Path(directory), [
+                self._receipt(1, "player1", 4, sha_a),
+                self._checkpoint(2, 4),
+                self._receipt(3, "player1", 4, sha_b),
+                self._receipt(4, "player2", 4, sha_c),
+            ])
+            point = analyse_restore_points(
+                audit, self.SESSION, ("player1", "player2")
+            )["points"][0]
+            self.assertFalse(point["ready"])
+            self.assertIn(
+                "player1 filed conflicting duplicate save receipts", point["reasons"]
+            )
+            self.assertIn(
+                "player1 save receipt precedes its checkpoint outcome", point["reasons"]
+            )
+
+    def test_receipt_must_match_checkpoint_convergence_key(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            first = self._receipt(2, "player1", 4, "a" * 64)
+            second = self._receipt(3, "player2", 4, "b" * 64)
+            first["payload"]["action"]["convergenceKey"] = "wrong-key"
+            second["payload"]["action"]["convergenceKey"] = "wrong-key"
+            audit = self._audit(Path(directory), [self._checkpoint(1, 4), first, second])
+            point = analyse_restore_points(
+                audit, self.SESSION, ("player1", "player2")
+            )["points"][0]
+            self.assertFalse(point["ready"])
+            self.assertIn(
+                "save receipts do not match the agreed checkpoint convergence key",
+                point["reasons"],
+            )
+
     def test_ready_restore_point_builds_a_plan_and_verifies_saves_on_disk(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1872,6 +2019,7 @@ class RestorePointTests(unittest.TestCase):
             self.assertEqual(verified["boundarySeq"], 4)
             self.assertEqual(verified["resumeSession"], f"{self.SESSION}-r4")
             self.assertEqual(verified["peerSaves"]["player1"]["saveSha256"], sha1)
+            self.assertEqual(verified["peerSaves"]["player1"]["boundarySeq"], 4)
 
             ready = confirm_restore_readiness(plan, {"player1": player1, "player2": player2})
             self.assertTrue(ready["ready"], ready["problems"])
@@ -1889,6 +2037,41 @@ class RestorePointTests(unittest.TestCase):
             missing = confirm_restore_readiness(plan, {"player1": player1})
             self.assertFalse(missing["ready"])
             self.assertIn("player2 save was not supplied", missing["problems"])
+
+            core = dict(plan)
+            core.pop("checksum")
+            core["requiredPeers"] = ["player1", "player1"]
+            duplicate_roster = sign(core)
+            with self.assertRaisesRegex(ProtocolError, "roster contains duplicates"):
+                verify_restore_plan(duplicate_roster)
+
+            core = dict(plan)
+            core.pop("checksum")
+            core["peerSaves"] = json.loads(json.dumps(core["peerSaves"]))
+            core["peerSaves"]["player2"]["boundarySeq"] = 99
+            mixed_boundary = sign(core)
+            with self.assertRaisesRegex(ProtocolError, "names a different boundary"):
+                verify_restore_plan(mixed_boundary)
+
+    def test_game_event_copies_of_receipts_do_not_invalidate_the_ordered_receipts(self) -> None:
+        first = self._receipt(2, "player1", 4, "a" * 64)
+        second = self._receipt(3, "player2", 4, "b" * 64)
+        event_copies = []
+        for local_seq, receipt in enumerate((first, second), start=1):
+            event_copies.append({
+                "protocol": 1, "session": self.SESSION, "peer": receipt["origin_peer"],
+                "local_seq": local_seq, "kind": "record", "record_type": "event",
+                "payload": {"action": dict(receipt["payload"]["action"])},
+            })
+        with tempfile.TemporaryDirectory() as directory:
+            audit = self._audit(Path(directory), [
+                self._checkpoint(1, 4), first, event_copies[0], second, event_copies[1],
+            ])
+            plan = build_restore_plan(
+                audit, self.SESSION, boundary_seq=4,
+                required_peers=("player1", "player2"),
+            )
+            self.assertEqual(verify_restore_plan(plan)["boundarySeq"], 4)
 
     def test_save_receipt_action_is_strictly_validated(self) -> None:
         base = {
@@ -1913,6 +2096,51 @@ class RestorePointTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             validate_action(extra)
 
+    def test_town_development_is_strict_and_opens_a_checkpoint_boundary(self) -> None:
+        action = {"type": "town.develop", "batch": {"town:pre:a": 8}}
+        self.assertEqual(validate_action(action), action)
+        for batch in (
+            {}, {"city:pre:a": 1}, {"town:pre:a": 0},
+            {"town:pre:a": 9}, {"town:pre:a": 1.5},
+        ):
+            with self.assertRaises(ProtocolError):
+                validate_action({"type": "town.develop", "batch": batch})
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "town-checkpoint"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            committed = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": action},
+            }))
+            tracker = host.checkpoint_consensus[committed["seq"]]
+            self.assertEqual(tracker["reason"], "town-development")
+            self.assertEqual(tracker["status"], "pending")
+
+            restored = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            self.assertEqual(
+                restored.checkpoint_consensus[committed["seq"]]["reason"],
+                "town-development",
+            )
+
+    def test_restore_analysis_refuses_to_mix_sessions_implicitly(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            second_session = self._checkpoint(2, 5)
+            second_session["session"] = "other-session"
+            audit = self._audit(root, [self._checkpoint(1, 4), second_session])
+            with self.assertRaisesRegex(ProtocolError, "multiple sessions"):
+                analyse_restore_points(audit)
+
 
 class AnchorCoordinatorTests(unittest.TestCase):
     def _host(self, root: Path) -> CommitHost:
@@ -1934,6 +2162,25 @@ class AnchorCoordinatorTests(unittest.TestCase):
                 "success": True, "convergenceKey": f"key-{boundary}", "coreDigest": "core-1",
             }},
         })
+        now = time.monotonic()
+        for peer in host.required_peers:
+            host.clock_health[peer] = {
+                "schemaVersion": 3,
+                "requestedSpeed": 0,
+                "effectiveSpeed": 0,
+                "generation": host.clock_pause_acknowledged_generation,
+                "engineTick": 100,
+                "lastCommitSeq": boundary,
+                "proposalPending": False,
+                "localWorkPending": False,
+                "deferredIntentCount": 0,
+                "rendezvousGeneration": 0,
+                "rendezvousState": "idle",
+                "rendezvousTargetTime": 0,
+                "observedSpeed": 0,
+                "gameTime": 100.0,
+                "receivedAt": now,
+            }
 
     def test_anchor_refuses_while_running_or_faulted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1979,6 +2226,23 @@ class AnchorCoordinatorTests(unittest.TestCase):
             })
             self.assertIn(
                 "work has been ordered since the last converged checkpoint",
+                host.anchor.readiness()["reasons"],
+            )
+
+    def test_local_game_queue_or_stale_health_blocks_a_false_ready_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            self._converge(host, 4)
+            host.clock_pause_acknowledged = True
+            host.clock_health["player2"]["localWorkPending"] = True
+            self.assertIn(
+                "player2 still has local ordered work pending",
+                host.anchor.readiness()["reasons"],
+            )
+            host.clock_health["player2"]["localWorkPending"] = False
+            host.clock_health["player2"]["receivedAt"] = time.monotonic() - 10
+            self.assertIn(
+                "player2 anchor-readiness health is stale",
                 host.anchor.readiness()["reasons"],
             )
 
@@ -2041,6 +2305,185 @@ class AnchorCoordinatorTests(unittest.TestCase):
                 host.anchor.anchor_save(root / "absent.sav", 1000)
             self.assertEqual(host.anchor.restorable(), [])
 
+    def test_receipt_claim_must_match_current_ready_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            self._converge(host, 4)
+            host.clock_pause_acknowledged = True
+            receipt = {
+                "type": "recovery.save_receipt", "boundarySeq": 5,
+                "savedAtUnix": 1000, "saveSha256": "a" * 64,
+                "coreDigest": "core-1", "convergenceKey": "key-4", "paused": True,
+            }
+            with self.assertRaisesRegex(ProtocolError, "boundarySeq does not match"):
+                host.anchor.validate_receipt(receipt, "player2")
+
+    def test_one_action_pauses_and_requests_matching_checkpoints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            prepare = host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            self.assertEqual(prepare["seq"], 1)
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "checkpointing")
+            request = decode_line((host.bridge.inbox / "000000000002.json").read_bytes())
+            self.assertEqual(request["payload"]["action"]["type"], "network.checkpoint_request")
+            self.assertEqual(request["payload"]["action"]["preparationSeq"], 1)
+
+            reason = "recovery-prepare:1"
+            host._record_non_intent(consensus_checkpoint("anchor-test", "player1", 2, 2, reason))
+            host._record_non_intent(consensus_checkpoint("anchor-test", "player2", 3, 2, reason))
+            self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], 2)
+            self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "converged")
+            restored = self._host(Path(directory))
+            self.assertEqual(restored.last_agreed_checkpoint["boundarySeq"], 2)
+            self.assertEqual(
+                restored.anchor_preparation.status()["anchorPreparationStatus"], "converged"
+            )
+            for sample in host.clock_health.values():
+                sample["lastCommitSeq"] = 3
+                sample["receivedAt"] = time.monotonic()
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertTrue(host.anchor.readiness()["ready"])
+            self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "ready")
+
+    def test_matching_manual_exports_open_a_paused_tip_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.next_seq = 5
+            host.clock_pause_acknowledged = True
+            host._record_non_intent(
+                consensus_checkpoint("anchor-test", "player1", 1, 4, "manual-ui")
+            )
+            self.assertEqual(host.checkpoint_consensus[4]["status"], "pending")
+            host._record_non_intent(
+                consensus_checkpoint("anchor-test", "player2", 2, 4, "manual-ui")
+            )
+            self.assertEqual(host.checkpoint_consensus[4]["status"], "complete")
+            self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], 4)
+
+
+class AnchorRequestStoreTests(unittest.TestCase):
+    def test_client_receipt_uses_persistent_negative_sequence_and_acknowledges(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bridge = GameBridge(root / "client", "anchor-io", "player2")
+            store = AnchorRequestStore(bridge)
+            save = root / "world.sav"
+            save.write_bytes(b"world-at-boundary")
+            request_id = "a" * 32
+            request = {
+                "schemaVersion": 1, "session": "anchor-io", "peer": "player2",
+                "requestId": request_id, "boundarySeq": 9,
+                "coreDigest": "core-9", "convergenceKey": "key-9",
+                "savePath": str(save), "savedAtUnix": 1717171717,
+            }
+            atomic_write(
+                store.requests / f"{request_id}.json",
+                (json.dumps(request) + "\n").encode("utf-8"),
+            )
+            state = validate_anchor_state(anchor_state_message(
+                "anchor-io", "player1", {
+                    "ready": True, "boundarySeq": 9, "coreDigest": "core-9",
+                    "convergenceKey": "key-9", "reasons": [],
+                },
+            ))
+            first = list(store.client_intents(state))
+            second = list(store.client_intents(state))
+            self.assertEqual(len(first), 1)
+            self.assertEqual(first, second)
+            self.assertLess(first[0]["local_seq"], 0)
+            self.assertEqual(
+                first[0]["payload"]["action"]["saveSha256"],
+                hashlib.sha256(save.read_bytes()).hexdigest(),
+            )
+            self.assertTrue(store.record_receipt(first[0]["local_seq"], True, None))
+            self.assertEqual(list(store.client_intents(state)), [])
+            self.assertEqual(store.status()["localAnchorsFiled"], [9])
+
+    def test_client_refuses_request_for_another_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bridge = GameBridge(root / "client", "anchor-io", "player2")
+            store = AnchorRequestStore(bridge)
+            save = root / "world.sav"
+            save.write_bytes(b"world")
+            request = {
+                "schemaVersion": 1, "session": "anchor-io", "peer": "player2",
+                "requestId": "b" * 32, "boundarySeq": 8,
+                "coreDigest": "core-8", "convergenceKey": "key-8",
+                "savePath": str(save), "savedAtUnix": 1,
+            }
+            atomic_write(
+                store.requests / ("b" * 32 + ".json"),
+                (json.dumps(request) + "\n").encode("utf-8"),
+            )
+            state = {
+                "ready": True, "boundarySeq": 9, "coreDigest": "core-9",
+                "convergenceKey": "key-9", "reasons": [],
+            }
+            self.assertEqual(list(store.client_intents(state)), [])
+
+
+class HostLocalSequenceTests(unittest.TestCase):
+    @staticmethod
+    def _intent(session: str, local_seq: int, action: dict) -> dict:
+        return sign({
+            "protocol": 1,
+            "session": session,
+            "peer": "player1",
+            "local_seq": local_seq,
+            "tick": 0,
+            "kind": "intent",
+            "payload": {"action": action},
+        })
+
+    @staticmethod
+    def _host_action(freeze: bool) -> dict:
+        return {"type": "world.freeze", "freeze": freeze}
+
+    def test_host_intents_use_a_restart_stable_negative_sequence_namespace(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bridge = GameBridge(root / "host", "host-sequence-test", "player1")
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, audit, require_connected_peers=False
+            )
+            game = host._commit(self._intent(
+                "host-sequence-test", 1_000_000_000,
+                {"type": "world.freeze", "freeze": True},
+            ))
+            synthetic = host.emit_local_intent(self._host_action(False))
+            self.assertEqual(game["origin_local_seq"], 1_000_000_000)
+            self.assertLess(synthetic["origin_local_seq"], 0)
+            self.assertNotEqual(game["origin_local_seq"], synthetic["origin_local_seq"])
+
+            restored = CommitHost(
+                GameBridge(root / "host", "host-sequence-test", "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            next_synthetic = restored.emit_local_intent(self._host_action(True))
+            self.assertLess(
+                next_synthetic["origin_local_seq"], synthetic["origin_local_seq"]
+            )
+            self.assertTrue(next_synthetic["payload"]["action"]["freeze"])
+
 
 class RecoveryArchiveTests(unittest.TestCase):
     def test_native_save_archive_is_signed_hashed_and_tamper_evident(self) -> None:
@@ -2091,8 +2534,122 @@ class RecoveryArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "already exists"):
                 write_recovery_archive(save, output, "manual", "player2")
 
+    def test_receipt_bound_restore_archive_matches_its_peer_save_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save = root / "player1.sav"
+            save.write_bytes(b"player1-boundary-9")
+            Path(str(save) + ".lua").write_text("return {}", encoding="utf-8")
+            sha = hashlib.sha256(save.read_bytes()).hexdigest()
+            peer_save = {
+                "saveSha256": sha, "savedAtUnix": 1000, "receiptCommitSeq": 10,
+                "boundarySeq": 9, "coreDigest": "core-9", "convergenceKey": "key-9",
+            }
+            plan = sign({
+                "format": "tpf2mp-restore-plan", "version": 2, "protocol": 1,
+                "session": "archive-test", "resumeSession": "archive-test-r9",
+                "generatedAtUtc": "2026-08-06T00:00:00+00:00", "boundarySeq": 9,
+                "convergenceKey": "key-9", "coreDigest": "core-9",
+                "requiredPeers": ["player1", "player2"],
+                "peerSaves": {
+                    "player1": peer_save,
+                    "player2": {**peer_save, "saveSha256": "b" * 64, "receiptCommitSeq": 11},
+                },
+                "steps": ["restore both peers"],
+            })
+            output = root / "receipt-bound"
+            manifest = write_recovery_archive(
+                save, output, "archive-test", "player1", plan
+            )
+            verified = verify_recovery_archive(manifest, output)
+            self.assertEqual(
+                verified["association"], "coordinated-receipt-bound-restore-save"
+            )
+            self.assertEqual(verified["restoreAttestation"]["saveSha256"], sha)
+            self.assertEqual(verified["checkpointAnchor"]["boundarySeq"], 9)
+
+            other = root / "other.sav"
+            other.write_bytes(b"wrong-save")
+            Path(str(other) + ".lua").write_text("return {}", encoding="utf-8")
+            refused = root / "refused"
+            with self.assertRaisesRegex(ProtocolError, "does not match"):
+                write_recovery_archive(
+                    other, refused, "archive-test", "player1", plan
+                )
+            self.assertFalse(refused.exists())
+
 
 class NetworkIntegrationTests(unittest.TestCase):
+    def test_receipt_bound_restore_blocks_gameplay_until_fresh_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session, source, boundary = "restore-source-r9", "restore-source", 9
+            probe = consensus_checkpoint(session, "player1", 1, 1, "probe")
+            core = probe["payload"]["coreDigest"]
+            save = {
+                "saveSha256": "a" * 64, "savedAtUnix": 100,
+                "receiptCommitSeq": 10, "boundarySeq": boundary,
+                "coreDigest": core, "convergenceKey": "1234abcd",
+            }
+            plan = sign({
+                "format": "tpf2mp-restore-plan", "version": 2, "protocol": 1,
+                "session": source, "resumeSession": session,
+                "generatedAtUtc": "2026-08-06T00:00:00+00:00",
+                "boundarySeq": boundary, "convergenceKey": "1234abcd",
+                "coreDigest": core, "requiredPeers": ["player1", "player2"],
+                "peerSaves": {
+                    "player1": save,
+                    "player2": {**save, "saveSha256": "b" * 64, "receiptCommitSeq": 11},
+                },
+                "steps": ["load each attested save"],
+            })
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False, restore_plan=plan,
+            )
+            with self.assertRaisesRegex(ProtocolError, "restore handshake"):
+                host._commit(sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 1, "tick": 0, "kind": "intent",
+                    "payload": {"action": {"type": "world.freeze", "freeze": True}},
+                }))
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 2, "tick": 0, "kind": "intent",
+                "payload": {"action": host.restore_session.expected_action()},
+            }))
+            self.assertEqual(commit["seq"], 1)
+            reason = f"restore-resume:{plan['checksum']}"
+            host._record_non_intent(consensus_checkpoint(session, "player1", 3, 1, reason))
+            host._record_non_intent(consensus_checkpoint(session, "player2", 4, 1, reason))
+            self.assertEqual(host.restore_session.state, "complete")
+            self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], 1)
+
+    def test_generic_ordered_action_rejection_faults_instead_of_hanging_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "authored-rejection"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "world.freeze", "freeze": True}},
+            }))
+            host._record_non_intent(proposal_prepare_ack(
+                "player2", 2, int(commit["seq"]), success=False,
+                error="native projection failed",
+            ))
+
+            self.assertIn("ordered-action-rejected:1:player2", host.session_fault)
+            fault = host.commits[2]["payload"]["action"]
+            self.assertEqual(fault["type"], "network.sync_fault")
+            self.assertEqual(fault["scope"], "authored")
+
     def test_rejected_intent_emits_ordered_replayable_release_control(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -2294,6 +2851,55 @@ class NetworkIntegrationTests(unittest.TestCase):
             host._maybe_adjust_clock_locked(sampled_at)
             self.assertAlmostEqual(host.clock_game_time_skew, 3.0, places=6)
             self.assertEqual(host.commits[1]["payload"]["action"]["type"], "clock.rendezvous")
+
+    def test_clock_skew_ignores_samples_from_adjacent_authority_generations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "clock-generation-window", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host.clock_generation = 8
+            host.clock_last_adjustment = sampled_at - 10.0
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": sampled_at, "engineTick": 19815,
+                    "lastCommitSeq": 14, "gameTime": 3124.8,
+                    "observedSpeed": 1, "effectiveSpeed": 1,
+                    "generation": 8, "tickRate": 60.0, "gameRate": 12.0,
+                },
+                "player2": {
+                    "receivedAt": sampled_at - 0.05, "engineTick": 21376,
+                    "lastCommitSeq": 13, "gameTime": 3122.2,
+                    "observedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 7, "tickRate": 60.0, "gameRate": 0.0,
+                },
+            }
+
+            host._maybe_adjust_clock_locked(sampled_at)
+
+            self.assertIsNone(host.clock_game_time_skew)
+            self.assertFalse(host.clock_skew_samples_comparable)
+            self.assertGreater(host.clock_projected_game_time_skew, 2.0)
+            self.assertEqual(host.commits, {},
+                "a half-applied clock generation caused a false resync")
+
+            host.clock_health["player2"].update({
+                "receivedAt": sampled_at,
+                "lastCommitSeq": 14,
+                "gameTime": 3124.8,
+                "observedSpeed": 1,
+                "effectiveSpeed": 1,
+                "generation": 8,
+                "gameRate": 12.0,
+            })
+            host._maybe_adjust_clock_locked(sampled_at)
+            self.assertAlmostEqual(host.clock_game_time_skew, 0.0, places=6)
+            self.assertTrue(host.clock_skew_samples_comparable)
+            self.assertEqual(host.commits, {})
 
     def test_recovered_clock_ack_timeout_is_not_left_as_current_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -3678,6 +4284,89 @@ class NetworkIntegrationTests(unittest.TestCase):
             host.stop.set()
             client_thread.join(2)
             host_thread.join(2)
+
+    def test_client_save_request_becomes_an_ordered_peer_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "socket-anchor"
+            host_bridge = GameBridge(root / "host", session, "player1")
+            client_bridge = GameBridge(root / "client", session, "player2")
+            port = available_port()
+            host = CommitHost(host_bridge, "127.0.0.1", port, root / "audit.ndjson", "same")
+            client = CommitClient(client_bridge, "127.0.0.1", port, "same")
+            host_thread = threading.Thread(
+                target=host.run, kwargs={"poll_seconds": 0.01}, daemon=True
+            )
+            client_thread = threading.Thread(
+                target=client.run,
+                kwargs={"poll_seconds": 0.01, "retry_seconds": 0.05}, daemon=True,
+            )
+            host_thread.start()
+            client_thread.start()
+            try:
+                self.assertTrue(wait_for(lambda: "player2" in host.peers))
+                boundary = 4
+                host.commits[boundary] = sign({
+                    "protocol": 1, "session": session, "seq": boundary,
+                    "kind": "control", "origin_peer": "player1", "tick": 0,
+                    "payload": {"action": {
+                        "type": "network.checkpoint_outcome", "boundarySeq": boundary,
+                        "success": True, "convergenceKey": "key-4",
+                        "coreDigest": "core-4",
+                    }},
+                })
+                host.next_seq = boundary + 1
+                host.last_agreed_checkpoint = {
+                    "boundarySeq": boundary, "convergenceKey": "key-4",
+                    "coreDigest": "core-4",
+                }
+                host.clock_pause_acknowledged = True
+                now = time.monotonic()
+                for peer in host.required_peers:
+                    host.clock_health[peer] = {
+                        "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                        "generation": host.clock_pause_acknowledged_generation,
+                        "engineTick": 1, "lastCommitSeq": boundary,
+                        "proposalPending": False, "localWorkPending": False,
+                        "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                        "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                        "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                    }
+                host._write_status()
+                self.assertTrue(wait_for(
+                    lambda: client.anchor_state is not None
+                    and client.anchor_state.get("ready") is True
+                ))
+
+                save = root / "player2.sav"
+                save.write_bytes(b"client-world-at-four")
+                request_id = "c" * 32
+                request = {
+                    "schemaVersion": 1, "session": session, "peer": "player2",
+                    "requestId": request_id, "boundarySeq": boundary,
+                    "coreDigest": "core-4", "convergenceKey": "key-4",
+                    "savePath": str(save), "savedAtUnix": 1717171717,
+                }
+                atomic_write(
+                    client.anchor_requests.requests / f"{request_id}.json",
+                    (json.dumps(request) + "\n").encode("utf-8"),
+                )
+                self.assertTrue(wait_for(
+                    lambda: client.anchor_requests.status()["localAnchorsFiled"] == [4]
+                ))
+                peer_receipts = [
+                    message for message in host.commits.values()
+                    if message.get("origin_peer") == "player2"
+                    and (message.get("payload") or {}).get("action", {}).get("type")
+                    == "recovery.save_receipt"
+                ]
+                self.assertEqual(len(peer_receipts), 1)
+                self.assertLess(peer_receipts[0]["origin_local_seq"], 0)
+            finally:
+                client.stop.set()
+                host.stop.set()
+                client_thread.join(2)
+                host_thread.join(2)
 
     def test_two_bridge_physical_completions_broadcast_ordered_control(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

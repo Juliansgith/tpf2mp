@@ -25,6 +25,7 @@ function data()
   local startClicked = false
   local lastError = nil
   local treeDumped = false
+  local newGameTreeDumped = false
   local loadTreeDumped = false
   local networkPumpCount = 0
   local networkPumpError = nil
@@ -87,7 +88,7 @@ function data()
   end
 
   local function subtreeHasText(value, wanted, seen, depth, budget)
-    if not value or seen[value] or depth > 12 or budget.remaining <= 0 then return false end
+    if not value or seen[value] or depth > 24 or budget.remaining <= 0 then return false end
     seen[value] = true
     budget.remaining = budget.remaining - 1
     if normalized(safeStringCall(value, "getText")) == wanted then return true end
@@ -110,11 +111,11 @@ function data()
   end
 
   local function findClickableByText(value, wanted, seen, depth, budget)
-    if not value or seen[value] or depth > 16 or budget.remaining <= 0 then return nil end
+    if not value or seen[value] or depth > 32 or budget.remaining <= 0 then return nil end
     seen[value] = true
     budget.remaining = budget.remaining - 1
     if type(value.click) == "function"
-      and subtreeHasText(value, wanted, {}, 0, { remaining = 512 }) then return value end
+      and subtreeHasText(value, wanted, {}, 0, { remaining = 2048 }) then return value end
     local content = childContent(value)
     if content and content ~= value then
       local found = findClickableByText(content, wanted, seen, depth + 1, budget)
@@ -172,7 +173,7 @@ function data()
   end
 
   local function findInTree(value, wanted, seen, depth, budget)
-    if not value or budget.remaining <= 0 or depth > 16 then return nil end
+    if not value or budget.remaining <= 0 or depth > 32 then return nil end
     if seen[value] then return nil end
     seen[value] = true
     budget.remaining = budget.remaining - 1
@@ -242,16 +243,20 @@ function data()
     if direct then return direct end
     local rootItem = directItem("menuUI")
     if not rootItem then return nil end
-    local found = findInTree(rootItem, id, {}, 0, { remaining = 2048 })
+    local found = findInTree(rootItem, id, {}, 0, { remaining = 16384 })
     if not found then
       local labels = {
-        ["create-new-game"] = "free game",
-        ["load-game"] = "load game",
-        ["start-game-button"] = "start",
-        ["tpf2mp.mainMenuEntry"] = "multiplayer",
+        ["create-new-game"] = { "free game" },
+        ["load-game"] = { "load game" },
+        ["next-game-button"] = { "next" },
+        ["start-game-button"] = { "start" },
+        ["tpf2mp.mainMenuEntry"] = { "multiplayer" },
       }
       if labels[id] then
-        found = findClickableByText(rootItem, labels[id], {}, 0, { remaining = 2048 })
+        for _, label in ipairs(labels[id]) do
+          found = findClickableByText(rootItem, label, {}, 0, { remaining = 16384 })
+          if found then break end
+        end
       end
     end
     return found
@@ -260,9 +265,9 @@ function data()
   local function dumpMenuTree(fileName)
     local file = io.open(root .. "/launcher/" .. fileName, "wb")
     if not file then return end
-    local seen, budget = {}, { remaining = 4096 }
+    local seen, budget = {}, { remaining = 16384 }
     local function visit(value, path, depth)
-      if not value or seen[value] or budget.remaining <= 0 or depth > 20 then return end
+      if not value or seen[value] or budget.remaining <= 0 or depth > 32 then return end
       seen[value] = true
       budget.remaining = budget.remaining - 1
       local id = safeId(value)
@@ -333,6 +338,7 @@ function data()
       createNewGame = tostring(clickable("create-new-game")),
       loadGame = tostring(clickable("load-game")),
       startGame = tostring(clickable("start-game-button")),
+      nextGame = tostring(clickable("next-game-button")),
       basicSettings = tostring(item("mainMenu.loadGame.basicSettings") ~= nil),
       expectedSave = quote(expectedSave),
       requireMenuEntry = tostring(requireMenuEntry),
@@ -340,6 +346,7 @@ function data()
       createNewGameRect = rectJson(item("create-new-game")),
       loadGameRect = rectJson(item("load-game")),
       startGameRect = rectJson(item("start-game-button")),
+      nextGameRect = rectJson(item("next-game-button")),
       multiplayerRect = rectJson(item("tpf2mp.mainMenuEntry")),
       expectedSaveRect = rectJson(expectedSaveItem()),
       menuRect = rectJson(directItem("menuUI")),
@@ -357,6 +364,7 @@ function data()
       '"components":{"createNewGame":' .. fields.createNewGame
         .. ',"loadGame":' .. fields.loadGame
         .. ',"startGame":' .. fields.startGame
+        .. ',"nextGame":' .. fields.nextGame
          .. ',"basicSettings":' .. fields.basicSettings
          .. ',"expectedSave":' .. fields.expectedSave
          .. ',"requireMenuEntry":' .. fields.requireMenuEntry
@@ -364,6 +372,7 @@ function data()
         .. ',"createNewGameRect":' .. fields.createNewGameRect
         .. ',"loadGameRect":' .. fields.loadGameRect
         .. ',"startGameRect":' .. fields.startGameRect
+        .. ',"nextGameRect":' .. fields.nextGameRect
          .. ',"multiplayerRect":' .. fields.multiplayerRect
         .. ',"expectedSaveRect":' .. fields.expectedSaveRect
         .. ',"menuRect":' .. fields.menuRect .. '}',
@@ -564,6 +573,11 @@ function data()
         if not treeDumped and item("create-new-game") then
           treeDumped = true
           pcall(dumpMenuTree, "menu_tree.txt")
+        end
+        if treeDumped and not newGameTreeDumped and normalized(expectedSave) == ""
+          and not item("create-new-game") then
+          newGameTreeDumped = true
+          pcall(dumpMenuTree, "new_game_tree.txt")
         end
         if not loadTreeDumped and item("start-game-button") then
           loadTreeDumped = true

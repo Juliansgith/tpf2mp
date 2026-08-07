@@ -1,9 +1,9 @@
 # Physical town development, as a measurable experiment
 
 Date: 2026-08-06 (Europe/Amsterdam)  
-Scope: towns can now gain buildings as a consequence of the service they
-receive. Shipped **off by default**, because whether native development is
-deterministic enough to keep is exactly what this slice is built to find out.
+Scope: towns can gain physical buildings as a consequence of the service they
+receive. The exact two-process determinism experiment now passes; the option
+remains **off by default** until growth pacing and appearance are playtested.
 
 ## Why this, and why as an experiment
 
@@ -44,25 +44,23 @@ research.
    already live in the structural snapshot. If the two worlds diverge, the
    existing structural digest says so.
 
-## What each outcome means
+## Experiment outcome
 
-- **Digests converge** — native development is deterministic under identical
-  ordered calls, visible town growth is nearly free, and the feature can be
-  switched on by default.
-- **Digests diverge** — native lot choice is per-peer random. That is a real
-  finding, arrives on the first attempt, and makes authored placement through
-  the schema-7 construction pipeline the plan. The building data is already
-  portable there; only lot selection would need writing.
+The convergent branch won. In session
+`round3-town-construction-pos-20260807`, two exact Build 35924 processes began
+from the same physical town state and applied three rounds of eight ordered
+development calls. Both peers selected the same local candidate set, produced
+the same town after every round, and converged the dedicated development and
+final structural checkpoints.
 
-Either way the answer costs one session instead of a research project.
+## Strict, atomic, and bounded
 
-## Fail-soft and bounded
-
-An unavailable `developTown` factory or an unmapped town is recorded in
-`probes.townDevelopment.errors` and skipped — a growth experiment must never
-fault an otherwise healthy session. The protocol validator bounds the batch
-strictly: canonical `town:` ids only, 1-8 calls each, at most 512 towns, exact
-field set.
+The production network contract is fail-closed. Before the first native call,
+each peer resolves every canonical town through its local manifest. An
+unmapped town or native command error rejects the whole action; it is never
+reported as a partially successful batch. Lua and Python both require the
+exact field set, canonical `town:` ids only, integer call counts from 1 through
+8, and at most 512 towns.
 
 Native tags 19-22 remain ungated in the hook, as with the existing town
 commands. Acceptable for trusted sessions; listed as required before town
@@ -70,32 +68,62 @@ commands are adversary-safe.
 
 ## Tests
 
-`tests/run_lua_tests.lua` (68/68): points banking below the threshold and
+`tests/run_lua_tests.lua` (71/71): points banking below the threshold and
 carrying their remainder forward; a boom clamped to the per-settlement
 maximum with a bounded accumulator; identical inputs producing identical
 batches; one native call per due building with the right local id; and an
-unmapped town reported rather than silently developed.
-`tests/test_companion.py`: the `town.develop` validator rejects malformed
-ids, out-of-range counts, oversized batches, and unknown fields.
+unmapped town rejected before mutation. Runtime-module coverage also drives
+the extracted three-round validator through each development checkpoint, its
+native settle window, and the final ordered structural boundary.
 
-Full offline suite passes (79 Python, 68 Lua, boundaries, cross-language
-replay with an unchanged model digest — development changes no authored
-model state).
+The full offline suite passes: 71 Lua cases, 73 Lua/Python economy vectors,
+99 Python companion/consensus/restore tests, source-boundary checks, syntax,
+and long cross-language replay. Development points and placement cursors are
+authored, digest-projected, and replayed; native entity ids remain local.
 
 ## Also in this slice
 
-The auto-registration policy and the ordered-development handler both moved
-into `corridor_binding.lua`, because the game script crossed its source
-budget again. The gate keeps doing its job: growth policy, registration
-policy, and schedule policy now live together in the module that owns
-corridor behaviour, and the game script keeps only the dispatch.
+`corridor_binding.lua` owns growth calculation and deterministic candidate
+selection. `authored_followup_runtime.lua` owns strict ordered application and
+checkpoint export. `validation_town_development.lua` owns only the live
+three-round experiment. This keeps production policy, application, and test
+orchestration separate.
 
-## Live verification owed
+## Exact live result (2026-08-07)
 
-- Turn **Physical town growth (experimental)** on, run several settlements,
-  and compare structural digests across two peers. That is the whole
-  experiment.
-- Watch what the towns look like after a dozen buildings: spaghetti is
-  acceptable, a wall of towers on one tile is not.
-- Confirm growth pacing feels right; 400 carried passengers per building is a
-  first guess sitting beside the other constants.
+Evidence:
+`runtime/localhost-live/round3-town-construction-pos-20260807/run-status.json`.
+
+- Both peers passed (`52` host checks, `39` client checks).
+- Initial structure digest: `1ef990cc`; final: `2de890d4` on both peers.
+- Northfleet capacity moved identically from `633` to `657`, `687`, then
+  `704`; intermediate digests were `4f3b90dd`, `4c6390e2`, and `2de890d4`.
+- The final ordered structural boundary was sequence `22`; both peers ended at
+  core `b418e90f` and model `ca0582b4` with no consensus fault.
+- The run issued 24 physical development calls in total and proved an actual
+  structural change rather than merely identical no-ops.
+
+This closes the engine-determinism gate for the tested starting world. It does
+not yet settle product questions: watch several towns after dozens of
+buildings, tune the current 400-carried-passenger threshold, and perform the
+true two-computer latency/usability run before enabling growth by default.
+
+## Follow-up hardening (2026-08-06)
+
+The ordered handler is now strict and atomic at the script boundary. Lua and
+Python accept the same exact action shape: at most 512 canonical `town:` ids,
+integer call counts from 1 through 8, and no unknown fields. Before issuing any
+native command, Lua resolves every canonical town through the local manifest;
+one missing binding rejects the entire action, so peers cannot acknowledge a
+partially applied batch. A native command error also rejects the action.
+
+Successful development now opens a dedicated `town-development` checkpoint.
+That makes the experiment answerable at the moment growth occurs instead of at
+some later incidental checkpoint, and the companion reconstructs the pending
+tracker after restart. The environment-driven localhost launcher can enable
+the experiment without rebuilding the source mod.
+
+The original fail-soft prototype is superseded by the strict contract above.
+See `ADVERSARIAL_AUDIT_ROUND3_2026-08-06.md` for the static audit and
+`AUTOMATED_NATIVE_WORLD_AND_POLICY_EVIDENCE_2026-08-07.md` for the launcher and
+fresh-world policy controls used alongside this experiment.

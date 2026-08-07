@@ -41,13 +41,15 @@ M.MODES = {
     simulateCargoWeight = false,
     destinationRecomputationPermille = 250,
   },
-  -- Maximum performance and maximum determinism: no agents at all. Platforms
-  -- are empty; the model and its boards are the only passenger story.
+  -- Minimum safe crowd. Build 35924 fatally asserts while generating a town
+  -- building whose PersonCapacity component is removed by a literal zero.
+  -- Keep one capacity slot on every otherwise populated building instead;
+  -- disabling destination recomputation still makes this the cheapest mode.
   empty = {
     label = "empty",
-    capacityNumerator = 0,
-    capacityDenominator = 1,
-    capacityFloor = 0,
+    capacityNumerator = 1,
+    capacityDenominator = 1000000000,
+    capacityFloor = 1,
     pinLoadSpeed = true,
     simulateCargoWeight = false,
     destinationRecomputationPermille = 0,
@@ -139,14 +141,37 @@ function M.applyToWorld(worldState, policy, deps)
   return outcome
 end
 
--- Applies the configured policy at match initialisation and records the
--- outcome as a probe, so one live match answers whether runtime scaling
--- works on this build instead of a separate investigation session.
+-- Records the configured policy at match initialisation without mutating an
+-- already-running town.  The live Build 35924 experiment on 2026-08-06 proved
+-- that setTownInfo is not a capacity-scaling surface: the host accepted the
+-- command but read back unchanged capacities.  (The client's simultaneous
+-- native assertion was later isolated to saved-company ownership projection.)
+-- The loadConstruction modifier remains the supported path for freshly
+-- loaded/generated town buildings.
 function M.applyConfiguredPolicy(state, cfg, deps, log)
   local policy = M.mode(cfg.agentMode)
-  local applied, outcome = pcall(M.applyToWorld, state.world, policy, deps)
-  state.probes.agentPolicy = applied and outcome
-    or { mode = policy.label, errors = { tostring(outcome) } }
+  local outcome = {
+    mode = policy.label,
+    fingerprint = M.fingerprint(policy),
+    towns = 0, applied = 0, verified = 0, unchanged = 0, errors = {},
+    constructionScalingActive = policy.capacityDenominator > 1
+      or policy.capacityNumerator ~= 1,
+    runtimeScalingWorks = false,
+  }
+  local listed, towns = pcall(deps.listTowns)
+  if listed and type(towns) == "table" then
+    outcome.towns = #towns
+  elseif not listed then
+    outcome.errors[#outcome.errors + 1] = "town enumeration failed: " .. tostring(towns)
+  end
+  if outcome.constructionScalingActive then
+    outcome.skipped = "runtime setTownInfo scaling is unsafe on Build 35924; "
+      .. "loadConstruction applies the policy while town buildings load"
+  else
+    outcome.skipped = "policy keeps the vanilla population"
+  end
+  if state.world then state.world.agentPolicy = util.deepCopy(outcome) end
+  state.probes.agentPolicy = outcome
   state.probes.agentPolicy.configuredFingerprint = cfg.agentPolicyFingerprint
   if log then
     log("agent-policy", {

@@ -971,6 +971,131 @@ assert(vanillaAssign.name == "intent" and vanillaAssign.param.type == "operation
   and vanillaAssign.param.capture.stopIndex == -1,
   "suppressed stock automatic-stop SetLine was not converted into vehicle.assign")
 
+-- A canonical replay arrives after the issuing builder's original command was
+-- suppressed.  If that replay replaces a signalled edge, Build 35924 can keep
+-- emitting proposal userdata backed by the removed edge until the replay's
+-- callback/wallet sample has settled.  The origin must not dereference those
+-- stale previews, and a second click in that short interval must fail visibly.
+local proposalCodec = require "tpf2_mp/proposal_codec"
+local replayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
+local eventRuntimeModule = require "tpf2_mp/gui_event_runtime"
+local replayGui = require("tpf2_mp/gui_state").new()
+replayGui.frames = 500
+local replayState = {
+  networkMode = "network",
+  world = { proposals = { byId = {
+    ["gui-replay-quarantine"] = {
+      proposalId = "gui-replay-quarantine",
+      status = "queued",
+      transaction = { schemaVersion = proposalCodec.SCHEMA_VERSION, digest = "quarantine" },
+      localRefs = {},
+      nativeOwnerPlayerId = 100,
+      issuerPlayerId = 100,
+    },
+  } } },
+}
+local originalMaterialise = proposalCodec.materialise
+local originalBuildFactory = api.cmd.make.buildProposal
+local originalAuthorizeBuild = rawget(_G, "tpf2mp_native_authorize_build")
+proposalCodec.materialise = function() return { replay = true } end
+api.cmd.make.buildProposal = function(proposal)
+  return { kind = "build-proposal", proposal = proposal }
+end
+tpf2mp_native_authorize_build = function() return true end
+local replayRuntime = replayRuntimeModule.new({
+  getState = function() return replayState end,
+  gui = replayGui,
+  collectNumeric = function() return {} end,
+  safeField = function(value, key) return type(value) == "table" and value[key] or nil end,
+  eventShape = function() return {} end,
+  componentEntitySet = function() return {} end,
+  balanceOf = function() return 10000000 end,
+  queueAction = function() end,
+})
+assert(replayRuntime.processProposalQueue() == true
+    and replayGui.proposalReplayQuarantine
+    and replayGui.proposalReplayQuarantine.proposalId == "gui-replay-quarantine",
+  "canonical BuildProposal replay did not arm its stale-builder quarantine")
+
+local quarantineLogs = {}
+local quarantineRuntime = eventRuntimeModule.new({
+  getState = function() return replayState end,
+  gui = replayGui,
+  config = function() return { networkAutoValidate = false } end,
+  queueAction = function() error("quarantined builder event escaped into the action queue") end,
+  renderGui = function() end,
+  ensureWindow = function() end,
+  installMultiplayerEntryPoints = function() end,
+  enforceProxyGuiLocks = function() end,
+  componentEntitySet = function() return {} end,
+  balanceOf = function() return 10000000 end,
+  nativeHookStatus = function() return { available = true, gates = { buildProposal = nativeBuildGate } } end,
+  markNativeContext = function() end,
+  configureNativeAuthority = function() return true end,
+  freezeNetworkGame = function() return true end,
+  freezeNetworkCalendar = function() return true end,
+  diagnosticLog = function(name, details)
+    quarantineLogs[#quarantineLogs + 1] = { name = name, details = details }
+  end,
+  projectNetworkSpeedIndicator = function() end,
+})
+local stalePreviewTouched = false
+local stalePreview = setmetatable({}, {
+  __index = function()
+    stalePreviewTouched = true
+    error("stale native proposal userdata was dereferenced")
+  end,
+})
+-- Lua 5.1 does not honour __pairs, so intercept iteration explicitly as well
+-- as indexing. This makes the regression prove that the event envelope itself
+-- is never traversed, rather than only proving that no named field is read.
+local originalPairs = pairs
+local originalIpairs = ipairs
+pairs = function(value)
+  if rawequal(value, stalePreview) then
+    stalePreviewTouched = true
+    error("stale native proposal userdata was traversed")
+  end
+  return originalPairs(value)
+end
+ipairs = function(value)
+  if rawequal(value, stalePreview) then
+    stalePreviewTouched = true
+    error("stale native proposal userdata was traversed")
+  end
+  return originalIpairs(value)
+end
+assert(quarantineRuntime.handleEvent(
+    "streetTerminalBuilder", "builder.proposalCreate", stalePreview) == nil
+    and stalePreviewTouched == false
+    and replayGui.nativeBuildCapture.replayPreviewsQuarantined == 1
+    and quarantineLogs[1].name == "proposal-replay-preview-quarantined",
+  "in-flight signal-builder preview was not quarantined without dereferencing its payload")
+local rejectedReplayClick = quarantineRuntime.handleEvent(
+  "streetTerminalBuilder", "builder.apply", stalePreview)
+pairs = originalPairs
+ipairs = originalIpairs
+assert(type(rejectedReplayClick) == "table"
+    and rejectedReplayClick.errorMessages[1]:find("still synchronising", 1, true)
+    and stalePreviewTouched == false
+    and replayGui.nativeBuildCapture.replayAppliesRejected == 1,
+  "a second builder click crossed the canonical replay quarantine")
+
+-- The guard ends only after proposal.result crosses back to engine state.
+replayGui.pendingProposalCaptures = {}
+replayGui.proposalResults = {{
+  proposalId = "gui-replay-quarantine", success = true,
+}}
+local resultCountBeforeQuarantineRelease = #sentEvents
+assert(replayRuntime.processProposalQueue() == true
+    and replayGui.proposalReplayQuarantine == nil
+    and #sentEvents == resultCountBeforeQuarantineRelease + 1
+    and sentEvents[#sentEvents].name == "proposal.result",
+  "proposal replay quarantine did not release at the engine result boundary")
+proposalCodec.materialise = originalMaterialise
+api.cmd.make.buildProposal = originalBuildFactory
+rawset(_G, "tpf2mp_native_authorize_build", originalAuthorizeBuild)
+
 assert(enabled["finances.borrow"] == false and enabled["finances.repay"] == false, "finance controls were not disabled")
 
 print("PASS GUI/native commit bridge, strict rival proposal/entity veto, shared-state refresh, and proxy finance locks")

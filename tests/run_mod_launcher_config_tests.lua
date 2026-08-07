@@ -36,5 +36,7 @@ assert(cfg.startNetwork == true and cfg.launcherManaged == true,
   "launcher did not activate launcher-managed network mode")
 assert(cfg.startingCash == 50000000,
   "explicit launcher research budget did not override the mod dropdown")
+assert(cfg.agentMode == "vanilla", "launcher agent policy did not override the mod dropdown")
+assert(cfg.townDevelopment == true, "launcher town-development policy was not applied")
 
 print("PASS short-lived launcher profile configures peer/session/bridge/network mode")

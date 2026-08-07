@@ -69,7 +69,9 @@ try {
         'sessionId=launcher-test',
         'peerId=player2',
         'bridgeDir=C:/bridge/launcher-test/player2',
-        'startNetwork=true'
+        'startNetwork=true',
+        'agentMode=vanilla',
+        'townDevelopment=true'
     ), [Text.UTF8Encoding]::new($false))
     $previousTemp = $env:TEMP
     $previousStartingCash = $env:TPF2MP_STARTING_CASH
@@ -127,7 +129,57 @@ try {
     if ($emptyPeersJson -ne '{"connectedPeers":[]}') { throw 'Launcher status empty peer list is not a JSON array.' }
     Write-Host 'PASS launcher process identity boundaries and status array encoding'
 
+    $profileA = Write-Tpf2mpMatchContentProfile -Path (Join-Path $temporary 'profile-a.json') `
+        -AgentMode skeleton -TownDevelopment $false
+    $profileB = Write-Tpf2mpMatchContentProfile -Path (Join-Path $temporary 'profile-b.json') `
+        -AgentMode vanilla -TownDevelopment $false
+    if ((Get-Content -LiteralPath $profileA -Raw) -eq (Get-Content -LiteralPath $profileB -Raw)) {
+        throw 'Distinct agent policies produced the same match-content profile.'
+    }
+    $profileValue = Get-Content -LiteralPath $profileA -Raw | ConvertFrom-Json
+    if ($profileValue.agentMode -ne 'skeleton' -or $profileValue.townDevelopment -ne $false) {
+        throw 'Match-content profile did not preserve its peer-invariant settings.'
+    }
+    Write-Host 'PASS match-content profile binds agent and town-development policy'
+
     . (Join-Path $projectRoot 'tools\native_load_common.ps1')
+
+    $identitySaveRoot = Join-Path $temporary 'restore-player-identities'
+    New-Item -ItemType Directory -Force -Path $identitySaveRoot | Out-Null
+    $identitySaves = @{
+        player1 = Join-Path $identitySaveRoot 'player1.sav'
+        player2 = Join-Path $identitySaveRoot 'player2.sav'
+    }
+    foreach ($save in $identitySaves.Values) {
+        [IO.File]::WriteAllBytes($save, [byte[]](1))
+    }
+    [IO.File]::WriteAllText($identitySaves.player1 + '.lua', @'
+return { ["tpf2_mp.lua"] = { companies = {
+  ["company:1"] = {
+    playerId = 5743,
+  },
+  ["company:2"] = {
+    playerId = 9619,
+  },
+} } }
+'@, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($identitySaves.player2 + '.lua', @'
+return { ["tpf2_mp.lua"] = { companies = {
+  ["company:1"] = {
+    playerId = 9673,
+  },
+  ["company:2"] = {
+    playerId = 5743,
+  },
+} } }
+'@, [Text.UTF8Encoding]::new($false))
+    $peerIdentities = Get-Tpf2mpPeerStartingCompanyPlayerIds `
+        -Player1Save $identitySaves.player1 -Player2Save $identitySaves.player2
+    if ($peerIdentities.player1 -ne '5743,9619' -or $peerIdentities.player2 -ne '9673,5743' `
+        -or $peerIdentities.player1 -eq $peerIdentities.player2) {
+        throw 'Peer-local restore company-player identity preservation failed.'
+    }
+    Write-Host 'PASS peer-specific restore company-player identities remain local to each world'
 
     $statusBridge = Join-Path $temporary 'menu-status-reader'
     $statusLauncher = Join-Path $statusBridge 'launcher'

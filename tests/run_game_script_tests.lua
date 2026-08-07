@@ -10,6 +10,7 @@ local bridgeModule = require "tpf2_mp/bridge"
 
 local nextPlayer = 100
 local commands = {}
+local nativeGameSpeed = 1
 local buildGateEnables, commandGateEnables = 0, 0
 local buildGateEnabled, commandGateEnabled = false, false
 local authorizedCommandTags = {}
@@ -68,6 +69,7 @@ game = {
     getVehicles = function() return {} end,
     setTownCapacities = function() end,
     setTownDevelopmentActive = function() end,
+    getGameSpeed = function() return nativeGameSpeed end,
     getGameTime = function() return { time = 100 } end,
     getPlayerJournal = function() return { income = { _sum = 0 } } end,
   },
@@ -107,6 +109,7 @@ api = {
     },
     sendCommand = function(command, callback)
       commands[#commands + 1] = command
+      if command.kind == "speed" then nativeGameSpeed = command.speed end
       if callback then callback(command, true) end
     end,
   },
@@ -117,10 +120,21 @@ local script = assert(data())
 script.init()
 assert(buildGateEnables == 1 and commandGateEnables == 1,
   "network startup did not enable both native authority gates")
-assert(authorizedCommandTags[1] == "0" and commands[1].kind == "speed" and commands[1].speed == 0,
-  "network startup did not freeze the loaded game through an authorized tag-0 command")
-assert(authorizedCommandTags[2] == "1" and commands[2].kind == "calendar" and commands[2].speed == 0,
-  "network startup did not freeze the calendar through an authorized tag-1 command")
+assert(#authorizedCommandTags == 0 and #commands == 0,
+  "engine init issued a native clock command before ScriptSave equality")
+local startupState = script.save().world.networkClock.startupPause
+assert(startupState.requested == false and startupState.confirmed == false,
+  "engine init issued a native game-speed command before ScriptSave equality")
+script.update()
+startupState = script.save().world.networkClock.startupPause
+assert(authorizedCommandTags[1] == "0" and commands[1].kind == "speed"
+    and commands[1].speed == 0 and authorizedCommandTags[2] == "1"
+    and commands[2].kind == "calendar" and commands[2].speed == 0
+    and startupState.requested == true,
+  "post-init network update did not rearm both native clocks")
+script.update()
+assert(script.save().world.networkClock.startupPause.confirmed == true,
+  "second post-init network update did not confirm the native startup pause")
 
 script.handleEvent("test", "tpf2mp", "intent", { type = "match.initialise" })
 local queued = script.save()
@@ -151,8 +165,8 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 22,
-  "state schema was not migrated to the asset-root construction version")
+assert(initialized.version == 23,
+  "state schema was not migrated to the coordinated recovery/town-development version")
 assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
 
 local checkpointMessage

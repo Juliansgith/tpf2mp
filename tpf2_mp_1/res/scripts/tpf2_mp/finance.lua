@@ -61,6 +61,9 @@ function M.ensureNetworkAccounts(state)
   end
   if ledger.version == nil then ledger.version = defaults.version end
   if ledger.initialized == nil then ledger.initialized = false end
+  if ledger.bankruptCid ~= nil and type(ledger.bankruptCid) ~= "string" then
+    ledger.bankruptCid = nil
+  end
   ledger.accounts = ledger.accounts or {}
   ledger.nextEntrySeq = math.max(1, util.integer(ledger.nextEntrySeq, 1))
   ledger.entries = ledger.entries or {}
@@ -88,6 +91,7 @@ function M.initialiseNetworkAccounts(state, companyCids, startingCash, context)
   ledger.nextEntrySeq = 1
   ledger.entries = {}
   ledger.totalApplied = 0
+  ledger.bankruptCid = nil
   ledger.initializedContext = util.deepCopy(context or {})
   for _, companyCid in ipairs(companyCids or {}) do
     companyCid = tostring(companyCid)
@@ -121,11 +125,15 @@ function M.networkDigestView(state)
       creditLimit = util.integer(account.creditLimit, 0),
     }
   end
-  return {
+  local result = {
     version = util.integer(ledger.version, 1),
     initialized = ledger.initialized == true,
     accounts = accounts,
   }
+  if type(ledger.bankruptCid) == "string" and ledger.bankruptCid ~= "" then
+    result.bankruptCid = ledger.bankruptCid
+  end
+  return result
 end
 
 -- Competitive credit and insolvency.
@@ -215,6 +223,9 @@ function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, cont
       }
     end
   end
+  -- This verdict authors match termination. Keep it in the canonical ledger
+  -- rather than a diagnostic probe so checkpoint digests enforce agreement.
+  ledger.bankruptCid = bankruptCid
   return report, bankruptCid
 end
 
