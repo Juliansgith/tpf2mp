@@ -45,8 +45,9 @@ $budgets = [ordered]@{
     'native\src\native_command_codec.cpp' = 350
     'native\src\native_hook_status.cpp' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
-    'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2100
+    'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
 }
 
 foreach ($relative in $budgets.Keys) {
@@ -122,6 +123,17 @@ if (-not $worldSource.Contains('require "tpf2_mp/native_ownership_projection"'))
 }
 if (-not $worldSource.Contains('require "tpf2_mp/world_operational_telemetry"')) {
     throw 'World runtime no longer composes the operational telemetry boundary.'
+}
+if (-not $worldSource.Contains('require "tpf2_mp/world_town_reading"')) {
+    throw 'World runtime no longer composes the town reading boundary.'
+}
+# Town size for the economy must stay policy-independent. Native land-use
+# capacity is scaled by the crowd policy, so reading it into gravity demand
+# lets a cosmetic setting rescale the match economy.
+$corridorSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\corridor_binding.lua') -Raw
+if ($corridorSource -match 'local\s+capacity[AB]\s*=\s*townCapacity\(') {
+    throw 'Corridor binding reads presentation-scaled town capacity into gravity demand.'
 }
 $validationSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua') -Raw

@@ -4,6 +4,7 @@ local canonical = require "tpf2_mp/canonical"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
+local townReadingModule = require "tpf2_mp/world_town_reading"
 
 local M = {}
 
@@ -309,147 +310,18 @@ local function positionOfEntity(entity)
   return resolvedPositionOfEntity(entity) or { 0, 0 }
 end
 
--- Canonical fingerprints quantize positions to tenths of a metre. Native
--- DevelopTown instead takes an actual Vec2f world position, so keep that unit
--- conversion explicit at the dependency boundary.
-local function developmentPositionOfEntity(entity)
-  local position = resolvedPositionOfEntity(entity)
-  if not position then return nil end
-  return { position[1] / 10, position[2] / 10 }
-end
-
-local function developmentPositionOfTownBuilding(buildingId)
-  local direct = developmentPositionOfEntity(buildingId)
-  if direct then return direct, "direct" end
-  local getConstructionEntity = game and game.interface
-    and game.interface.getConstructionEntity or nil
-  if util.isCallable(getConstructionEntity) then
-    local ok, constructionId = pcall(getConstructionEntity, buildingId)
-    constructionId = ok and tonumber(constructionId) or nil
-    if constructionId and constructionId >= 0 then
-      local position = developmentPositionOfEntity(constructionId)
-      if position then return position, "construction" end
-    end
-  end
-  local entity = safeEntity(buildingId)
-  if entity then
-    for _, field in ipairs({ "construction", "constructionId" }) do
-      local constructionId = tonumber(entity[field])
-      if constructionId and constructionId >= 0 then
-        local position = developmentPositionOfEntity(constructionId)
-        if position then return position, "entity-" .. field end
-      end
-    end
-    for _, parcelId in ipairs(sortedNumbers(entity.parcels or {})) do
-      local position = developmentPositionOfEntity(parcelId)
-      if position then return position, "parcel" end
-      if util.isCallable(getConstructionEntity) then
-        local ok, constructionId = pcall(getConstructionEntity, parcelId)
-        constructionId = ok and tonumber(constructionId) or nil
-        position = constructionId and developmentPositionOfEntity(constructionId) or nil
-        if position then return position, "parcel-construction" end
-      end
-    end
-  end
-  return nil, "unresolved"
-end
-
-local function developmentPositionsOfTown(townId)
-  local positions, seen = {}, {}
-  local diagnostics = {
-    mapAvailable = false, mapType = "nil", lookupType = "nil",
-    buildingIds = 0, usedFallback = false,
-  }
-  local function addResolvedPosition(position)
-    if not position then return false end
-    local key = tostring(position[1]) .. ":" .. tostring(position[2])
-    if seen[key] then return false end
-    seen[key] = true
-    positions[#positions + 1] = position
-    return true
-  end
-  local function addPosition(entityId)
-    return addResolvedPosition(developmentPositionOfEntity(entityId))
-  end
-  local townBuildingSystem = api and api.engine and api.engine.system
-    and api.engine.system.townBuildingSystem or nil
-  local townMap
-  if townBuildingSystem and util.isCallable(townBuildingSystem.getTown2BuildingMap) then
-    local ok, value = pcall(townBuildingSystem.getTown2BuildingMap)
-    if ok and (type(value) == "table" or type(value) == "userdata") then
-      townMap = value
-      diagnostics.mapAvailable = true
-      diagnostics.mapType = type(value)
-    end
-  end
-  local buildings
-  if townMap then
-    local lookupOk, value = pcall(function() return townMap[townId] end)
-    if lookupOk then buildings = value end
-    -- Ordinary Lua maps may have numeric entity ids serialized as strings.
-    if buildings == nil and type(townMap) == "table" then
-      for key, candidate in pairs(townMap) do
-        if tonumber(key) == tonumber(townId) then buildings = candidate; break end
-      end
-    end
-  end
-  diagnostics.lookupType = type(buildings)
-  if type(buildings) == "userdata" then
-    local lengthOk, length = pcall(function() return #buildings end)
-    diagnostics.lookupLengthOk = lengthOk and true or false
-    diagnostics.lookupLength = lengthOk and tonumber(length) or nil
-    for _, index in ipairs({ 0, 1 }) do
-      local itemOk, item = pcall(function() return buildings[index] end)
-      diagnostics["probe" .. tostring(index)] = {
-        readable = itemOk and item ~= nil,
-        valueType = itemOk and type(item) or "error",
-        entityNumber = itemOk and entityNumber(item) or nil,
-      }
-    end
-  end
-  local buildingIds = sortedNumbers(buildings)
-  diagnostics.buildingIds = #buildingIds
-  for _, buildingId in ipairs(buildingIds) do addPosition(buildingId) end
-  -- Build 35924 returns town -> building sets as length-bearing userdata that
-  -- do not expose numeric indexing. The documented TOWN_BUILDING component
-  -- and vanilla getEntity().town field provide a stable read-only fallback.
-  diagnostics.componentScanAvailable = false
-  diagnostics.componentScanVisited = 0
-  diagnostics.componentScanMatched = 0
-  diagnostics.componentPositionSources = {}
-  local componentType = api and api.type and api.type.ComponentType
-    and api.type.ComponentType.TOWN_BUILDING or nil
-  local forEach = api and api.engine and api.engine.forEachEntityWithComponent or nil
-  if #positions == 0 and componentType and util.isCallable(forEach) then
-    diagnostics.componentScanAvailable = true
-    local scanOk, scanError = pcall(function()
-      forEach(function(entityId)
-        diagnostics.componentScanVisited = diagnostics.componentScanVisited + 1
-        local entity = safeEntity(entityId)
-        local entityTown = entity and entity.town or nil
-        if tonumber(entityTown) == tonumber(townId) then
-          diagnostics.componentScanMatched = diagnostics.componentScanMatched + 1
-          local position, source = developmentPositionOfTownBuilding(entityId)
-          diagnostics.componentPositionSources[source] =
-            (diagnostics.componentPositionSources[source] or 0) + 1
-          addResolvedPosition(position)
-        end
-      end, componentType)
-    end)
-    diagnostics.componentScanOk = scanOk and true or false
-    if not scanOk then diagnostics.componentScanError = tostring(scanError) end
-  end
-  if #positions == 0 then
-    local fallback = developmentPositionOfEntity(townId)
-    if fallback then positions[1] = fallback; diagnostics.usedFallback = true end
-  end
-  table.sort(positions, function(a, b)
-    if a[1] ~= b[1] then return a[1] < b[1] end
-    return a[2] < b[2]
-  end)
-  diagnostics.positions = #positions
-  return positions, diagnostics
-end
+-- Town structural reading -- building enumeration, development positions, and
+-- the policy-independent building count the economy uses as town size -- lives
+-- in its own module so the native town->building walk has exactly one home.
+local townReading = townReadingModule.new({
+  resolvedPositionOfEntity = resolvedPositionOfEntity,
+  safeEntity = safeEntity,
+  sortedNumbers = sortedNumbers,
+  entityNumber = entityNumber,
+})
+local developmentPositionOfEntity = townReading.developmentPositionOfEntity
+local townBuildingCount = townReading.townBuildingCount
+local developmentPositionsOfTown = townReading.developmentPositionsOfTown
 
 local function boundedComponentValues(values, maximum)
   local result = {}
@@ -1567,13 +1439,22 @@ local function stationGroupTown(groupId)
   return nil
 end
 
+-- Raw native land-use capacity. The crowd policy scales this at load, so it is
+-- telemetry and readback-probe input only and must never reach the economy;
+-- `townBuildingCount` is the policy-independent town size the model consumes.
+-- The third return reports whether the reading is real: the fallback keeps
+-- callers alive, but it makes every town identical, which would otherwise read
+-- as a uniformly flat world instead of a failed read.
 local function townCapacity(townId)
   local system = api.engine.system.townBuildingSystem
   if system and system.getLandUsePersonCapacities then
     local ok, capacities = pcall(system.getLandUsePersonCapacities, townId)
-    if ok and capacities then return util.integer((capacities[1] or 0) + (capacities[2] or 0) + (capacities[3] or 0), 0), capacities end
+    if ok and capacities then
+      return util.integer((capacities[1] or 0) + (capacities[2] or 0) + (capacities[3] or 0), 0),
+        capacities, true
+    end
   end
-  return 300, { 100, 100, 100 }
+  return 300, { 100, 100, 100 }, false
 end
 
 local function lineVehicleCount(lineId)
@@ -1601,6 +1482,7 @@ local corridorBinding = corridorBindingModule.new({
   lineStopGroups = lineStopGroups,
   stationGroupTown = stationGroupTown,
   townCapacity = townCapacity,
+  townBuildingCount = townBuildingCount,
   lineVehicleCount = lineVehicleCount,
   nameOf = nameOf,
   safeEntity = safeEntity,

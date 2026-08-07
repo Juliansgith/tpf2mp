@@ -1726,6 +1726,40 @@ test("gravity demand scales with town capacities over distance and clamps", func
   equal(world.gravityDemand(1000000, 1000000, 1000), world.SERVICE_FACTS.maxDemand)
 end)
 
+-- The crowd policy scales native building capacity at load, and gravity demand
+-- goes as the product of two town sizes -- so sizing towns by capacity let a
+-- cosmetic setting rescale the whole match economy by roughly its square. Town
+-- size is a building count instead, and this pins the property that makes a
+-- count safe: the capacity floor keeps every populated building populated
+-- under every policy, so the building set itself never moves.
+test("model town size is independent of the native crowd policy", function()
+  local buildings = { 640, 137, 40, 12, 3, 1 }
+  local counts, sums = {}, {}
+  for _, name in ipairs({ "vanilla", "skeleton", "empty" }) do
+    local policy = presentation.mode(name)
+    local populated, total = 0, 0
+    for _, capacity in ipairs(buildings) do
+      local scaled = presentation.scaledCapacity(capacity, policy)
+      if scaled > 0 then populated = populated + 1 end
+      total = total + scaled
+    end
+    counts[#counts + 1] = populated
+    sums[#sums + 1] = total
+  end
+  equal(counts[1], #buildings, "every populated building counts under vanilla")
+  equal(counts[2], counts[1], "skeleton must not change the building set")
+  equal(counts[3], counts[1], "minimum-safe must not change the building set")
+
+  -- The negative half, kept deliberately: this is precisely why summing native
+  -- capacity into the economy was wrong, and why the boundary check forbids it.
+  truthy(sums[1] > sums[2], "capacity sums do move with the crowd policy")
+  truthy(sums[2] > sums[3], "capacity sums keep moving with the crowd policy")
+  truthy(
+    world.gravityDemand(sums[1], sums[1], 5000)
+      > world.gravityDemand(sums[3], sums[3], 5000),
+    "capacity-sized demand would depend on a cosmetic setting")
+end)
+
 test("computed service facts derive journey, headway, and capacity from geometry", function()
   local previousGame, previousApi = game, api
   local positions = {

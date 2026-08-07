@@ -18,7 +18,23 @@ M.SERVICE_FACTS = {
   turnaroundSeconds = 240,        -- both terminals combined per cycle
   minHeadwaySeconds = 60,
   fallbackSeatsPerVehicle = 100,
-  gravityDivisor = 25,            -- demand = capA*capB / (divisor * km)
+  gravityDivisor = 25,            -- demand = sizeA*sizeB / (divisor * km)
+  -- Town size is a building count, not native capacity: the crowd policy
+  -- scales capacity at load, and demand goes as the product of two town sizes,
+  -- so reading capacity would let a cosmetic setting rescale the whole economy
+  -- by roughly the square of the policy factor. See world.townBuildingCount.
+  --
+  -- This converts a count back into the numeric range the divisor was tuned
+  -- against. The value is the measured vanilla capacity-per-construction
+  -- (3.38-3.77, AGENT_PRESENTATION_POLICY_2026-08-06) rounded to an integer.
+  -- Town buildings are a subset of constructions, so the true per-building
+  -- figure is somewhat higher; calibrate against a live vanilla world by
+  -- comparing this size to that world's reported town capacity.
+  nominalCapacityPerBuilding = 4,
+  -- An unsized town still has to trade. Documented rather than magic, and
+  -- deliberately mid-range so an unreadable town neither dominates nor
+  -- vanishes from a corridor.
+  fallbackTownBuildings = 50,
   minDemand = 50,
   maxDemand = 100000,
 }
@@ -256,6 +272,8 @@ function M.new(deps)
   local lineStopGroups = assert(deps.lineStopGroups, "lineStopGroups dependency is required")
   local stationGroupTown = assert(deps.stationGroupTown, "stationGroupTown dependency is required")
   local townCapacity = assert(deps.townCapacity, "townCapacity dependency is required")
+  local townBuildingCount = assert(
+    deps.townBuildingCount, "townBuildingCount dependency is required")
   local lineVehicleCount = assert(deps.lineVehicleCount, "lineVehicleCount dependency is required")
   local nameOf = assert(deps.nameOf, "nameOf dependency is required")
   local safeEntity = assert(deps.safeEntity, "safeEntity dependency is required")
@@ -263,6 +281,17 @@ function M.new(deps)
   local developmentPositionsOfTown = assert(
     deps.developmentPositionsOfTown, "developmentPositionsOfTown dependency is required")
   local resolveLocal = assert(deps.resolveLocal, "resolveLocal dependency is required")
+
+  -- The model's town size, in the same units the gravity divisor was tuned
+  -- against. Deliberately never native capacity: that is presentation-scaled.
+  local function townMarketSize(townId)
+    local facts = M.SERVICE_FACTS
+    local buildings = townBuildingCount(townId)
+    if type(buildings) ~= "number" or buildings <= 0 then
+      buildings = facts.fallbackTownBuildings
+    end
+    return buildings * facts.nominalCapacityPerBuilding
+  end
 
   local binding = {}
 
@@ -599,8 +628,8 @@ function M.new(deps)
     end
     local computed = binding.computedServiceFacts(groups, vehicles, consistFacts)
 
-    local capacityA = townCapacity(townA)
-    local capacityB = townCapacity(townB)
+    local capacityA = townMarketSize(townA)
+    local capacityB = townMarketSize(townB)
     -- The market belongs to the town pair, not to the registering line. A
     -- rival's detour must never deflate a shared corridor, so the pool is
     -- sized by the shortest route anyone has found between these towns and
