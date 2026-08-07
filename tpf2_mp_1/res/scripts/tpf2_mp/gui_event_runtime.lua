@@ -10,6 +10,7 @@ local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
 local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 local guiVehicleCaptureRuntimeModule = require "tpf2_mp/gui_vehicle_capture_runtime"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
+local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "GUI event runtime dependencies are required")
@@ -87,7 +88,6 @@ function M.new(deps)
     end
     return false
   end
-  
   local function operationalGuiMutation(id, name)
     local text = (tostring(id or "") .. "." .. tostring(name or "")):lower()
     local subject = false
@@ -613,80 +613,11 @@ function M.new(deps)
     return true
   end
   
-  gui.nativeLineCaptureInteger = function(value, low, high)
-    local number = tonumber(value)
-    if not number or number ~= math.floor(number) or number < low or number > high then return nil end
-    return number
-  end
-  
-  gui.decodeNativeLineName = function(value)
-    value = tostring(value or "")
-    if #value % 2 ~= 0 or #value > 320 or value:find("[^0-9a-fA-F]") then return nil end
-    local result = {}
-    for index = 1, #value, 2 do
-      local byte = tonumber(value:sub(index, index + 1), 16)
-      if not byte or byte == 0 then return nil end
-      result[#result + 1] = string.char(byte)
-    end
-    return table.concat(result)
-  end
-  
+  gui.nativeLineCaptureInteger = guiLineCommandCodec.integer
+  gui.decodeNativeLineName = guiLineCommandCodec.decodeName
   gui.decodeSuppressedNativeLineCommand = function(raw)
-    if type(raw) ~= "string" or #raw > 16384 then return nil, "invalid native line envelope" end
-    local fields, cursor = {}, 1
-    for index = 1, 9 do
-      local boundary = raw:find("|", cursor, true)
-      if not boundary then return nil, "truncated native line envelope" end
-      fields[index] = raw:sub(cursor, boundary - 1)
-      cursor = boundary + 1
-    end
-    fields[10] = raw:sub(cursor)
-    if fields[1] ~= "L1" then return nil, "unsupported native line envelope version" end
-    local tag = gui.nativeLineCaptureInteger(fields[2], 3, 29)
-    if tag ~= 3 and tag ~= 4 and tag ~= 5 and tag ~= 28 and tag ~= 29 then tag = nil end
-    local target = gui.nativeLineCaptureInteger(fields[3], -1, 2147483647)
-    local player = gui.nativeLineCaptureInteger(fields[4], -1, 2147483647)
-    local r = gui.nativeLineCaptureInteger(fields[5], 0, 1000)
-    local g = gui.nativeLineCaptureInteger(fields[6], 0, 1000)
-    local b = gui.nativeLineCaptureInteger(fields[7], 0, 1000)
-    local name = gui.decodeNativeLineName(fields[8])
-    local count = gui.nativeLineCaptureInteger(fields[9], 0, operationCodec.MAX_STOPS)
-    if not tag or not target or not player or not r or not g or not b or name == nil or not count then
-      return nil, "native line envelope contains invalid scalar fields"
-    end
-    local stops = {}
-    if count == 0 then
-      if fields[10] ~= "" then return nil, "empty native line envelope contains stop bytes" end
-    else
-      for encoded in fields[10]:gmatch("[^;]+") do
-        local groupText, stationText, terminalText = encoded:match("^(-?%d+),(-?%d+),(-?%d+)$")
-        local stationGroup = gui.nativeLineCaptureInteger(groupText, 0, 2147483647)
-        local station = gui.nativeLineCaptureInteger(stationText, 0, 4095)
-        local terminal = gui.nativeLineCaptureInteger(terminalText, 0, 4095)
-        if not stationGroup or not station or not terminal then
-          return nil, "native line envelope contains an invalid stop"
-        end
-        stops[#stops + 1] = {
-          stationGroupLocalId = stationGroup,
-          station = station,
-          terminal = terminal,
-        }
-      end
-      if #stops ~= count then return nil, "native line envelope stop count mismatch" end
-    end
-    if tag == 3 and (target ~= -1 or player < 0) then
-      return nil, "native CreateLine envelope has invalid identity fields"
-    elseif (tag == 4 or tag == 5 or tag == 28 or tag == 29) and target < 0 then
-      return nil, "native line mutation envelope has no target"
-    end
-    return {
-      tag = tag,
-      targetLocalId = target,
-      nativePlayerId = player,
-      name = name,
-      color = { r = r, g = g, b = b },
-      stops = stops,
-    }
+    return guiLineCommandCodec.decode(
+      raw, operationCodec.MAX_STOPS, operationCodec.MAX_ALTERNATIVE_TERMINALS)
   end
   
   gui.processSuppressedNativeLineCommandCapture = function()
@@ -771,6 +702,14 @@ function M.new(deps)
         stops = decoded.stops,
         nativePlayerId = decoded.nativePlayerId,
       }
+      -- Stock Line Manager selection events do not consistently expose the
+      -- line entity in their GUI payload.  The native line command does: keep
+      -- that exact target as the manual-panel selection after every surviving
+      -- line mutation.  This makes fare/re-check actions work for pre-existing
+      -- lines without asking the player to select an invisible world entity.
+      -- A deleted line deliberately clears the retained selection instead of
+      -- leaving a stale local ID behind.
+      guiLineCommandCodec.retainSelection(gui, capture)
       queueAction({
         type = "operation.capture",
         companyCid = snapshot.activeCompanyCid,
@@ -976,6 +915,7 @@ function M.new(deps)
       saveGame = hasFactory("saveGame"),
       lineType = hasType("Line"),
       lineStopType = hasType("Line.Stop"),
+      stationTerminalType = hasType("StationTerminal"),
       transportVehicleConfigType = hasType("TransportVehicleConfig"),
       transportVehiclePartType = hasType("TransportVehiclePart"),
       vehiclePartType = hasType("VehiclePart"),
@@ -1223,6 +1163,7 @@ function M.new(deps)
           and (id == "finances.borrow" or id == "finances.repay")
         if not isProposalCreate and not isProposalApply and not isFinanceLock then
           local entityAccess = checkEntityEventAccess(id, name, param)
+          gui.selectedLineId = guiSelectedLine(param) or gui.selectedLineId
           if not entityAccess.allowed then
             if gui.frames - gui.lastEntityAccessDenialProbeFrame >= 15 then
               gui.lastEntityAccessDenialProbeFrame = gui.frames
@@ -1264,7 +1205,7 @@ function M.new(deps)
             and gui.constructionPreviewPlacement(param) or nil
           local matchingConstructionTemplate = constructionPlacement
             and gui.lastConstructionPreviewSnapshot
-            and constructionPlacement.templateSignature == gui.lastConstructionPreviewSignature
+            and constructionPlacement.templateSignature ~= nil and constructionPlacement.templateSignature == gui.lastConstructionPreviewSignature
           if matchingConstructionTemplate then
             gui.nativeBuildCapture.constructionPreviewsSkipped =
               (gui.nativeBuildCapture.constructionPreviewsSkipped or 0) + 1
@@ -1301,10 +1242,10 @@ function M.new(deps)
           if networkConstructionPreview then
             local moduleSentinels = gui.constructionModuleSentinels(observedSnapshot)
             gui.lastConstructionPreviewModuleSentinels = moduleSentinels
-            if constructionPlacement and moduleSentinels then
+            if constructionPlacement and constructionPlacement.topologyCacheable and moduleSentinels then
               constructionPlacement.moduleSignature = moduleSentinels.signature
               constructionPlacement.templateSignature =
-                constructionPlacement.scalarSignature .. "|modules=" .. moduleSentinels.signature
+                constructionPlacement.scalarSignature .. "|modules=" .. moduleSentinels.signature .. "|topology=" .. constructionPlacement.topologySignature
             end
             gui.lastConstructionPreviewSnapshot = observedSnapshot
             gui.lastConstructionPreviewPlacement = constructionPlacement

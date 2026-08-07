@@ -46,6 +46,7 @@ MAX_CONSTRUCTION_PROPOSAL_NODES = 1024
 MAX_CONSTRUCTION_PROPOSAL_EDGES = 1024
 MAX_STATION_MODULES = 256
 MAX_PROPOSAL_REMOVALS = 512
+MAX_CONSTRUCTION_COLLATERAL = 64
 # A schema-7 construction can return one canonical output for every node, edge,
 # and edge object plus a bounded compound construction graph.
 MAX_PROPOSAL_OUTPUTS = (
@@ -54,8 +55,12 @@ MAX_PROPOSAL_OUTPUTS = (
     + MAX_PROPOSAL_EDGE_OBJECTS
     + 64
 )
-OPERATION_SCHEMA_VERSION = 1
+LEGACY_OPERATION_SCHEMA_VERSION = 1
+FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION = 2
+OPERATION_SCHEMA_VERSION = 3
 MAX_OPERATION_STOPS = 256
+MAX_OPERATION_ALTERNATIVE_TERMINALS = 64
+MAX_OPERATION_ALTERNATIVE_TERMINALS_TOTAL = 1024
 MAX_OPERATION_VEHICLE_PARTS = 128
 
 
@@ -952,7 +957,7 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
         construction = constructions[0]
         fields = {
             "slot", "mode", "adapter", "kind", "sourceCid", "fileName",
-            "transform", "params", "modules",
+            "transform", "params", "modules", "collateral",
         }
         if not isinstance(construction, dict) or set(construction) != fields or construction.get("slot") != "construction:1":
             raise ProtocolError("schema 7 construction has unknown or missing fields")
@@ -971,6 +976,24 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
             source_prefix = "asset:" if kind == "asset" else "construction:"
             if not isinstance(source, str) or not source.startswith(source_prefix):
                 raise ProtocolError("construction upgrade/removal has no canonical source")
+        collateral = _proposal_list(
+            construction.get("collateral"), "construction collateral", MAX_CONSTRUCTION_COLLATERAL
+        )
+        previous_collateral: str | None = None
+        for item in collateral:
+            if not isinstance(item, dict) or set(item) != {"kind", "cid"}:
+                raise ProtocolError("construction collateral entry is invalid")
+            collateral_kind, cid = item.get("kind"), item.get("cid")
+            if collateral_kind not in {"construction", "asset"}:
+                raise ProtocolError("construction collateral kind is invalid")
+            if not isinstance(cid, str) or not cid.startswith(collateral_kind + ":"):
+                raise ProtocolError("construction collateral has no canonical source")
+            key = f"{collateral_kind}:{cid}"
+            if previous_collateral is not None and key <= previous_collateral:
+                raise ProtocolError("construction collateral must be sorted and unique")
+            previous_collateral = key
+        if mode != "build" and collateral:
+            raise ProtocolError("construction upgrade/removal cannot contain collateral demolition")
         if mode == "remove":
             if (
                 construction.get("fileName") != ""
@@ -1079,7 +1102,7 @@ def _operation_color(value: Any) -> bool:
     )
 
 
-def _operation_line(value: Any) -> None:
+def _operation_line(value: Any, schema_version: int) -> None:
     if not isinstance(value, dict) or set(value) != {"stops"}:
         raise ProtocolError("operation line must contain only stops")
     # Lua's JSON encoder serialises an empty array-shaped table as `{}` because
@@ -1090,14 +1113,37 @@ def _operation_line(value: Any) -> None:
     # one UpdateLine per stop. Preserve those intermediate native states.
     if not 0 <= len(stops) <= MAX_OPERATION_STOPS:
         raise ProtocolError("operation line has an invalid stop count")
+    total_alternatives = 0
     for stop in stops:
-        if not isinstance(stop, dict) or set(stop) != {"stationGroupCid", "station", "terminal"}:
+        fields = {"stationGroupCid", "station", "terminal"}
+        if schema_version != LEGACY_OPERATION_SCHEMA_VERSION:
+            fields.add("alternativeTerminals")
+        if not isinstance(stop, dict) or set(stop) != fields:
             raise ProtocolError("operation line stop has unknown or missing fields")
         if not _operation_cid(stop["stationGroupCid"], "station_group"):
             raise ProtocolError("operation line stop has an invalid canonical station group")
         for field in ("station", "terminal"):
             if not isinstance(stop[field], int) or isinstance(stop[field], bool) or not 0 <= stop[field] <= 4095:
                 raise ProtocolError(f"operation line stop {field} is invalid")
+        if schema_version != LEGACY_OPERATION_SCHEMA_VERSION:
+            alternatives = _lua_array(stop["alternativeTerminals"], empty=True)
+            if schema_version == FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION:
+                if len(alternatives) % 2 or len(alternatives) // 2 > MAX_OPERATION_ALTERNATIVE_TERMINALS \
+                        or any(not isinstance(item, int) or isinstance(item, bool)
+                               or not 0 <= item <= 4095 for item in alternatives):
+                    raise ProtocolError("operation line stop flat alternative terminals are invalid")
+                total_alternatives += len(alternatives) // 2
+            elif len(alternatives) > MAX_OPERATION_ALTERNATIVE_TERMINALS or any(
+                not isinstance(item, dict) or set(item) != {"station", "terminal"}
+                or any(not isinstance(item[field], int) or isinstance(item[field], bool)
+                       or not 0 <= item[field] <= 4095 for field in ("station", "terminal"))
+                for item in alternatives
+            ):
+                raise ProtocolError("operation line stop StationTerminal pairs are invalid")
+            else:
+                total_alternatives += len(alternatives)
+            if total_alternatives > MAX_OPERATION_ALTERNATIVE_TERMINALS_TOTAL:
+                raise ProtocolError("operation line contains too many alternative terminals")
 
 
 def _lua_array(value: Any, *, empty: bool = False) -> list[Any]:
@@ -1118,10 +1164,10 @@ def _operation_vehicle_config(value: Any) -> None:
         if not isinstance(part, dict) or set(part) != {"model", "reversed", "loadConfig", "color", "logo"}:
             raise ProtocolError("operation vehicle part has unknown or missing fields")
         model = part["model"]
-        if not isinstance(model, str) or not model.startswith(("vehicle/train/", "vehicle/waggon/")) \
-                or not model.endswith(".mdl") \
+        if not isinstance(model, str) or not model.startswith("vehicle/") \
+                or not model.endswith(".mdl") or ".." in model or "\\" in model \
                 or len(model) > 240 or any(ord(c) < 32 for c in model):
-            raise ProtocolError("operation vehicle part is not a canonical railway model")
+            raise ProtocolError("operation vehicle part is not a portable vehicle model")
         if not isinstance(part["reversed"], bool) or not _operation_color(part["color"]):
             raise ProtocolError("operation vehicle part settings are invalid")
         if not isinstance(part["logo"], str) or len(part["logo"]) > 240 or any(ord(c) < 32 for c in part["logo"]):
@@ -1145,7 +1191,11 @@ def validate_operation_transaction(value: Any) -> dict[str, Any]:
         "schemaVersion", "kind", "companyCid", "data", "digest", "transactionId"
     }:
         raise ProtocolError("operation transaction has unknown or missing fields")
-    if value["schemaVersion"] != OPERATION_SCHEMA_VERSION:
+    if value["schemaVersion"] not in {
+        LEGACY_OPERATION_SCHEMA_VERSION,
+        FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION,
+        OPERATION_SCHEMA_VERSION,
+    }:
         raise ProtocolError("unsupported operation schemaVersion")
     kind, company, data = value["kind"], value["companyCid"], value["data"]
     if not isinstance(kind, str) or not _operation_cid(company, "company") or not isinstance(data, dict):
@@ -1156,11 +1206,11 @@ def validate_operation_transaction(value: Any) -> dict[str, Any]:
         if set(data) != {"name", "color", "line"} or not isinstance(data["name"], str) \
                 or not data["name"] or len(data["name"]) > 160 or not _operation_color(data["color"]):
             raise ProtocolError("line.create data is invalid")
-        _operation_line(data["line"])
+        _operation_line(data["line"], value["schemaVersion"])
     elif kind == "line.update":
         if set(data) != {"targetCid", "line"} or not _operation_cid(data["targetCid"], "line"):
             raise ProtocolError("line.update data is invalid")
-        _operation_line(data["line"])
+        _operation_line(data["line"], value["schemaVersion"])
     elif kind == "line.delete":
         if set(data) != {"targetCid"} or not _operation_cid(data["targetCid"], "line"):
             raise ProtocolError("line.delete data is invalid")
@@ -1245,10 +1295,11 @@ def validate_action(action: Any) -> dict[str, Any]:
         # different models on the two sides.
         for payload, fields in (
             (action["market"], ("demand", "votCentsPerHour", "gcOutsideCents", "thetaCents",
-                                "waitWeightPm", "transferSeconds")),
+                                "waitWeightPm", "transferSeconds", "demandResid")),
             (action["service"], ("headwaySeconds", "journeySeconds", "fareCents", "capacity",
-                                 "quality", "transfers", "sharePpm", "shareResid",
-                                 "lagLoadPpm", "lastFareCents")),
+                                  "quality", "transfers", "sharePpm", "shareResid",
+                                   "lagLoadPpm", "lastFareCents", "annualVehicleUpkeepCents",
+                                   "upkeepResid", "capacityResid", "revenueMultiplierResid")),
         ):
             for field in fields:
                 value = payload.get(field)
@@ -1256,10 +1307,79 @@ def validate_action(action: Any) -> dict[str, Any]:
                     continue
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise ProtocolError(f"line.register {field} must be an integer")
+        market_metadata = action["market"].get("metadata", {})
+        if isinstance(market_metadata, dict):
+            for field in ("townSizeA", "townSizeB"):
+                if field in market_metadata and (
+                    isinstance(market_metadata[field], bool)
+                    or not isinstance(market_metadata[field], int)
+                    or not 1 <= market_metadata[field] <= 100_000
+                ):
+                    raise ProtocolError(f"line.register market {field} is invalid")
+        vehicle_costs = action.get("vehicleCosts", {})
+        if not isinstance(vehicle_costs, dict):
+            raise ProtocolError("line.register vehicleCosts must be an object")
+        service_metadata = action["service"].get("metadata", {})
+        service_vehicle_values = _lua_array(
+            service_metadata.get("vehicleCids", {}) if isinstance(service_metadata, dict) else {},
+            empty=True,
+        )
+        if not all(
+            _operation_cid(value, "vehicle") for value in service_vehicle_values
+        ):
+            raise ProtocolError("line.register service vehicleCids are invalid")
+        service_vehicles = set(service_vehicle_values)
+        for vehicle_cid, record in vehicle_costs.items():
+            if not _operation_cid(vehicle_cid, "vehicle") or vehicle_cid not in service_vehicles:
+                raise ProtocolError("line.register vehicleCosts contains an unrelated vehicle")
+            if not isinstance(record, dict) or set(record) != {
+                "vehicleCid", "companyCid", "annualVehicleUpkeepCents", "upkeepResid"
+            }:
+                raise ProtocolError("line.register vehicle cost record is malformed")
+            if record["vehicleCid"] != vehicle_cid \
+                    or record["companyCid"] != action["companyCid"]:
+                raise ProtocolError("line.register vehicle cost identity mismatch")
+            annual = record["annualVehicleUpkeepCents"]
+            residual = record["upkeepResid"]
+            if isinstance(annual, bool) or not isinstance(annual, int) \
+                    or not 0 <= annual <= 1_000_000_000_000_000 \
+                    or isinstance(residual, bool) or not isinstance(residual, int) \
+                    or not 0 <= residual < 10_800:
+                raise ProtocolError("line.register vehicle cost values are invalid")
     if action_type == "fare.adjust" and not isinstance(action.get("deltaCents"), int):
         raise ProtocolError("fare.adjust requires integer deltaCents")
-    if action_type == "economy.settle" and not isinstance(action.get("results"), dict):
-        raise ProtocolError("economy.settle requires host-computed results")
+    if action_type == "economy.settle":
+        if not isinstance(action.get("results"), dict):
+            raise ProtocolError("economy.settle requires host-computed results")
+        if "scheduled" in action and not isinstance(action.get("scheduled"), bool):
+            raise ProtocolError("economy.settle requires a scheduled boolean")
+        boundary = action.get("boundaryGameTimeSeconds")
+        if boundary is not None and (
+            isinstance(boundary, bool) or not isinstance(boundary, int) or boundary < 0
+        ):
+            raise ProtocolError("economy.settle requires a non-negative accounting boundary")
+        delivery = action.get("deliverySnapshot")
+        if delivery is not None:
+            if not isinstance(delivery, dict) or set(delivery) != {
+                "schemaVersion", "presentationEpoch", "lines"
+            } or delivery.get("schemaVersion") != 1:
+                raise ProtocolError("economy.settle delivery snapshot is malformed")
+            presentation_epoch = delivery.get("presentationEpoch")
+            if isinstance(presentation_epoch, bool) or not isinstance(presentation_epoch, int) \
+                    or not 0 <= presentation_epoch <= 1_000_000_000 \
+                    or not isinstance(delivery.get("lines"), dict):
+                raise ProtocolError("economy.settle delivery snapshot header is invalid")
+            for line_cid, row in delivery["lines"].items():
+                if not _operation_cid(line_cid, "line") or not isinstance(row, dict) \
+                        or set(row) != {"deliveredPassengers", "earnedRevenueCents"}:
+                    raise ProtocolError("economy.settle delivery line is malformed")
+                passengers = row["deliveredPassengers"]
+                earned = row["earnedRevenueCents"]
+                if isinstance(passengers, bool) or not isinstance(passengers, int) \
+                        or not 0 <= passengers <= 1_000_000_000 \
+                        or isinstance(earned, bool) or not isinstance(earned, int) \
+                        or not 0 <= earned <= 1_000_000_000_000_000:
+                    raise ProtocolError("economy.settle delivery values are invalid")
     if action_type == "world.freeze" and not isinstance(action.get("freeze"), bool):
         raise ProtocolError("world.freeze requires a boolean freeze value")
     if action_type == "match.initialise" and "rules" in action:
@@ -1269,12 +1389,30 @@ def validate_action(action: Any) -> dict[str, Any]:
         for field in ("maxEpochs", "valuationTargetCents"):
             if not isinstance(rules.get(field), int) or isinstance(rules.get(field), bool) or rules[field] < 0:
                 raise ProtocolError(f"match.initialise rules require non-negative integer {field}")
+        for field in ("economyEpochSeconds", "economyStartGameTimeSeconds"):
+            if field in rules and (
+                not isinstance(rules.get(field), int)
+                or isinstance(rules.get(field), bool)
+                or rules[field] < 0
+            ):
+                raise ProtocolError(f"match.initialise rules require non-negative integer {field}")
         if "startingCash" in rules and (
             not isinstance(rules.get("startingCash"), int)
             or isinstance(rules.get("startingCash"), bool)
             or rules["startingCash"] < 0
         ):
             raise ProtocolError("match.initialise rules require non-negative integer startingCash")
+        difficulty = rules.get("economyDifficulty")
+        multiplier = rules.get("revenueMultiplierPpm")
+        multipliers = {"hard": 600_000, "normal": 1_000_000,
+                       "easy": 1_500_000, "relaxed": 2_000_000}
+        # Historical event records predate the save-owned setting and migrate
+        # to Normal. New normalized actions always carry both fields.
+        if difficulty is not None or multiplier is not None:
+            if difficulty not in multipliers:
+                raise ProtocolError("match.initialise rules require a known economyDifficulty")
+            if multiplier != multipliers[difficulty]:
+                raise ProtocolError("match.initialise economy difficulty multiplier is inconsistent")
     if action_type == "match.finish":
         if not isinstance(action.get("winnerCid"), str) or not isinstance(action.get("reason"), str):
             raise ProtocolError("match.finish requires a canonical winnerCid and reason")

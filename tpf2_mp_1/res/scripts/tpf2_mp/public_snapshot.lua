@@ -3,6 +3,7 @@ local economy = require "tpf2_mp/economy"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local economyPublicView = require "tpf2_mp/economy_public_view"
 
 local M = {}
 
@@ -107,6 +108,7 @@ function M.new(env)
       currentState().world.passengerPresentation,
       currentState().economy,
       currentState().canonical)
+    local economyPresentation = economyPublicView.build(currentState(), cid)
     return {
       version = currentState().version,
       tick = currentState().tick,
@@ -122,12 +124,19 @@ function M.new(env)
       marketCount = util.tableCount(currentState().economy.markets),
       serviceCount = util.tableCount(currentState().economy.services),
       epoch = currentState().economy.epoch,
+      economyScheduler = util.deepCopy(currentState().economy.scheduler),
+      companyCosts = util.deepCopy(currentState().economy.companyCosts),
+      towns = util.deepCopy(currentState().economy.towns or {}),
+      vehicleCosts = util.deepCopy(currentState().economy.vehicleCosts or {}),
+      deliveryCursors = util.deepCopy(currentState().economy.deliveryCursors or {}),
+      payoutResidCents = util.deepCopy(currentState().economy.payoutResidCents or {}),
       lastResults = util.deepCopy(currentState().economy.lastResults),
       ledger = util.deepCopy(currentState().economy.ledger),
       scoreboard = economy.scoreboard(currentState().economy, currentState().companies),
       -- Names/local ids are display-only, but every count is projected from
       -- the digested authored passenger ledger.
       passengerPresentation = passengerView,
+      economyPresentation = economyPresentation,
       stationBoards = passengerView.stations,
       autonomyFrozen = currentState().world.autonomyFrozen,
       neutralizer = util.deepCopy(currentState().finance.neutralizer),

@@ -8,7 +8,11 @@ local util = require "tpf2_mp/util"
 local canonical = require "tpf2_mp/canonical"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
+local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
 local economy = require "tpf2_mp/economy"
+local economyCosts = require "tpf2_mp/economy_costs"
+local economyRevenue = require "tpf2_mp/economy_revenue"
+local economyDifficulty = require "tpf2_mp/economy_difficulty"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
@@ -19,6 +23,7 @@ local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local nativeHook = require "tpf2_mp/native_hook"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
+local stationReadingModule = require "tpf2_mp/world_station_reading"
 
 local tests, passed = {}, 0
 
@@ -351,7 +356,10 @@ test("canonical line operations preserve vanilla empty and one-stop editor state
     targetCid = "line:event:test:1",
     line = {
       stops = {
-        { stationGroupCid = "station_group:pre:a", station = 3, terminal = 4 },
+        { stationGroupCid = "station_group:pre:a", station = 3, terminal = 4,
+          alternativeTerminals = {
+            { station = 5, terminal = 6 }, { station = 7, terminal = 8 },
+          } },
       },
     },
   }))
@@ -359,8 +367,26 @@ test("canonical line operations preserve vanilla empty and one-stop editor state
   truthy(operationCodec.validate(oneStop))
 
   local capturedArgs
+  local sawEmptyAlternativeInitialisation = false
   local materialised = assert(operationCodec.materialise(oneStop, {
-    api = { type = { Line = { new = function() return {} end } } },
+    api = { type = {
+      Line = {
+        new = function() return {} end,
+        Stop = { new = function()
+          return setmetatable({}, {
+            __newindex = function(target, key, value)
+              if key == "alternativeTerminals" then
+                truthy(type(value) == "table" and next(value) == nil,
+                  "native alternative-terminal vector was bulk-assigned")
+                sawEmptyAlternativeInitialisation = true
+              end
+              rawset(target, key, value)
+            end,
+          })
+        end },
+      },
+      StationTerminal = { new = function() return {} end },
+    } },
     nativePlayerId = 77,
     resolveLocal = function(cid)
       if cid == "line:event:test:1" then return 700 end
@@ -373,10 +399,53 @@ test("canonical line operations preserve vanilla empty and one-stop editor state
   }))
   equal(materialised.tag, 5)
   equal(materialised.factory(unpack(materialised.args)).kind, "update-line")
+  truthy(sawEmptyAlternativeInitialisation,
+    "native alternative-terminal vector was not initialised through its proxy")
   equal(capturedArgs[1], 700)
   equal(capturedArgs[2].stops[1].stationGroup, 901)
   equal(capturedArgs[2].stops[1].station, 3)
   equal(capturedArgs[2].stops[1].terminal, 4)
+  equal(capturedArgs[2].stops[1].alternativeTerminals[1].station, 5)
+  equal(capturedArgs[2].stops[1].alternativeTerminals[1].terminal, 6)
+  equal(capturedArgs[2].stops[1].alternativeTerminals[2].station, 7)
+  equal(capturedArgs[2].stops[1].alternativeTerminals[2].terminal, 8)
+end)
+
+test("native line mutations retain a usable manual-control target", function()
+  local gui = {}
+  equal(guiLineCommandCodec.retainSelection(gui, {
+    kind = "entity.name", targetLocalId = 700, originLocalId = 700,
+  }), 700)
+  equal(gui.selectedLineId, 700)
+  equal(guiLineCommandCodec.retainSelection(gui, {
+    kind = "line.update", targetLocalId = 701, originLocalId = 701,
+  }), 701)
+  equal(gui.selectedLineId, 701)
+  -- Deleting some other line must not discard a still-valid retained target.
+  equal(guiLineCommandCodec.retainSelection(gui, {
+    kind = "line.delete", targetLocalId = 700,
+  }), 701)
+  equal(guiLineCommandCodec.retainSelection(gui, {
+    kind = "line.delete", targetLocalId = 701,
+  }), nil)
+  equal(gui.selectedLineId, nil)
+end)
+
+test("native line envelopes preserve typed StationTerminal pairs", function()
+  local current = assert(guiLineCommandCodec.decode(
+    "L3|5|700|-1|0|0|0||1|901,1,2,0.3:4.5", 256, 64))
+  equal(current.stops[1].alternativeTerminals[1].station, 0)
+  equal(current.stops[1].alternativeTerminals[1].terminal, 3)
+  equal(current.stops[1].alternativeTerminals[2].station, 4)
+  equal(current.stops[1].alternativeTerminals[2].terminal, 5)
+
+  local legacyFlat = assert(guiLineCommandCodec.decode(
+    "L2|5|700|-1|0|0|0||1|901,1,2,0:3:4:5", 256, 64))
+  equal(legacyFlat.stops[1].alternativeTerminals[1].station, 0)
+  equal(legacyFlat.stops[1].alternativeTerminals[1].terminal, 3)
+  truthy(guiLineCommandCodec.decode(
+    "L2|5|700|-1|0|0|0||1|901,1,2,0:3:4", 256, 64) == nil,
+    "odd legacy flat StationTerminal sequence was accepted")
 end)
 
 test("canonical entity naming preserves vanilla empty names", function()
@@ -403,12 +472,13 @@ test("canonical entity naming preserves vanilla empty names", function()
   equal(capturedArgs[2], "")
 end)
 
-local function railwayModelRepository()
+local function vehicleModelRepository()
   local ids = {
     ["vehicle/train/db_v100.mdl"] = 17,
     ["vehicle/waggon/open_1910.mdl"] = 18,
+    ["vehicle/bus/benz.mdl"] = 19,
   }
-  local loadConfigCounts = { [17] = { 1 }, [18] = { 4 } }
+  local loadConfigCounts = { [17] = { 1 }, [18] = { 4 }, [19] = { 1 } }
   return {
     find = function(name) return ids[name] end,
     get = function(id)
@@ -423,10 +493,10 @@ local function railwayModelRepository()
   }
 end
 
-test("railway vehicle operations reject local ids and non-train resources", function()
+test("vehicle operations accept every portable carrier resource and reject local ids", function()
   local config = operationCodec.defaultVehicleConfig({
     "vehicle/train/db_v100.mdl", "vehicle/waggon/open_1910.mdl",
-  }, { res = { modelRep = railwayModelRepository() } })
+  }, { res = { modelRep = vehicleModelRepository() } })
   equal(config.vehicles[1].loadConfig[1], 0)
   equal(config.vehicles[2].loadConfig[1], 0)
   local transaction = assert(operationCodec.make("vehicle.buy", "company:2", {
@@ -434,14 +504,22 @@ test("railway vehicle operations reject local ids and non-train resources", func
     config = config,
   }))
   truthy(operationCodec.validate(transaction))
+  local roadConfig = operationCodec.defaultVehicleConfig({
+    "vehicle/bus/benz.mdl",
+  }, { res = { modelRep = vehicleModelRepository() } })
+  local roadTransaction = operationCodec.make("vehicle.buy", "company:2", {
+    depotCid = "depot:pre:abc",
+    config = roadConfig,
+  })
+  truthy(roadTransaction, "a valid non-rail vehicle resource was rejected")
   local invalid = util.deepCopy(config)
-  invalid.vehicles[1].model = "vehicle/bus/benz.mdl"
+  invalid.vehicles[1].model = "vehicle/../construction/depot.mdl"
   local rejected, err = operationCodec.make("vehicle.buy", "company:2", {
     depotCid = "depot:pre:abc",
     config = invalid,
   })
   equal(rejected, nil)
-  truthy(tostring(err):match("railway model"))
+  truthy(tostring(err):match("portable vehicle model"))
   local emptyLoadConfig = util.deepCopy(config)
   emptyLoadConfig.vehicles[1].loadConfig = {}
   local emptyRejected, emptyError = operationCodec.make("vehicle.buy", "company:2", {
@@ -483,7 +561,7 @@ test("railway vehicle materialisation uses the documented nested consist shape",
     depotCid = "depot:pre:abc",
     config = operationCodec.defaultVehicleConfig({
       "vehicle/train/db_v100.mdl", "vehicle/waggon/open_1910.mdl",
-    }, { res = { modelRep = railwayModelRepository() } }),
+    }, { res = { modelRep = vehicleModelRepository() } }),
   }))
   local madeArgs
   local command = assert(operationCodec.materialise(transaction, {
@@ -495,7 +573,7 @@ test("railway vehicle materialisation uses the documented nested consist shape",
         Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
       },
       res = {
-        modelRep = railwayModelRepository(),
+        modelRep = vehicleModelRepository(),
       },
     },
     nativePlayerId = 88,
@@ -704,6 +782,32 @@ test("proposal codec canonicalises the measured smallest modular passenger stati
   equal(ordinary, nil)
   truthy(tostring(ordinaryError):match("engine%-thread"), ordinaryError)
 
+  -- A stock placement may demolish town buildings without being an edit of
+  -- those buildings. Keep the station as an absolute build and carry each
+  -- obstacle as separately resolved collateral; treating the first house as
+  -- an upgrade source makes upgradeConstruction anchor the station there.
+  local obstructedRaw = smallestStationProposal(150)
+  obstructedRaw.__constructionRemovals = { 902, 901 }
+  local obstructed, obstructedError = proposalCodec.normalise(
+    obstructedRaw, "company:1", {
+      resolveCanonical = function(kind, localId)
+        if kind == "construction" and localId == 901 then return "construction:pre:house-a" end
+        if kind == "construction" and localId == 902 then return "construction:pre:house-b" end
+      end,
+      entityKind = function() return "construction" end,
+    })
+  truthy(obstructed, obstructedError)
+  equal(obstructed.constructions[1].mode, "build")
+  equal(obstructed.constructions[1].adapter, "stock-rail-station")
+  equal(obstructed.constructions[1].sourceCid, "")
+  equal(#obstructed.constructions[1].collateral, 2)
+  equal(obstructed.constructions[1].collateral[1].cid, "construction:pre:house-a")
+  equal(obstructed.constructions[1].collateral[2].cid, "construction:pre:house-b")
+  local obstructedSpec = assert(proposalCodec.materialiseConstruction(obstructed))
+  equal(obstructedSpec.mode, "build")
+  equal(obstructedSpec.transform[13], 100)
+  equal(#obstructedSpec.collateral, 2)
+
   local rotated = assert(proposalCodec.normalise(smallestStationProposal(
     200,
     3400020,
@@ -853,6 +957,7 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   })
   truthy(upgradeTx, upgradeError)
   equal(upgradeTx.constructions[1].mode, "upgrade")
+  equal(#upgradeTx.constructions[1].collateral, 0)
   equal(upgradeTx.constructions[1].sourceCid, "asset:pre:asset")
   equal(upgradeTx.constructions[1].params.seed, 5)
   equal(upgradeTx.constructions[1].params.upgrade, true)
@@ -1572,12 +1677,12 @@ test("economy conserves demand and respects capacity", function()
   local result = scenario(1000, 200, 300).markets["market:a-b"]
   local allocated = result.outside
   for _, service in pairs(result.services) do
-    truthy(service.allocated <= service.capacity, "capacity exceeded")
+    truthy(service.allocated <= service.availableCapacity, "interval capacity exceeded")
     allocated = allocated + service.allocated
   end
   equal(allocated, result.demand, "demand was not conserved")
-  equal(result.services["line:a"].allocated, 200)
-  equal(result.services["line:b"].allocated, 300)
+  equal(result.services["line:a"].allocated, 17)
+  equal(result.services["line:b"].allocated, 25)
 end)
 
 test("lower fares improve allocation deterministically", function()
@@ -1672,10 +1777,10 @@ test("economy v2 migration arms the first-settlement fare guard", function()
   state.version = 2
   state.params.alphaDownPm = 250
   local migrated = economy.migrate(state)
-  equal(migrated.version, 4)
-  equal(migrated.params.alphaDownPm, 250)
+  equal(migrated.version, 7)
+  equal(migrated.params.alphaDownPm, 500)
   equal(migrated.services["line:a"].lastFareCents, nil)
-  -- The version-4 step must be passenger-equivalent: same wait weight and
+  -- The version-4 market step must be passenger-equivalent: same wait weight and
   -- transfer time the version-3 evaluator hardcoded.
   local market = migrated.markets["market:a-b"]
   equal(market.kind, "passenger")
@@ -1726,6 +1831,49 @@ test("gravity demand scales with town capacities over distance and clamps", func
   equal(world.gravityDemand(1000000, 1000000, 1000), world.SERVICE_FACTS.maxDemand)
 end)
 
+test("station-group town reading prefers direct station queries", function()
+  local mapRead = false
+  local fakeApi = {
+    type = { ComponentType = { STATION = "STATION" } },
+    engine = { system = {
+      stationSystem = {
+        forEach = function(visitor) visitor(41); visitor(42) end,
+        getTown = function(stationId) return stationId == 41 and 701 or 702 end,
+        getStation2TownMap = function() mapRead = true; return {} end,
+      },
+      stationGroupSystem = {
+        getStationGroup = function(stationId) return stationId == 41 and 901 or 902 end,
+      },
+    } },
+  }
+  local reader = stationReadingModule.new({
+    getApi = function() return fakeApi end,
+    entityNumber = tonumber,
+  })
+  local townId, source = reader.stationGroupTown(902)
+  equal(townId, 702)
+  equal(source, "stationSystem.forEach/getTown")
+  equal(mapRead, false, "direct station lookup unexpectedly fell through to the map")
+end)
+
+test("station-group town reading keeps the station map as a fallback", function()
+  local fakeApi = { engine = { system = {
+    stationSystem = { getStation2TownMap = function() return { [51] = 801 } end },
+    stationGroupSystem = { getStationGroup = function() return 903 end },
+  } } }
+  local reader = stationReadingModule.new({
+    getApi = function() return fakeApi end,
+    entityNumber = tonumber,
+  })
+  local townId, source = reader.stationGroupTown(903)
+  equal(townId, 801)
+  equal(source, "station-to-town map")
+  local missing, diagnostic = reader.stationGroupTown(904)
+  equal(missing, nil)
+  truthy(diagnostic:find("examined=1", 1, true), "failure omitted station enumeration evidence")
+  truthy(diagnostic:find("matched=0", 1, true), "failure omitted group-match evidence")
+end)
+
 -- The crowd policy scales native building capacity at load, and gravity demand
 -- goes as the product of two town sizes -- so sizing towns by capacity let a
 -- cosmetic setting rescale the whole match economy by roughly its square. Town
@@ -1773,6 +1921,7 @@ test("computed service facts derive journey, headway, and capacity from geometry
   api = { type = { ComponentType = { CONSTRUCTION = "CONSTRUCTION", BASE_NODE = "BASE_NODE" } },
     engine = { getComponent = function() return nil end } }
   local facts = world.computedServiceFacts({ 11, 12 }, 2, { seats = 200, limitSpeedMs = 40 })
+  local slowFacts = world.computedServiceFacts({ 11, 12 }, 2, { seats = 200, limitSpeedMs = 20 })
   local noStock = world.computedServiceFacts({ 11, 12 }, 0, { seats = 200, limitSpeedMs = 40 })
   local unresolved = world.computedServiceFacts({ 11, 13 }, 2, { seats = 200, limitSpeedMs = 40 })
   game, api = previousGame, previousApi
@@ -1784,8 +1933,14 @@ test("computed service facts derive journey, headway, and capacity from geometry
   equal(facts.distanceMeters, 12500)
   equal(facts.journeySeconds, 536)
   equal(facts.headwaySeconds, 656)
-  -- 5 departures per authored hour, two consists of 200 seats.
-  equal(facts.capacity, 200 * 2 * 5)
+  -- Five fleet-wide departures per direction, each with 200 seats.
+  equal(facts.capacity, 200 * 5 * 2,
+    "fleet count was applied twice after already shortening headway")
+  truthy(slowFacts.journeySeconds > facts.journeySeconds
+      and slowFacts.headwaySeconds > facts.headwaySeconds
+      and slowFacts.departuresPerHourPerDirection < facts.departuresPerHourPerDirection
+      and slowFacts.capacity < facts.capacity,
+    "a faster consist did not improve journey, frequency, and usable capacity")
   local repeatFacts
   game = { interface = { getEntity = function(id)
     local p = positions[id]
@@ -1794,6 +1949,41 @@ test("computed service facts derive journey, headway, and capacity from geometry
   repeatFacts = world.computedServiceFacts({ 11, 12 }, 2, { seats = 200, limitSpeedMs = 40 })
   game = previousGame
   equal(hash.value(facts), hash.value(repeatFacts), "computed facts must be repeatable")
+end)
+
+test("initial checkpoint bootstraps only runnable pre-existing company lines", function()
+  local registry = canonical.newState()
+  truthy(canonical.bind(registry, "line:pre:own", "line", 700))
+  truthy(canonical.bind(registry, "line:pre:idle", "line", 701))
+  truthy(canonical.bind(registry, "line:pre:rival", "line", 702))
+  truthy(canonical.bind(registry, "line:pre:registered", "line", 703))
+  local state = {
+    tick = 44,
+    canonical = registry,
+    economy = { services = { ["line:pre:registered"] = { companyCid = "company:1" } } },
+    probes = { structural = { lines = {
+      { cid = "line:pre:own", owner = "company:1", stops = { "a", "b" }, vehicles = 1 },
+      { cid = "line:pre:idle", owner = "company:1", stops = { "a", "b" }, vehicles = 0 },
+      { cid = "line:pre:rival", owner = "company:2", stops = { "a", "b" }, vehicles = 1 },
+      { cid = "line:pre:registered", owner = "company:1", stops = { "a", "b" }, vehicles = 1 },
+    } } },
+  }
+  local submitted, diagnostics = {}, {}
+  local queued, summary = world.autoRegisterExistingServices(state, {
+    activeCompany = function() return "company:1" end,
+    submit = function(action) submitted[#submitted + 1] = action; return true, { queued = true } end,
+    log = function(event, values) diagnostics[#diagnostics + 1] = { event = event, values = values } end,
+    reason = "match-initialised",
+  })
+  equal(queued, 1)
+  equal(summary.queued, 1)
+  equal(summary.skipped, 3)
+  equal(summary.failed, 0)
+  equal(#submitted, 1)
+  equal(submitted[1].type, "line.register")
+  equal(submitted[1].lineCid, "line:pre:own")
+  equal(submitted[1].companyCid, "company:1")
+  equal(diagnostics[#diagnostics].event, "existing-service-register-scan")
 end)
 
 test("consist transport facts read repository metadata fail-soft", function()
@@ -1886,29 +2076,31 @@ test("passenger presentation conserves queues and loads across ordered releases"
   local line = state.lines["line:presentation"]
   equal(line.waitingAToB, 32)
   equal(line.waitingBToA, 33, "the odd passenger must stay in the ledger")
-  equal(line.departuresPlanned, 4)
+  equal(line.departuresPlanned, 1)
   equal(line.seatsPerVehicle, 40)
 
   ok, result = passengerPresentation.applyRelease(state, economyState,
     passengerRelease("vehicle:one", 1, 0), { owner = "company:1" })
   truthy(ok, result)
-  equal(result.boarded, 8)
-  equal(result.aboard, 8)
-  equal(line.waitingAToB, 24)
+  equal(result.boarded, 32)
+  equal(result.aboard, 32)
+  equal(line.waitingAToB, 0)
 
   ok, result = passengerPresentation.applyRelease(state, economyState,
     passengerRelease("vehicle:one", 2, 1), { owner = "company:1" })
   truthy(ok, result)
   equal(result.boarded, 0, "intermediate stops must preserve the terminal load")
   equal(result.alighted, 0)
-  equal(result.aboard, 8)
+  equal(result.aboard, 32)
 
   ok, result = passengerPresentation.applyRelease(state, economyState,
     passengerRelease("vehicle:one", 3, 2), { owner = "company:1" })
   truthy(ok, result)
-  equal(result.alighted, 8)
-  equal(result.boarded, 9)
-  equal(result.aboard, 9)
+  equal(result.alighted, 32)
+  equal(result.boarded, 33)
+  equal(result.aboard, 33)
+  equal(line.earnedRevenueCents, 16000000,
+    "completed passenger cohorts did not accrue boarding-time fare")
 
   local beforeDuplicate = hash.value(passengerPresentation.digestView(state))
   ok, result = passengerPresentation.applyRelease(state, economyState,
@@ -1920,7 +2112,7 @@ test("passenger presentation conserves queues and loads across ordered releases"
   ok, result = passengerPresentation.applyRelease(state, economyState,
     passengerRelease("vehicle:two", 1, 0), { owner = "company:1" })
   truthy(ok, result)
-  equal(result.boarded, 8)
+  equal(result.boarded, 0)
   local waiting = line.waitingAToB + line.waitingBToA
   local aboard = state.vehicles["vehicle:one"].aboard
     + state.vehicles["vehicle:two"].aboard
@@ -1957,9 +2149,9 @@ test("passenger presentation carries backlog, invalidates edited routes, and exc
     ["line:presentation"].allocated = 20
   truthy(passengerPresentation.beginEpoch(state, economyState))
   local line = state.lines["line:presentation"]
-  equal(line.waitingAToB, 34, "old queue plus new terminal demand was not carried")
+  equal(line.waitingAToB, 10, "old queue plus new terminal demand was not carried")
   equal(line.waitingBToA, 43)
-  equal(state.vehicles["vehicle:one"].aboard, 8,
+  equal(state.vehicles["vehicle:one"].aboard, 32,
     "settlement must not teleport a train empty")
 
   economyState.services["line:presentation"].metadata.stationGroupCids = {
@@ -1969,9 +2161,9 @@ test("passenger presentation carries backlog, invalidates edited routes, and exc
   line = state.lines["line:presentation"]
   equal(line.waitingAToB, 10)
   equal(line.waitingBToA, 10)
-  equal(line.overflowTotal, 77, "edited-route queues must be accounted, not teleported")
+  equal(line.overflowTotal, 53, "edited-route queues must be accounted, not teleported")
   equal(state.vehicles["vehicle:one"].aboard, 0)
-  equal(state.vehicles["vehicle:one"].discardedTotal, 8)
+  equal(state.vehicles["vehicle:one"].discardedTotal, 32)
 
   local cargoEconomy = passengerPresentationEconomy("cargo", 65)
   local cargoState = passengerPresentation.newState()
@@ -2079,7 +2271,7 @@ test("carried-by-town splits corridor allocations between digested endpoints", f
   equal(next(world.carriedByTown(results, {})), nil, "markets without town metadata grow nothing")
 end)
 
-test("departure slots are periodic, phased, and future-dated", function()
+test("departure slots remain model-only while train synchronization is prompt", function()
   local service = { lineCid = "line:slot-test", headwaySeconds = 600,
     journeySeconds = 900, metadata = { stationGroupCids = { "station:a", "station:b" } } }
   local slot = world.departureSlots(service, 5000, 0)
@@ -2096,11 +2288,8 @@ test("departure slots are periodic, phased, and future-dated", function()
   truthy(opposite.phaseSeconds ~= slot.phaseSeconds,
     "different stops must receive a deterministic journey offset")
   local registered = world.synchronizationSchedule(service.lineCid, service, 0)
-  equal(registered.enabled, true,
-    "registered train synchronization must enable the model schedule")
-  equal(registered.periodSeconds, slot.periodSeconds,
-    "registered train synchronization must consume the model schedule")
-  equal(registered.phaseSeconds, slot.phaseSeconds)
+  equal(registered.enabled, false,
+    "registered service headway must not become an artificial native dwell")
   local fallbackA = world.synchronizationSchedule("line:fallback", nil, 0)
   local fallbackB = world.synchronizationSchedule("line:fallback", nil, 1)
   equal(fallbackA.enabled, false,
@@ -2289,6 +2478,10 @@ test("credit limits follow earned revenue, not ambition", function()
   local earned = finance.creditLimit({ revenueCents = 1000000 }, 4)
   equal(earned, finance.CREDIT.baseLimitCents + 250000 * 4)
   truthy(earned > fresh, "trading successfully must extend credit")
+  local hourlyExact = finance.creditLimit({ revenueCents = 1200000 }, 4)
+  local fiveMinute = finance.creditLimit({ revenueCents = 300000 }, 12, nil, 300)
+  equal(fiveMinute, hourlyExact,
+    "five-minute settlement history did not annualise to the hourly credit basis")
 end)
 
 test("credit charges interest and bankruptcy takes three consecutive breaches", function()
@@ -2628,6 +2821,221 @@ test("model evaluation is deterministic across independent replays", function()
     "independent replays diverged in results")
 end)
 
+test("authored hourly upkeep conserves the exact annual cost", function()
+  local annual = economyCosts.vehicleAnnualUpkeepCents(7200000)
+  equal(annual, 120000000,
+    "the documented automatic running-cost ratio changed")
+  local total, residual = 0, 0
+  for _ = 1, economyCosts.HOURS_PER_YEAR do
+    local charge
+    charge, residual = economyCosts.hourlyCharge(annual, residual)
+    total = total + charge
+  end
+  equal(total, annual, "hourly rounding lost or created annual vehicle upkeep")
+  equal(residual, 0, "annual vehicle-upkeep residual did not close")
+
+  local allocated = economyCosts.allocateCapital(
+    { "edge:c", "edge:a", "edge:b", "edge:a" }, 100)
+  equal(allocated["edge:a"], 34, "capital remainder was not canonically ordered")
+  equal(allocated["edge:b"], 33)
+  equal(allocated["edge:c"], 33)
+
+  local wallet = economy.newState()
+  local first, firstResid = economy.walletDeltaDollars(wallet, "company:1", -1)
+  local second, secondResid = economy.walletDeltaDollars(wallet, "company:1", -99)
+  local third, thirdResid = economy.walletDeltaDollars(wallet, "company:1", 199)
+  local fourth, fourthResid = economy.walletDeltaDollars(wallet, "company:1", 1)
+  equal(first, 0, "a one-cent loss was rounded into a one-dollar debit")
+  equal(firstResid, -1)
+  equal(second, -1)
+  equal(secondResid, 0)
+  equal(third, 1)
+  equal(thirdResid, 99)
+  equal(fourth, 1)
+  equal(fourthResid, 0)
+  equal(first + second + third + fourth, 1,
+    "signed cent carry did not conserve the cumulative native-wallet delta")
+end)
+
+test("five-minute passenger accounting hits the playable payback envelope", function()
+  local state = economy.newState()
+  economy.upsertMarket(state, { cid = "market:balance", kind = "passenger",
+    demand = 12000, gcOutsideCents = 100000000, thetaCents = 200 })
+  economy.upsertService(state, { lineCid = "line:balance", marketCid = "market:balance",
+    companyCid = "company:1", fareCents = 950, capacity = 320,
+    headwaySeconds = 900, journeySeconds = 600, quality = 100,
+    annualVehicleUpkeepCents = 120000000 })
+  local allocated, gross, upkeep, net = 0, 0, 0, 0
+  for _ = 1, 12 do
+    local row = economy.evaluateAll(state).markets["market:balance"].services["line:balance"]
+    allocated, gross = allocated + row.allocated, gross + row.grossRevenueCents
+    upkeep, net = upkeep + row.vehicleUpkeepCents, net + row.netRevenueCents
+  end
+  equal(allocated, 320, "hourly bidirectional capacity was not conserved across 5m ticks")
+  equal(gross, 304000000, "40-seat corridor no longer grosses $3.04m per authored hour")
+  equal(upkeep, 40000000, "$1.2m native annual upkeep was not compressed to $400k/hour")
+  equal(net, 264000000, "healthy passenger service left the intended payback envelope")
+  equal(economyRevenue.defaultFareCents(3000, "passenger"), 950)
+end)
+
+test("save-owned economy difficulties scale revenue but not demand or upkeep", function()
+  truthy(economy.validateDifficultyRule({ economyDifficulty = "easy",
+    revenueMultiplierPpm = 1500000 }))
+  local valid, difficultyError = economy.validateDifficultyRule({
+    economyDifficulty = "hard", revenueMultiplierPpm = 1000000,
+  })
+  equal(valid, false)
+  truthy(tostring(difficultyError):find("inconsistent", 1, true) ~= nil)
+  local function run(key)
+    local state = economy.newState()
+    economy.setDifficulty(state, key)
+    economy.upsertMarket(state, { cid = "market:difficulty", kind = "passenger",
+      demand = 12000, gcOutsideCents = 100000000, thetaCents = 200 })
+    economy.upsertService(state, { lineCid = "line:difficulty",
+      marketCid = "market:difficulty", companyCid = "company:1",
+      fareCents = 950, capacity = 320, headwaySeconds = 900,
+      journeySeconds = 600, quality = 100,
+      annualVehicleUpkeepCents = 120000000 })
+    local allocated, rawGross, gross, upkeep = 0, 0, 0, 0
+    for _ = 1, 12 do
+      local row = economy.evaluateAll(state).markets["market:difficulty"]
+        .services["line:difficulty"]
+      allocated = allocated + row.allocated
+      rawGross = rawGross + row.rawGrossRevenueCents
+      gross = gross + row.grossRevenueCents
+      upkeep = upkeep + row.vehicleUpkeepCents
+    end
+    return state, allocated, rawGross, gross, upkeep
+  end
+  local expected = {
+    hard = 182400000, normal = 304000000,
+    easy = 456000000, relaxed = 608000000,
+  }
+  for _, key in ipairs(economyDifficulty.ORDER) do
+    local state, allocated, rawGross, gross, upkeep = run(key)
+    equal(allocated, 320, key .. " changed service capacity or demand")
+    equal(rawGross, 304000000, key .. " changed the fare-derived raw revenue")
+    equal(gross, expected[key], key .. " applied the wrong revenue multiplier")
+    equal(upkeep, 40000000, key .. " changed native-derived upkeep")
+    equal(state.params.economyDifficulty, key)
+    equal(state.params.revenueMultiplierPpm,
+      economyDifficulty.PRESETS[key].revenueMultiplierPpm)
+  end
+  local first, resid = economyDifficulty.apply(1, 600000, 0)
+  local second, finalResid = economyDifficulty.apply(1, 600000, resid)
+  equal(first, 0)
+  equal(second, 1)
+  equal(finalResid, 200000,
+    "difficulty residual did not conserve repeated sub-cent-scaled revenue")
+end)
+
+test("delivered demand grows canonical towns and refreshes every corridor", function()
+  local function build()
+    local state = economy.newState()
+    economy.upsertMarket(state, {
+      cid = "market:growth", kind = "passenger", demand = 533,
+      gcOutsideCents = 100000000, thetaCents = 200,
+      metadata = { townA = "town:a", townB = "town:b",
+        townSizeA = 200, townSizeB = 200, corridorMeters = 3000 },
+    })
+    economy.upsertService(state, {
+      lineCid = "line:growth", marketCid = "market:growth",
+      companyCid = "company:1", fareCents = 950, capacity = 320,
+      headwaySeconds = 900, journeySeconds = 600, quality = 100,
+    })
+    return state
+  end
+  local first, second = build(), build()
+  local final
+  for _ = 1, 12 do
+    final = economy.evaluateAll(first)
+    economy.evaluateAll(second)
+  end
+  equal(hash.value(first), hash.value(second),
+    "canonical town growth was not deterministic")
+  truthy(first.towns["town:a"].size > 200 and first.towns["town:b"].size > 200,
+    "carried passengers did not grow the endpoint towns")
+  truthy(first.markets["market:growth"].demand > 533,
+    "town growth did not refresh future corridor demand")
+  truthy(type(final.townGrowth) == "table"
+      and type(final.townGrowth.towns["town:a"]) == "table",
+    "settlement did not disclose its authored demographic transition")
+  equal(first.markets["market:growth"].metadata.townSizeA,
+    first.towns["town:a"].size)
+end)
+
+test("passenger revenue is paid once from completed synchronized legs", function()
+  local state = marketState(12000)
+  corridorService(state, "a", "company:1", { fareCents = 950, capacity = 320 })
+  local snapshot = { schemaVersion = 1, presentationEpoch = 1, lines = {
+    ["line:a"] = { deliveredPassengers = 40, earnedRevenueCents = 38000000 },
+  } }
+  local first = economy.evaluateAll(state, nil, snapshot)
+    .markets["market:a-b"].services["line:a"]
+  equal(first.delivered, 40)
+  equal(first.grossRevenueCents, 38000000)
+  local second = economy.evaluateAll(state, nil, snapshot)
+    .markets["market:a-b"].services["line:a"]
+  equal(second.delivered, 0, "an unchanged completion cursor paid passengers twice")
+  equal(second.grossRevenueCents, 0, "an unchanged completion cursor created money")
+  snapshot.lines["line:a"].deliveredPassengers = 39
+  local ok, err = pcall(economy.evaluateAll, state, nil, snapshot)
+  equal(ok, false, "a backwards passenger delivery cursor was accepted")
+  truthy(tostring(err):find("moved backwards", 1, true) ~= nil)
+end)
+
+test("cargo baseline pays one thousand dollars per unit-kilometre", function()
+  local state = economy.newState()
+  economy.upsertMarket(state, { cid = "market:cargo-balance", kind = "cargo",
+    demand = 4800, gcOutsideCents = 100000000, thetaCents = 200 })
+  economy.upsertService(state, { lineCid = "line:cargo-balance",
+    marketCid = "market:cargo-balance", companyCid = "company:1",
+    fareCents = 1000, capacity = 4800, headwaySeconds = 300,
+    journeySeconds = 1200, quality = 100,
+    metadata = { distanceMeters = 50000 } })
+  local row = economy.evaluateAll(state).markets["market:cargo-balance"]
+    .services["line:cargo-balance"]
+  equal(row.delivered, 400)
+  equal(row.grossRevenueCents, 2000000000,
+    "400 cargo units over 50km should gross $20m at baseline fare")
+end)
+
+test("scheduled settlements charge costs, allow losses, and reject atomically", function()
+  local state = economy.newState()
+  economy.startScheduler(state, 100, 3600)
+  economy.upsertMarket(state, {
+    cid = "market:loss", demand = 100, outsideWeight = 100,
+  })
+  economy.upsertService(state, {
+    lineCid = "line:loss", marketCid = "market:loss", companyCid = "company:1",
+    fareCents = 0, capacity = 100, headwaySeconds = 600,
+    journeySeconds = 1200, quality = 100,
+    annualVehicleUpkeepCents = 15000,
+  })
+  -- A $300 capital basis produces $30 nominal annual upkeep. With a three-hour
+  -- competitive financial year, one authored hour costs exactly $10.
+  economy.applyInfrastructureChange(state, "company:1", 0, 30000)
+  local result = economy.evaluateAll(state, 3700)
+  local company = result.companies["company:1"]
+  equal(company.grossRevenueCents, 0)
+  equal(company.vehicleUpkeepCents, 5000)
+  equal(company.infrastructureUpkeepCents, 1000)
+  equal(company.operatingCostCents, 6000)
+  equal(company.netRevenueCents, -6000)
+  equal(result.boundaryGameTimeSeconds, 3700)
+  equal(economy.nextBoundary(state), 7300)
+  truthy(economy.recordSettlement(state, result))
+  equal(state.ledger.companies["company:1"].netRevenueCents, -6000,
+    "a losing hour was clamped instead of debited")
+
+  local before = hash.value(state)
+  local ok, err = pcall(economy.evaluateAll, state, 9999)
+  equal(ok, false, "an out-of-order economy boundary was accepted")
+  truthy(tostring(err):find("next scheduled accounting interval", 1, true) ~= nil)
+  equal(hash.value(state), before,
+    "a rejected economy boundary mutated shares, residuals, or scheduler state")
+end)
+
 test("settlement ledger is idempotent and produces a scoreboard", function()
   local state = economy.newState()
   economy.upsertMarket(state, { cid = "market", demand = 100, outsideWeight = 100 })
@@ -2654,6 +3062,8 @@ test("authoritative settlement results are validated before acceptance", functio
   local authoritative = economy.evaluateAll(util.deepCopy(host))
   truthy(economy.acceptAuthoritativeResults(host, authoritative))
   equal(host.epoch, 1)
+  equal(host.markets.market.demandResid, 1200,
+    "accepted results discarded the hourly-demand residual")
 
   local nextResults = economy.evaluateAll(util.deepCopy(host))
   nextResults.totalRevenueCents = nextResults.totalRevenueCents + 1

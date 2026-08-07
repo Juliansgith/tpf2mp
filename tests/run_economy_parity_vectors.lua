@@ -22,6 +22,7 @@ local function digestView(state)
       thetaCents = value.thetaCents,
       waitWeightPm = value.waitWeightPm,
       transferSeconds = value.transferSeconds,
+      demandResid = value.demandResid,
       metadata = util.deepCopy(value.metadata or {}),
     }
   end
@@ -43,6 +44,11 @@ local function digestView(state)
       shareResid = value.shareResid,
       lagLoadPpm = value.lagLoadPpm,
       lastFareCents = value.lastFareCents,
+      annualVehicleUpkeepCents = value.annualVehicleUpkeepCents,
+      upkeepResid = value.upkeepResid,
+      capacityResid = value.capacityResid,
+      revenueMultiplierResid = value.revenueMultiplierResid,
+      metadata = util.deepCopy(value.metadata or {}),
     }
   end
   return {
@@ -50,7 +56,13 @@ local function digestView(state)
     epoch = state.epoch,
     params = util.deepCopy(state.params),
     markets = markets,
+    towns = util.deepCopy(state.towns or {}),
     services = services,
+    companyCosts = util.deepCopy(state.companyCosts or {}),
+    vehicleCosts = util.deepCopy(state.vehicleCosts or {}),
+    deliveryCursors = util.deepCopy(state.deliveryCursors or {}),
+    payoutResidCents = util.deepCopy(state.payoutResidCents or {}),
+    scheduler = util.deepCopy(state.scheduler or {}),
     lastResults = util.deepCopy(state.lastResults),
     ledger = util.deepCopy(state.ledger),
   }
@@ -82,6 +94,22 @@ local function addScenario(spec)
   end
   for _, market in ipairs(spec.markets) do economy.upsertMarket(state, market) end
   for _, service in ipairs(spec.services) do economy.upsertService(state, service) end
+  for vehicleCid, value in pairs(spec.vehicleCosts or {}) do
+    local record = economy.upsertVehicleCost(state, vehicleCid, value.companyCid,
+      value.annualVehicleUpkeepCents)
+    if value.upkeepResid ~= nil then record.upkeepResid = value.upkeepResid end
+  end
+  for companyCid, value in pairs(spec.companyCosts or {}) do
+    local capital = type(value) == "table" and value.infrastructureCapitalCents or value
+    local record = economy.applyInfrastructureChange(state, companyCid, 0, capital)
+    if type(value) == "table" and value.upkeepResid ~= nil then
+      record.upkeepResid = value.upkeepResid
+    end
+  end
+  if spec.scheduler then
+    economy.startScheduler(state, spec.scheduler.startGameTimeSeconds,
+      spec.scheduler.epochSeconds)
+  end
   applyOverrides(state, spec.overrides)
   for _, service in ipairs(spec.reupserts or {}) do economy.upsertService(state, service) end
 
@@ -89,6 +117,15 @@ local function addScenario(spec)
   for _, service in ipairs(spec.services) do
     companies[service.companyCid] = companies[service.companyCid]
       or { cid = service.companyCid, name = "Company " .. service.companyCid }
+  end
+  for companyCid in pairs(spec.companyCosts or {}) do
+    companies[companyCid] = companies[companyCid]
+      or { cid = companyCid, name = "Company " .. companyCid }
+  end
+  for _, value in pairs(spec.vehicleCosts or {}) do
+    local companyCid = value.companyCid
+    companies[companyCid] = companies[companyCid]
+      or { cid = companyCid, name = "Company " .. companyCid }
   end
 
   local record = {
@@ -98,6 +135,9 @@ local function addScenario(spec)
     services = util.deepCopy(spec.services),
     overrides = util.deepCopy(spec.overrides or {}),
     reupserts = util.deepCopy(spec.reupserts or {}),
+    companyCosts = util.deepCopy(spec.companyCosts or {}),
+    vehicleCosts = util.deepCopy(spec.vehicleCosts or {}),
+    scheduler = util.deepCopy(spec.scheduler),
     fareSchedule = util.deepCopy(spec.fareSchedule or {}),
     epochs = spec.epochs,
     initial = digestView(state),
@@ -108,9 +148,14 @@ local function addScenario(spec)
     for lineCid, fareCents in pairs((spec.fareSchedule or {})[index] or {}) do
       assert(economy.setFare(state, lineCid, fareCents))
     end
-    local result = economy.evaluateAll(state)
+    local result = economy.evaluateAll(state, economy.nextBoundary(state))
     record.results[index] = util.deepCopy(result)
     assert(economy.recordSettlement(state, result))
+    for _, companyCid in ipairs(util.sortedKeys(result.companies or {})) do
+      local company = result.companies[companyCid]
+      economy.walletDeltaDollars(state, companyCid,
+        company.netRevenueCents ~= nil and company.netRevenueCents or company.revenueCents)
+    end
   end
   record.final = digestView(state)
   record.scoreboard = economy.scoreboard(state, companies)
@@ -132,6 +177,35 @@ addScenario({
       quality = 100, transfers = 0 },
   },
   epochs = 40,
+})
+
+addScenario({
+  id = "v5-operating-cost-clock",
+  markets = {
+    { cid = "market:cost", name = "Cost", demand = 100,
+      gcOutsideCents = 2500, thetaCents = 250 },
+  },
+  services = {
+    { lineCid = "line:cost", marketCid = "market:cost", companyCid = "company:1",
+      name = "Costed consist", headwaySeconds = 600, journeySeconds = 1200,
+      fareCents = 0, capacity = 100, quality = 100,
+      metadata = { vehicleCids = { "vehicle:cost:assigned" } } },
+  },
+  vehicleCosts = {
+    ["vehicle:cost:assigned"] = {
+      companyCid = "company:1", annualVehicleUpkeepCents = 43800001,
+      upkeepResid = 8759,
+    },
+    ["vehicle:cost:depot"] = {
+      companyCid = "company:1", annualVehicleUpkeepCents = 8760001,
+      upkeepResid = 8759,
+    },
+  },
+  companyCosts = {
+    ["company:1"] = { infrastructureCapitalCents = 87600001, upkeepResid = 8759 },
+  },
+  scheduler = { startGameTimeSeconds = 123, epochSeconds = 3600 },
+  epochs = 3,
 })
 
 addScenario({
@@ -310,6 +384,26 @@ addScenario({
       capacity = 602, quality = 102, transfers = 2 },
   },
   epochs = 2,
+})
+
+addScenario({
+  id = "v7-easy-town-growth",
+  params = { economyDifficulty = "easy", revenueMultiplierPpm = 1500000 },
+  markets = {
+    { cid = "market:growing", kind = "passenger", demand = 533,
+      gcOutsideCents = 100000000, thetaCents = 200,
+      metadata = { townA = "town:alpha", townB = "town:beta",
+        -- Deliberately below the missing-observation fallback so parity catches
+        -- accidental reapplication of that fallback during later settlements.
+        townSizeA = 80, townSizeB = 120, corridorMeters = 3000 } },
+  },
+  services = {
+    { lineCid = "line:growing", marketCid = "market:growing",
+      companyCid = "company:1", name = "Growing",
+      headwaySeconds = 900, journeySeconds = 600, fareCents = 950,
+      capacity = 320, quality = 100, transfers = 0 },
+  },
+  epochs = 24,
 })
 
 local seed = 20260804

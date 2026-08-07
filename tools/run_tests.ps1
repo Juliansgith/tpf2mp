@@ -39,6 +39,9 @@ try {
     & $python (Join-Path $projectRoot 'tests\check_economy_parity.py') $projectRoot $economyParity
     if ($LASTEXITCODE -ne 0) { throw "Cross-language economy parity failed with exit code $LASTEXITCODE" }
 
+    & $python (Join-Path $projectRoot 'tools\audit_economy_era_balance.py') --check
+    if ($LASTEXITCODE -ne 0) { throw "Economy era-balance audit failed with exit code $LASTEXITCODE" }
+
     & $lua (Join-Path $projectRoot 'tests\run_runtime_module_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Runtime module tests failed with exit code $LASTEXITCODE" }
 

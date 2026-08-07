@@ -34,7 +34,7 @@ function M.reconcileLinePostcondition(transaction, targetCid, observed, originAp
     kind = transaction.kind,
     targetCid = targetCid,
     exists = true,
-    stops = util.deepCopy(transaction.data.line.stops),
+    stops = operationCodec.normaliseLineStops(transaction),
   }
   if originApplied == true then return expected end
   if hash.value(observed) ~= hash.value(expected) then
@@ -265,10 +265,18 @@ function M.new(env)
         local groupId = tonumber(stop.stationGroup or stop.group or stop.station)
         local cid = groupId and canonical.resolveCanonical(currentState().canonical, "station_group", groupId) or nil
         if not cid then return nil, "native line contains an unmapped station group" end
+        local alternativeTerminals = {}
+        for _, alternative in ipairs(stop.alternativeTerminals or {}) do
+          alternativeTerminals[#alternativeTerminals + 1] = {
+            station = util.integer(alternative.station, 0),
+            terminal = util.integer(alternative.terminal, 0),
+          }
+        end
         result.stops[#result.stops + 1] = {
           stationGroupCid = cid,
           station = util.integer(stop.station, 0),
           terminal = util.integer(stop.terminal, 0),
+          alternativeTerminals = alternativeTerminals,
         }
       end
       return M.reconcileLinePostcondition(
@@ -285,6 +293,16 @@ function M.new(env)
       result.stopIndex = tonumber(vehicle.stopIndex)
       local config = vehicle.transportVehicleConfig
       result.vehicleParts = config and #(config.vehicles or {}) or nil
+      -- This is the same resolved annual figure the stock purchase and vehicle
+      -- detail windows display after all vanilla/modded model modifiers have
+      -- run.  Keeping it in the physical postcondition makes every peer agree
+      -- on the economic basis instead of re-implementing the engine's private
+      -- automatic-cost formula or trusting a single machine's resource data.
+      local maintenance = safeOperationComponent(localId, types.MAINTENANCE_COST)
+      local annual = maintenance and tonumber(maintenance.maintenanceCost) or nil
+      if annual and annual >= 0 then
+        result.annualMaintenanceDollars = math.max(0, util.integer(annual, 0))
+      end
     elseif kind == "entity.name" then
       local name = safeOperationComponent(localId, types.NAME)
       result.name = name and tostring(name.name or "") or nil
@@ -346,7 +364,7 @@ function M.new(env)
       canonical.unbindCanonical(currentState().canonical, data.targetCid)
       if localId then currentState().world.logicalOwners[tostring(localId)] = nil end
       -- A deleted line must stop earning. Without this the registered service
-      -- keeps its capacity and settles revenue every epoch forever, on every
+      -- keeps its capacity and settles revenue every accounting tick forever, on every
       -- peer identically, so no digest would ever catch it.
       if transaction.kind == "line.delete" then
         economy.removeService(currentState().economy, data.targetCid)
@@ -419,6 +437,17 @@ function M.new(env)
       local ok, result = operationFailure(record, "native delete/sell left the target entity alive")
       emitOperationCompletion(record, false, result)
       return ok, result
+    end
+    -- Keep the old assignment long enough for the post-consensus follow-up to
+    -- refresh both affected services. applyOperationMetadata intentionally
+    -- unbinds a sold vehicle, so this fact would otherwise disappear before
+    -- the owning peer can remove its seats/upkeep from the old line.
+    if record.transaction.kind == "vehicle.assign"
+      or record.transaction.kind == "vehicle.sell" then
+      local targetCid = record.transaction.data and record.transaction.data.targetCid
+      local targetBinding = targetCid and currentState().canonical.byCanonical[targetCid] or nil
+      record.previousLineCid = targetBinding and targetBinding.metadata
+        and targetBinding.metadata.lineCid or nil
     end
     applyOperationMetadata(record)
     local balanceAfter = tonumber(payload.balanceAfter) or env.balanceOf(record.nativePlayerId)

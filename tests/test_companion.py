@@ -16,6 +16,9 @@ from tpf2mp.anchor_io import AnchorRequestStore, anchor_state_message, validate_
 from tpf2mp.checkpoint import (
     _advance_town_development_cursor,
     _advance_town_development_points,
+    _evaluate_all_v2,
+    _upsert_market_v2,
+    _upsert_service_v2,
     analyse_bridge,
     verify_checkpoint,
     verify_event_record,
@@ -25,7 +28,9 @@ from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
 from tpf2mp.network import CommitClient, CommitHost
 from tpf2mp.protocol import (
     CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
+    FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION,
     MAX_PROPOSAL_OUTPUTS,
+    OPERATION_SCHEMA_VERSION,
     ProtocolError,
     canonical_json,
     checksum,
@@ -118,6 +123,7 @@ def portable_construction_transaction(
         "adapter": "portable-construction",
         "kind": kind,
         "sourceCid": source,
+        "collateral": [],
         "fileName": "depot/train_depot.con" if kind == "depot" else "asset/bench.con",
         "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 250, 500, 8, 1],
         "params": {
@@ -214,6 +220,7 @@ def station_proposal_transaction(
                 "adapter": "stock-rail-station",
                 "kind": "rail_station",
                 "sourceCid": "",
+                "collateral": [],
                 "fileName": prefix + "modular_station.con",
                 "transform": transform or [0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 100, 200, 5, 1],
                 "params": {
@@ -343,7 +350,7 @@ def pass_proposal_prepare(host: CommitHost, intent: dict) -> tuple[dict, dict]:
 
 def operation_transaction(company: str = "company:2") -> dict:
     content = {
-        "schemaVersion": 1,
+        "schemaVersion": OPERATION_SCHEMA_VERSION,
         "kind": "line.create",
         "companyCid": company,
         "data": {
@@ -351,8 +358,10 @@ def operation_transaction(company: str = "company:2") -> dict:
             "color": {"r": 80, "g": 420, "b": 1000},
             "line": {
                 "stops": [
-                    {"stationGroupCid": "station_group:pre:a", "station": 0, "terminal": 0},
-                    {"stationGroupCid": "station_group:pre:b", "station": 0, "terminal": 0},
+                    {"stationGroupCid": "station_group:pre:a", "station": 0,
+                     "terminal": 0, "alternativeTerminals": []},
+                    {"stationGroupCid": "station_group:pre:b", "station": 0,
+                     "terminal": 0, "alternativeTerminals": []},
                 ]
             },
         },
@@ -515,14 +524,43 @@ class ProtocolTests(unittest.TestCase):
             "line:pre:abc",
         )
 
+    def test_completed_trip_delivery_snapshot_is_strict_and_bounded(self) -> None:
+        action = {
+            "type": "economy.settle",
+            "results": {},
+            "scheduled": True,
+            "boundaryGameTimeSeconds": 400,
+            "deliverySnapshot": {
+                "schemaVersion": 1,
+                "presentationEpoch": 7,
+                "lines": {
+                    "line:event:test:1": {
+                        "deliveredPassengers": 40,
+                        "earnedRevenueCents": 38_000_000,
+                    }
+                },
+            },
+        }
+        self.assertEqual(validate_action(action), action)
+        tampered = json.loads(json.dumps(action))
+        tampered["deliverySnapshot"]["lines"]["line:event:test:1"][
+            "earnedRevenueCents"
+        ] = -1
+        with self.assertRaises(ProtocolError):
+            validate_action(tampered)
+
     def test_match_lifecycle_actions_require_canonical_rules_and_result(self) -> None:
         initial = validate_action(
             {
                 "type": "match.initialise",
-                "rules": {"startingCash": 5_000_000, "maxEpochs": 24, "valuationTargetCents": 50_000_000},
+                "rules": {"startingCash": 5_000_000, "maxEpochs": 24,
+                          "valuationTargetCents": 50_000_000,
+                          "economyDifficulty": "easy",
+                          "revenueMultiplierPpm": 1_500_000},
             }
         )
         self.assertEqual(initial["rules"]["maxEpochs"], 24)
+        self.assertEqual(initial["rules"]["economyDifficulty"], "easy")
         self.assertEqual(
             validate_action({"type": "match.finish", "winnerCid": "company:2", "reason": "epoch-limit"})[
                 "winnerCid"
@@ -538,6 +576,14 @@ class ProtocolTests(unittest.TestCase):
                     "rules": {"startingCash": -1, "maxEpochs": 24, "valuationTargetCents": 0},
                 }
             )
+        with self.assertRaisesRegex(ProtocolError, "multiplier is inconsistent"):
+            validate_action({
+                "type": "match.initialise",
+                "rules": {"startingCash": 5_000_000, "maxEpochs": 24,
+                          "valuationTargetCents": 0,
+                          "economyDifficulty": "hard",
+                          "revenueMultiplierPpm": 1_000_000},
+            })
 
     def test_native_samples_are_host_ordered_and_have_no_client_payload(self) -> None:
         self.assertEqual(validate_action({"type": "probe.mobility"}), {"type": "probe.mobility"})
@@ -756,6 +802,26 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(len(accepted["transaction"]["nodes"]), 13)
         self.assertEqual(len(accepted["transaction"]["edges"]), 12)
+
+        obstructed = json.loads(json.dumps(transaction))
+        obstructed["constructions"][0]["collateral"] = [
+            {"kind": "construction", "cid": "construction:pre:house-a"},
+            {"kind": "construction", "cid": "construction:pre:house-b"},
+        ]
+        redigest_proposal(obstructed)
+        accepted_obstructed = validate_action({"type": "proposal.build", "transaction": obstructed})
+        self.assertEqual(
+            accepted_obstructed["transaction"]["constructions"][0]["mode"], "build"
+        )
+        self.assertEqual(
+            len(accepted_obstructed["transaction"]["constructions"][0]["collateral"]), 2
+        )
+
+        unsorted_collateral = json.loads(json.dumps(obstructed))
+        unsorted_collateral["constructions"][0]["collateral"].reverse()
+        redigest_proposal(unsorted_collateral)
+        with self.assertRaisesRegex(ProtocolError, "sorted and unique"):
+            validate_action({"type": "proposal.build", "transaction": unsorted_collateral})
 
         malformed = json.loads(json.dumps(transaction))
         malformed["constructions"][0]["modules"][3]["name"] = (
@@ -987,7 +1053,11 @@ class ProtocolTests(unittest.TestCase):
             "targetCid": "line:event:test:1",
             "line": {
                 "stops": [
-                    {"stationGroupCid": "station_group:pre:a", "station": 3, "terminal": 4}
+                    {"stationGroupCid": "station_group:pre:a", "station": 3,
+                     "terminal": 4, "alternativeTerminals": [
+                         {"station": 5, "terminal": 6},
+                         {"station": 7, "terminal": 8},
+                     ]}
                 ]
             },
         }
@@ -999,8 +1069,35 @@ class ProtocolTests(unittest.TestCase):
         transaction["transactionId"] = f"operation:{transaction['digest']}"
         accepted = validate_action({"type": "operation.execute", "transaction": transaction})
         self.assertEqual(accepted["transaction"]["data"]["line"]["stops"][0]["terminal"], 4)
+        self.assertEqual(
+            accepted["transaction"]["data"]["line"]["stops"][0]["alternativeTerminals"],
+            [{"station": 5, "terminal": 6}, {"station": 7, "terminal": 8}],
+        )
 
-    def test_canonical_train_purchase_accepts_vanilla_waggons_only(self) -> None:
+    def test_flat_operation_schema_two_remains_auditable_as_station_terminal_pairs(self) -> None:
+        transaction = operation_transaction()
+        transaction["schemaVersion"] = FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION
+        transaction["data"]["line"]["stops"][0]["alternativeTerminals"] = [0, 3, 4, 5]
+        content = {
+            key: transaction[key]
+            for key in ("schemaVersion", "kind", "companyCid", "data")
+        }
+        transaction["digest"] = checksum(content)
+        transaction["transactionId"] = f"operation:{transaction['digest']}"
+        accepted = validate_action({"type": "operation.execute", "transaction": transaction})
+        self.assertEqual(
+            accepted["transaction"]["data"]["line"]["stops"][0]["alternativeTerminals"],
+            [0, 3, 4, 5],
+        )
+
+        transaction["data"]["line"]["stops"][0]["alternativeTerminals"] = [0, 3, 4]
+        content["data"] = transaction["data"]
+        transaction["digest"] = checksum(content)
+        transaction["transactionId"] = f"operation:{transaction['digest']}"
+        with self.assertRaises(ProtocolError):
+            validate_action({"type": "operation.execute", "transaction": transaction})
+
+    def test_canonical_vehicle_purchase_accepts_all_portable_vehicle_resources(self) -> None:
         content = {
             "schemaVersion": 1,
             "kind": "vehicle.buy",
@@ -1039,14 +1136,29 @@ class ProtocolTests(unittest.TestCase):
             accepted["transaction"]["data"]["config"]["vehicles"][1]["model"],
             "vehicle/waggon/open_1910.mdl",
         )
+        road = json.loads(json.dumps(transaction))
+        road["data"]["config"]["vehicles"] = [road["data"]["config"]["vehicles"][0]]
+        road["data"]["config"]["vehicles"][0]["model"] = "vehicle/bus/benz.mdl"
+        road["data"]["config"]["vehicleGroups"] = [1]
+        road_content = {
+            key: road[key] for key in ("schemaVersion", "kind", "companyCid", "data")
+        }
+        road["digest"] = checksum(road_content)
+        road["transactionId"] = f"operation:{road['digest']}"
+        accepted_road = validate_action({"type": "operation.execute", "transaction": road})
+        self.assertEqual(
+            accepted_road["transaction"]["data"]["config"]["vehicles"][0]["model"],
+            "vehicle/bus/benz.mdl",
+        )
+
         invalid = json.loads(json.dumps(transaction))
-        invalid["data"]["config"]["vehicles"][1]["model"] = "vehicle/bus/benz.mdl"
+        invalid["data"]["config"]["vehicles"][1]["model"] = "vehicle/../construction/depot.mdl"
         invalid_content = {
             key: invalid[key] for key in ("schemaVersion", "kind", "companyCid", "data")
         }
         invalid["digest"] = checksum(invalid_content)
         invalid["transactionId"] = f"operation:{invalid['digest']}"
-        with self.assertRaisesRegex(ProtocolError, "railway model"):
+        with self.assertRaisesRegex(ProtocolError, "portable vehicle model"):
             validate_action({"type": "operation.execute", "transaction": invalid})
 
         invalid_load = json.loads(json.dumps(transaction))
@@ -1203,6 +1315,76 @@ class BridgeTests(unittest.TestCase):
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_completed_passenger_revenue_cursor_pays_exactly_once(self) -> None:
+        economy = {
+            "version": 6,
+            "epoch": 0,
+            "params": {},
+            "markets": {},
+            "services": {},
+            "companyCosts": {},
+            "vehicleCosts": {},
+            "deliveryCursors": {},
+            "scheduler": {"schemaVersion": 2, "automatic": True, "epochSeconds": 300},
+            "lastResults": {},
+            "ledger": {},
+        }
+        _upsert_market_v2(economy, {
+            "cid": "market:test", "kind": "passenger", "demand": 12_000,
+            "gcOutsideCents": 100_000_000, "thetaCents": 200,
+        })
+        _upsert_service_v2(economy, {
+            "lineCid": "line:test", "marketCid": "market:test",
+            "companyCid": "company:1", "fareCents": 950, "capacity": 320,
+            "headwaySeconds": 900, "journeySeconds": 600, "quality": 100,
+        })
+        delivery = {
+            "schemaVersion": 1, "presentationEpoch": 1,
+            "lines": {"line:test": {
+                "deliveredPassengers": 40, "earnedRevenueCents": 38_000_000,
+            }},
+        }
+        first = _evaluate_all_v2(economy, delivery_snapshot=delivery)
+        row = first["markets"]["market:test"]["services"]["line:test"]
+        self.assertEqual((row["delivered"], row["grossRevenueCents"]), (40, 38_000_000))
+        second = _evaluate_all_v2(economy, delivery_snapshot=delivery)
+        row = second["markets"]["market:test"]["services"]["line:test"]
+        self.assertEqual((row["delivered"], row["grossRevenueCents"]), (0, 0))
+        delivery["lines"]["line:test"]["deliveredPassengers"] = 39
+        with self.assertRaisesRegex(ProtocolError, "moved backwards"):
+            _evaluate_all_v2(economy, delivery_snapshot=delivery)
+
+    def test_wrong_authored_economy_boundary_rejects_without_mutation(self) -> None:
+        economy = {
+            "version": 5,
+            "epoch": 0,
+            "params": {},
+            "markets": {},
+            "services": {},
+            "companyCosts": {
+                "company:1": {
+                    "companyCid": "company:1",
+                    "infrastructureCapitalCents": 87600,
+                    "annualInfrastructureUpkeepCents": 8760,
+                    "upkeepResid": 0,
+                }
+            },
+            "scheduler": {
+                "schemaVersion": 1,
+                "automatic": True,
+                "epochSeconds": 3600,
+                "startGameTimeSeconds": 100,
+                "lastBoundaryGameTimeSeconds": 100,
+                "nextBoundaryGameTimeSeconds": 3700,
+            },
+            "lastResults": {},
+            "ledger": {},
+        }
+        before = canonical_json(economy)
+        with self.assertRaisesRegex(ProtocolError, "next scheduled accounting interval"):
+            _evaluate_all_v2(economy, 9999)
+        self.assertEqual(canonical_json(economy), before)
+
     def test_town_development_replay_matches_lua_accumulator_and_cursor(self) -> None:
         model = {
             "townDevelopment": {
@@ -3322,6 +3504,16 @@ class NetworkIntegrationTests(unittest.TestCase):
                 }
                 for peer in ("player1", "player2")
             }
+            host.vehicle_sync_slot_reservations[
+                "line:event:station-sync:1#0"
+            ] = {
+                "lineCid": "line:event:station-sync:1",
+                "stopIndex": 0,
+                "periodSeconds": 778,
+                "phaseSeconds": 223,
+                "slotIndex": 1,
+                "scheduledDepartureAt": 1001.0,
+            }
             host._record_non_intent(vehicle_sync_record("player1", 1, "held", game_time=100.0))
             self.assertEqual(host.commits, {})
             host._record_non_intent(vehicle_sync_record("player2", 2, "held", game_time=101.0))
@@ -3334,6 +3526,10 @@ class NetworkIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(
                 release["schedule"], {"schemaVersion": 1, "enabled": False}
+            )
+            self.assertEqual(
+                host.vehicle_sync_slot_reservations, {},
+                "prompt release retained a historical timetable reservation",
             )
             self.assertEqual(
                 host.synchronization.status()["vehicleSync"]["pendingByStatus"],

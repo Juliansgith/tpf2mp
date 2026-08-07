@@ -55,8 +55,9 @@ def _validate_passenger_presentation(
     model: Mapping[str, Any],
 ) -> dict[str, Any]:
     presentation = _mapping(value, "checkpoint passenger presentation")
+    schema = presentation.get("schemaVersion")
     if set(presentation) != {"schemaVersion", "epoch", "lines", "vehicles"} \
-            or presentation.get("schemaVersion") != 1:
+            or schema not in {1, 2}:
         raise ProtocolError("checkpoint passenger presentation header is invalid")
     epoch = _positive_int(presentation["epoch"], "passenger presentation epoch")
     if epoch > 1_000_000_000:
@@ -77,6 +78,8 @@ def _validate_passenger_presentation(
         "departuresPlanned", "departuresAToB", "departuresBToA", "seatsPerVehicle",
         "boardedTotal", "alightedTotal", "overflowTotal",
     }
+    if schema >= 2:
+        line_fields.add("earnedRevenueCents")
     bounded_counts = {
         "allocated", "waitingAToB", "waitingBToA", "departuresAToB",
         "departuresBToA", "boardedTotal", "alightedTotal", "overflowTotal",
@@ -128,6 +131,10 @@ def _validate_passenger_presentation(
         for field in bounded_counts:
             if _positive_int(item[field], f"passenger line {field}") > 1_000_000_000:
                 raise ProtocolError(f"checkpoint passenger line {field} is too large")
+        if schema >= 2 and _positive_int(
+            item["earnedRevenueCents"], "passenger line earned revenue"
+        ) > _ACCUMULATOR_LIMIT:
+            raise ProtocolError("checkpoint passenger line earned revenue is too large")
 
     vehicles = _array_or_lua_empty(
         presentation["vehicles"], "checkpoint passenger vehicles"
@@ -136,9 +143,12 @@ def _validate_passenger_presentation(
         "vehicleCid", "lineCid", "companyCid", "capacity", "aboard", "lastRound",
         "boardedTotal", "alightedTotal", "discardedTotal",
     }
+    if schema >= 2:
+        required_vehicle.add("earnedRevenueCents")
     optional_vehicle = {
         "boardedEpoch", "lastStopIndex", "lastStationGroupCid",
         "originStationGroupCid", "destinationStationGroupCid",
+        "boardedFareCents",
     }
     seen_vehicles: set[str] = set()
     previous_vehicle_cid: str | None = None
@@ -165,6 +175,14 @@ def _validate_passenger_presentation(
         for field in ("boardedTotal", "alightedTotal", "discardedTotal"):
             if _positive_int(item[field], f"passenger vehicle {field}") > 1_000_000_000:
                 raise ProtocolError(f"checkpoint passenger vehicle {field} is too large")
+        if schema >= 2 and _positive_int(
+            item["earnedRevenueCents"], "passenger vehicle earned revenue"
+        ) > _ACCUMULATOR_LIMIT:
+            raise ProtocolError("checkpoint passenger vehicle earned revenue is too large")
+        if "boardedFareCents" in item and _positive_int(
+            item["boardedFareCents"], "passenger vehicle boarded fare"
+        ) > 100_000_000:
+            raise ProtocolError("checkpoint passenger vehicle boarded fare is too large")
         if "boardedEpoch" in item and (
             _positive_int(item["boardedEpoch"], "passenger vehicle boardedEpoch") > epoch
         ):
@@ -530,6 +548,26 @@ def _upsert_service(economy: dict[str, Any], service: Mapping[str, Any]) -> None
 
 _SHARE_SCALE = 1_000_000
 _ACCUMULATOR_LIMIT = 1_000_000_000_000_000
+_HOURS_PER_YEAR = 365 * 24
+_FINANCIAL_YEAR_SECONDS = 3 * 3600
+_PASSENGER_COHORT_SCALE = 1_000
+_CARGO_CENTS_PER_UNIT_KM = 100_000
+_CARGO_REFERENCE_FARE_CENTS = 1_000
+_DIFFICULTY_SCALE = 1_000_000
+_DIFFICULTIES = {
+    "hard": 600_000,
+    "normal": 1_000_000,
+    "easy": 1_500_000,
+    "relaxed": 2_000_000,
+}
+_DEFAULT_DIFFICULTY = "normal"
+_NOMINAL_CAPACITY_PER_BUILDING = 4
+_FALLBACK_TOWN_BUILDINGS = 50
+_GRAVITY_DIVISOR = 25
+_MIN_DEMAND = 50
+_MAX_DEMAND = 100_000
+_MAX_TOWN_SIZE = 100_000
+_GROWTH_PASSENGERS_PER_BUILDING = 400
 
 # Pinned integer exponential shared byte-for-byte with the Lua model:
 # _EXP_TABLE[k] = round(65536 * exp(-k / 10)) for k = 0..80. Both languages
@@ -551,15 +589,147 @@ def _economy_version(economy: Mapping[str, Any]) -> int:
     return _integer(economy.get("version"), 1)
 
 
-def _economy_params(economy: Mapping[str, Any]) -> dict[str, int]:
+def _economy_params(economy: Mapping[str, Any]) -> dict[str, Any]:
     params = economy.get("params") if isinstance(economy.get("params"), Mapping) else {}
+    version = _economy_version(economy)
+    difficulty = str(params.get("economyDifficulty", _DEFAULT_DIFFICULTY)).lower()
+    if difficulty not in _DIFFICULTIES:
+        difficulty = _DEFAULT_DIFFICULTY
     return {
-        "alphaUpPm": _integer(params.get("alphaUpPm"), 80),
-        "alphaDownPm": _integer(params.get("alphaDownPm"), 250),
+        "alphaUpPm": _integer(params.get("alphaUpPm"), 350 if version >= 6 else 80),
+        "alphaDownPm": _integer(params.get("alphaDownPm"), 500 if version >= 6 else 250),
         "maxWaitSeconds": _integer(params.get("maxWaitSeconds"), 1800),
         "transferSeconds": _integer(params.get("transferSeconds"), 480),
         "crowdThresholdPpm": _integer(params.get("crowdThresholdPpm"), 700_000),
+        "economyDifficulty": difficulty,
+        "revenueMultiplierPpm": _DIFFICULTIES[difficulty],
     }
+
+
+def _difficulty_apply(raw_cents: int, multiplier_ppm: int, residual: int) -> tuple[int, int]:
+    raw = _clamp(_integer(raw_cents, 0), 0, _ACCUMULATOR_LIMIT)
+    multiplier = _clamp(_integer(multiplier_ppm, 1_000_000), 0, 4_000_000)
+    carried = _clamp(_integer(residual, 0), 0, _DIFFICULTY_SCALE - 1)
+    whole, remainder = divmod(raw, _DIFFICULTY_SCALE)
+    base = whole * multiplier
+    if base >= _ACCUMULATOR_LIMIT:
+        return _ACCUMULATOR_LIMIT, 0
+    tail = remainder * multiplier + carried
+    scaled = base + tail // _DIFFICULTY_SCALE
+    if scaled >= _ACCUMULATOR_LIMIT:
+        return _ACCUMULATOR_LIMIT, 0
+    return scaled, tail % _DIFFICULTY_SCALE
+
+
+def _town_upsert(economy: dict[str, Any], town_cid: str, observed_size: Any) -> dict[str, Any]:
+    fallback = _FALLBACK_TOWN_BUILDINGS * _NOMINAL_CAPACITY_PER_BUILDING
+    size = _integer(observed_size, fallback, 1, _MAX_TOWN_SIZE)
+    towns = economy.setdefault("towns", {})
+    value = towns.get(town_cid)
+    if not isinstance(value, Mapping):
+        record = {
+            "schemaVersion": 1,
+            "cid": town_cid,
+            "size": size,
+            "growthResid": 0,
+            "totalGrowth": 0,
+        }
+    else:
+        record = dict(value)
+        record["schemaVersion"] = 1
+        record["cid"] = town_cid
+        record["size"] = max(_integer(record.get("size"), size, 1, _MAX_TOWN_SIZE), size)
+        record["growthResid"] = _integer(
+            record.get("growthResid"), 0, 0, _GROWTH_PASSENGERS_PER_BUILDING - 1
+        )
+        record["totalGrowth"] = _integer(record.get("totalGrowth"), 0, 0, _MAX_TOWN_SIZE)
+    towns[town_cid] = record
+    return record
+
+
+def _observe_market_towns(economy: dict[str, Any], market: dict[str, Any]) -> None:
+    metadata = market.get("metadata")
+    if not isinstance(metadata, dict):
+        return
+    town_a, town_b = metadata.get("townA"), metadata.get("townB")
+    if not isinstance(town_a, str) or not isinstance(town_b, str):
+        return
+    first = _town_upsert(economy, town_a, metadata.get("townSizeA"))
+    second = _town_upsert(economy, town_b, metadata.get("townSizeB"))
+    metadata["townSizeA"], metadata["townSizeB"] = first["size"], second["size"]
+
+
+def _gravity_demand(size_a: Any, size_b: Any, distance_meters: Any) -> int:
+    fallback = _FALLBACK_TOWN_BUILDINGS * _NOMINAL_CAPACITY_PER_BUILDING
+    first = _integer(size_a, fallback, 1, _MAX_TOWN_SIZE)
+    second = _integer(size_b, fallback, 1, _MAX_TOWN_SIZE)
+    distance = max(0, _integer(distance_meters, 1000))
+    km = max(1, distance // 1000)
+    return _clamp(first * second // (_GRAVITY_DIVISOR * km), _MIN_DEMAND, _MAX_DEMAND)
+
+
+def _refresh_market_demands(economy: dict[str, Any]) -> dict[str, Any]:
+    changes: dict[str, Any] = {}
+    towns = economy.get("towns", {})
+    for market_cid in sorted(economy.get("markets", {})):
+        market = economy["markets"][market_cid]
+        metadata = market.get("metadata", {})
+        first = towns.get(metadata.get("townA")) if isinstance(metadata, Mapping) else None
+        second = towns.get(metadata.get("townB")) if isinstance(metadata, Mapping) else None
+        if isinstance(first, Mapping) and isinstance(second, Mapping):
+            previous = _integer(market.get("demand"), _MIN_DEMAND, 0, 1_000_000_000)
+            computed = _gravity_demand(
+                first.get("size"), second.get("size"), metadata.get("corridorMeters")
+            )
+            updated = max(previous, computed)
+            market["demand"] = updated
+            metadata["townSizeA"], metadata["townSizeB"] = first["size"], second["size"]
+            if updated != previous:
+                changes[market_cid] = {"previousDemand": previous, "demand": updated}
+    return changes
+
+
+def _advance_town_demand(economy: dict[str, Any], results: Mapping[str, Any]) -> dict[str, Any]:
+    carried: dict[str, int] = {}
+    for market_cid in sorted(results.get("markets", {})):
+        result = results["markets"][market_cid]
+        market = economy.get("markets", {}).get(market_cid)
+        metadata = market.get("metadata", {}) if isinstance(market, Mapping) else {}
+        if not isinstance(market, Mapping) or market.get("kind") == "cargo" \
+                or not isinstance(metadata.get("townA"), str) \
+                or not isinstance(metadata.get("townB"), str):
+            continue
+        total = sum(
+            max(0, _integer(row.get("delivered", row.get("allocated")), 0))
+            for row in result.get("services", {}).values()
+        )
+        half = total // 2
+        town_a, town_b = metadata["townA"], metadata["townB"]
+        carried[town_a] = carried.get(town_a, 0) + half
+        carried[town_b] = carried.get(town_b, 0) + total - half
+    changes: dict[str, Any] = {}
+    for town_cid in sorted(carried):
+        existing = economy.setdefault("towns", {}).get(town_cid)
+        record = existing if isinstance(existing, dict) else _town_upsert(economy, town_cid, None)
+        previous = int(record["size"])
+        numerator = max(0, int(record.get("growthResid", 0))) \
+            + max(0, carried[town_cid]) * _NOMINAL_CAPACITY_PER_BUILDING
+        gain, record["growthResid"] = divmod(
+            numerator, _GROWTH_PASSENGERS_PER_BUILDING
+        )
+        record["size"] = min(_MAX_TOWN_SIZE, int(record["size"]) + gain)
+        record["totalGrowth"] = min(
+            _MAX_TOWN_SIZE,
+            max(0, int(record.get("totalGrowth", 0))) + int(record["size"]) - previous,
+        )
+        changes[town_cid] = {
+            "carried": carried[town_cid],
+            "previousSize": previous,
+            "size": record["size"],
+            "gained": int(record["size"]) - previous,
+            "growthResid": record["growthResid"],
+        }
+    return {"schemaVersion": 1, "towns": changes, "markets": _refresh_market_demands(economy)}
 
 
 # Mirrors economy.lua's M.MARKET_KINDS exactly; kind weighting is market data
@@ -593,6 +763,7 @@ def _upsert_market_v2(economy: dict[str, Any], market: Mapping[str, Any]) -> Non
         1,
         100_000_000,
     )
+    existing = economy.setdefault("markets", {}).get(cid)
     record: dict[str, Any] = {
         "cid": cid,
         "name": str(market.get("name", cid)),
@@ -607,13 +778,18 @@ def _upsert_market_v2(economy: dict[str, Any], market: Mapping[str, Any]) -> Non
         "thetaCents": _integer(market.get("thetaCents"), max(200, gc_outside * 8 // 100), 50, 1_000_000),
         "metadata": copy.deepcopy(market.get("metadata", {})),
     }
+    source = existing if isinstance(existing, Mapping) else market
+    record["demandResid"] = _integer(source.get("demandResid"), 0, 0, 3599)
     if v4:
         record["kind"] = kind
         record["waitWeightPm"] = _integer(market.get("waitWeightPm"), kind_defaults["waitWeightPm"], 0, 10_000)
         record["transferSeconds"] = _integer(
             market.get("transferSeconds"), kind_defaults["transferSeconds"], 0, 14_400
         )
-    economy.setdefault("markets", {})[cid] = record
+    economy["markets"][cid] = record
+    if _economy_version(economy) >= 7:
+        _observe_market_towns(economy, record)
+        _refresh_market_demands(economy)
 
 
 def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> None:
@@ -623,21 +799,46 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         raise ProtocolError(f"replay service references unknown market: {market_cid}")
     existing = economy.setdefault("services", {}).get(line_cid)
     fare_cents = _integer(service.get("fareCents"), 1000, 0, 100_000_000)
-    if isinstance(existing, dict) and existing.get("sharePpm") is not None:
-        share_ppm = int(existing["sharePpm"])
+    share_ppm: int | None
+    if isinstance(existing, dict):
+        share_ppm = int(existing["sharePpm"]) if existing.get("sharePpm") is not None else None
         share_resid = int(existing.get("shareResid", 0))
         lag_load_ppm = int(existing.get("lagLoadPpm", 0))
-    else:
+    elif service.get("sharePpm") is not None:
         share_ppm = _integer(service.get("sharePpm"), 0, 0, _SHARE_SCALE)
         share_resid = 0
         lag_load_ppm = 0
+    elif _economy_version(economy) < 6:
+        share_ppm, share_resid, lag_load_ppm = 0, 0, 0
+    else:
+        rivals = sum(
+            1 for candidate_cid, candidate in economy["services"].items()
+            if candidate_cid != line_cid and isinstance(candidate, Mapping)
+            and candidate.get("enabled") is not False
+            and candidate.get("marketCid") == market_cid
+        )
+        share_ppm, share_resid, lag_load_ppm = (0 if rivals > 0 else None), 0, 0
     if isinstance(existing, dict):
         last_fare_cents = existing.get("lastFareCents")
     else:
         last_fare_cents = _integer(
             service.get("lastFareCents"), fare_cents, 0, 100_000_000
         )
-    economy["services"][line_cid] = {
+    annual_vehicle_upkeep = _integer(
+        service.get("annualVehicleUpkeepCents"),
+        int(existing.get("annualVehicleUpkeepCents", 0)) if isinstance(existing, dict) else 0,
+        0,
+        _ACCUMULATOR_LIMIT,
+    )
+    residual_limit = _FINANCIAL_YEAR_SECONDS - 1 \
+        if _economy_version(economy) >= 6 else _HOURS_PER_YEAR - 1
+    upkeep_resid = _integer(
+        existing.get("upkeepResid", 0) if isinstance(existing, dict) else service.get("upkeepResid"),
+        0,
+        0,
+        residual_limit,
+    )
+    record = {
         "lineCid": line_cid,
         "marketCid": market_cid,
         "companyCid": str(service["companyCid"]),
@@ -649,11 +850,23 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         "quality": _integer(service.get("quality"), 100, 0, 1000),
         "transfers": _integer(service.get("transfers"), 0, 0, 8),
         "enabled": service.get("enabled") is not False,
-        "sharePpm": share_ppm,
+        "annualVehicleUpkeepCents": annual_vehicle_upkeep,
+        "upkeepResid": upkeep_resid,
         "shareResid": share_resid,
         "lagLoadPpm": lag_load_ppm,
         "metadata": copy.deepcopy(service.get("metadata", {})),
     }
+    if share_ppm is not None:
+        record["sharePpm"] = share_ppm
+    source = existing if isinstance(existing, Mapping) else service
+    record["capacityResid"] = _integer(source.get("capacityResid"), 0, 0, 3599)
+    if _economy_version(economy) >= 7:
+        record["revenueMultiplierResid"] = _integer(
+            existing.get("revenueMultiplierResid", 0)
+            if isinstance(existing, Mapping) else service.get("revenueMultiplierResid"),
+            0, 0, _DIFFICULTY_SCALE - 1,
+        )
+    economy["services"][line_cid] = record
     if _economy_version(economy) >= 3:
         economy["services"][line_cid]["lastFareCents"] = last_fare_cents
 
@@ -668,6 +881,47 @@ def _saturating_add(left: int, right: int) -> int:
 
 def _saturating_multiply(left: int, right: int) -> int:
     return min(_ACCUMULATOR_LIMIT, max(0, int(left)) * max(0, int(right)))
+
+
+def _signed_add(left: int, right: int) -> int:
+    return max(-_ACCUMULATOR_LIMIT, min(_ACCUMULATOR_LIMIT, int(left) + int(right)))
+
+
+def _hourly_charge(annual_cents: int, residual: int) -> tuple[int, int]:
+    numerator = max(0, int(annual_cents)) + max(0, int(residual))
+    return numerator // _HOURS_PER_YEAR, numerator % _HOURS_PER_YEAR
+
+
+def _period_charge(annual_cents: int, residual: int, period_seconds: int) -> tuple[int, int]:
+    annual = min(_ACCUMULATOR_LIMIT, max(0, int(annual_cents)))
+    period = max(0, int(period_seconds))
+    quotient, remainder = divmod(annual, _FINANCIAL_YEAR_SECONDS)
+    tail = remainder * period + max(0, int(residual))
+    return min(_ACCUMULATOR_LIMIT, quotient * period + tail // _FINANCIAL_YEAR_SECONDS), \
+        tail % _FINANCIAL_YEAR_SECONDS
+
+
+def _cost_charge(
+    annual_cents: int, residual: int, period_seconds: int, economy_version: int
+) -> tuple[int, int]:
+    if economy_version < 6:
+        return _hourly_charge(annual_cents, residual)
+    return _period_charge(annual_cents, residual, period_seconds)
+
+
+def _wallet_delta_dollars(
+    economy: dict[str, Any], company_cid: str, net_revenue_cents: int
+) -> tuple[int, int]:
+    residuals = economy.setdefault("payoutResidCents", {})
+    combined = _clamp(
+        int(net_revenue_cents) + int(residuals.get(company_cid, 0)),
+        -_ACCUMULATOR_LIMIT,
+        _ACCUMULATOR_LIMIT,
+    )
+    dollars = combined // 100 if combined >= 0 else -((-combined) // 100)
+    residual = combined - dollars * 100
+    residuals[company_cid] = residual
+    return dollars, residual
 
 
 def _generalized_cost(
@@ -727,21 +981,99 @@ def _glide_step(actual: int, equilibrium: int, alpha_pm: int, resid: int) -> tup
     return actual + step, delta - step * 1000
 
 
-def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str, Any]:
+def _scaled_rate(hourly: int, residual: int, period_seconds: int) -> tuple[int, int]:
+    numerator = max(0, int(hourly)) * period_seconds + max(0, int(residual))
+    return numerator // 3600, numerator % 3600
+
+
+def _model_delivery_cents(
+    market: Mapping[str, Any], service: Mapping[str, Any], delivered: int
+) -> int:
+    if market.get("kind") == "cargo":
+        metadata = service.get("metadata") if isinstance(service.get("metadata"), Mapping) else {}
+        distance_meters = _integer(metadata.get("distanceMeters"), 1000, 0)
+        distance_km = max(1, distance_meters // 1000)
+        base = _saturating_multiply(
+            _saturating_multiply(delivered, distance_km), _CARGO_CENTS_PER_UNIT_KM
+        )
+        return _saturating_multiply(base, int(service.get("fareCents", 1000))) \
+            // _CARGO_REFERENCE_FARE_CENTS
+    return _saturating_multiply(
+        _saturating_multiply(delivered, int(service.get("fareCents", 0))),
+        _PASSENGER_COHORT_SCALE,
+    )
+
+
+def _delivery_delta(
+    economy: dict[str, Any], snapshot: Mapping[str, Any] | None,
+    market: Mapping[str, Any], service: Mapping[str, Any], allocated: int,
+) -> tuple[int, int]:
+    if snapshot is None or market.get("kind") == "cargo":
+        return allocated, _model_delivery_cents(market, service, allocated)
+    cursors = economy.setdefault("deliveryCursors", {})
+    line_cid = str(service["lineCid"])
+    prior_value = cursors.get(line_cid)
+    prior = prior_value if isinstance(prior_value, Mapping) else {
+        "deliveredPassengers": 0, "earnedRevenueCents": 0,
+    }
+    lines = snapshot.get("lines") if isinstance(snapshot.get("lines"), Mapping) else {}
+    row_value = lines.get(line_cid)
+    row = row_value if isinstance(row_value, Mapping) else prior
+    passengers = _integer(
+        row.get("deliveredPassengers"), int(prior.get("deliveredPassengers", 0)),
+        0, 1_000_000_000,
+    )
+    earned = _integer(
+        row.get("earnedRevenueCents"), int(prior.get("earnedRevenueCents", 0)),
+        0, _ACCUMULATOR_LIMIT,
+    )
+    prior_passengers = int(prior.get("deliveredPassengers", 0))
+    prior_earned = int(prior.get("earnedRevenueCents", 0))
+    if passengers < prior_passengers or earned < prior_earned:
+        raise ProtocolError("passenger delivery snapshot moved backwards")
+    cursors[line_cid] = {
+        "deliveredPassengers": passengers, "earnedRevenueCents": earned,
+    }
+    return passengers - prior_passengers, earned - prior_earned
+
+
+def _evaluate_market_v2(
+    economy: dict[str, Any], market_cid: str,
+    delivery_snapshot: Mapping[str, Any] | None = None,
+    period_seconds: int | None = None,
+) -> dict[str, Any]:
     market = economy["markets"][market_cid]
     params = _economy_params(economy)
+    version = _economy_version(economy)
+    v6 = version >= 6
+    period = _integer(period_seconds, 300, 60, 86400) if v6 else 3600
+    demand = int(market["demand"])
+    if v6:
+        demand, demand_resid = _scaled_rate(
+            demand, int(market.get("demandResid", 0)), period
+        )
+        market["demandResid"] = demand_resid
     services: list[dict[str, Any]] = []
     for line_cid in sorted(economy.get("services", {})):
         service = economy["services"][line_cid]
         if service.get("enabled") is not False and service.get("marketCid") == market_cid:
             gc_cents, factors = _generalized_cost(params, market, service)
-            services.append({"cid": line_cid, "service": service, "gcCents": gc_cents, "factors": factors})
+            available_capacity = int(service["capacity"])
+            if v6:
+                available_capacity, capacity_resid = _scaled_rate(
+                    available_capacity, int(service.get("capacityResid", 0)), period
+                )
+                service["capacityResid"] = capacity_resid
+            services.append({
+                "cid": line_cid, "service": service, "gcCents": gc_cents,
+                "factors": factors, "availableCapacity": available_capacity,
+            })
 
     gc_min = int(market["gcOutsideCents"])
     for option in services:
         gc_min = min(gc_min, option["gcCents"])
     theta = int(market["thetaCents"])
-    cutoff_weight = 0 if _economy_version(economy) >= 3 else 1
+    cutoff_weight = 0 if version >= 3 else 1
     weight_items = [{
         "cid": "~outside",
         "weight": _logit_weight_with_cutoff(
@@ -763,7 +1095,7 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
         if service.get("sharePpm") is None:
             service["sharePpm"], service["shareResid"] = equilibrium, 0
         else:
-            fare_shock = _economy_version(economy) >= 3 and (
+            fare_shock = version >= 3 and (
                 service.get("lastFareCents") is None
                 or int(service["fareCents"]) > int(service["lastFareCents"])
             )
@@ -777,21 +1109,24 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
             )
             service["sharePpm"] = _clamp(share, 0, _SHARE_SCALE)
             service["shareResid"] = resid
-        if _economy_version(economy) >= 3:
+        if version >= 3:
             service["lastFareCents"] = int(service["fareCents"])
         service_share_ppm += int(service["sharePpm"])
     outside_ppm = max(0, _SHARE_SCALE - service_share_ppm)
 
     active = list(services)
     allocations: dict[str, int] = {}
-    remaining = int(market["demand"])
+    remaining = demand
     while remaining > 0 and active:
         preview_items = [{"cid": "~outside", "weight": outside_ppm}]
         preview_items.extend(
             {"cid": option["cid"], "weight": int(option["service"]["sharePpm"])} for option in active
         )
         preview = _proportional(remaining, preview_items)
-        capped = [option for option in active if preview.get(option["cid"], 0) > int(option["service"]["capacity"])]
+        capped = [
+            option for option in active
+            if preview.get(option["cid"], 0) > int(option["availableCapacity"])
+        ]
         if not capped:
             for cid, amount in preview.items():
                 allocations[cid] = allocations.get(cid, 0) + amount
@@ -799,7 +1134,7 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
         else:
             capped_ids = {option["cid"] for option in capped}
             for option in capped:
-                amount = int(option["service"]["capacity"])
+                amount = int(option["availableCapacity"])
                 allocations[option["cid"]] = amount
                 remaining -= amount
             active = [option for option in active if option["cid"] not in capped_ids]
@@ -809,59 +1144,284 @@ def _evaluate_market_v2(economy: Mapping[str, Any], market_cid: str) -> dict[str
     result: dict[str, Any] = {
         "marketCid": market_cid,
         "name": market["name"],
-        "demand": int(market["demand"]),
+        "demand": demand,
         "gcOutsideCents": int(market["gcOutsideCents"]),
         "thetaCents": theta,
         "outside": allocations.get("~outside", 0),
         "outsidePpm": outside_ppm,
         "services": {},
     }
+    if v6:
+        result["hourlyDemand"] = int(market["demand"])
+        result["intervalSeconds"] = period
     if market.get("kind") is not None:
         result["kind"] = market["kind"]
     for option in services:
         service = option["service"]
         amount = allocations.get(option["cid"], 0)
-        if int(service["capacity"]) > 0:
-            service["lagLoadPpm"] = amount * _SHARE_SCALE // int(service["capacity"])
+        if int(option["availableCapacity"]) > 0:
+            service["lagLoadPpm"] = amount * _SHARE_SCALE // int(option["availableCapacity"])
         else:
             service["lagLoadPpm"] = _SHARE_SCALE
-        result["services"][option["cid"]] = {
+        delivered, raw_gross_revenue = _delivery_delta(
+            economy, delivery_snapshot, market, service, amount
+        )
+        gross_revenue = raw_gross_revenue
+        if version >= 7:
+            gross_revenue, service["revenueMultiplierResid"] = _difficulty_apply(
+                raw_gross_revenue,
+                int(params["revenueMultiplierPpm"]),
+                int(service.get("revenueMultiplierResid", 0)),
+            )
+        metadata = service.get("metadata", {})
+        vehicle_cids = metadata.get("vehicleCids", []) if isinstance(metadata, dict) else []
+        vehicle_costs = economy.get("vehicleCosts", {})
+        managed_vehicle_cost = isinstance(vehicle_costs, dict) and any(
+            str(vehicle_cid) in vehicle_costs for vehicle_cid in vehicle_cids
+        )
+        annual_vehicle_upkeep = 0 if managed_vehicle_cost else int(
+            service.get("annualVehicleUpkeepCents", 0)
+        )
+        vehicle_upkeep, upkeep_resid = _cost_charge(
+            annual_vehicle_upkeep,
+            0 if managed_vehicle_cost else int(service.get("upkeepResid", 0)),
+            period,
+            version,
+        )
+        if not managed_vehicle_cost:
+            service["upkeepResid"] = upkeep_resid
+        service_result = {
             "lineCid": option["cid"],
             "companyCid": service["companyCid"],
             "name": service["name"],
             "allocated": amount,
+            "delivered": delivered,
             "capacity": service["capacity"],
+            "availableCapacity": option["availableCapacity"],
             "fareCents": service["fareCents"],
-            "revenueCents": _saturating_multiply(amount, int(service["fareCents"])),
-            "shareBasisPoints": amount * 10000 // int(market["demand"]) if int(market["demand"]) > 0 else 0,
+            "revenueCents": gross_revenue,
+            "grossRevenueCents": gross_revenue,
+            "annualVehicleUpkeepCents": annual_vehicle_upkeep,
+            "vehicleUpkeepCents": vehicle_upkeep,
+            "operatingCostCents": vehicle_upkeep,
+            "netRevenueCents": _signed_add(gross_revenue, -vehicle_upkeep),
+            "upkeepResid": int(service.get("upkeepResid", 0)),
+            "shareBasisPoints": amount * 10000 // demand if demand > 0 else 0,
             "sharePpm": int(service["sharePpm"]),
             "shareResid": int(service["shareResid"]),
             "equilibriumPpm": option["equilibriumPpm"],
             "lagLoadPpm": int(service["lagLoadPpm"]),
             "factors": option["factors"],
         }
+        if version >= 7:
+            service_result["rawGrossRevenueCents"] = raw_gross_revenue
+            service_result["revenueMultiplierPpm"] = int(params["revenueMultiplierPpm"])
+            service_result["revenueMultiplierResid"] = int(
+                service.get("revenueMultiplierResid", 0)
+            )
+        result["services"][option["cid"]] = service_result
     return result
 
 
-def _evaluate_all_v2(economy: dict[str, Any]) -> dict[str, Any]:
-    results: dict[str, Any] = {"markets": {}, "companies": {}, "totalDemand": 0, "totalRevenueCents": 0}
+def _evaluate_all_v2(
+    economy: dict[str, Any], boundary_game_time_seconds: int | None = None,
+    delivery_snapshot: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    # Reject an out-of-order authored boundary before mutating share/upkeep
+    # stocks. Replay validation must have the same transactional failure
+    # semantics as the in-game Lua evaluator.
+    scheduler = economy.get("scheduler")
+    scheduled_boundary: int | None = None
+    if isinstance(scheduler, dict) and scheduler.get("nextBoundaryGameTimeSeconds") is not None:
+        expected = int(scheduler["nextBoundaryGameTimeSeconds"])
+        scheduled_boundary = expected if boundary_game_time_seconds is None else int(
+            boundary_game_time_seconds
+        )
+        if scheduled_boundary != expected:
+            raise ProtocolError("economy boundary is not the next scheduled accounting interval")
+    version = _economy_version(economy)
+    period_seconds = _integer(
+        scheduler.get("epochSeconds") if isinstance(scheduler, Mapping) else None,
+        300 if version >= 6 else 3600, 60, 86400,
+    )
+    results: dict[str, Any] = {
+        "markets": {}, "companies": {}, "totalDemand": 0,
+        "totalRevenueCents": 0, "totalGrossRevenueCents": 0,
+        "totalVehicleUpkeepCents": 0, "totalInfrastructureUpkeepCents": 0,
+        "totalOperatingCostCents": 0, "totalNetRevenueCents": 0,
+    }
+    if version >= 6:
+        results["intervalSeconds"] = period_seconds
+    vehicle_line: dict[str, str] = {}
+    line_vehicle_annual: dict[str, int] = {}
+    line_vehicle_upkeep: dict[str, int] = {}
+    company_vehicle_annual: dict[str, int] = {}
+    company_vehicle_upkeep: dict[str, int] = {}
+    company_assigned_upkeep: dict[str, int] = {}
+    vehicle_costs = economy.setdefault("vehicleCosts", {})
+    for line_cid in sorted(economy.get("services", {})):
+        service = economy["services"][line_cid]
+        if service.get("enabled") is False:
+            continue
+        metadata = service.get("metadata", {})
+        vehicle_cids = metadata.get("vehicleCids", []) if isinstance(metadata, dict) else []
+        for raw_vehicle_cid in vehicle_cids:
+            vehicle_cid = str(raw_vehicle_cid)
+            record = vehicle_costs.get(vehicle_cid)
+            if isinstance(record, dict) and str(record.get("companyCid", "")) == str(
+                service.get("companyCid", "")
+            ) and vehicle_cid not in vehicle_line:
+                vehicle_line[vehicle_cid] = line_cid
+    for vehicle_cid in sorted(vehicle_costs):
+        record = vehicle_costs[vehicle_cid]
+        if not isinstance(record, dict):
+            continue
+        charge, residual = _cost_charge(
+            int(record.get("annualVehicleUpkeepCents", 0)),
+            int(record.get("upkeepResid", 0)),
+            period_seconds,
+            version,
+        )
+        record["upkeepResid"] = residual
+        company_cid = str(record.get("companyCid", ""))
+        company_vehicle_annual[company_cid] = _saturating_add(
+            company_vehicle_annual.get(company_cid, 0),
+            int(record.get("annualVehicleUpkeepCents", 0)),
+        )
+        company_vehicle_upkeep[company_cid] = _saturating_add(
+            company_vehicle_upkeep.get(company_cid, 0), charge
+        )
+        line_cid = vehicle_line.get(vehicle_cid)
+        if line_cid is not None:
+            line_vehicle_annual[line_cid] = _saturating_add(
+                line_vehicle_annual.get(line_cid, 0),
+                int(record.get("annualVehicleUpkeepCents", 0)),
+            )
+            line_vehicle_upkeep[line_cid] = _saturating_add(
+                line_vehicle_upkeep.get(line_cid, 0), charge
+            )
+            company_assigned_upkeep[company_cid] = _saturating_add(
+                company_assigned_upkeep.get(company_cid, 0), charge
+            )
     for market_cid in sorted(economy.get("markets", {})):
-        market = _evaluate_market_v2(economy, market_cid)
+        market = _evaluate_market_v2(
+            economy, market_cid, delivery_snapshot, period_seconds
+        )
         results["markets"][market_cid] = market
         results["totalDemand"] = _saturating_add(results["totalDemand"], market["demand"])
         for line_cid in sorted(market["services"]):
             service = market["services"][line_cid]
+            if line_cid in line_vehicle_upkeep:
+                service["annualVehicleUpkeepCents"] = line_vehicle_annual.get(line_cid, 0)
+                service["vehicleUpkeepCents"] = line_vehicle_upkeep[line_cid]
+                service["operatingCostCents"] = service["vehicleUpkeepCents"]
+                service["netRevenueCents"] = _signed_add(
+                    service["grossRevenueCents"], -service["vehicleUpkeepCents"]
+                )
+                service["upkeepResid"] = 0
             company_cid = service["companyCid"]
             company = results["companies"].setdefault(
-                company_cid, {"companyCid": company_cid, "demand": 0, "revenueCents": 0}
+                company_cid, {
+                    "companyCid": company_cid, "demand": 0, "revenueCents": 0,
+                    "grossRevenueCents": 0, "vehicleUpkeepCents": 0,
+                    "infrastructureUpkeepCents": 0, "operatingCostCents": 0,
+                    "netRevenueCents": 0,
+                }
             )
-            company["demand"] = _saturating_add(company["demand"], service["allocated"])
+            company["demand"] = _saturating_add(
+                company["demand"], service.get("delivered", service["allocated"])
+            )
             company["revenueCents"] = _saturating_add(company["revenueCents"], service["revenueCents"])
+            company["grossRevenueCents"] = _saturating_add(
+                company["grossRevenueCents"], service["grossRevenueCents"]
+            )
+            company["vehicleUpkeepCents"] = _saturating_add(
+                company["vehicleUpkeepCents"], service["vehicleUpkeepCents"]
+            )
             results["totalRevenueCents"] = _saturating_add(
                 results["totalRevenueCents"], service["revenueCents"]
             )
+            results["totalGrossRevenueCents"] = _saturating_add(
+                results["totalGrossRevenueCents"], service["grossRevenueCents"]
+            )
+            results["totalVehicleUpkeepCents"] = _saturating_add(
+                results["totalVehicleUpkeepCents"], service["vehicleUpkeepCents"]
+            )
+    for company_cid in sorted(company_vehicle_upkeep):
+        company = results["companies"].setdefault(
+            company_cid,
+            {
+                "companyCid": company_cid, "demand": 0, "revenueCents": 0,
+                "grossRevenueCents": 0, "vehicleUpkeepCents": 0,
+                "infrastructureUpkeepCents": 0, "operatingCostCents": 0,
+                "netRevenueCents": 0,
+            },
+        )
+        unassigned = max(
+            0,
+            company_vehicle_upkeep[company_cid]
+            - company_assigned_upkeep.get(company_cid, 0),
+        )
+        company["vehicleUpkeepCents"] = _saturating_add(
+            company.get("vehicleUpkeepCents", 0), unassigned
+        )
+        company["annualVehicleUpkeepCents"] = company_vehicle_annual.get(company_cid, 0)
+        company["unassignedVehicleUpkeepCents"] = unassigned
+        results["totalVehicleUpkeepCents"] = _saturating_add(
+            results["totalVehicleUpkeepCents"], unassigned
+        )
+    company_costs = economy.setdefault("companyCosts", {})
+    for company_cid in sorted(company_costs):
+        cost_record = company_costs[company_cid]
+        infrastructure_upkeep, upkeep_resid = _cost_charge(
+            int(cost_record.get("annualInfrastructureUpkeepCents", 0)),
+            int(cost_record.get("upkeepResid", 0)),
+            period_seconds,
+            version,
+        )
+        cost_record["upkeepResid"] = upkeep_resid
+        company = results["companies"].setdefault(
+            company_cid,
+            {
+                "companyCid": company_cid, "demand": 0, "revenueCents": 0,
+                "grossRevenueCents": 0, "vehicleUpkeepCents": 0,
+                "infrastructureUpkeepCents": 0, "operatingCostCents": 0,
+                "netRevenueCents": 0,
+            },
+        )
+        company["infrastructureCapitalCents"] = int(cost_record.get("infrastructureCapitalCents", 0))
+        company["annualInfrastructureUpkeepCents"] = int(
+            cost_record.get("annualInfrastructureUpkeepCents", 0)
+        )
+        company["infrastructureUpkeepCents"] = infrastructure_upkeep
+        company["infrastructureUpkeepResid"] = upkeep_resid
+        results["totalInfrastructureUpkeepCents"] = _saturating_add(
+            results["totalInfrastructureUpkeepCents"], infrastructure_upkeep
+        )
+    for company_cid in sorted(results["companies"]):
+        company = results["companies"][company_cid]
+        company["operatingCostCents"] = _saturating_add(
+            company.get("vehicleUpkeepCents", 0), company.get("infrastructureUpkeepCents", 0)
+        )
+        company["netRevenueCents"] = _signed_add(
+            company.get("grossRevenueCents", 0), -company["operatingCostCents"]
+        )
+        results["totalOperatingCostCents"] = _saturating_add(
+            results["totalOperatingCostCents"], company["operatingCostCents"]
+        )
+        results["totalNetRevenueCents"] = _signed_add(
+            results["totalNetRevenueCents"], company["netRevenueCents"]
+        )
+    if version >= 7:
+        results["townGrowth"] = _advance_town_demand(economy, results)
     economy["epoch"] = int(economy.get("epoch", 0)) + 1
     results["epoch"] = economy["epoch"]
+    if scheduled_boundary is not None:
+        results["boundaryGameTimeSeconds"] = scheduled_boundary
+        scheduler["lastBoundaryGameTimeSeconds"] = scheduled_boundary
+        scheduler["nextBoundaryGameTimeSeconds"] = scheduled_boundary + _integer(
+            scheduler.get("epochSeconds"), 300 if version >= 6 else 3600, 60, 86400
+        )
     economy["lastResults"] = copy.deepcopy(results)
     return results
 
@@ -981,7 +1541,12 @@ def _evaluate_all(economy: dict[str, Any]) -> dict[str, Any]:
 def _record_settlement(economy: dict[str, Any], results: Mapping[str, Any]) -> None:
     ledger = economy.setdefault(
         "ledger",
-        {"settledEpochs": {}, "companies": {}, "settlementCount": 0, "totalDemand": 0, "totalRevenueCents": 0},
+        {
+            "settledEpochs": {}, "companies": {}, "settlementCount": 0,
+            "totalDemand": 0, "totalRevenueCents": 0, "totalGrossRevenueCents": 0,
+            "totalVehicleUpkeepCents": 0, "totalInfrastructureUpkeepCents": 0,
+            "totalOperatingCostCents": 0, "totalNetRevenueCents": 0,
+        },
     )
     epoch_key = str(int(results["epoch"]))
     if ledger.setdefault("settledEpochs", {}).get(epoch_key):
@@ -993,6 +1558,22 @@ def _record_settlement(economy: dict[str, Any], results: Mapping[str, Any]) -> N
         ledger["totalRevenueCents"] = _saturating_add(
             ledger.get("totalRevenueCents", 0), results.get("totalRevenueCents", 0)
         )
+        ledger["totalGrossRevenueCents"] = _saturating_add(
+            ledger.get("totalGrossRevenueCents", 0), results.get("totalGrossRevenueCents", 0)
+        )
+        ledger["totalVehicleUpkeepCents"] = _saturating_add(
+            ledger.get("totalVehicleUpkeepCents", 0), results.get("totalVehicleUpkeepCents", 0)
+        )
+        ledger["totalInfrastructureUpkeepCents"] = _saturating_add(
+            ledger.get("totalInfrastructureUpkeepCents", 0),
+            results.get("totalInfrastructureUpkeepCents", 0),
+        )
+        ledger["totalOperatingCostCents"] = _saturating_add(
+            ledger.get("totalOperatingCostCents", 0), results.get("totalOperatingCostCents", 0)
+        )
+        ledger["totalNetRevenueCents"] = _signed_add(
+            ledger.get("totalNetRevenueCents", 0), results.get("totalNetRevenueCents", 0)
+        )
     else:
         ledger["totalDemand"] = int(ledger.get("totalDemand", 0)) + int(results.get("totalDemand", 0))
         ledger["totalRevenueCents"] = int(ledger.get("totalRevenueCents", 0)) + int(
@@ -1002,12 +1583,32 @@ def _record_settlement(economy: dict[str, Any], results: Mapping[str, Any]) -> N
     for company_cid in sorted(results.get("companies", {})):
         item = results["companies"][company_cid]
         total = companies.setdefault(
-            company_cid, {"companyCid": company_cid, "demand": 0, "revenueCents": 0, "wins": 0}
+            company_cid, {
+                "companyCid": company_cid, "demand": 0, "revenueCents": 0,
+                "grossRevenueCents": 0, "vehicleUpkeepCents": 0,
+                "infrastructureUpkeepCents": 0, "operatingCostCents": 0,
+                "netRevenueCents": 0, "wins": 0,
+            }
         )
         if _economy_version(economy) >= 2:
             total["demand"] = _saturating_add(total.get("demand", 0), item.get("demand", 0))
             total["revenueCents"] = _saturating_add(
                 total.get("revenueCents", 0), item.get("revenueCents", 0)
+            )
+            total["grossRevenueCents"] = _saturating_add(
+                total.get("grossRevenueCents", 0), item.get("grossRevenueCents", 0)
+            )
+            total["vehicleUpkeepCents"] = _saturating_add(
+                total.get("vehicleUpkeepCents", 0), item.get("vehicleUpkeepCents", 0)
+            )
+            total["infrastructureUpkeepCents"] = _saturating_add(
+                total.get("infrastructureUpkeepCents", 0), item.get("infrastructureUpkeepCents", 0)
+            )
+            total["operatingCostCents"] = _saturating_add(
+                total.get("operatingCostCents", 0), item.get("operatingCostCents", 0)
+            )
+            total["netRevenueCents"] = _signed_add(
+                total.get("netRevenueCents", 0), item.get("netRevenueCents", 0)
             )
         else:
             total["demand"] += int(item.get("demand", 0))
@@ -1112,8 +1713,22 @@ def _scoreboard(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
         reach = len(markets_by_company.get(company_cid, set()))
         lines = lines_by_company.get(company_cid, 0)
         revenue = int(totals.get("revenueCents", 0))
+        gross = int(totals.get("grossRevenueCents", revenue))
+        operating_cost = int(totals.get("operatingCostCents", 0))
+        net = int(totals.get("netRevenueCents", gross - operating_cost))
         demand = int(totals.get("demand", 0))
-        if _economy_version(economy) >= 2:
+        if _economy_version(economy) >= 5:
+            model_value = max(
+                0,
+                _signed_add(
+                    _signed_add(net * 10, _saturating_multiply(demand, 100)),
+                    _saturating_add(
+                        _saturating_multiply(reach, 500_000),
+                        _saturating_multiply(lines, 250_000),
+                    ),
+                ),
+            )
+        elif _economy_version(economy) >= 2:
             model_value = _saturating_add(
                 _saturating_add(_saturating_multiply(revenue, 10), _saturating_multiply(demand, 100)),
                 _saturating_add(_saturating_multiply(reach, 500_000), _saturating_multiply(lines, 250_000)),
@@ -1125,6 +1740,9 @@ def _scoreboard(model: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
             "name": model["companies"][company_cid].get("name", company_cid),
             "settledDemand": demand,
             "settledRevenueCents": revenue,
+            "settledGrossRevenueCents": gross,
+            "settledOperatingCostCents": operating_cost,
+            "settledNetRevenueCents": net,
             "marketsReached": reach,
             "activeLines": lines,
             "marketWins": int(totals.get("wins", 0)),
@@ -1138,6 +1756,7 @@ def _ranked_winner(model: Mapping[str, Any]) -> tuple[str | None, list[dict[str,
     ranked.sort(
         key=lambda item: (
             -int(item["modelValueCents"]),
+            -int(item.get("settledNetRevenueCents", item["settledRevenueCents"])),
             -int(item["settledRevenueCents"]),
             -int(item["settledDemand"]),
             -int(item["marketWins"]),
@@ -1198,6 +1817,13 @@ def _charge_credit_and_assess_solvency(
         dict(ledger_companies_value) if isinstance(ledger_companies_value, Mapping) else {}
     )
     settlement_count = max(1, int(ledger.get("settlementCount", 1)))
+    scheduler_value = economy.get("scheduler")
+    scheduler = dict(scheduler_value) if isinstance(scheduler_value, Mapping) else {}
+    period = max(60, int(scheduler.get("epochSeconds", 3600)))
+    breach_limit = (
+        max(1, (insolvent_limit * 3600 + period - 1) // period)
+        if insolvent_limit > 0 else 0
+    )
     accounts = _mapping(network_finance.get("accounts"), "replay network finance accounts")
     bankrupt_cid: str | None = None
     for company_value in model.get("companyOrder", []):
@@ -1209,11 +1835,21 @@ def _charge_credit_and_assess_solvency(
         ledger_company = (
             dict(ledger_company_value) if isinstance(ledger_company_value, Mapping) else {}
         )
-        settled = max(0, int(ledger_company.get("revenueCents", 0)))
-        limit = base_limit + (settled // settlement_count) * revenue_multiple
+        settled = max(
+            0,
+            int(ledger_company.get(
+                "netRevenueCents", ledger_company.get("revenueCents", 0)
+            )),
+        )
+        average = settled // settlement_count
+        per_hour = (average // period) * 3600 \
+            + ((average % period) * 3600) // period
+        limit = base_limit + per_hour * revenue_multiple
         balance = int(account.get("balance", 0))
         drawn = -balance if balance < 0 else 0
-        interest = (drawn * interest_permille) // 1000
+        interest_numerator = interest_permille * period
+        interest = (drawn // 3_600_000) * interest_numerator \
+            + ((drawn % 3_600_000) * interest_numerator) // 3_600_000
         if interest > 0:
             balance -= interest
             account["balance"] = balance
@@ -1223,8 +1859,8 @@ def _charge_credit_and_assess_solvency(
             int(account.get("insolventSettlements", 0)) + 1 if breached else 0
         )
         account["creditLimit"] = limit
-        if bankruptcy_enabled and insolvent_limit > 0 \
-                and int(account["insolventSettlements"]) >= insolvent_limit \
+        if bankruptcy_enabled and breach_limit > 0 \
+                and int(account["insolventSettlements"]) >= breach_limit \
                 and bankrupt_cid is None:
             bankrupt_cid = company_cid
     if bankrupt_cid is None:
@@ -1246,6 +1882,28 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         if _economy_version(economy) >= 2:
             _upsert_market_v2(economy, action["market"])
             _upsert_service_v2(economy, action["service"])
+            for vehicle_cid in sorted(action.get("vehicleCosts", {})):
+                cost = action["vehicleCosts"][vehicle_cid]
+                existing = economy.setdefault("vehicleCosts", {}).get(vehicle_cid)
+                if isinstance(existing, Mapping) \
+                        and str(existing.get("companyCid", "")) != str(cost["companyCid"]):
+                    raise ProtocolError(
+                        "vehicle upkeep company cannot change without an authored transfer"
+                    )
+                economy["vehicleCosts"][vehicle_cid] = {
+                    "vehicleCid": vehicle_cid,
+                    "companyCid": str(cost["companyCid"]),
+                    "annualVehicleUpkeepCents": _integer(
+                        cost.get("annualVehicleUpkeepCents"), 0, 0, _ACCUMULATOR_LIMIT
+                    ),
+                    "upkeepResid": _integer(
+                        existing.get("upkeepResid", 0) if isinstance(existing, Mapping)
+                        else cost.get("upkeepResid"),
+                        0, 0,
+                        _FINANCIAL_YEAR_SECONDS - 1
+                        if _economy_version(economy) >= 6 else _HOURS_PER_YEAR - 1,
+                    ),
+                }
         else:
             _upsert_market(economy, action["market"])
             _upsert_service(economy, action["service"])
@@ -1357,7 +2015,25 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
             # Version-2 share/crowding stocks live in the authored model, so
             # replay must advance them by deterministic re-evaluation; embedded
             # host results are verified against it by canonical checksum.
-            results = _evaluate_all_v2(economy)
+            delivery_value = action.get("deliverySnapshot")
+            delivery_snapshot = delivery_value if isinstance(delivery_value, Mapping) else None
+            # A standalone developer settlement has no wire payload. The game
+            # still evaluates it against its local presentation ledger; an
+            # empty world therefore supplies an empty cumulative snapshot, not
+            # the model-delivery fallback used by cargo. Network settlements
+            # always carry the verified snapshot in their ordered action.
+            network_finance = model.get("networkFinance")
+            if delivery_snapshot is None and _economy_version(economy) >= 6 \
+                    and (not isinstance(network_finance, Mapping)
+                         or network_finance.get("initialized") is not True):
+                delivery_snapshot = {
+                    "schemaVersion": 1,
+                    "presentationEpoch": int(economy.get("epoch", 0)),
+                    "lines": {},
+                }
+            results = _evaluate_all_v2(
+                economy, action.get("boundaryGameTimeSeconds"), delivery_snapshot
+            )
             if isinstance(action.get("results"), Mapping):
                 if checksum(copy.deepcopy(dict(action["results"]))) != checksum(results):
                     raise ProtocolError(
@@ -1371,6 +2047,15 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
             results = _evaluate_all(economy)
         _record_settlement(economy, results)
         _advance_town_development_points(model, economy, results)
+        result_companies = _mapping(results.get("companies"), "settlement result companies")
+        payout_dollars: dict[str, int] = {}
+        for company_cid in sorted(result_companies):
+            net_revenue_cents = int(result_companies[company_cid].get(
+                "netRevenueCents", result_companies[company_cid].get("revenueCents", 0)
+            ))
+            payout_dollars[str(company_cid)], _ = _wallet_delta_dollars(
+                economy, str(company_cid), net_revenue_cents
+            )
         # Network checkpoints include the canonical cash ledger in their
         # authored model. Native journal commands are deliberately excluded;
         # replay applies only the deterministic ordered payout amounts.
@@ -1378,13 +2063,11 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         if isinstance(network_finance, dict) and network_finance.get("initialized") is True:
             _charge_credit_and_assess_solvency(model, network_finance)
             accounts = _mapping(network_finance.get("accounts"), "replay network finance accounts")
-            result_companies = _mapping(results.get("companies"), "settlement result companies")
             for company_cid in sorted(result_companies):
                 account = accounts.get(str(company_cid))
                 if not isinstance(account, dict):
                     raise ProtocolError(f"settlement finance references unknown company: {company_cid}")
-                revenue_cents = int(result_companies[company_cid].get("revenueCents", 0))
-                account["balance"] = int(account.get("balance", 0)) + revenue_cents // 100
+                account["balance"] = int(account.get("balance", 0)) + payout_dollars[str(company_cid)]
         _evaluate_match_end(model, event_tick)
     elif action_type == "town.develop":
         _advance_town_development_cursor(model, action.get("batch"))

@@ -2,6 +2,18 @@ local util = require "tpf2_mp/util"
 
 local M = {}
 
+-- Exact floor(value * numerator / denominator) for non-negative authored
+-- integers without first constructing a potentially unsafe Lua double. The
+-- quotient/remainder split is mirrored by the companion replayer.
+local function scaledFloor(value, numerator, denominator)
+  value = math.max(0, util.integer(value, 0))
+  numerator = math.max(0, util.integer(numerator, 0))
+  denominator = math.max(1, util.integer(denominator, 1))
+  local quotient = math.floor(value / denominator)
+  local remainder = value - quotient * denominator
+  return quotient * numerator + math.floor(remainder * numerator / denominator)
+end
+
 function M.newState()
   return {
     totalPaid = 0,
@@ -47,6 +59,7 @@ function M.newState()
         lastReason = nil,
         lastError = nil,
         items = {},
+        pending = {},
       },
     },
   }
@@ -75,6 +88,7 @@ function M.ensureNetworkAccounts(state)
   reconciliation.failures = math.max(0, util.integer(reconciliation.failures, 0))
   reconciliation.totalAbsolute = math.max(0, util.integer(reconciliation.totalAbsolute, 0))
   reconciliation.items = reconciliation.items or {}
+  reconciliation.pending = reconciliation.pending or {}
   return ledger
 end
 
@@ -92,6 +106,7 @@ function M.initialiseNetworkAccounts(state, companyCids, startingCash, context)
   ledger.entries = {}
   ledger.totalApplied = 0
   ledger.bankruptCid = nil
+  ledger.reconciliation.pending = {}
   ledger.initializedContext = util.deepCopy(context or {})
   for _, companyCid in ipairs(companyCids or {}) do
     companyCid = tostring(companyCid)
@@ -169,30 +184,40 @@ function M.creditRules(rules)
   }
 end
 
-function M.creditLimit(ledgerCompany, settlementCount, rules)
+function M.creditLimit(ledgerCompany, settlementCount, rules, periodSeconds)
   local credit = M.creditRules(rules)
-  local settled = math.max(0, util.integer(ledgerCompany and ledgerCompany.revenueCents, 0))
+  local settled = math.max(0, util.integer(ledgerCompany
+    and (ledgerCompany.netRevenueCents ~= nil and ledgerCompany.netRevenueCents
+      or ledgerCompany.revenueCents), 0))
   local settlements = math.max(1, util.integer(settlementCount, 1))
-  local perSettlement = math.floor(settled / settlements)
-  return credit.baseLimitCents + perSettlement * credit.revenueMultiple
+  local period = math.max(60, util.integer(periodSeconds, 3600))
+  local average = math.floor(settled / settlements)
+  local perHour = scaledFloor(average, 3600, period)
+  return credit.baseLimitCents + perHour * credit.revenueMultiple
 end
 
 -- Charges interest on drawn credit and advances (or clears) each company's
 -- insolvency countdown. Returns a per-company report plus the cid of any
 -- company that has now failed.
-function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, context, rules)
+function M.chargeCreditAndAssessSolvency(
+  state, companyCids, economyLedger, context, rules, periodSeconds)
   local ledger = M.ensureNetworkAccounts(state)
   local credit = M.creditRules(rules)
   local ledgerCompanies = economyLedger and economyLedger.companies or {}
   local settlementCount = economyLedger and economyLedger.settlementCount or 1
+  local period = math.max(60, util.integer(periodSeconds, 3600))
+  local breachLimit = credit.insolventSettlements > 0
+    and math.max(1, math.floor((credit.insolventSettlements * 3600 + period - 1) / period)) or 0
   local report, bankruptCid = {}, nil
   for _, companyCid in ipairs(companyCids or {}) do
     local account = ledger.accounts[companyCid]
     if account then
-      local limit = M.creditLimit(ledgerCompanies[companyCid], settlementCount, rules)
+      local limit = M.creditLimit(
+        ledgerCompanies[companyCid], settlementCount, rules, period)
       local balance = util.integer(account.balance, 0)
       local drawn = balance < 0 and -balance or 0
-      local interest = math.floor(drawn * credit.interestPermille / 1000)
+      local interest = scaledFloor(
+        drawn, credit.interestPermille * period, 3600000)
       if interest > 0 then
         M.applyNetworkDelta(state, companyCid, -interest, {
           kind = "credit-interest", drawn = drawn, reason = context and context.reason or nil,
@@ -208,8 +233,8 @@ function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, cont
       -- Elimination is opt-out. With bankruptcy disabled, or the breach
       -- threshold set to zero, debt still charges interest and still limits
       -- what a company can afford, but nobody is removed from the match.
-      if credit.bankruptcyEnabled and credit.insolventSettlements > 0
-        and account.insolventSettlements >= credit.insolventSettlements
+      if credit.bankruptcyEnabled and breachLimit > 0
+        and account.insolventSettlements >= breachLimit
         and not bankruptCid then
         bankruptCid = companyCid
       end
@@ -220,6 +245,7 @@ function M.chargeCreditAndAssessSolvency(state, companyCids, economyLedger, cont
         interestCents = interest,
         breached = breached,
         insolventSettlements = account.insolventSettlements,
+        insolventSettlementLimit = breachLimit,
       }
     end
   end
@@ -336,6 +362,8 @@ function M.reconcileNetworkAccounts(state, companies, context)
     ok = true,
   }
   local errors = {}
+  local contextTick = type(context) == "table" and tonumber(context.tick) or nil
+  local clock = contextTick or reconciliation.attempts
   for _, companyCid in ipairs(util.sortedKeys(ledger.accounts)) do
     local account = ledger.accounts[companyCid]
     local company = type(companies) == "table" and companies[companyCid] or nil
@@ -344,20 +372,42 @@ function M.reconcileNetworkAccounts(state, companies, context)
     local target = util.integer(account.balance, 0)
     local adjustment = before and (target - util.integer(before, 0)) or nil
     local booked, bookingError = false, nil
+    local waiting, commandIssued = false, false
+    local pending = reconciliation.pending[companyCid]
     if not playerId then
       bookingError = "native player binding is unavailable"
     elseif before == nil then
       bookingError = "native balance is unavailable"
     elseif adjustment == 0 then
       booked = true
+      reconciliation.pending[companyCid] = nil
+    elseif pending and clock - (contextTick and util.integer(pending.issuedTick, clock)
+      or util.integer(pending.issuedAttempt, clock)) < 15 then
+      -- Journal commands become visible asynchronously. Poll every update, but
+      -- never issue the same correction repeatedly while the previous command
+      -- is still in flight.
+      booked = true
+      waiting = true
     else
       booked, bookingError = M.book(playerId, adjustment)
       if booked then
+        commandIssued = true
         reconciliation.commands = reconciliation.commands + 1
         reconciliation.totalAbsolute = reconciliation.totalAbsolute + math.abs(adjustment)
+        reconciliation.pending[companyCid] = {
+          target = target,
+          before = before,
+          adjustment = adjustment,
+          issuedTick = contextTick,
+          issuedAttempt = reconciliation.attempts,
+        }
       end
     end
     local after = playerId and nativeBalance(playerId) or nil
+    if after ~= nil and math.abs(after - target) < 0.5 then
+      reconciliation.pending[companyCid] = nil
+      waiting = false
+    end
     local item = {
       companyCid = companyCid,
       playerId = playerId,
@@ -366,6 +416,8 @@ function M.reconcileNetworkAccounts(state, companies, context)
       adjustment = adjustment,
       after = after,
       settledImmediately = booked == true and after ~= nil and math.abs(after - target) < 0.5,
+      waiting = waiting,
+      commandIssued = commandIssued,
       ok = booked == true,
       error = booked and nil or tostring(bookingError),
     }
@@ -470,13 +522,18 @@ function M.settleProxyTurn(state, controlPlayerId, companyPlayerId, turnStart, t
   return true, recordTransfer(state, record)
 end
 
-function M.payResults(state, companies, results)
+function M.payResults(state, companies, results, payoutDollars)
   state.lastPayouts = {}
   local errors = {}
   for _, companyCid in ipairs(util.sortedKeys(results.companies or {})) do
     local companyResult = results.companies[companyCid]
     local company = companies[companyCid]
-    local amount = math.floor((companyResult.revenueCents or 0) / 100)
+    local amount = type(payoutDollars) == "table" and payoutDollars[companyCid]
+    if amount == nil then
+      amount = math.floor(((companyResult.netRevenueCents ~= nil
+        and companyResult.netRevenueCents or companyResult.revenueCents) or 0) / 100)
+    end
+    amount = util.integer(amount, 0)
     if company and company.playerId and amount ~= 0 then
       local ok, err = M.book(company.playerId, amount)
       state.lastPayouts[companyCid] = { amount = amount, ok = ok, error = err }

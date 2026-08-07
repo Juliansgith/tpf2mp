@@ -26,6 +26,7 @@ game = {
       localProxyEnabled = false,
       maxEpochs = 0,
       valuationTargetCents = 0,
+      developerEconomyControls = true,
     },
   },
   interface = {
@@ -101,7 +102,8 @@ for epoch = 1, 96 do
 end
 
 local saved = script.save()
-assert(saved.economy.epoch == 96, "long replay trace stopped at the wrong epoch")
+assert(saved.economy.epoch == 96, "long replay trace stopped at epoch "
+  .. tostring(saved.economy.epoch) .. ": " .. tostring(saved.lastError))
 assert(saved.economy.ledger.settlementCount == 96, "long replay trace lost a settlement")
 assert(saved.match.status == "running", "disabled match limits unexpectedly finished the trace")
 assert(saved.eventLog.nextSeq == 106, "long replay trace recorded the wrong event count")

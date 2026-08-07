@@ -471,7 +471,7 @@ function M.new(deps)
 
   return {
     submit = submitIntent,
-    scheduleFollowup = followups.schedule,
+    scheduleFollowup = followups.schedule, cancelLineRegistration = followups.cancelLineRegistration,
     processDeferred = processDeferredNetworkIntent,
     consume = consumeBridge,
     pendingBarrierReason = networkPendingBarrierReason,

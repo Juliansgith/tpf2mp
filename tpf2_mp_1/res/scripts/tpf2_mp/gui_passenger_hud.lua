@@ -66,14 +66,14 @@ local function vehicleText(item)
 end
 
 local function stationText(item)
-  return string.format("TPF2MP PAX  %d waiting  |  %d passengers/epoch  |  %s",
+  return string.format("TPF2MP PAX  %d waiting  |  %d passengers/5m  |  %s",
     tonumber(item.waiting) or 0,
     tonumber(item.throughput) or 0,
     tostring(item.name or item.stationGroupCid or "station"))
 end
 
 local function lineText(item)
-  return string.format("TPF2MP PAX  %d waiting  |  %d allocated/epoch  |  %d boarded  |  %s",
+  return string.format("TPF2MP PAX  %d waiting  |  %d allocated/5m  |  %d boarded  |  %s",
     tonumber(item.waiting) or 0,
     tonumber(item.allocated) or 0,
     tonumber(item.boardedTotal) or 0,

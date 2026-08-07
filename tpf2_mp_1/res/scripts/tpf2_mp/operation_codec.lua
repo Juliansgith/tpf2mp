@@ -2,8 +2,12 @@ local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
 
 local M = {
-  SCHEMA_VERSION = 1,
+  SCHEMA_VERSION = 3,
+  FLAT_ALTERNATIVE_SCHEMA_VERSION = 2,
+  LEGACY_SCHEMA_VERSION = 1,
   MAX_STOPS = 256,
+  MAX_ALTERNATIVE_TERMINALS = 64,
+  MAX_ALTERNATIVE_TERMINALS_TOTAL = 1024,
   MAX_VEHICLE_PARTS = 128,
 }
 
@@ -51,6 +55,19 @@ local function boundedString(value, maximum, allowEmpty)
     and (allowEmpty == true or value ~= "") and value:find("[%z\1-\31]") == nil
 end
 
+-- BuyVehicle and ReplaceVehicle use the same typed config for every carrier.
+-- Keep resource identity portable without freezing the codec to the stock
+-- train/waggon folders: buses, trucks, trams, ships, aircraft, and mod-added
+-- vehicle namespaces all live below vehicle/.  Repository lookup during
+-- materialisation remains the final proof that a named model exists locally.
+local function vehicleModelResource(value)
+  return boundedString(value, 240, false)
+    and value:sub(1, 8) == "vehicle/"
+    and value:sub(-4) == ".mdl"
+    and not value:find("..", 1, true)
+    and not value:find("\\", 1, true)
+end
+
 local function boundedInteger(value, low, high)
   return type(value) == "number" and value == math.floor(value)
     and value >= low and value <= high
@@ -63,7 +80,7 @@ local function validateColor(value)
     and boundedInteger(value.b, 0, 1000)
 end
 
-local function validateLine(value)
+local function validateLine(value, schemaVersion)
   if not exactFields(value, { "stops" }) then return false, "line must contain only stops" end
   -- The vanilla line manager commits an empty CreateLine first and then one
   -- UpdateLine per added/removed stop.  Empty and one-stop routes are valid
@@ -72,8 +89,12 @@ local function validateLine(value)
   if not isArray or count > M.MAX_STOPS then
     return false, "line requires between 0 and " .. M.MAX_STOPS .. " stops"
   end
+  local totalAlternatives = 0
   for index, stop in ipairs(value.stops) do
-    if not exactFields(stop, { "stationGroupCid", "station", "terminal" }) then
+    local fields = schemaVersion == M.LEGACY_SCHEMA_VERSION
+      and { "stationGroupCid", "station", "terminal" }
+      or { "stationGroupCid", "station", "terminal", "alternativeTerminals" }
+    if not exactFields(stop, fields) then
       return false, "line stop " .. index .. " has unknown or missing fields"
     end
     if not canonicalId(stop.stationGroupCid, "station_group") then
@@ -82,6 +103,30 @@ local function validateLine(value)
     if not boundedInteger(stop.station, 0, 4095)
       or not boundedInteger(stop.terminal, 0, 4095) then
       return false, "line stop " .. index .. " has an invalid station/terminal"
+    end
+    if schemaVersion ~= M.LEGACY_SCHEMA_VERSION then
+      local alternatives, alternativeCount = array(stop.alternativeTerminals, true)
+      local logicalCount = schemaVersion == M.FLAT_ALTERNATIVE_SCHEMA_VERSION
+        and alternativeCount / 2 or alternativeCount
+      if not alternatives or logicalCount ~= math.floor(logicalCount)
+        or logicalCount > M.MAX_ALTERNATIVE_TERMINALS then
+        return false, "line stop " .. index .. " has invalid alternative terminals"
+      end
+      totalAlternatives = totalAlternatives + logicalCount
+      if totalAlternatives > M.MAX_ALTERNATIVE_TERMINALS_TOTAL then
+        return false, "line contains too many alternative terminals"
+      end
+      for _, alternative in ipairs(stop.alternativeTerminals) do
+        if schemaVersion == M.FLAT_ALTERNATIVE_SCHEMA_VERSION then
+          if not boundedInteger(alternative, 0, 4095) then
+            return false, "line stop " .. index .. " has an invalid flat alternative terminal"
+          end
+        elseif not exactFields(alternative, { "station", "terminal" })
+          or not boundedInteger(alternative.station, 0, 4095)
+          or not boundedInteger(alternative.terminal, 0, 4095) then
+          return false, "line stop " .. index .. " has an invalid StationTerminal pair"
+        end
+      end
     end
   end
   return true
@@ -99,12 +144,8 @@ local function validateVehicleConfig(value)
     if not exactFields(part, { "model", "reversed", "loadConfig", "color", "logo" }) then
       return false, "vehicle part " .. index .. " has unknown or missing fields"
     end
-    local railwayModel = type(part.model) == "string"
-      and (part.model:sub(1, 14) == "vehicle/train/"
-        or part.model:sub(1, 15) == "vehicle/waggon/")
-    if not boundedString(part.model, 240, false)
-      or not railwayModel or part.model:sub(-4) ~= ".mdl" then
-      return false, "vehicle part " .. index .. " is not a canonical railway model resource"
+    if not vehicleModelResource(part.model) then
+      return false, "vehicle part " .. index .. " is not a portable vehicle model resource"
     end
     if type(part.reversed) ~= "boolean" or not validateColor(part.color)
       or not boundedString(part.logo, 240, true) then
@@ -144,7 +185,11 @@ function M.validate(transaction)
   if not exactFields(transaction, {
     "schemaVersion", "kind", "companyCid", "data", "digest", "transactionId",
   }) then return false, "operation transaction has unknown or missing fields" end
-  if transaction.schemaVersion ~= M.SCHEMA_VERSION then return false, "unsupported operation schemaVersion" end
+  if transaction.schemaVersion ~= M.SCHEMA_VERSION
+    and transaction.schemaVersion ~= M.FLAT_ALTERNATIVE_SCHEMA_VERSION
+    and transaction.schemaVersion ~= M.LEGACY_SCHEMA_VERSION then
+    return false, "unsupported operation schemaVersion"
+  end
   local spec = SPECS[transaction.kind]
   if not spec then return false, "unsupported canonical operation kind" end
   if not canonicalId(transaction.companyCid, "company") then return false, "operation has an invalid companyCid" end
@@ -156,10 +201,10 @@ function M.validate(transaction)
   if kind == "line.create" then
     ok = exactFields(data, { "name", "color", "line" })
       and boundedString(data.name, 160, false) and validateColor(data.color)
-    if ok then ok, err = validateLine(data.line) end
+    if ok then ok, err = validateLine(data.line, transaction.schemaVersion) end
   elseif kind == "line.update" then
     ok = exactFields(data, { "targetCid", "line" }) and canonicalId(data.targetCid, "line")
-    if ok then ok, err = validateLine(data.line) end
+    if ok then ok, err = validateLine(data.line, transaction.schemaVersion) end
   elseif kind == "line.delete" then
     ok = exactFields(data, { "targetCid" }) and canonicalId(data.targetCid, "line")
   elseif kind == "vehicle.buy" then
@@ -213,6 +258,12 @@ function M.make(kind, companyCid, data)
     companyCid = tostring(companyCid or ""),
     data = util.deepCopy(data or {}),
   }
+  local line = transaction.data and transaction.data.line
+  for _, stop in ipairs(type(line) == "table" and line.stops or {}) do
+    if type(stop) == "table" and stop.alternativeTerminals == nil then
+      stop.alternativeTerminals = {}
+    end
+  end
   transaction.digest = hash.value(contentView(transaction))
   transaction.transactionId = "operation:" .. transaction.digest
   local ok, err = M.validate(transaction)
@@ -227,7 +278,9 @@ end
 function M.defaultLine(stationGroupCids)
   local stops = {}
   for _, cid in ipairs(stationGroupCids or {}) do
-    stops[#stops + 1] = { stationGroupCid = cid, station = 0, terminal = 0 }
+    stops[#stops + 1] = {
+      stationGroupCid = cid, station = 0, terminal = 0, alternativeTerminals = {},
+    }
   end
   return { stops = stops }
 end
@@ -258,7 +311,7 @@ local function repositoryModelId(gameApi, name)
       if value and value >= 0 then return value end
     end
   end
-  return nil, "railway model is unavailable locally: " .. tostring(name)
+  return nil, "vehicle model is unavailable locally: " .. tostring(name)
 end
 
 local function modelCompartmentLayout(gameApi, name, knownModelId)
@@ -271,14 +324,14 @@ local function modelCompartmentLayout(gameApi, name, knownModelId)
   if id == nil then return nil, idError end
   local modelOk, model = pcall(rep.get, id)
   if not modelOk or model == nil then
-    return nil, "cannot read railway model metadata: " .. tostring(name)
+    return nil, "cannot read vehicle model metadata: " .. tostring(name)
   end
   local metadata = safeField(model, "metadata")
   local transportVehicle = safeField(metadata, "transportVehicle")
   local compartments = safeField(transportVehicle, "compartments")
   local count = vectorLength(compartments)
   if not count or count < 1 or count > 64 then
-    return nil, "railway model has no valid transport compartments: " .. tostring(name)
+    return nil, "vehicle model has no valid transport compartments: " .. tostring(name)
   end
   local layout = {}
   for index = 1, count do
@@ -286,7 +339,7 @@ local function modelCompartmentLayout(gameApi, name, knownModelId)
     local loadConfigs = safeField(compartment, "loadConfigs")
     local loadConfigCount = vectorLength(loadConfigs)
     if not loadConfigCount or loadConfigCount < 1 or loadConfigCount > 256 then
-      return nil, "railway model compartment has no valid load configurations: "
+      return nil, "vehicle model compartment has no valid load configurations: "
         .. tostring(name) .. "#" .. tostring(index)
     end
     layout[index] = loadConfigCount
@@ -335,6 +388,31 @@ local function newType(gameApi, path)
   return {}
 end
 
+local function newStationTerminal(gameApi, station, terminal)
+  local value = gameApi and gameApi.type and gameApi.type.StationTerminal
+  local constructor = value and value.new
+  if not util.isCallable(constructor) then
+    return nil, "StationTerminal constructor is unavailable"
+  end
+  local errors = {}
+  for attempt = 1, 2 do
+    local ok, result
+    if attempt == 1 then ok, result = pcall(constructor, station, terminal)
+    else ok, result = pcall(constructor) end
+    if ok and result ~= nil then
+      local fieldsOk, fieldsError = pcall(function()
+        result.station = station
+        result.terminal = terminal
+      end)
+      if fieldsOk then return result end
+      errors[#errors + 1] = tostring(fieldsError)
+    else
+      errors[#errors + 1] = tostring(result)
+    end
+  end
+  return nil, "cannot construct StationTerminal userdata: " .. table.concat(errors, " | ")
+end
+
 local function vec3(gameApi, color)
   local r, g, b = color.r / 1000, color.g / 1000, color.b / 1000
   if gameApi and gameApi.type and gameApi.type.Vec3f
@@ -351,17 +429,55 @@ local function resolve(options, cid, expectedKind)
   return value
 end
 
+function M.normaliseLineStops(transaction)
+  local source = transaction and transaction.data and transaction.data.line
+    and transaction.data.line.stops or {}
+  local result = {}
+  for index, stop in ipairs(source) do
+    local normalised = {
+      stationGroupCid = stop.stationGroupCid,
+      station = stop.station,
+      terminal = stop.terminal,
+      alternativeTerminals = {},
+    }
+    if transaction.schemaVersion == M.FLAT_ALTERNATIVE_SCHEMA_VERSION then
+      for alternativeIndex = 1, #(stop.alternativeTerminals or {}), 2 do
+        normalised.alternativeTerminals[#normalised.alternativeTerminals + 1] = {
+          station = stop.alternativeTerminals[alternativeIndex],
+          terminal = stop.alternativeTerminals[alternativeIndex + 1],
+        }
+      end
+    elseif transaction.schemaVersion ~= M.LEGACY_SCHEMA_VERSION then
+      normalised.alternativeTerminals = util.deepCopy(stop.alternativeTerminals or {})
+    end
+    result[index] = normalised
+  end
+  return result
+end
+
 local function materialiseLine(transaction, options)
   local line = newType(options.api, "Line")
   line.stops = {}
-  for index, encoded in ipairs(transaction.data.line.stops) do
+  for index, encoded in ipairs(M.normaliseLineStops(transaction)) do
     local stationGroup, err = resolve(options, encoded.stationGroupCid, "station_group")
     if not stationGroup then return nil, err end
     local stop = newType(options.api, "Line.Stop")
     stop.stationGroup = stationGroup
     stop.station = encoded.station
     stop.terminal = encoded.terminal
+    -- In Build 35924 this field is exposed as a native
+    -- std::vector<StationTerminal> proxy.  Assigning a populated Lua table
+    -- asks sol2 to convert each owning StationTerminal userdata to the
+    -- pointer userdata returned by component reads and fails at runtime.
+    -- Initialising the vector empty and assigning each element through the
+    -- proxy performs the intended value copy.
     stop.alternativeTerminals = {}
+    for alternativeIndex, sourceAlternative in ipairs(encoded.alternativeTerminals) do
+      local alternative, alternativeError = newStationTerminal(
+        options.api, sourceAlternative.station, sourceAlternative.terminal)
+      if not alternative then return nil, alternativeError end
+      stop.alternativeTerminals[alternativeIndex] = alternative
+    end
     stop.loadMode = 0
     stop.minWaitingTime = 0
     stop.maxWaitingTime = 0

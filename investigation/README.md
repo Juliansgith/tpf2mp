@@ -1,10 +1,36 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-07 (Europe/Amsterdam), prototype `0.24.0-alpha`, state schema `24`, checkpoint format `4`, passenger-presentation schema `1`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
+Last updated: 2026-08-07 (Europe/Amsterdam), prototype `0.28.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
+
+[Save-owned difficulty and canonical model-town growth](SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md)
+records the four immutable new-world revenue modes, legacy-to-Normal migration,
+exact residual scaling, crowd-independent authored town populations, automatic
+corridor-demand growth, cross-language proof, and the 1850-2030 audit tool.
+
+[Authoritative standard-UI replacement](STOCK_UI_AUTHORITATIVE_REPLACEMENT_2026-08-07.md)
+records which native surfaces are overwritten, suppressed, preserved, or still
+engine-only, plus the fail-soft GUI lifecycle and acceptance boundary.
 
 [Exact passenger presentation and native boundary](PASSENGER_PRESENTATION_AND_NATIVE_BOUNDARY_2026-08-07.md)
 records deterministic endpoint queues/per-train loads, format-4 binding, the
-exact HUD, and the static proof that tag 36 cannot address a train or station.
+exact presentation ledger, and the static proof that tag 36 cannot address a
+train or station.
+
+[Five-minute delivered economy](FIVE_MINUTE_DELIVERED_ECONOMY_2026-08-07.md)
+supersedes the hourly cadence with exact five-minute rate proration,
+completed-leg passenger revenue, distance fares, financial cohorts, cargo
+unit-kilometre calibration, a three-hour competitive financial year, save
+migration, and Lua/Python replay evidence.
+
+[Prompt station release after registered-service timeout](PROMPT_STATION_RELEASE_POLICY_2026-08-07.md)
+records the live 778-second timetable defect, the exact 10-second native
+arrival lead, the resulting safety timeout, and the replacement prompt
+all-peer release policy.
+
+[Authored hourly economy and operating costs](AUTHORED_HOURLY_ECONOMY_AND_OPERATING_COSTS_2026-08-07.md)
+records automatic synchronized-hour settlement, complete-consist and private-
+infrastructure upkeep, exact residual arithmetic, native-finance quarantine,
+cross-language proof, and the remaining fresh-match live gate.
 
 This directory distinguishes four things that must not be blurred together:
 
@@ -38,8 +64,8 @@ authoritative indicator projection, immediate native pause fence, and bounded
 resume path are recorded in
 [CLOCK_INDICATOR_AND_NATIVE_PAUSE_FENCE_2026-08-06.md](CLOCK_INDICATOR_AND_NATIVE_PAUSE_FENCE_2026-08-06.md).
 
-The follow-up lifecycle normalization, single departure-schedule policy,
-durable slot allocator, barrier pruning, and 50-train authority stress are
+The historical lifecycle normalization, departure-slot experiment, durable
+slot codec, barrier pruning, and 50-train authority stress are
 recorded in
 [STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md](STATION_SCHEDULE_INTEGRATION_AND_BARRIER_LOAD_2026-08-06.md).
 
@@ -282,7 +308,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 24 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger queues/loads, and authored town-development progress, and retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-4 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, or an unchanged upgrade postcondition faults closed.
+State schema 26 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger queues/loads/completed revenue, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, and authored physical town-development progress, and retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-4 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, or an unchanged upgrade postcondition faults closed.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two
@@ -321,6 +347,10 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md](SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md) - immutable new-world revenue modes, exact residuals, canonical model towns/demand growth, legacy migration, and era audit.
+- [VEHICLE_COST_COMPATIBILITY_AND_ECONOMY_HUD_2026-08-07.md](VEHICLE_COST_COMPATIBILITY_AND_ECONOMY_HUD_2026-08-07.md) - resolved native annual vehicle costs across vanilla/mod resources, generic `vehicle/*.mdl` protocol scope, corrected speed/frequency/capacity incentive, `$50m` default capital, authoritative HUD fields, and the live acceptance boundary.
+- [FIVE_MINUTE_DELIVERED_ECONOMY_2026-08-07.md](FIVE_MINUTE_DELIVERED_ECONOMY_2026-08-07.md) - current automatic five-minute completed-trip economy, playable calibration, migration, and replay contract.
+- [AUTHORED_HOURLY_ECONOMY_AND_OPERATING_COSTS_2026-08-07.md](AUTHORED_HOURLY_ECONOMY_AND_OPERATING_COSTS_2026-08-07.md) - superseded hourly slice; historical native-cost capture and finance-quarantine evidence.
 - [CREDIT_CHECKPOINT_REPLAY_PARITY_2026-08-06.md](CREDIT_CHECKPOINT_REPLAY_PARITY_2026-08-06.md) - credit/insolvency checkpoint fields, strict legacy/current shapes, Python settlement parity, tamper proof, and match-runtime extraction.
 - [SIGNAL_REPLAY_STALE_BUILDER_2026-08-06.md](SIGNAL_REPLAY_STALE_BUILDER_2026-08-06.md) - origin-only signal-ghost lifetime failure after delayed edge replacement, exact minidump/consensus evidence, no-dereference replay quarantine, and fresh-session regression contract.
 - [TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md](TRAIN_CLOCK_RENDEZVOUS_AND_STATION_BARRIERS_2026-08-06.md) - projected future-time clock barriers, paused telemetry, station-leg holds/releases, format-3 durability, automated fault/restart proof, and four-round populated localhost acceptance.
@@ -329,6 +359,7 @@ Relevant documented behavior used by the implementation:
 - [STATION_CONSTRUCTION_SETTLE_TIMEOUT_2026-08-05.md](STATION_CONSTRUCTION_SETTLE_TIMEOUT_2026-08-05.md) - false native-result timeout after visibly successful station construction, bounded 600-update fix, delayed-result regression, and clean six-operation two-process checkpoint proof.
 - [VEHICLE_PURCHASE_AND_ROUTE_PHASE_2026-08-05.md](VEHICLE_PURCHASE_AND_ROUTE_PHASE_2026-08-05.md) - typed stock railway purchase/assignment capture, consist namespace fix, canonical vehicle identity, route-phase policy, and the focused live-test boundary.
 - [VANILLA_LINE_MANAGER_CAPTURE_2026-08-04.md](VANILLA_LINE_MANAGER_CAPTURE_2026-08-04.md) - exact Build 35924 tags 3-5 payload layouts, stop stride/fields, typed native queue, canonical replay path, automated evidence, fresh two-process create/update/delete proof, and the remaining human widget/stop visual test.
+- [LINE_FOLLOWUP_AND_ALTERNATIVE_TERMINALS_2026-08-07.md](LINE_FOLLOWUP_AND_ALTERNATIVE_TERMINALS_2026-08-07.md) - live deleted-line FIFO cancellation, exact `Line::Stop +0x10` typed `StationTerminal` recovery, failed flattened L2 acceptance, corrected L3/schema-3 codecs, and pending two-origin acceptance.
 - [ORDINARY_UI_FACILITY_MATRIX_2026-08-04.md](ORDINARY_UI_FACILITY_MATRIX_2026-08-04.md) - passing staged two-process signals/depot/station/graphless-asset matrix, two last-mile fixes, audit receipts, and the new boundary.
 - [FACILITY_UI_FAILURES_2026-08-04.md](FACILITY_UI_FAILURES_2026-08-04.md) - first broad two-process facility-UI failure evidence; sentinel edge-object recovery, four-visitor station-edit coalescing, signed-zero bridge repair, and native vanilla-speed capture.
 - [SIGNAL_FACILITY_LIVE_PROOF_2026-08-04.md](SIGNAL_FACILITY_LIVE_PROOF_2026-08-04.md) - exact-build signal add/remove, facility custody, station edit, asset/depot/station removal, `ASSET_GROUP` discovery, no-op upgrade rejection, and evidence paths.
@@ -361,7 +392,7 @@ Relevant documented behavior used by the implementation:
 - How long can two independently running Build 35924 worlds remain equivalent after schema-5/7 transactions when autonomous systems and real services are introduced?
 - Can a future supported engine hook replace the one remaining manual Save-dialog step without weakening receipt-bound restore safety? Coordinated peer-local reload and mandatory post-load convergence now pass live.
 - What station-barrier latency and signaling interactions appear with two or more real trains on one populated line? Long-pause/speed-3 and deliberate slow-peer recovery now pass with one train.
-- Do two populated stops retain their order and alternate-terminal selections through the actual widgets from both origins? Basic stock create/rename/color/delete/add/remove now passes.
+- Do two populated stops retain their order and schema-2 alternate-terminal selections through the actual widgets from both origins? Typed capture/replay is implemented and automated; the two-origin visual acceptance remains.
 - Which canonical payload, reference-translation, replay, and postcondition formats are required to turn each gated vehicle category into playable synchronized actions?
 - Which consequential or autonomous mutation paths remain outside the selected 23 visitors?
 - Can towns and industries be held stable for long dual-instance runs, then driven by host events?

@@ -19,10 +19,18 @@ struct NativeVectorLayout {
   std::uint8_t* capacity{};
 };
 
+struct SuppressedStationTerminal {
+  std::int32_t station{};
+  std::int32_t terminal{};
+
+  bool operator==(const SuppressedStationTerminal&) const = default;
+};
+
 struct SuppressedLineStop {
   std::int32_t station_group{-1};
   std::int32_t station{};
   std::int32_t terminal{};
+  std::vector<SuppressedStationTerminal> alternative_terminals;
 };
 
 struct SuppressedLineCommand {

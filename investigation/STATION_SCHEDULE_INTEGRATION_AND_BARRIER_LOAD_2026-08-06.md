@@ -4,6 +4,12 @@ Date: 2026-08-06 (Europe/Amsterdam)
 
 Implementation: prototype `0.22.0-alpha`, state schema `22`, checkpoint format `3`
 
+Superseded for physical train control on 2026-08-07. A registered one-train
+service exposed a 364.2-game-second post-arrival hold and then hit the active
+round timeout. The slot codec remains supported for archived evidence, but new
+physical station rounds use prompt all-peer release. See
+[PROMPT_STATION_RELEASE_POLICY_2026-08-07.md](PROMPT_STATION_RELEASE_POLICY_2026-08-07.md).
+
 ## Review verdict
 
 The four review findings were correct. The first two were architectural bugs,

@@ -21,6 +21,7 @@ local M = {
   MAX_CONSTRUCTION_EDGES = 1024,
   MAX_REMOVALS = 512,
   MAX_CONSTRUCTIONS = 1,
+  MAX_CONSTRUCTION_COLLATERAL = 64,
   MAX_CONSTRUCTION_PARAM_VALUES = 8192,
   MAX_CONSTRUCTION_PARAM_DEPTH = 16,
 }
@@ -901,17 +902,48 @@ local function constructionSourceCid(entry, options, preferredKind)
   return reference and reference.cid or nil, referenceError, rootKind
 end
 
-local function normaliseConstructionChange(additions, removals, options)
-  if #additions > 1 or #removals > 1 then
-    return nil, "a canonical proposal may change only one construction at a time"
+local function normaliseConstructionCollateral(removals, options)
+  local result, seen = {}, {}
+  for _, removal in ipairs(removals) do
+    local cid, removalError, rootKind = constructionSourceCid(removal, options, nil)
+    if not cid then return nil, removalError end
+    local kind = rootKind == "asset" and "asset" or "construction"
+    local key = kind .. ":" .. cid
+    if seen[key] then return nil, "construction collateral contains a duplicate source" end
+    seen[key] = true
+    result[#result + 1] = { kind = kind, cid = cid }
   end
-  local mode = #additions == 1 and (#removals == 1 and "upgrade" or "build") or "remove"
+  table.sort(result, function(a, b)
+    if a.kind ~= b.kind then return a.kind < b.kind end
+    return a.cid < b.cid
+  end)
+  return result
+end
+
+local function normaliseConstructionChange(additions, removals, options)
+  if #additions > M.MAX_CONSTRUCTIONS or #removals > M.MAX_CONSTRUCTION_COLLATERAL then
+    return nil, "canonical construction proposal exceeds its bounded change limit"
+  end
+  if #additions == 0 and #removals ~= 1 then
+    return nil, "a canonical bulldoze must name exactly one construction root"
+  end
   local value = #additions == 1 and additions[1].value or nil
   local rawFileName = value and (safeField(value, "fileName") or safeField(value, "name")) or nil
   local prospectiveKind = rawFileName and constructionKind(rawFileName) or nil
+  local sourceParams = value and (safeField(value, "params") or safeField(value, "param")) or nil
+  local explicitUpgrade = value ~= nil and safeField(sourceParams, "upgrade") == true
+  if explicitUpgrade and #removals ~= 1 then
+    return nil, "a construction upgrade must name exactly one canonical source"
+  end
+  local mode = value == nil and "remove" or (explicitUpgrade and "upgrade" or "build")
   local sourceCid = ""
   local sourceRootKind
-  if #removals == 1 then
+  local collateral = {}
+  if mode == "build" then
+    local collateralError
+    collateral, collateralError = normaliseConstructionCollateral(removals, options)
+    if not collateral then return nil, collateralError end
+  elseif #removals == 1 then
     local sourceError
     sourceCid, sourceError, sourceRootKind = constructionSourceCid(
       removals[1], options, prospectiveKind)
@@ -922,7 +954,7 @@ local function normaliseConstructionChange(additions, removals, options)
       slot = "construction:1", mode = mode, adapter = "portable-construction",
       kind = sourceRootKind == "asset" and "asset" or "construction",
       sourceCid = sourceCid, fileName = "",
-      transform = {}, params = {}, modules = {},
+      transform = {}, params = {}, modules = {}, collateral = {},
     }
   end
 
@@ -932,6 +964,7 @@ local function normaliseConstructionChange(additions, removals, options)
     station.mode = mode
     station.adapter = "stock-rail-station"
     station.sourceCid = sourceCid
+    station.collateral = collateral
     return station
   end
   local fileName, fileError = portableResourceName(rawFileName, ".con", "construction")
@@ -950,7 +983,7 @@ local function normaliseConstructionChange(additions, removals, options)
   return {
     slot = "construction:1", mode = mode, adapter = "portable-construction",
     kind = constructionKind(fileName), sourceCid = sourceCid, fileName = fileName,
-    transform = transform, params = params, modules = modules,
+    transform = transform, params = params, modules = modules, collateral = collateral,
   }
 end
 
@@ -1536,7 +1569,7 @@ function M.validate(transaction)
     local construction = transaction.constructions[1]
     if not exactFields(construction, {
       "slot", "mode", "adapter", "kind", "sourceCid", "fileName",
-      "transform", "params", "modules",
+      "transform", "params", "modules", "collateral",
     }) or construction.slot ~= "construction:1" then
       return false, "invalid schema 7 construction record"
     end
@@ -1560,6 +1593,32 @@ function M.validate(transaction)
         or construction.sourceCid:sub(1, #sourcePrefix) ~= sourcePrefix then
         return false, "construction upgrade/removal has no canonical source"
       end
+    end
+    local collateralCount = type(construction.collateral) == "table"
+      and #construction.collateral or -1
+    if collateralCount < 0 or collateralCount > M.MAX_CONSTRUCTION_COLLATERAL
+      or not exactList(construction.collateral, collateralCount) then
+      return false, "construction collateral list is invalid"
+    end
+    if construction.mode ~= "build" and collateralCount > 0 then
+      return false, "construction upgrade/removal cannot contain collateral demolition"
+    end
+    local previousCollateralKey
+    for _, collateral in ipairs(construction.collateral) do
+      if not exactFields(collateral, { "kind", "cid" })
+        or (collateral.kind ~= "construction" and collateral.kind ~= "asset") then
+        return false, "construction collateral entry is invalid"
+      end
+      local prefix = collateral.kind .. ":"
+      if type(collateral.cid) ~= "string"
+        or collateral.cid:sub(1, #prefix) ~= prefix then
+        return false, "construction collateral has no canonical source"
+      end
+      local key = collateral.kind .. ":" .. collateral.cid
+      if previousCollateralKey and key <= previousCollateralKey then
+        return false, "construction collateral must be sorted and unique"
+      end
+      previousCollateralKey = key
     end
     if construction.mode == "remove" then
       if construction.fileName ~= "" or not exactList(construction.transform, 0)
@@ -2014,6 +2073,7 @@ function M.materialiseConstruction(transaction)
     return {
       mode = source.mode, adapter = source.adapter, kind = source.kind,
       slot = source.slot, sourceCid = source.sourceCid,
+      collateral = util.deepCopy(source.collateral),
     }
   end
   local params = source.adapter == "stock-rail-station"
@@ -2050,6 +2110,7 @@ function M.materialiseConstruction(transaction)
     kind = source.kind,
     slot = source.slot,
     sourceCid = source.sourceCid,
+    collateral = util.deepCopy(source.collateral),
     fileName = source.fileName,
     transform = util.deepCopy(source.transform),
     params = params,

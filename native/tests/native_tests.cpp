@@ -29,6 +29,11 @@ int main(int argc, char** argv) {
   static_assert(tpf2mp::profile::kLineStopStationGroupOffset == 0x00);
   static_assert(tpf2mp::profile::kLineStopStationOffset == 0x04);
   static_assert(tpf2mp::profile::kLineStopTerminalOffset == 0x08);
+  static_assert(tpf2mp::profile::kLineStopAlternativeTerminalsOffset == 0x10);
+  static_assert(tpf2mp::profile::kStationTerminalSize == 0x08);
+  static_assert(sizeof(tpf2mp::native_command::SuppressedStationTerminal) ==
+                tpf2mp::profile::kStationTerminalSize);
+  static_assert(tpf2mp::profile::kMaximumAlternativeTerminalsPerStop == 64);
   static_assert(tpf2mp::profile::kMaximumLineStops == 256);
   static_assert(tpf2mp::profile::kSetLineVehicleOffset == 0x00);
   static_assert(tpf2mp::profile::kSetLineLineOffset == 0x04);
@@ -67,8 +72,51 @@ int main(int argc, char** argv) {
   encoded_line.target = expected_line;
   encoded_line.name = "A";
   if (tpf2mp::native_command::EncodeSuppressedLineCommand(encoded_line) !=
-      "L1|29|42|-1|0|0|0|41|0|") {
+      "L3|29|42|-1|0|0|0|41|0|") {
     std::cerr << "pointer-free line command encoder is invalid\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kLineStopSize> native_stop{};
+  const std::int32_t station_group = 901;
+  const std::int32_t station = 1;
+  const std::int32_t terminal = 2;
+  std::array<tpf2mp::native_command::SuppressedStationTerminal, 2> alternatives{{
+      {3, 5}, {4, 6},
+  }};
+  std::memcpy(native_stop.data() + tpf2mp::profile::kLineStopStationGroupOffset,
+              &station_group, sizeof(station_group));
+  std::memcpy(native_stop.data() + tpf2mp::profile::kLineStopStationOffset,
+              &station, sizeof(station));
+  std::memcpy(native_stop.data() + tpf2mp::profile::kLineStopTerminalOffset,
+              &terminal, sizeof(terminal));
+  tpf2mp::native_command::NativeVectorLayout alternative_layout{
+      reinterpret_cast<std::uint8_t*>(alternatives.data()),
+      reinterpret_cast<std::uint8_t*>(alternatives.data() + alternatives.size()),
+      reinterpret_cast<std::uint8_t*>(alternatives.data() + alternatives.size()),
+  };
+  std::memcpy(
+      native_stop.data() + tpf2mp::profile::kLineStopAlternativeTerminalsOffset,
+      &alternative_layout, sizeof(alternative_layout));
+  tpf2mp::native_command::NativeVectorLayout stop_layout{
+      native_stop.data(), native_stop.data() + native_stop.size(),
+      native_stop.data() + native_stop.size(),
+  };
+  std::array<std::uint8_t, tpf2mp::profile::kUpdateLineMinimumSize> update_command{};
+  std::memcpy(update_command.data() + tpf2mp::profile::kUpdateLineTargetOffset,
+              &expected_line, sizeof(expected_line));
+  std::memcpy(update_command.data() + tpf2mp::profile::kUpdateLineLineOffset,
+              &stop_layout, sizeof(stop_layout));
+  tpf2mp::native_command::SuppressedLineCommand decoded_update;
+  if (!tpf2mp::native_command::DecodeSuppressedLineCommand(
+          5, update_command.data(), decoded_update) ||
+      decoded_update.stops.size() != 1 ||
+      decoded_update.stops[0].alternative_terminals !=
+          std::vector<tpf2mp::native_command::SuppressedStationTerminal>({
+              {3, 5}, {4, 6},
+          }) ||
+      tpf2mp::native_command::EncodeSuppressedLineCommand(decoded_update) !=
+          "L3|5|42|-1|0|0|0||1|901,1,2,3.5:4.6") {
+    std::cerr << "bounded alternative-terminal line decoder is invalid\n";
     return 1;
   }
   std::array<std::uint8_t, tpf2mp::profile::kSetLineMinimumSize> set_line_command{};

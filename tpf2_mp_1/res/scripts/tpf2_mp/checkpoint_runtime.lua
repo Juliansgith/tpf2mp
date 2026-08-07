@@ -25,6 +25,7 @@ function M.new(env)
         name = value.name,
         kind = value.kind,
         demand = value.demand,
+        demandResid = value.demandResid,
         outsideWeight = value.outsideWeight,
         votCentsPerHour = value.votCentsPerHour,
         gcOutsideCents = value.gcOutsideCents,
@@ -55,6 +56,10 @@ function M.new(env)
         shareResid = value.shareResid,
         lagLoadPpm = value.lagLoadPpm,
         lastFareCents = value.lastFareCents,
+        annualVehicleUpkeepCents = value.annualVehicleUpkeepCents,
+        upkeepResid = value.upkeepResid,
+        capacityResid = value.capacityResid,
+        revenueMultiplierResid = value.revenueMultiplierResid,
         metadata = util.deepCopy(value.metadata or {}),
       }
     end
@@ -63,7 +68,13 @@ function M.new(env)
       epoch = currentState().economy.epoch,
       params = util.deepCopy(currentState().economy.params),
       markets = markets,
+      towns = util.deepCopy(currentState().economy.towns or {}),
       services = services,
+      companyCosts = util.deepCopy(currentState().economy.companyCosts or {}),
+      vehicleCosts = util.deepCopy(currentState().economy.vehicleCosts or {}),
+      deliveryCursors = util.deepCopy(currentState().economy.deliveryCursors or {}),
+      payoutResidCents = util.deepCopy(currentState().economy.payoutResidCents or {}),
+      scheduler = util.deepCopy(currentState().economy.scheduler or {}),
       lastResults = util.deepCopy(currentState().economy.lastResults),
       ledger = util.deepCopy(currentState().economy.ledger),
     }

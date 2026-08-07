@@ -14,6 +14,9 @@ function M.new(deps)
     for _, cid in ipairs(util.sortedKeys(scores)) do ranked[#ranked + 1] = scores[cid] end
     table.sort(ranked, function(a, b)
       if a.modelValueCents ~= b.modelValueCents then return a.modelValueCents > b.modelValueCents end
+      if a.settledNetRevenueCents ~= b.settledNetRevenueCents then
+        return a.settledNetRevenueCents > b.settledNetRevenueCents
+      end
       if a.settledRevenueCents ~= b.settledRevenueCents then
         return a.settledRevenueCents > b.settledRevenueCents
       end

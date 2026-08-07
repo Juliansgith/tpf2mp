@@ -1,6 +1,7 @@
 local util = require "tpf2_mp/util"
 local canonical = require "tpf2_mp/canonical"
 local economy = require "tpf2_mp/economy"
+local economyDifficulty = require "tpf2_mp/economy_difficulty"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
@@ -151,6 +152,8 @@ function M.new(cfg, versions)
         startingCash = cfg.startingCash,
         maxEpochs = cfg.maxEpochs,
         valuationTargetCents = cfg.valuationTargetCents,
+        economyDifficulty = economyDifficulty.normaliseKey(cfg.economyDifficulty),
+        revenueMultiplierPpm = economyDifficulty.multiplier(cfg.economyDifficulty),
       },
     },
     companies = {},
@@ -374,6 +377,7 @@ function M.new(cfg, versions)
     lastError = nil,
   }
   result.finance.neutralizer.enabled = cfg.neutralizer
+  economy.setDifficulty(result.economy, cfg.economyDifficulty)
   return result
 end
 
@@ -384,6 +388,16 @@ function M.migrate(saved, context)
   local STATE_VERSION = assert(context.stateVersion, "stateVersion is required")
   local CHECKPOINT_VERSION = assert(context.checkpointVersion, "checkpointVersion is required")
   if type(saved) ~= "table" then return newState() end
+  -- Economy v5 and older counted one settlement per authored hour. Economy v6
+  -- settles every five minutes, so a persisted non-zero match limit must be
+  -- converted before economy.migrate replaces the version marker. Unlimited
+  -- matches remain zero. This preserves the advertised duration of old saves.
+  local priorEconomyVersion = util.integer(
+    type(saved.economy) == "table" and saved.economy.version or 0, 0)
+  local legacyMaxEpochs = saved.match and saved.match.rules
+    and util.integer(saved.match.rules.maxEpochs, 0) or nil
+  local legacyValuationTarget = saved.match and saved.match.rules
+    and util.integer(saved.match.rules.valuationTargetCents, 0) or nil
   local cfg = config()
   -- A local/hot-seat state cannot be promoted in place, and a saved network
   -- match cannot donate its barriers/accounts to a differently identified
@@ -476,9 +490,23 @@ function M.migrate(saved, context)
   saved.match.rules = saved.match.rules or util.deepCopy(defaults.match.rules)
   if saved.match.rules.startingCash == nil then saved.match.rules.startingCash = defaults.match.rules.startingCash end
   if saved.match.rules.maxEpochs == nil then saved.match.rules.maxEpochs = defaults.match.rules.maxEpochs end
+  if priorEconomyVersion > 0 and priorEconomyVersion < 6
+    and legacyMaxEpochs and legacyMaxEpochs > 0 then
+    saved.match.rules.maxEpochs = legacyMaxEpochs * 12
+  end
+  if priorEconomyVersion > 0 and priorEconomyVersion < 6
+    and legacyValuationTarget and legacyValuationTarget > 0 then
+    saved.match.rules.valuationTargetCents = legacyValuationTarget > 1000000000000
+      and 1000000000000000 or legacyValuationTarget * 1000
+  end
   if saved.match.rules.valuationTargetCents == nil then
     saved.match.rules.valuationTargetCents = defaults.match.rules.valuationTargetCents
   end
+  local savedDifficulty = economyDifficulty.normaliseKey(
+    saved.match.rules.economyDifficulty)
+  saved.match.rules.economyDifficulty = savedDifficulty
+  saved.match.rules.revenueMultiplierPpm = economyDifficulty.multiplier(savedDifficulty)
+  economy.setDifficulty(saved.economy, savedDifficulty)
   if saved.match.status == nil then saved.match.status = saved.initialized and "running" or "setup" end
   saved.finance.neutralizer = saved.finance.neutralizer or finance.newState().neutralizer
   saved.finance.transfers = saved.finance.transfers or finance.newState().transfers

@@ -9,6 +9,18 @@ $root = [IO.Path]::GetFullPath($ProjectRoot)
 
 $budgets = [ordered]@{
     'tpf2_mp_1\res\config\game_script\tpf2_mp.lua' = 3400
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy.lua' = 880
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_costs.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_flow.lua' = 260
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_revenue.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_difficulty.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_town_demand.lua' = 210
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_action_runtime.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_public_view.lua' = 180
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_clock_runtime.lua' = 80
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_asset_cost_runtime.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_cost_runtime.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_demo.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
     'tpf2_mp_1\res\scripts\tpf2_mp\network_followup_queue.lua' = 170
@@ -27,10 +39,13 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_town_development.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\operational_capture_runtime.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_line_command_codec.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_entry_points.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_quarantine.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_network_bootstrap.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_runtime.lua' = 650
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_text.lua' = 300
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
     'companion\tpf2mp\network.py' = 1450
     'companion\tpf2mp\client.py' = 200
     'companion\tpf2mp\anchor.py' = 300
@@ -48,6 +63,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_station_reading.lua' = 120
 }
 
 foreach ($relative in $budgets.Keys) {
@@ -76,6 +92,10 @@ $requiredModules = @(
     'tpf2_mp/network_clock_runtime',
     'tpf2_mp/authored_followup_runtime',
     'tpf2_mp/recovery_prepare_runtime',
+    'tpf2_mp/economy_clock_runtime',
+    'tpf2_mp/economy_action_runtime',
+    'tpf2_mp/economy_asset_cost_runtime',
+    'tpf2_mp/economy_demo',
     'tpf2_mp/network_speed_indicator',
     'tpf2_mp/vehicle_sync_runtime',
     'tpf2_mp/validation_runtime',
@@ -84,6 +104,7 @@ $requiredModules = @(
     'tpf2_mp/gui_entry_points',
     'tpf2_mp/gui_capture',
     'tpf2_mp/gui_view',
+    'tpf2_mp/gui_stock_presentation',
     'tpf2_mp/gui_event_runtime',
     'tpf2_mp/native_hook'
 )
@@ -126,6 +147,16 @@ if (-not $worldSource.Contains('require "tpf2_mp/world_operational_telemetry"'))
 }
 if (-not $worldSource.Contains('require "tpf2_mp/world_town_reading"')) {
     throw 'World runtime no longer composes the town reading boundary.'
+}
+if (-not $worldSource.Contains('require "tpf2_mp/world_station_reading"')) {
+    throw 'World runtime no longer composes the station association reading boundary.'
+}
+$economySource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\economy.lua') -Raw
+foreach ($requiredModule in @('economy_difficulty', 'economy_town_demand')) {
+    if (-not $economySource.Contains($requiredModule)) {
+        throw "Economy runtime no longer composes $requiredModule."
+    }
 }
 # Town size for the economy must stay policy-independent. Native land-use
 # capacity is scaled by the crowd policy, so reading it into gravity demand

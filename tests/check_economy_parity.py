@@ -32,7 +32,7 @@ def _digest_view(economy: dict[str, Any]) -> dict[str, Any]:
         }
         if value.get("outsideWeight") is not None:
             market["outsideWeight"] = value["outsideWeight"]
-        for field in ("kind", "waitWeightPm", "transferSeconds"):
+        for field in ("kind", "waitWeightPm", "transferSeconds", "demandResid"):
             if value.get(field) is not None:
                 market[field] = value[field]
         markets[cid] = market
@@ -53,7 +53,14 @@ def _digest_view(economy: dict[str, Any]) -> dict[str, Any]:
             "enabled": value.get("enabled"),
             "shareResid": value.get("shareResid"),
             "lagLoadPpm": value.get("lagLoadPpm"),
+            "annualVehicleUpkeepCents": value.get("annualVehicleUpkeepCents"),
+            "upkeepResid": value.get("upkeepResid"),
+            "metadata": copy.deepcopy(value.get("metadata", {})),
         }
+        if value.get("capacityResid") is not None:
+            service["capacityResid"] = value["capacityResid"]
+        if value.get("revenueMultiplierResid") is not None:
+            service["revenueMultiplierResid"] = value["revenueMultiplierResid"]
         if value.get("sharePpm") is not None:
             service["sharePpm"] = value["sharePpm"]
         if "lastFareCents" in value:
@@ -64,7 +71,13 @@ def _digest_view(economy: dict[str, Any]) -> dict[str, Any]:
         "epoch": economy.get("epoch"),
         "params": copy.deepcopy(economy.get("params")),
         "markets": markets,
+        "towns": copy.deepcopy(economy.get("towns", {})),
         "services": services,
+        "companyCosts": copy.deepcopy(economy.get("companyCosts", {})),
+        "vehicleCosts": copy.deepcopy(economy.get("vehicleCosts", {})),
+        "deliveryCursors": copy.deepcopy(economy.get("deliveryCursors", {})),
+        "payoutResidCents": copy.deepcopy(economy.get("payoutResidCents", {})),
+        "scheduler": copy.deepcopy(economy.get("scheduler", {})),
         "lastResults": copy.deepcopy(economy.get("lastResults")),
         "ledger": copy.deepcopy(economy.get("ledger")),
     }
@@ -98,27 +111,49 @@ def _new_economy(version: int) -> dict[str, Any]:
         "version": version,
         "epoch": 0,
         "params": {
-            "alphaUpPm": 80,
-            "alphaDownPm": 250,
+            "alphaUpPm": 350,
+            "alphaDownPm": 250 if version == 2 else 500,
             "maxWaitSeconds": 1800,
             "transferSeconds": 480,
             "crowdThresholdPpm": 700_000,
+            "economyDifficulty": "normal",
+            "revenueMultiplierPpm": 1_000_000,
         },
         "markets": {},
+        "towns": {},
         "services": {},
-        "lastResults": {"markets": {}, "companies": {}, "totalDemand": 0, "totalRevenueCents": 0},
+        "companyCosts": {},
+        "vehicleCosts": {},
+        "deliveryCursors": {},
+        "payoutResidCents": {},
+        "scheduler": {
+            "schemaVersion": 2,
+            "automatic": True,
+            "epochSeconds": 300,
+        },
+        "lastResults": {
+            "markets": {}, "companies": {}, "totalDemand": 0, "totalRevenueCents": 0,
+            "totalGrossRevenueCents": 0, "totalVehicleUpkeepCents": 0,
+            "totalInfrastructureUpkeepCents": 0, "totalOperatingCostCents": 0,
+            "totalNetRevenueCents": 0,
+        },
         "ledger": {
             "settledEpochs": {},
             "companies": {},
             "settlementCount": 0,
             "totalDemand": 0,
             "totalRevenueCents": 0,
+            "totalGrossRevenueCents": 0,
+            "totalVehicleUpkeepCents": 0,
+            "totalInfrastructureUpkeepCents": 0,
+            "totalOperatingCostCents": 0,
+            "totalNetRevenueCents": 0,
         },
     }
 
 
 def _verify_exp_tables() -> None:
-    source = (PROJECT_ROOT / "tpf2_mp_1/res/scripts/tpf2_mp/economy.lua").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "tpf2_mp_1/res/scripts/tpf2_mp/economy_flow.lua").read_text(encoding="utf-8")
     match = re.search(r"local EXP_TABLE = \{(.*?)\n\}", source, re.DOTALL)
     if match is None:
         raise AssertionError("Lua pinned exponential table was not found")
@@ -149,6 +184,37 @@ def main() -> None:
             checkpoint._upsert_market_v2(economy, market)
         for service in scenario["services"]:
             checkpoint._upsert_service_v2(economy, service)
+        for vehicle_cid, value in scenario.get("vehicleCosts", {}).items():
+            economy["vehicleCosts"][vehicle_cid] = {
+                "vehicleCid": vehicle_cid,
+                "companyCid": str(value["companyCid"]),
+                "annualVehicleUpkeepCents": int(value.get("annualVehicleUpkeepCents", 0)),
+                "upkeepResid": int(value.get("upkeepResid", 0)),
+            }
+        for company_cid, value in scenario.get("companyCosts", {}).items():
+            if isinstance(value, dict):
+                capital = int(value.get("infrastructureCapitalCents", 0))
+                residual = int(value.get("upkeepResid", 0))
+            else:
+                capital, residual = int(value), 0
+            economy["companyCosts"][company_cid] = {
+                "companyCid": company_cid,
+                "infrastructureCapitalCents": capital,
+                "annualInfrastructureUpkeepCents": capital // 10,
+                "upkeepResid": residual,
+            }
+        scheduler = scenario.get("scheduler")
+        if isinstance(scheduler, dict):
+            start = max(0, int(scheduler.get("startGameTimeSeconds", 0)))
+            period = checkpoint._integer(scheduler.get("epochSeconds"), 300, 60, 86400)
+            economy["scheduler"] = {
+                "schemaVersion": 2,
+                "automatic": True,
+                "epochSeconds": period,
+                "startGameTimeSeconds": start,
+                "lastBoundaryGameTimeSeconds": start,
+                "nextBoundaryGameTimeSeconds": start + period,
+            }
         _apply_overrides(economy, scenario.get("overrides", {}))
         for service in scenario.get("reupserts", []):
             checkpoint._upsert_service_v2(economy, service)
@@ -165,13 +231,21 @@ def main() -> None:
                         0,
                         100_000_000,
                     )
-            actual = checkpoint._evaluate_all_v2(economy)
+            boundary = economy.get("scheduler", {}).get("nextBoundaryGameTimeSeconds")
+            actual = checkpoint._evaluate_all_v2(economy, boundary)
             _same(f"{label} epoch {index}", actual, expected)
             checkpoint._record_settlement(economy, actual)
+            for company_cid in sorted(actual.get("companies", {})):
+                company = actual["companies"][company_cid]
+                checkpoint._wallet_delta_dollars(
+                    economy,
+                    company_cid,
+                    int(company.get("netRevenueCents", company.get("revenueCents", 0))),
+                )
         _same(f"{label} final state", _digest_view(economy), scenario["final"])
         model = {"economy": economy, "companies": scenario["companies"]}
         _same(f"{label} scoreboard", checkpoint._scoreboard(model), scenario["scoreboard"])
-    print(f"PASS {len(vectors['scenarios'])} cross-language v2/v3 economy parity scenarios")
+    print(f"PASS {len(vectors['scenarios'])} cross-language v2-v7 economy parity scenarios")
 
 
 if __name__ == "__main__":

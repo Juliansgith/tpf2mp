@@ -95,6 +95,45 @@ bool DecodeNativeString(const std::uint8_t* value, std::string& output) {
   return output.find('\0') == std::string::npos;
 }
 
+bool DecodeAlternativeTerminals(
+    const std::uint8_t* stop, std::vector<SuppressedStationTerminal>& output) {
+  NativeVectorLayout layout{};
+  if (!ReadNativeValue(
+          stop, tpf2mp::profile::kLineStopAlternativeTerminalsOffset, layout)) {
+    return false;
+  }
+  const auto begin = reinterpret_cast<std::uintptr_t>(layout.begin);
+  const auto end = reinterpret_cast<std::uintptr_t>(layout.end);
+  const auto capacity = reinterpret_cast<std::uintptr_t>(layout.capacity);
+  if (begin == 0 || end == 0 || capacity == 0) {
+    if (begin == 0 && end == 0 && capacity == 0) {
+      output.clear();
+      return true;
+    }
+    return false;
+  }
+  if (begin > end || end > capacity) return false;
+  const auto used_bytes = end - begin;
+  const auto capacity_bytes = capacity - begin;
+  if (used_bytes % tpf2mp::profile::kStationTerminalSize != 0 ||
+      capacity_bytes % tpf2mp::profile::kStationTerminalSize != 0) {
+    return false;
+  }
+  const auto count = used_bytes / tpf2mp::profile::kStationTerminalSize;
+  const auto capacity_count = capacity_bytes / tpf2mp::profile::kStationTerminalSize;
+  if (count > tpf2mp::profile::kMaximumAlternativeTerminalsPerStop ||
+      capacity_count > tpf2mp::profile::kMaximumAlternativeTerminalCapacity ||
+      (used_bytes > 0 && !IsReadableRange(layout.begin, used_bytes))) {
+    return false;
+  }
+  output.resize(static_cast<std::size_t>(count));
+  if (used_bytes > 0) std::memcpy(output.data(), layout.begin, used_bytes);
+  return std::all_of(output.begin(), output.end(), [](const SuppressedStationTerminal& value) {
+    return value.station >= 0 && value.station <= 4095 &&
+           value.terminal >= 0 && value.terminal <= 4095;
+  });
+}
+
 bool DecodeLineStops(const std::uint8_t* line, std::vector<SuppressedLineStop>& output) {
   std::uintptr_t begin = 0;
   std::uintptr_t end = 0;
@@ -127,6 +166,7 @@ bool DecodeLineStops(const std::uint8_t* line, std::vector<SuppressedLineStop>& 
   }
   output.clear();
   output.reserve(static_cast<std::size_t>(count));
+  std::size_t alternative_count = 0;
   for (std::size_t index = 0; index < count; ++index) {
     const auto* stop = reinterpret_cast<const std::uint8_t*>(begin) +
                        index * tpf2mp::profile::kLineStopSize;
@@ -137,8 +177,14 @@ bool DecodeLineStops(const std::uint8_t* line, std::vector<SuppressedLineStop>& 
                          decoded.station) ||
         !ReadNativeValue(stop, tpf2mp::profile::kLineStopTerminalOffset,
                          decoded.terminal) ||
+        !DecodeAlternativeTerminals(stop, decoded.alternative_terminals) ||
         decoded.station_group < 0 || decoded.station < 0 || decoded.station > 4095 ||
         decoded.terminal < 0 || decoded.terminal > 4095) {
+      output.clear();
+      return false;
+    }
+    alternative_count += decoded.alternative_terminals.size();
+    if (alternative_count > tpf2mp::profile::kMaximumAlternativeTerminalsTotal) {
       output.clear();
       return false;
     }
@@ -219,16 +265,22 @@ std::string HexEncode(const std::string_view value) {
 }
 
 std::string EncodeSuppressedLineCommand(const SuppressedLineCommand& command) {
-  // Delimiter protocol L1 is intentionally tiny and pointer-free. Names are
-  // hex encoded; all other values are bounded decimal integers.
+  // Delimiter protocol L3 is intentionally tiny and pointer-free. Names are
+  // hex encoded; each alternative is the bounded StationTerminal pair S.T.
   std::ostringstream output;
-  output << "L1|" << command.tag << '|' << command.target << '|' << command.player << '|'
+  output << "L3|" << command.tag << '|' << command.target << '|' << command.player << '|'
          << command.color[0] << '|' << command.color[1] << '|' << command.color[2] << '|'
          << HexEncode(command.name) << '|' << command.stops.size() << '|';
   for (std::size_t index = 0; index < command.stops.size(); ++index) {
     if (index != 0) output << ';';
     const auto& stop = command.stops[index];
-    output << stop.station_group << ',' << stop.station << ',' << stop.terminal;
+    output << stop.station_group << ',' << stop.station << ',' << stop.terminal << ',';
+    for (std::size_t terminal_index = 0;
+         terminal_index < stop.alternative_terminals.size(); ++terminal_index) {
+      if (terminal_index != 0) output << ':';
+      const auto& alternative = stop.alternative_terminals[terminal_index];
+      output << alternative.station << '.' << alternative.terminal;
+    }
   }
   return output.str();
 }

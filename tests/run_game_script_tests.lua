@@ -70,7 +70,7 @@ game = {
     setTownCapacities = function() end,
     setTownDevelopmentActive = function() end,
     getGameSpeed = function() return nativeGameSpeed end,
-    getGameTime = function() return { time = 100 } end,
+    getGameTime = function() return { time = 100.2 } end,
     getPlayerJournal = function() return { income = { _sum = 0 } } end,
   },
 }
@@ -140,6 +140,11 @@ script.handleEvent("test", "tpf2mp", "intent", { type = "match.initialise" })
 local queued = script.save()
 assert(queued.initialized == false, "network intent must wait for a host commit")
 assert(queued.bridge.nextOutSeq == 2, "intent was not emitted to the bridge")
+local initialIntentFile = assert(io.open(bridgeRoot .. "/game_outbox/000000000001.json", "rb"))
+local initialIntent = json.decode(initialIntentFile:read("*a"))
+initialIntentFile:close()
+assert(initialIntent.payload.action.rules.economyStartGameTimeSeconds == 100,
+  "fractional native bootstrap time was not quantized before protocol emission")
 
 local commit = {
   protocol = 1,
@@ -165,8 +170,8 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 24,
-  "state schema was not migrated to the passenger-presentation version")
+assert(initialized.version == 26,
+  "state schema was not migrated to the delivered-economy version")
 assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
 
 local checkpointMessage
@@ -214,8 +219,9 @@ second:close()
 script.update()
 
 local demo = script.save()
-assert(demo.economy.lastResults.totalDemand == 1800,
-  "demo passenger and freight markets were not both evaluated")
+assert(demo.economy.lastResults.totalDemand == 149
+    and demo.economy.lastResults.intervalSeconds == 300,
+  "demo passenger and freight rates were not prorated into a five-minute preview")
 assert(demo.economy.markets["market:prototype-freight"]
   and demo.economy.markets["market:prototype-freight"].kind == "cargo",
   "demo freight market lost its cargo kind")
@@ -224,7 +230,11 @@ assert(demo.economy.epoch == 0, "seeding a demo must not consume an authoritativ
 assert(demo.eventLog.items[2].seq == 2 and demo.eventLog.items[2].commitSeq == 2, "event ordering is wrong")
 assert(demo.bridge.nextOutSeq >= 4, "digest acknowledgements were not emitted")
 
-local authoritativeResults = economy.evaluateAll(util.deepCopy(demo.economy))
+local firstDelivery = { schemaVersion = 1,
+  presentationEpoch = demo.world.passengerPresentation.epoch, lines = {} }
+local firstBoundary = economy.nextBoundary(demo.economy)
+local authoritativeResults = economy.evaluateAll(
+  util.deepCopy(demo.economy), firstBoundary, firstDelivery)
 assert(authoritativeResults.epoch == 1, "first authoritative settlement should use epoch 1")
 local settleCommit = {
   protocol = 1,
@@ -234,7 +244,8 @@ local settleCommit = {
   origin_peer = "player1",
   origin_local_seq = 2,
   tick = 3,
-  payload = { action = { type = "economy.settle", results = authoritativeResults } },
+  payload = { action = { type = "economy.settle", results = authoritativeResults,
+    boundaryGameTimeSeconds = firstBoundary, deliverySnapshot = firstDelivery } },
 }
 settleCommit.checksum = hash.value(settleCommit)
 local third = assert(io.open(bridgeRoot .. "/game_inbox/000000000003.json", "wb"))
@@ -252,7 +263,11 @@ assert(settled.eventLog.items[3].postModelDigest ~= settled.eventLog.items[3].pr
   "settlement did not change the independently replayable model digest")
 assert(settled.match.status == "running", "match ended before its configured epoch limit")
 
-local secondResults = economy.evaluateAll(util.deepCopy(settled.economy))
+local secondDelivery = { schemaVersion = 1,
+  presentationEpoch = settled.world.passengerPresentation.epoch, lines = {} }
+local secondBoundary = economy.nextBoundary(settled.economy)
+local secondResults = economy.evaluateAll(
+  util.deepCopy(settled.economy), secondBoundary, secondDelivery)
 local secondSettleCommit = {
   protocol = 1,
   session = "engine-test",
@@ -261,7 +276,8 @@ local secondSettleCommit = {
   origin_peer = "player1",
   origin_local_seq = 3,
   tick = 4,
-  payload = { action = { type = "economy.settle", results = secondResults } },
+  payload = { action = { type = "economy.settle", results = secondResults,
+    boundaryGameTimeSeconds = secondBoundary, deliverySnapshot = secondDelivery } },
 }
 secondSettleCommit.checksum = hash.value(secondSettleCommit)
 local fourth = assert(io.open(bridgeRoot .. "/game_inbox/000000000004.json", "wb"))

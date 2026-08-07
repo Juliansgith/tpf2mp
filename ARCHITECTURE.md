@@ -31,13 +31,34 @@ boundary applies.
 Domain modules under `res/scripts/tpf2_mp`:
 
 - `canonical.lua` owns canonical/local identity bindings and canonical digests.
-- `economy.lua` owns deterministic demand, settlement, and scoring.
+- `economy.lua` owns deterministic demand, five-minute accounting state,
+  delivery cursors, operating-cost stocks/residuals, signed wallet-cent carry,
+  and scoring. `economy_flow.lua` owns generalized cost, pinned-logit share
+  movement, exact hourly-rate proration, capacity allocation, and per-market
+  evaluation. `economy_revenue.lua` owns passenger cohorts, distance fares,
+  and cargo unit-kilometre revenue. `economy_difficulty.lua` owns the four
+  exact save presets and overflow-safe revenue scaling; `economy_town_demand.lua`
+  owns model-town populations, growth residuals, and corridor-demand refresh.
+- `economy_costs.lua` owns the compressed financial-year/interval cost
+  conversions and exact
+  canonical capital allocation; `economy_asset_cost_runtime.lua` converts
+  consensus proposal deltas into infrastructure capital; `vehicle_cost_runtime.lua`
+  converts all-peer resolved native `MAINTENANCE_COST` postconditions into
+  durable vehicle costs, including uniquely manifest-bound starting vehicles;
+  `economy_clock_runtime.lua` submits only the host's due synchronized boundary;
+  `economy_action_runtime.lua` constructs portable line registration and
+  completed-trip settlement actions.
+- `economy_public_view.lua` builds the display-only local-ID map and exact
+  purchase/upkeep/service/company figures used by the standard-UI projection.
+- `economy_demo.lua` contains developer-only seeded-market fixtures and has no
+  production authority.
 - `passenger_presentation.lua` owns exact endpoint queues, per-train loads,
   ordered-release boarding/alighting, migration, and the canonical digest/public
   projections. `passenger_cosmetics.lua` owns read-only native-person telemetry
   and the fail-closed optional-write boundary.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, and autonomy;
+  `world_station_reading.lua` owns station-group to town association reads;
   `world_operational_telemetry.lua` owns read-only clock, journal, autonomy,
   and composed operational snapshots.
 - `corridor_binding.lua` derives line.register market/service facts (gravity
@@ -54,6 +75,8 @@ Runtime-controller modules:
 
 - `runtime_config.lua` reads dynamic process/mod configuration. Its injected
   read boundary keeps tests independent from the real process environment.
+  World-creation choices are inputs only until `match.initialise`; the ordered
+  match rules and saved economy state are authoritative after that boundary.
 - `state_schema.lua` exclusively creates and migrates persisted game state.
 - `checkpoint_runtime.lua` owns authored/core digests, event records, checkpoint
   payloads, and checkpoint export barriers.
@@ -104,12 +127,21 @@ GUI/native-adapter modules:
 - `gui_network_bootstrap.lua` re-arms native game/calendar pause authority in
   the GUI Lua state after a saved world replaces the pre-load engine state.
 - `gui_view.lua` formats the prototype overlay from a public snapshot.
-- `gui_passenger_hud.lua` mounts selection-aware exact model passenger counts
-  into the stock HUD; native people are explicitly labelled scenery.
+- `gui_authoritative_text.lua` formats canonical company, service, vehicle,
+  station, fleet, and toolbar projections without retaining native GUI objects.
+- `gui_stock_presentation.lua` is the standard-UI adapter. It overwrites the
+  normal account/earnings/passenger totals, inserts authoritative strips into
+  entity/manager/finance/statistics windows, and only then hides or relabels
+  conflicting native load/queue/history controls. Missing stock IDs fail soft.
+- `gui_passenger_hud.lua` and `gui_economy_hud.lua` are compatibility fallbacks
+  used only before initialization or when the standard toolbar cannot be found.
 - `gui_entry_points.lua` idempotently mounts the overlay reopen controls into
   the stock `gameInfo.layout` and the parent of the pause menu's quit button.
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer
   installation, bounded build/line/speed capture, and GUI callback lifecycle.
+- `gui_line_command_codec.lua` strictly decodes the pointer-free native line
+  envelope, including primary terminals and typed `{station, terminal}`
+  alternative-platform selections.
 - `gui_replay_quarantine.lua` owns the machine-local no-dereference window for
   builder ghosts while a delayed canonical BuildProposal settles.
 - `gui_replay_runtime.lua` owns GUI-state proposal and line/vehicle command
@@ -153,7 +185,8 @@ captured table reference would therefore mutate stale state after loading.
   signatures, layouts, and visitor tags.
 - `native_common.cpp` owns executable validation and shared file utilities.
 - `native_command_codec.cpp` owns bounded exact-layout reads plus typed
-  line/name/color command decoding and pointer-free encoding.
+  line/name/color decoding, eight-byte `StationTerminal` vector reads, and
+  pointer-free encoding.
 - `native_hook_status.cpp` owns the stable native status JSON schema and formats
   a lock-protected view supplied by the hook.
 - `injector.cpp` owns exact-profile verification and DLL injection.
@@ -178,7 +211,9 @@ executable profile verification in the same commit.
 4. A native success callback is insufficient. Physical output/postconditions
    and then a checkpoint must agree on all required peers.
 5. Canonical finance is authoritative. Native wallets are display/execution
-   caches and are never summed across peers.
+   caches and are never summed across peers. Native trip/maintenance/interest
+   entries are quarantined by reconciliation; only ordered model net dollars,
+   with authored sub-dollar carry, change competitive balances.
 6. Unsupported or ambiguous payloads fail closed. A gate without a typed codec,
    authorization, replay, and postcondition is not a synchronized feature.
 7. GUI view/state modules must not enter canonical digests or saved match state.
@@ -189,7 +224,27 @@ executable profile verification in the same commit.
    has reported and received the same canonical station-round release.
 10. Passenger queue/load changes occur only inside authored settlement or
     station-release actions. Native person IDs and stock agent counts never
-    enter revenue, score, the passenger ledger, or a checkpoint.
+    enter revenue, score, the passenger ledger, or a checkpoint. Passenger
+    revenue advances only from the monotonic completed-leg/boarded-fare ledger
+    and each cumulative delivery cursor can be paid once.
+11. Economy time is the synchronized simulation clock. Only Player 1 may
+    submit the exact next 300-second boundary, only after local
+    physical/checkpoint work is quiescent. Invalid or repeated boundaries
+    reject before any share, rate residual, delivery cursor, upkeep, scheduler,
+    or payout-residual mutation.
+12. Purchased canonical vehicles accrue upkeep whether assigned, running, or
+    parked. Private infrastructure accrues against active attributed capital;
+    replacement carries old capital plus new spend, deletion retires it, and
+    public town roads never enter a company's upkeep base.
+13. Economy difficulty is a save-owned rule, not a peer-local live control.
+    Current match actions carry both the preset key and its exact multiplier;
+    no gameplay action may mutate them after initialization. Difficulty scales
+    gross revenue only and its sub-cent-in-ppm residual is checkpoint state.
+14. Native town population and crowd scaling never enter competitive demand.
+    Registration supplies a building-count baseline; completed authored
+    passenger service advances canonical model towns, and their future demand
+    is digest-projected and replayed in both Lua and Python. Ordered physical
+    town development remains a separate optional presentation experiment.
 
 ## Adding a synchronized vehicle action
 

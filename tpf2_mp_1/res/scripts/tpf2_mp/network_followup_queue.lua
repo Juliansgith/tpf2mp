@@ -10,6 +10,26 @@ function M.new(deps)
 
   local function count() return #items end
 
+  local function cancelLineRegistration(lineCid)
+    if type(lineCid) ~= "string" or lineCid == "" then return 0 end
+    local state = getState()
+    local removed = 0
+    for index = #items, 1, -1 do
+      local action = items[index].action
+      if action and action.type == "line.register" and action.lineCid == lineCid then
+        table.remove(items, index)
+        removed = removed + 1
+      end
+    end
+    if removed > 0 then
+      diagnosticLog("network-followup-cancelled", {
+        type = "line.register", lineCid = lineCid, removed = removed,
+        queueDepth = count(), tick = state.tick,
+      })
+    end
+    return removed
+  end
+
   local function schedule(action)
     local state = getState()
     if type(action) ~= "table" then return false, "follow-up action must be a table" end
@@ -131,6 +151,7 @@ function M.new(deps)
     head = function() return items[1] end,
     copy = function() return util.deepCopy(items) end,
     clear = function() items = {} end,
+    cancelLineRegistration = cancelLineRegistration,
     dropHead = function() table.remove(items, 1) end,
     emissionAction = emissionAction,
     consume = consume,

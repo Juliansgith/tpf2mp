@@ -335,6 +335,125 @@ function M.install(gui, env)
     if not number or number ~= number or number == math.huge or number == -math.huge then return nil end
     return number
   end
+
+  -- Construction ghosts are not rigid templates: moving the same station over
+  -- a building, road, or existing construction can change its removal set while
+  -- every menu parameter remains identical.  Keep this fingerprint deliberately
+  -- local and cheap.  It is used only to decide whether the last fully projected
+  -- graph is still safe to rebase; canonical payloads continue to carry the
+  -- complete proposal instead of this process-local identity sample.
+  local function previewCollectionShape(container, includeIdentities)
+    if container == nil then return "0", true end
+    local containerType = type(container)
+    if containerType ~= "table" and containerType ~= "userdata" then
+      return "invalid:" .. containerType, false
+    end
+
+    local lengthOk, length = pcall(function() return #container end)
+    if lengthOk and type(length) == "number" and length >= 0 and length == math.floor(length) then
+      local first = safeField(container, 1) or safeField(container, "1")
+      -- Stock proposal vectors implement an exact length. A proxy reporting
+      -- zero despite exposing index one does not; handle that boundedly below.
+      if length > 0 or first == nil then
+        if not includeIdentities or length == 0 then return tostring(length), true end
+        local tokens = {}
+        local sampleCount = math.min(length, 64)
+        for index = 1, sampleCount do
+          local value = safeField(container, index) or safeField(container, tostring(index))
+          local valueType = type(value)
+          local identity = value
+          if valueType == "table" or valueType == "userdata" then
+            identity = safeField(value, "entity") or safeField(value, "entityId")
+              or safeField(value, "id") or safeField(value, "constructionEntity")
+              or safeField(value, "segmentEntity") or safeField(value, "edgeEntity")
+              or safeField(value, "edgeObjectEntity") or safeField(value, "originalEntity")
+          end
+          local identityType = type(identity)
+          if identityType == "number" or identityType == "string" or identityType == "boolean" then
+            tokens[#tokens + 1] = identityType:sub(1, 1) .. ":" .. tostring(identity)
+          else
+            -- A removal record without a stable scalar identity cannot safely
+            -- participate in cache reuse. Force a fresh projection instead of
+            -- comparing userdata addresses or silently accepting stale data.
+            return tostring(length) .. ":opaque", false
+          end
+        end
+        if length > sampleCount then
+          local tail = safeField(container, length) or safeField(container, tostring(length))
+          local tailType = type(tail)
+          local identity = tail
+          if tailType == "table" or tailType == "userdata" then
+            identity = safeField(tail, "entity") or safeField(tail, "entityId")
+              or safeField(tail, "id") or safeField(tail, "constructionEntity")
+              or safeField(tail, "segmentEntity") or safeField(tail, "edgeEntity")
+              or safeField(tail, "edgeObjectEntity") or safeField(tail, "originalEntity")
+          end
+          local identityType = type(identity)
+          if identityType ~= "number" and identityType ~= "string" and identityType ~= "boolean" then
+            return tostring(length) .. ":opaque-tail", false
+          end
+          tokens[#tokens + 1] = "..." .. identityType:sub(1, 1) .. ":" .. tostring(identity)
+        end
+        table.sort(tokens)
+        return tostring(length) .. ":" .. table.concat(tokens, ","), true
+      end
+    end
+
+    -- Alternative builders can expose vector proxies without a useful length.
+    -- Inspect only a small contiguous prefix; larger unknown containers are not
+    -- cacheable, preserving correctness without walking a 384-edge station on
+    -- every rendered mouse-move callback.
+    local tokens, count = {}, 0
+    for index = 1, 65 do
+      local value = safeField(container, index) or safeField(container, tostring(index))
+      if value == nil then
+        return tostring(count) .. (includeIdentities and (":" .. table.concat(tokens, ",")) or ""), true
+      end
+      count = count + 1
+      if count > 64 then return "more-than-64", false end
+      if includeIdentities then
+        local valueType = type(value)
+        local identity = value
+        if valueType == "table" or valueType == "userdata" then
+          identity = safeField(value, "entity") or safeField(value, "entityId")
+            or safeField(value, "id") or safeField(value, "constructionEntity")
+            or safeField(value, "segmentEntity") or safeField(value, "edgeEntity")
+            or safeField(value, "edgeObjectEntity") or safeField(value, "originalEntity")
+        end
+        local identityType = type(identity)
+        if identityType ~= "number" and identityType ~= "string" and identityType ~= "boolean" then
+          return tostring(count) .. ":opaque", false
+        end
+        tokens[#tokens + 1] = identityType:sub(1, 1) .. ":" .. tostring(identity)
+      end
+    end
+    return "unreadable", false
+  end
+
+  gui.constructionPreviewTopology = function(param)
+    local proposal = safeField(param, "proposal")
+    if type(proposal) ~= "table" and type(proposal) ~= "userdata" then return nil, false end
+    local street = safeField(proposal, "streetProposal") or safeField(proposal, "proposal") or proposal
+    local descriptors = {
+      { "construction-add", proposal, "constructionsToAdd", "toAdd", false },
+      { "construction-remove", proposal, "constructionsToRemove", "toRemove", true },
+      { "node-add", street, "nodesToAdd", "addedNodes", false },
+      { "node-remove", street, "nodesToRemove", "removedNodes", true },
+      { "edge-add", street, "edgesToAdd", "addedSegments", false },
+      { "edge-remove", street, "edgesToRemove", "removedSegments", true },
+      { "edge-object-add", street, "edgeObjectsToAdd", nil, false },
+      { "edge-object-remove", street, "edgeObjectsToRemove", nil, true },
+    }
+    local parts, cacheable = {}, true
+    for _, descriptor in ipairs(descriptors) do
+      local container = safeField(descriptor[2], descriptor[3])
+      if container == nil and descriptor[4] then container = safeField(descriptor[2], descriptor[4]) end
+      local shape, complete = previewCollectionShape(container, descriptor[5])
+      parts[#parts + 1] = descriptor[1] .. "=" .. shape
+      if not complete then cacheable = false end
+    end
+    return table.concat(parts, "|"), cacheable
+  end
   
   gui.previewMatrix = function(value)
     if type(value) ~= "table" and type(value) ~= "userdata" then return nil end
@@ -531,6 +650,9 @@ function M.install(gui, env)
     end
     local moduleSignature = gui.previewModuleSignature(modules)
     local scalarSignature = table.concat(templateParts, "|")
+    local topologySignature, topologyCacheable = gui.constructionPreviewTopology(param)
+    local templateSignature = topologyCacheable and (scalarSignature .. "|modules="
+      .. tostring(moduleSignature or "-") .. "|topology=" .. topologySignature) or nil
     return {
       fileName = fileName,
       transform = transform,
@@ -539,7 +661,9 @@ function M.install(gui, env)
       scalarSignature = scalarSignature,
       -- Seed changes after a successful placement but does not alter graph
       -- layout, so it is deliberately absent from this local-only signature.
-      templateSignature = scalarSignature .. "|modules=" .. tostring(moduleSignature or "-"),
+      templateSignature = templateSignature,
+      topologySignature = topologySignature,
+      topologyCacheable = topologyCacheable == true,
       cost = tonumber(previewCost) and util.integer(previewCost) or nil,
       frame = gui.frames,
     }

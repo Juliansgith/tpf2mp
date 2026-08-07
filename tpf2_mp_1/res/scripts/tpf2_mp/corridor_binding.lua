@@ -1,5 +1,7 @@
 local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
+local revenue = require "tpf2_mp/economy_revenue"
+local townDemand = require "tpf2_mp/economy_town_demand"
 
 local M = {}
 
@@ -7,7 +9,8 @@ local M = {}
 -- origin peer and ride the ordered line.register action as authoritative
 -- values, so peers and the companion replay apply results, never re-derive.
 M.SERVICE_FACTS = {
-  epochSeconds = 3600,            -- one authored market hour per settlement
+  capacityWindowSeconds = 3600,   -- service capacity remains an hourly rate
+  accountingIntervalSeconds = 300,
   routeFactorPct = 125,           -- euclidean -> track distance allowance
   speedUtilisationPct = 70,       -- sustained share of consist top speed
   defaultTopSpeedKmh = 100,
@@ -18,7 +21,8 @@ M.SERVICE_FACTS = {
   turnaroundSeconds = 240,        -- both terminals combined per cycle
   minHeadwaySeconds = 60,
   fallbackSeatsPerVehicle = 100,
-  gravityDivisor = 25,            -- demand = sizeA*sizeB / (divisor * km)
+  gravityDivisor = townDemand.GRAVITY_DIVISOR,
+                                      -- demand = sizeA*sizeB / (divisor * km)
   -- Town size is a building count, not native capacity: the crowd policy
   -- scales capacity at load, and demand goes as the product of two town sizes,
   -- so reading capacity would let a cosmetic setting rescale the whole economy
@@ -30,13 +34,13 @@ M.SERVICE_FACTS = {
   -- Town buildings are a subset of constructions, so the true per-building
   -- figure is somewhat higher; calibrate against a live vanilla world by
   -- comparing this size to that world's reported town capacity.
-  nominalCapacityPerBuilding = 4,
+  nominalCapacityPerBuilding = townDemand.NOMINAL_CAPACITY_PER_BUILDING,
   -- An unsized town still has to trade. Documented rather than magic, and
   -- deliberately mid-range so an unreadable town neither dominates nor
   -- vanishes from a corridor.
-  fallbackTownBuildings = 50,
-  minDemand = 50,
-  maxDemand = 100000,
+  fallbackTownBuildings = townDemand.FALLBACK_TOWN_BUILDINGS,
+  minDemand = townDemand.MIN_DEMAND,
+  maxDemand = townDemand.MAX_DEMAND,
 }
 
 local function modelRepository()
@@ -94,10 +98,7 @@ function M.consistTransportFacts(modelNames)
 end
 
 function M.gravityDemand(capacityA, capacityB, distanceMeters)
-  local constants = M.SERVICE_FACTS
-  local km = math.max(1, math.floor((distanceMeters or 1000) / 1000))
-  local demand = math.floor((capacityA * capacityB) / (constants.gravityDivisor * km))
-  return util.clamp(demand, constants.minDemand, constants.maxDemand)
+  return townDemand.gravityDemand(capacityA, capacityB, distanceMeters)
 end
 
 -- Town growth version 1: capacities respond to carried demand. Growth is a
@@ -126,7 +127,8 @@ function M.carriedByTown(results, markets)
     if townA and townB then
       local carried = 0
       for _, lineCid in ipairs(util.sortedKeys(market.services or {})) do
-        carried = carried + (tonumber(market.services[lineCid].allocated) or 0)
+        local service = market.services[lineCid]
+        carried = carried + (tonumber(service.delivered or service.allocated) or 0)
       end
       local half = math.floor(carried / 2)
       carriedByTown[townA] = (carriedByTown[townA] or 0) + half
@@ -234,15 +236,15 @@ function M.departureSchedule(service, stopIndex)
   }
 end
 
--- Registered competitive services supply the timetable enforced by the
--- station barrier. An ordinary line has no authored headway yet, so inventing
--- one here would turn synchronization into an artificial station dwell. It
--- still uses the all-peer barrier, but the host releases it after the normal
--- network safety guard instead of reserving a timetable slot.
+-- The authored headway is an economy/service-frequency input, not a native
+-- timetable. Live evidence showed that forcing a train onto the next full
+-- headway slot at every stop can hold a one-train line for hundreds of game
+-- seconds and eventually trip the station-round safety timeout. Physical train
+-- synchronization therefore always uses the prompt all-peer rendezvous: once
+-- every native copy is held at the same stop, the host releases it after only
+-- the bounded network guard. departureSchedule/departureSlots remain pure
+-- model queries and do not control native dwell.
 function M.synchronizationSchedule(lineCid, service, stopIndex)
-  if type(service) == "table" and service.enabled ~= false then
-    return M.departureSchedule(service, stopIndex)
-  end
   return { schemaVersion = 1, enabled = false }
 end
 
@@ -275,22 +277,19 @@ function M.new(deps)
   local townBuildingCount = assert(
     deps.townBuildingCount, "townBuildingCount dependency is required")
   local lineVehicleCount = assert(deps.lineVehicleCount, "lineVehicleCount dependency is required")
+  local lineVehicleIds = assert(deps.lineVehicleIds, "lineVehicleIds dependency is required")
   local nameOf = assert(deps.nameOf, "nameOf dependency is required")
   local safeEntity = assert(deps.safeEntity, "safeEntity dependency is required")
   local positionOfEntity = assert(deps.positionOfEntity, "positionOfEntity dependency is required")
   local developmentPositionsOfTown = assert(
     deps.developmentPositionsOfTown, "developmentPositionsOfTown dependency is required")
   local resolveLocal = assert(deps.resolveLocal, "resolveLocal dependency is required")
+  local resolveCanonical = assert(deps.resolveCanonical, "resolveCanonical dependency is required")
 
   -- The model's town size, in the same units the gravity divisor was tuned
   -- against. Deliberately never native capacity: that is presentation-scaled.
   local function townMarketSize(townId)
-    local facts = M.SERVICE_FACTS
-    local buildings = townBuildingCount(townId)
-    if type(buildings) ~= "number" or buildings <= 0 then
-      buildings = facts.fallbackTownBuildings
-    end
-    return buildings * facts.nominalCapacityPerBuilding
+    return townDemand.marketSizeFromBuildings(townBuildingCount(townId))
   end
 
   local binding = {}
@@ -424,6 +423,54 @@ function M.new(deps)
       })
     end
     return called and queued == true, called and queueResult or queued
+  end
+
+  -- A loaded match may already have complete, assigned lines and therefore
+  -- never produce the operation which normally triggers registration.  Run
+  -- this only after the initial structural checkpoint has converged.  Each
+  -- peer queues facts solely for its own company; the ordinary ordered
+  -- line.register path remains the sole author of portable market data.
+  function binding.autoRegisterExistingServices(state, deps)
+    local companyCid = deps.activeCompany()
+    if not companyCid then return 0 end
+    local queued, skipped, failed = 0, 0, 0
+    local lines = state.probes and state.probes.structural
+      and state.probes.structural.lines or {}
+    for _, line in ipairs(lines) do
+      local eligible = line.owner == companyCid
+        and type(line.cid) == "string"
+        and type(line.stops) == "table" and #line.stops >= 2
+        and (tonumber(line.vehicles) or 0) > 0
+        and state.economy.services[line.cid] == nil
+        and resolveLocal(state.canonical, line.cid) ~= nil
+      if eligible then
+        local called, accepted, result = pcall(deps.submit, {
+          type = "line.register", lineCid = line.cid, companyCid = companyCid,
+        })
+        if called and accepted == true then
+          queued = queued + 1
+        else
+          failed = failed + 1
+          if deps.log then
+            deps.log("existing-service-register-failed", {
+              companyCid = companyCid, lineCid = line.cid,
+              error = tostring(called and result or accepted),
+              reason = tostring(deps.reason or "initial-checkpoint"),
+              tick = state.tick,
+            })
+          end
+        end
+      else
+        skipped = skipped + 1
+      end
+    end
+    if deps.log then
+      deps.log("existing-service-register-scan", {
+        companyCid = companyCid, queued = queued, skipped = skipped, failed = failed,
+        reason = tostring(deps.reason or "initial-checkpoint"), tick = state.tick,
+      })
+    end
+    return queued, { queued = queued, skipped = skipped, failed = failed }
   end
 
   -- Applies an ordered batch and refreshes the structural probe so the next
@@ -560,7 +607,18 @@ function M.new(deps)
     return names
   end
 
-  -- Journey, headway, and per-epoch seat capacity from canonical geometry
+  local function nativeAnnualMaintenanceCents(vehicleId)
+    local types = api and api.type and api.type.ComponentType or {}
+    if not (types.MAINTENANCE_COST and api and api.engine
+      and api.engine.getComponent) then return nil end
+    local ok, component = pcall(
+      api.engine.getComponent, vehicleId, types.MAINTENANCE_COST)
+    local dollars = ok and component and tonumber(component.maintenanceCost) or nil
+    if not dollars or dollars < 0 then return nil end
+    return math.max(0, util.integer(dollars, 0)) * 100
+  end
+
+  -- Journey, headway, and hourly seat capacity from canonical geometry
   -- and the consist. Origin-only arithmetic (sqrt included): the results are
   -- embedded in the ordered action, so no cross-peer recomputation happens.
   function binding.computedServiceFacts(groups, vehicles, consistFacts)
@@ -587,13 +645,24 @@ function M.new(deps)
     local seats = consistFacts and consistFacts.seats or 0
     local defaultedSeats = not (seats > 0)
     if defaultedSeats then seats = constants.fallbackSeatsPerVehicle end
-    local departures = math.max(1, math.floor(constants.epochSeconds / headway))
+    -- headway already divides the complete cycle by the number of consists,
+    -- so departures is the fleet-wide departure count. Multiplying by runs a
+    -- second time would make capacity scale quadratically (two trains = four
+    -- times the seats), rewarding fleet spam instead of real frequency.
+    local departures = math.max(1,
+      math.floor(constants.capacityWindowSeconds / headway))
     return {
       distanceMeters = routeMeters,
       journeySeconds = journey,
       headwaySeconds = headway,
-      capacity = runs > 0 and (seats * runs * departures) or 0,
+      -- A cycle serves the corridor once in each direction. Demand is pooled
+      -- across both directions, so hourly capacity must include both legs.
+      capacity = runs > 0 and (seats * departures * 2) or 0,
       seatsPerVehicle = seats,
+      topSpeedKmh = math.floor(speedMs * 3.6 + 0.5),
+      cruiseSpeedKmh = math.floor(cruiseMs * 3.6 + 0.5),
+      cycleSeconds = cycle,
+      departuresPerHourPerDirection = runs > 0 and departures or 0,
       defaultedSpeed = defaultedSpeed,
       defaultedSeats = defaultedSeats,
     }
@@ -604,9 +673,13 @@ function M.new(deps)
     if not lineCid then return false, err end
     local groups = lineStopGroups(lineId)
     if #groups < 2 then return false, "line needs at least two station groups" end
-    local townA, townB = stationGroupTown(groups[1]), stationGroupTown(groups[#groups])
+    local townA, townAError = stationGroupTown(groups[1])
+    local townB, townBError = stationGroupTown(groups[#groups])
     if not townA or not townB or townA == townB then
-      return false, "line endpoints do not map to two distinct towns"
+      local detail = townA == townB and townA and ("both resolve to town " .. tostring(townA))
+        or ("first: " .. tostring(townAError or townA)
+          .. "; last: " .. tostring(townBError or townB))
+      return false, "line endpoints do not map to two distinct towns (" .. detail .. ")"
     end
     local townCidA = bindExisting(registry, townA, "town", { name = nameOf(townA) })
     local townCidB = bindExisting(registry, townB, "town", { name = nameOf(townB) })
@@ -614,6 +687,34 @@ function M.new(deps)
     if second < first then first, second = second, first end
     local marketCid = "market:" .. hash.value({ first, second })
     local vehicles = lineVehicleCount(lineId)
+    local annualVehicleUpkeepCents, pricedVehicles, vehicleCids = 0, 0, {}
+    for _, vehicleId in ipairs(lineVehicleIds(lineId)) do
+      local vehicleCid = resolveCanonical(registry, "vehicle", vehicleId)
+      if vehicleCid then vehicleCids[#vehicleCids + 1] = vehicleCid end
+      local vehicleBinding = vehicleCid and registry.byCanonical[vehicleCid] or nil
+      local annual = vehicleBinding and vehicleBinding.metadata
+        and tonumber(vehicleBinding.metadata.annualVehicleUpkeepCents) or nil
+      if annual == nil and vehicleBinding then
+        annual = nativeAnnualMaintenanceCents(vehicleId)
+        if annual ~= nil then
+          vehicleBinding.metadata = vehicleBinding.metadata or {}
+          vehicleBinding.metadata.annualVehicleUpkeepCents = annual
+          vehicleBinding.metadata.nativeAnnualMaintenanceDollars = math.floor(annual / 100)
+          vehicleBinding.metadata.vehicleCostSource = "line-registration-native-maintenance"
+        end
+      end
+      if annual then
+        annualVehicleUpkeepCents = annualVehicleUpkeepCents
+          + math.max(0, util.integer(annual, 0))
+        pricedVehicles = pricedVehicles + 1
+        if vehicleCid and not (economyState.vehicleCosts
+          and economyState.vehicleCosts[vehicleCid]) then
+          economyModule.upsertVehicleCost(
+            economyState, vehicleCid, companyCid, annual)
+        end
+      end
+    end
+    table.sort(vehicleCids)
 
     local stationGroupCids = {}
     for _, groupId in ipairs(groups) do
@@ -653,6 +754,7 @@ function M.new(deps)
       demand = demand,
       metadata = {
         townA = townCidA, townB = townCidB,
+        townSizeA = capacityA, townSizeB = capacityB,
         corridorMeters = corridorMeters,
       },
     })
@@ -685,15 +787,25 @@ function M.new(deps)
       name = nameOf(lineId),
       headwaySeconds = headway,
       journeySeconds = journey,
-      fareCents = previous and previous.fareCents or 1000,
+      fareCents = previous and previous.fareCents
+        or revenue.defaultFareCents(computed and computed.distanceMeters, "passenger"),
       capacity = capacity,
       quality = math.max(20, 120 - math.max(0, #groups - 2) * 10),
+      annualVehicleUpkeepCents = annualVehicleUpkeepCents,
       metadata = {
         vehicleCount = vehicles,
         factsSource = factsSource,
         distanceMeters = computed and computed.distanceMeters or nil,
         seatsPerVehicle = computed and computed.seatsPerVehicle or nil,
+        topSpeedKmh = computed and computed.topSpeedKmh or nil,
+        cruiseSpeedKmh = computed and computed.cruiseSpeedKmh or nil,
+        cycleSeconds = computed and computed.cycleSeconds or nil,
+        departuresPerHourPerDirection = computed
+          and computed.departuresPerHourPerDirection or nil,
         stationGroupCids = stationGroupCids,
+        vehicleCids = vehicleCids,
+        pricedVehicleCount = pricedVehicles,
+        vehicleUpkeepCoverageComplete = pricedVehicles == vehicles,
       },
     })
     return true, {
@@ -717,14 +829,16 @@ function M.stationBoards(economyState, registry)
       and economyState.lastResults.markets[service.marketCid] or nil
     local row = marketResults and marketResults.services and marketResults.services[lineCid] or nil
     local allocated = row and row.allocated or 0
-    local headway = math.min(service.headwaySeconds or constants.epochSeconds, constants.epochSeconds)
+    local interval = economyState.scheduler and economyState.scheduler.epochSeconds
+      or constants.accountingIntervalSeconds
+    local headway = math.min(service.headwaySeconds or interval, interval)
     -- A corridor's passengers board once and alight once, so a line's load
     -- distributes across its stops rather than appearing whole at each one.
     -- Summing the raw allocation per stop would report a 5-stop line as
     -- five times its real traffic and rank halts like termini.
     local stops = service.metadata and service.metadata.stationGroupCids or {}
     local perStop = #stops > 0 and math.floor(allocated / #stops) or 0
-    local waiting = math.floor(perStop * headway / constants.epochSeconds)
+    local waiting = math.floor(perStop * headway / interval)
     for _, groupCid in ipairs(stops) do
       local bindingRecord = registry and registry.byCanonical and registry.byCanonical[groupCid] or nil
       local stationName = bindingRecord and bindingRecord.metadata and bindingRecord.metadata.name or groupCid

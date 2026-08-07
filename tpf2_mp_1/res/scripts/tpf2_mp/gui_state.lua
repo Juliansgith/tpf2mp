@@ -4,6 +4,8 @@ function M.new()
   return {
   window = nil,
   passengerHud = nil,
+  economyHud = nil,
+  stockPresentation = nil,
   status = nil,
   details = nil,
   queue = {},

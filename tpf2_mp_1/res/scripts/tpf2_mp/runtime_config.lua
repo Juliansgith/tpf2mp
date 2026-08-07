@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local economyDifficulty = require "tpf2_mp/economy_difficulty"
 
 local M = {}
 
@@ -166,6 +167,9 @@ function M.read(options)
     networkAutoValidate = networkAutoValidate,
     networkManualHandoff = networkManualHandoff,
     manualNetwork = manualNetwork,
+    developerEconomyControls = source.developerEconomyControls == true
+      or environmentEnabled("TPF2MP_DEVELOPER_ECONOMY")
+      or networkAutoValidate or forced ~= nil,
     manualBootstrapReady = manualBootstrapReady,
     restoreResume = restoreResume,
     operationalCapture = operationalCapture,
@@ -195,12 +199,16 @@ function M.read(options)
       readEnvironment("TPF2MP_NETWORK_CLOCK_RUN_TICKS")
         or source.networkClockRunTicks, 30)),
     startingCash = math.max(0, util.integer(
-      readEnvironment("TPF2MP_STARTING_CASH") or source.startingCash, 5000000)),
+      readEnvironment("TPF2MP_STARTING_CASH") or source.startingCash, 50000000)),
+    economyDifficulty = economyDifficulty.normaliseKey(
+      readEnvironment("TPF2MP_ECONOMY_DIFFICULTY") or source.economyDifficulty),
+    revenueMultiplierPpm = economyDifficulty.multiplier(
+      readEnvironment("TPF2MP_ECONOMY_DIFFICULTY") or source.economyDifficulty),
     startingCompanyPlayerIds = playerIdList(
       readEnvironment("TPF2MP_STARTING_COMPANY_PLAYER_IDS")
         or source.startingCompanyPlayerIds),
-    maxEpochs = math.max(0, util.integer(source.maxEpochs, 24)),
-    valuationTargetCents = math.max(0, util.integer(source.valuationTargetCents, 50000000)),
+    maxEpochs = math.max(0, util.integer(source.maxEpochs, 288)),
+    valuationTargetCents = math.max(0, util.integer(source.valuationTargetCents, 50000000000)),
   }
 end
 

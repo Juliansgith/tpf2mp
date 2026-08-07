@@ -430,13 +430,22 @@ function M.new(deps)
           })
           return true
         end
-        local spec, materialiseError = operationCodec.materialise(record.transaction, {
-          api = api,
-          nativePlayerId = record.nativePlayerId,
-          resolveLocal = function(cid)
-            return record.localRefs and record.localRefs[cid]
-          end,
-        })
+        -- Generated API userdata can reject a structurally valid Lua value by
+        -- throwing before a command factory is entered. Close that ordered
+        -- operation explicitly: the outer GUI update pcall can keep the game
+        -- alive, but by itself would leave operationIssued latched forever and
+        -- strand both peers behind a consensus barrier.
+        local materialised, spec, materialiseError = pcall(
+          operationCodec.materialise, record.transaction, {
+            api = api,
+            nativePlayerId = record.nativePlayerId,
+            resolveLocal = function(cid)
+              return record.localRefs and record.localRefs[cid]
+            end,
+          })
+        if not materialised then
+          materialiseError, spec = spec, nil
+        end
         if not spec then
           queueGuiOperationResult({
             operationId = operationId, success = false, error = tostring(materialiseError),

@@ -84,11 +84,17 @@ local Button = {
 
 local Component = {
   new = function(id)
-    local value = object({ id = id })
+    local value = object({ id = id, name = id, visible = true })
     guiById[id] = value
     function value:setLayout(layout) self.layout = layout end
+    function value:getLayout() return self.layout end
+    function value:getName() return self.name end
+    function value:setName(name) self.name = name end
+    function value:getId() return self.id end
+    function value:getParent() return self.parent end
     function value:setId(newId) self.id = newId; guiById[newId] = self end
     function value:setTooltip(text) self.tooltip = tostring(text) end
+    function value:setVisible(visible) self.visible = visible end
     return value
   end,
 }
@@ -105,6 +111,9 @@ local BoxLayout = {
   new = function(direction)
     local value = object({ direction = direction, items = {} })
     function value:addItem(item) self.items[#self.items + 1] = item end
+    function value:insertItem(item, index) table.insert(self.items, index + 1, item) end
+    function value:getNumItems() return #self.items end
+    function value:getItem(index) return self.items[index + 1] end
     return value
   end,
 }
@@ -185,6 +194,9 @@ api = {
   engine = {
     entityExists = function() return false end,
     getComponent = function(id, componentType)
+      if componentType == "LINE" and (id == 700 or id == 702 or lineEntities[id]) then
+        return { stops = {} }
+      end
       if componentType == "PLAYER_OWNED" then
         if id == 700 or id == 799 then return { player = 100 } end
         if id == 701 or id == 702 then return { player = 101 } end
@@ -380,7 +392,7 @@ script.guiUpdate()
 nativeLineCommands[#nativeLineCommands + 1] =
   "L1|3|-1|100|950|250|100|4c696e652031|0|"
 nativeLineCommands[#nativeLineCommands + 1] =
-  "L1|5|700|-1|0|0|0||2|901,1,2;902,3,4"
+  "L3|5|700|-1|0|0|0||2|901,1,2,0.5:0.6;902,3,4,3.7"
 nativeLineCommands[#nativeLineCommands + 1] =
   "L1|29|700|-1|0|0|0|4d79204c696e65|0|"
 nativeLineCommands[#nativeLineCommands + 1] =
@@ -408,9 +420,15 @@ assert(vanillaUpdate.name == "intent" and vanillaUpdate.param.type == "operation
   and vanillaUpdate.param.capture.stops[1].stationGroupLocalId == 901
   and vanillaUpdate.param.capture.stops[1].station == 1
   and vanillaUpdate.param.capture.stops[1].terminal == 2
+  and vanillaUpdate.param.capture.stops[1].alternativeTerminals[1].station == 0
+  and vanillaUpdate.param.capture.stops[1].alternativeTerminals[1].terminal == 5
+  and vanillaUpdate.param.capture.stops[1].alternativeTerminals[2].station == 0
+  and vanillaUpdate.param.capture.stops[1].alternativeTerminals[2].terminal == 6
   and vanillaUpdate.param.capture.stops[2].stationGroupLocalId == 902
   and vanillaUpdate.param.capture.stops[2].station == 3
-  and vanillaUpdate.param.capture.stops[2].terminal == 4,
+  and vanillaUpdate.param.capture.stops[2].terminal == 4
+  and vanillaUpdate.param.capture.stops[2].alternativeTerminals[1].station == 3
+  and vanillaUpdate.param.capture.stops[2].alternativeTerminals[1].terminal == 7,
   "suppressed vanilla stop edit lost its target or native stop tuple")
 script.guiUpdate()
 local vanillaName = sentEvents[#sentEvents]
@@ -525,6 +543,13 @@ assert(deniedEntityEvent.param.observation == "entity.accessDenied"
 
 local ownLine = script.guiHandleEvent("lineManager", "delete", { lineEntity = 700 })
 assert(ownLine == nil, "active company's own line action was vetoed")
+script.guiHandleEvent("mainView", "select", {})
+local retainedLineVisible = false
+for _, view in ipairs(textViews) do
+  if view.text:match("retained line 700") then retainedLineVisible = true end
+end
+assert(retainedLineVisible,
+  "line-manager event did not retain its line for panel registration controls")
 
 game.config.tpf2mp.operationalCapture = true
 local operationalLine = script.guiHandleEvent("lineManager", "update", {
@@ -617,6 +642,9 @@ local exactPreview = {
       },
       transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 200, 20, 3, 1 },
     }},
+    -- The first ghost overlaps an owned construction. Moving this unchanged
+    -- station template to clear ground must invalidate the cached removal set.
+    constructionsToRemove = { 700 },
     streetProposal = {
     edgesToAdd = {{
       entity = -21, type = 1,
@@ -640,6 +668,7 @@ assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", exactPrev
 for _ = 1, 2 do script.guiUpdate() end
 -- Move the same station template. The lightweight path must retain only its
 -- latest placement and rebase the cached full graph once at builder.apply.
+exactPreview.proposal.constructionsToRemove = {}
 exactPreview.proposal.constructionsToAdd[1].transf[13] = 333
 exactPreview.proposal.streetProposal.nodesToAdd[1].comp.position.x = 333
 exactPreview.proposal.streetProposal.nodesToAdd[2].comp.position.x = 393
@@ -678,6 +707,11 @@ assert(exactCapture.__constructionAdditions["1"].transf["13"] == 333
     and exactCapture.__constructionAdditions["1"].params.length == 1
     and exactCapture.__constructionAdditions["1"].params.tracks == 0,
   "suppression correlation retained the stale station transform/template instead of builder.apply")
+assert((exactCapture.constructionsToRemove == nil
+      or (exactCapture.constructionsToRemove[1] == nil
+        and exactCapture.constructionsToRemove["1"] == nil))
+    and exactCapture.__constructionRemovals == nil,
+  "clear-ground station capture retained a stale construction removal from an earlier ghost")
 assert(exactCapture.__observedCost == 7654
   and exactCapture.__builderData.trackType == 8
   and exactCapture.__builderData.catenary == false,
@@ -1127,6 +1161,243 @@ assert(passengerHud.update(passengerGui, {
     and passengerGui.passengerHud.text.text:find("Alpha -> Beta", 1, true)
     and passengerGui.passengerHud.root.tooltip:find("Authoritative synchronized", 1, true),
   "the exact passenger HUD did not render the selected canonical vehicle")
+
+local economyHud = require "tpf2_mp/gui_economy_hud"
+local economyGui = {
+  selectedEntityKind = "vehicle",
+  selectedEntityId = 60,
+}
+local economySnapshot = {
+  activeCompanyCid = "company:1",
+  economyPresentation = {
+    activeCompanyCid = "company:1",
+    localVehicles = { ["60"] = "vehicle:event:test:1" },
+    localLines = { ["70"] = "line:event:test:1" },
+    vehicles = { ["vehicle:event:test:1"] = {
+      purchasePriceDollars = 8000000,
+      annualVehicleUpkeepCents = 120000000,
+      intervalVehicleUpkeepCents = 3333333,
+      projectedHourlyVehicleUpkeepCents = 40000000,
+      line = { pendingGrossRevenueCents = 640000,
+        grossRevenueCents = 250000, netRevenueCents = 110000 },
+    } },
+    services = { ["line:event:test:1"] = {
+      fareCents = 1200, topSpeedKmh = 160,
+      journeySeconds = 900, headwaySeconds = 600,
+      delivered = 24, pendingDelivered = 8, pendingGrossRevenueCents = 640000,
+      grossRevenueCents = 250000, vehicleUpkeepCents = 140000,
+      netRevenueCents = 110000, projectedHourlyNetRevenueCents = 1320000,
+      outsideCostCents = 2500,
+      fareAtOutsideParityCents = 2313,
+    } },
+    companies = { ["company:1"] = {
+      grossRevenueCents = 250000, vehicleUpkeepCents = 140000,
+      infrastructureUpkeepCents = 5000, netRevenueCents = 105000,
+      pendingGrossRevenueCents = 640000, projectedHourlyNetRevenueCents = 1260000,
+    } },
+  },
+}
+assert(economyHud.update(economyGui, economySnapshot) == true
+    and economyGui.economyHud.text.text:find("$8.00m buy", 1, true)
+    and economyGui.economyHud.text.text:find("$1.20m/yr", 1, true)
+    and economyGui.economyHud.root.tooltip:find("resolved native component", 1, true),
+  "economy HUD did not render exact selected-vehicle purchase/upkeep figures")
+economyGui.selectedEntityKind, economyGui.selectedEntityId = "line", 70
+assert(economyHud.update(economyGui, economySnapshot) == true
+    and economyGui.economyHud.text.text:find("160 km/h", 1, true)
+    and economyGui.economyHud.text.text:find("$12.00", 1, true)
+    and economyGui.economyHud.text.text:find("outside parity $23.13", 1, true)
+    and economyGui.economyHud.root.tooltip:find("outside option", 1, true),
+  "economy HUD did not explain selected-line speed, fare, and outside competition")
+economyGui.selectedEntityKind, economyGui.selectedEntityId = nil, nil
+assert(economyHud.update(economyGui, economySnapshot) == true
+    and economyGui.economyHud.text.text:find("$6.4k completed-trip revenue pending", 1, true)
+    and economyGui.economyHud.text.text:find("last 5m $1.1k net", 1, true),
+  "economy HUD did not render active-company gross/cost/net figures")
+
+-- Authoritative presentation now occupies the standard HUD and stock windows.
+-- The two older TPF2MP game-bar rows remain only as a fallback for a build or
+-- UI overhaul in which those stable stock component IDs disappear.
+local function registerText(id, text)
+  local value = TextView.new(text or "")
+  value:setId(id)
+  function value:getText() return self.text end
+  function value:getId() return self.id end
+  function value:getName() return self.name or "TextView" end
+  function value:setName(name) self.name = name end
+  function value:setVisible(visible) self.visible = visible end
+  return value
+end
+
+local function stockNode(name, id)
+  local value = object({ name = name, id = id or "", visible = true })
+  function value:getName() return self.name end
+  function value:getId() return self.id end
+  function value:getParent() return self.parent end
+  function value:getLayout() return self.layout end
+  function value:setVisible(visible) self.visible = visible end
+  function value:setTooltip(text) self.tooltip = tostring(text) end
+  function value:getText() return self.text end
+  function value:setText(text) self.text = tostring(text) end
+  if id and id ~= "" then guiById[id] = value end
+  return value
+end
+
+local function stockWindow(seedId, nativeName)
+  local window = stockNode("Window")
+  window.layout = BoxLayout.new("VERTICAL")
+  local native = stockNode(nativeName or "StockContent")
+  native.layout = BoxLayout.new("VERTICAL")
+  native.parent = window
+  window.layout:addItem(native)
+  local seed = stockNode("Button", seedId)
+  seed.parent = native
+  native.layout:addItem(seed)
+  return window, native, seed
+end
+
+registerText("gameInfo.earningsComp.earningsText", "Earnings")
+registerText("gameInfo.earningsComp.earnings", "$999m")
+registerText("gameInfo.passengerComp.numPassenger", "1")
+registerText("gameInfo.cargoComp.numCargo", "2")
+registerText("menu.financesButton.number", "999")
+registerText("menu.financesButton.label", "Account")
+guiById["gameInfo.passengerComp"] = stockNode("PassengerComp", "gameInfo.passengerComp")
+guiById["gameInfo.cargoComp"] = stockNode("CargoComp", "gameInfo.cargoComp")
+guiById["menu.financesButton"] = stockNode("FinancesButton", "menu.financesButton")
+
+local entityWindow, entityNative = stockWindow("temp.view.entity_60", "VehicleContent")
+local nativeVehicleCargo = stockNode("VehicleCargo")
+nativeVehicleCargo.parent = entityNative
+entityNative.layout:addItem(nativeVehicleCargo)
+local nativeFinancesLabel = registerText("test.native.vehicle.finances", "Finances")
+nativeFinancesLabel.parent = entityNative
+entityNative.layout:addItem(nativeFinancesLabel)
+stockWindow("lineManager.newLine", "LineManager")
+stockWindow("vehicleManager.buyVehicles", "VehicleManager")
+local _, nativeFinances = stockWindow("finances.borrow", "FinancesManager")
+stockWindow("menu.stats.lines.table", "LinesTable")
+stockWindow("menu.stats.vehicles.table", "VehiclesTable")
+stockWindow("menu.stats.stations.table", "StationsTable")
+
+local stockPresentation = require "tpf2_mp/gui_stock_presentation"
+local stockGui = {
+  frames = 30,
+  selectedEntityKind = "vehicle",
+  selectedEntityId = 60,
+  selectedVehicleId = 60,
+  selectedLineId = 70,
+}
+local stockSnapshot = {
+  initialized = true,
+  activeCompanyCid = "company:1",
+  activeCompanyName = "Company 1",
+  epoch = 3,
+  companies = { ["company:1"] = {
+    name = "Company 1", balance = 50000000, effectiveBalance = 50000000,
+  } },
+  ledger = { companies = { ["company:1"] = { netRevenueCents = 315000 } } },
+  economyPresentation = economySnapshot.economyPresentation,
+  passengerPresentation = {
+    localVehicles = { ["60"] = "vehicle:event:test:1" },
+    localLines = { ["70"] = "line:event:test:1" },
+    localStations = { ["80"] = "station:event:test:1" },
+    totals = { aboard = 17, waiting = 29, boarded = 84 },
+    vehicles = { ["vehicle:event:test:1"] = {
+      name = "Express 1", aboard = 17, capacity = 40,
+      originName = "Alpha", destinationName = "Beta", lineName = "Intercity",
+    } },
+    lines = { ["line:event:test:1"] = {
+      name = "Intercity", companyCid = "company:1", allocated = 32, waiting = 29,
+    } },
+    stations = { ["station:event:test:1"] = {
+      name = "Alpha", waiting = 29, throughput = 16,
+      lines = { { companyCid = "company:1", name = "Intercity", waiting = 29, allocated = 16 } },
+    } },
+  },
+}
+assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
+    and guiById["gameInfo.earningsComp.earningsText"].text == "TPF2MP net/5m"
+    and guiById["gameInfo.earningsComp.earnings"].text == "$1.1k"
+    and guiById["gameInfo.passengerComp.numPassenger"].text == "84"
+    and guiById["gameInfo.cargoComp.numCargo"].text == "--"
+    and guiById["menu.financesButton.number"].text == "50,000,000"
+    and guiById["menu.financesButton.label"].text == "TPF2MP account",
+  "authoritative projection did not overwrite the stock game bar")
+assert(guiById["tpf2mp.stock.entity.60"]
+    and guiById["tpf2mp.stock.lineManager"]
+    and guiById["tpf2mp.stock.vehicleManager"]
+    and guiById["tpf2mp.stock.finances"]
+    and guiById["tpf2mp.stock.lineStatistics"]
+    and guiById["tpf2mp.stock.vehicleStatistics"]
+    and guiById["tpf2mp.stock.stationStatistics"],
+  "authoritative panels were not inserted into all supported stock windows")
+assert(nativeVehicleCargo.visible == false
+    and nativeFinancesLabel.text == "Native history (cosmetic)"
+    and nativeFinances.visible == false
+    and guiById["menu.stats.lines.table"].visible == false
+    and guiById["menu.stats.vehicles.table"].visible == false
+    and guiById["menu.stats.stations.table"].visible == false,
+  "misleading native load, finance, or statistics content remained visible")
+assert(guiById["tpf2mp.passengerHud"].visible == false
+    and guiById["tpf2mp.economyHud"].visible == false,
+  "legacy fallback HUD rows remained visible after stock projection succeeded")
+
+stockPresentation.handleEvent(stockGui, stockSnapshot, "lineManager", "select", { line = 70 })
+assert(stockGui.selectedLineId == 70
+    and guiById["tpf2mp.stock.lineManager.primary"].text:find("Intercity", 1, true),
+  "stock line-manager selection did not refresh its authoritative context")
+
+local _, lineNative = stockWindow("temp.view.entity_70", "line-extension")
+local nativeTransported = registerText("test.native.line.transported", "Transported")
+nativeTransported.parent = lineNative
+lineNative.layout:addItem(nativeTransported)
+stockGui.selectedEntityKind, stockGui.selectedEntityId = "line", 70
+assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
+    and guiById["tpf2mp.stock.entity.70.primary"].text:find("fare $12.00", 1, true)
+    and nativeTransported.text == "Native transported (cosmetic)",
+  "stock line window did not replace native performance presentation")
+
+local _, stationNative = stockWindow("temp.view.entity_80", "stationgroup-window")
+local nativeStationBoard = stockNode("StationGroupDisplayComp")
+nativeStationBoard.parent = stationNative
+stationNative.layout:addItem(nativeStationBoard)
+stockGui.selectedEntityKind, stockGui.selectedEntityId = "station_group", 80
+assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
+    and guiById["tpf2mp.stock.entity.80.primary"].text:find("29 waiting", 1, true)
+    and nativeStationBoard.visible == false,
+  "stock station window did not replace the native scenery board")
+
+-- A generated userdata marshalling exception must return an explicit failed
+-- result. Merely catching it at guiUpdate would leave operationIssued latched
+-- and the ordered session pending forever. Keep this last so its deliberately
+-- failed ordered record cannot obscure unrelated capture assertions.
+saved.world.operations.byId["gui-operation-materialise-failure"] = {
+  operationId = "gui-operation-materialise-failure",
+  transaction = lineTransaction,
+  localRefs = {},
+  nativePlayerId = 100,
+  status = "queued",
+}
+local originalOperationMaterialise = operationCodec.materialise
+operationCodec.materialise = function() error("typed StationTerminal marshalling failed") end
+script.load(saved)
+for _ = 1, 4 do script.guiUpdate() end
+operationCodec.materialise = originalOperationMaterialise
+local materialiseFailure
+for index = #sentEvents, 1, -1 do
+  local candidate = sentEvents[index]
+  if candidate.name == "operation.result"
+    and candidate.param.operationId == "gui-operation-materialise-failure" then
+    materialiseFailure = candidate
+    break
+  end
+end
+assert(materialiseFailure and materialiseFailure.name == "operation.result"
+    and materialiseFailure.param.operationId == "gui-operation-materialise-failure"
+    and materialiseFailure.param.success == false
+    and tostring(materialiseFailure.param.error):find("StationTerminal", 1, true),
+  "GUI operation materialisation exception did not close as an explicit failure")
 
 assert(enabled["finances.borrow"] == false and enabled["finances.repay"] == false, "finance controls were not disabled")
 

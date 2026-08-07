@@ -5,6 +5,7 @@ local edgeOwnership = require "tpf2_mp/edge_ownership"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
 local townReadingModule = require "tpf2_mp/world_town_reading"
+local stationReadingModule = require "tpf2_mp/world_station_reading"
 
 local M = {}
 
@@ -1425,19 +1426,12 @@ function M.ownershipSummary(worldState, companies)
   return result
 end
 
-local function stationGroupTown(groupId)
-  local systems = api.engine.system or {}
-  local stationSystem = systems.stationSystem
-  local groupSystem = systems.stationGroupSystem
-  if not (stationSystem and stationSystem.getStation2TownMap and groupSystem and groupSystem.getStationGroup) then return nil end
-  local okMap, stationMap = pcall(stationSystem.getStation2TownMap)
-  if not okMap or type(stationMap) ~= "table" then return nil end
-  for stationId, townId in pairs(stationMap or {}) do
-    local ok, stationGroup = pcall(groupSystem.getStationGroup, stationId)
-    if ok and tonumber(stationGroup) == tonumber(groupId) then return tonumber(townId) end
-  end
-  return nil
-end
+local stationReading = stationReadingModule.new({
+  getApi = function() return api end,
+  entityNumber = entityNumber,
+})
+local stationGroupTown = stationReading.stationGroupTown
+M.stationGroupTown = stationGroupTown
 
 -- Raw native land-use capacity. The crowd policy scales this at load, so it is
 -- telemetry and readback-probe input only and must never reach the economy;
@@ -1466,6 +1460,15 @@ local function lineVehicleCount(lineId)
   return 0
 end
 
+local function lineVehicleIds(lineId)
+  local system = api.engine.system.transportVehicleSystem
+  if system and system.getLineVehicles then
+    local ok, vehicles = pcall(system.getLineVehicles, lineId)
+    if ok and vehicles then return sortedNumbers(vehicles) end
+  end
+  return {}
+end
+
 local corridorBindingModule = require "tpf2_mp/corridor_binding"
 M.SERVICE_FACTS = corridorBindingModule.SERVICE_FACTS
 M.TOWN_GROWTH = corridorBindingModule.TOWN_GROWTH
@@ -1484,12 +1487,16 @@ local corridorBinding = corridorBindingModule.new({
   townCapacity = townCapacity,
   townBuildingCount = townBuildingCount,
   lineVehicleCount = lineVehicleCount,
+  lineVehicleIds = lineVehicleIds,
   nameOf = nameOf,
   safeEntity = safeEntity,
   positionOfEntity = resolvedPositionOfEntity,
   developmentPositionOfEntity = developmentPositionOfEntity,
   developmentPositionsOfTown = developmentPositionsOfTown,
   resolveLocal = function(registry, cid) return canonical.resolveLocal(registry, cid) end,
+  resolveCanonical = function(registry, kind, localId)
+    return canonical.resolveCanonical(registry, kind, localId)
+  end,
 })
 M.computedServiceFacts = corridorBinding.computedServiceFacts
 M.makeLineService = corridorBinding.makeLineService
@@ -1498,6 +1505,7 @@ M.applyTownDevelopment = corridorBinding.applyTownDevelopment
 M.runOrderedDevelopment = corridorBinding.runOrderedDevelopment
 M.settleDevelopment = corridorBinding.settleDevelopment
 M.autoRegisterLine = corridorBinding.autoRegisterLine
+M.autoRegisterExistingServices = corridorBinding.autoRegisterExistingServices
 M.accumulateDevelopment = corridorBindingModule.accumulateDevelopment
 M.TOWN_DEVELOPMENT = corridorBindingModule.TOWN_DEVELOPMENT
 

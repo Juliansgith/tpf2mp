@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "description": "Synthetic capacity/cost calibration tiers for regression testing. Replace or extend with exact native or mod-resolved consist facts; these rows are not a claim about named vanilla vehicles.",
+  "corridor": {
+    "straightLineMeters": 8000,
+    "stationCount": 2
+  },
+  "consists": [
+    {
+      "year": 1850,
+      "name": "Early 40-seat local",
+      "seats": 40,
+      "topSpeedKmh": 45,
+      "vehicleCount": 1,
+      "purchasePriceDollars": 2000000,
+      "annualUpkeepDollars": 300000,
+      "townSizeEach": 100
+    },
+    {
+      "year": 1900,
+      "name": "Steam 80-seat service",
+      "seats": 80,
+      "topSpeedKmh": 75,
+      "vehicleCount": 1,
+      "purchasePriceDollars": 4000000,
+      "annualUpkeepDollars": 700000,
+      "townSizeEach": 200
+    },
+    {
+      "year": 1950,
+      "name": "Diesel 160-seat service",
+      "seats": 160,
+      "topSpeedKmh": 120,
+      "vehicleCount": 1,
+      "purchasePriceDollars": 8000000,
+      "annualUpkeepDollars": 1500000,
+      "townSizeEach": 400
+    },
+    {
+      "year": 2000,
+      "name": "Electric 320-seat service",
+      "seats": 320,
+      "topSpeedKmh": 200,
+      "vehicleCount": 1,
+      "purchasePriceDollars": 20000000,
+      "annualUpkeepDollars": 4000000,
+      "townSizeEach": 800
+    },
+    {
+      "year": 2030,
+      "name": "High-speed 500-seat service",
+      "seats": 500,
+      "topSpeedKmh": 300,
+      "vehicleCount": 1,
+      "purchasePriceDollars": 35000000,
+      "annualUpkeepDollars": 7000000,
+      "townSizeEach": 1200
+    }
+  ]
+}

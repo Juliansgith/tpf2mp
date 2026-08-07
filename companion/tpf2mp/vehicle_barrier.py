@@ -99,9 +99,12 @@ class VehicleStationBarrier:
 
     def _remember_slot_reservation(self, action: Mapping[str, Any]) -> None:
         schedule = action.get("schedule") or self._disabled_schedule()
-        if schedule.get("enabled") is not True:
-            return
         key = self._slot_key(str(action["lineCid"]), int(action["stopIndex"]))
+        if schedule.get("enabled") is not True:
+            # Prompt release supersedes a reservation restored from the old
+            # timetable-enforced station policy.
+            self.host.vehicle_sync_slot_reservations.pop(key, None)
+            return
         self.host.vehicle_sync_slot_reservations[key] = {
             "lineCid": str(action["lineCid"]),
             "stopIndex": int(action["stopIndex"]),

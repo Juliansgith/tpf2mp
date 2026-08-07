@@ -418,6 +418,12 @@ function M.new(deps)
           "proposal cannot change a rival construction ")
         if err then return nil, err end
       end
+      for _, collateral in ipairs(construction and construction.collateral or {}) do
+        local _, err = checkOwnedReference(
+          collateral.cid, collateral.kind, true,
+          "proposal cannot demolish a rival construction ")
+        if err then return nil, err end
+      end
     end
     for _, edge in ipairs(transaction.edges) do
       for _, reference in ipairs({ edge.node0, edge.node1 }) do
@@ -448,7 +454,13 @@ function M.new(deps)
         inspected.localRefs[cid] = localId
       end
       if inspected.removal[cid] then
-        localInputs[#localInputs + 1] = { kind = kind, cid = cid, localId = localId }
+        local binding = state.canonical.byCanonical[cid]
+        local capitalCostCents = binding and binding.metadata
+          and math.max(0, util.integer(binding.metadata.capitalCostCents, 0)) or 0
+        localInputs[#localInputs + 1] = {
+          kind = kind, cid = cid, localId = localId,
+          capitalCostCents = capitalCostCents,
+        }
       end
     end
     return inspected.localRefs, localInputs
@@ -627,10 +639,10 @@ function M.new(deps)
     if ledger.initialized ~= true then return false, "canonical network accounts are not initialised" end
     local reconciliation = ledger.reconciliation or {}
     if reconciliation.nextHousekeepingTick == nil then
-      reconciliation.nextHousekeepingTick = state.tick + 60
+      reconciliation.nextHousekeepingTick = state.tick + 1
       return true
     end
-    local nextTick = util.integer(reconciliation.nextHousekeepingTick, state.tick + 60)
+    local nextTick = util.integer(reconciliation.nextHousekeepingTick, state.tick + 1)
     if state.tick < nextTick then return true end
     -- Never erase a native construction debit while it is still being sampled,
     -- and never alter wallet presentation inside a physical/checkpoint barrier.
@@ -650,7 +662,7 @@ function M.new(deps)
     for _, record in pairs(state.world.checkpointConsensus.byBoundary or {}) do
       if record.status == "pending" then return true end
     end
-    reconciliation.nextHousekeepingTick = state.tick + 60
+    reconciliation.nextHousekeepingTick = state.tick + 1
     local ok, result = finance.reconcileNetworkAccounts(state.finance, state.companies, {
       reason = "periodic-native-wallet-cache",
       tick = state.tick,
@@ -956,6 +968,34 @@ function M.new(deps)
     }
   end
   
+  local function buildCanonicalConstructionRoot(record, pending)
+    local interface = game and game.interface or {}
+    if interface.buildConstruction == nil then
+      return nil, "engine construction build API is unavailable"
+    end
+    local activePlayer = type(interface.getPlayer) == "function" and tonumber(interface.getPlayer()) or nil
+    if activePlayer ~= tonumber(record.issuerPlayerId) then
+      return nil, "construction replay player mapping changed before execution"
+    end
+    local called, entityOrError = pcall(
+      interface.buildConstruction, pending.spec.fileName, pending.spec.params, pending.spec.transform)
+    local rootEntity = called and tonumber(entityOrError) or nil
+    if not rootEntity or rootEntity < 0 then
+      return nil, tostring(called and "construction helper returned no entity" or entityOrError)
+    end
+    if type(interface.setPlayer) == "function" then
+      local assigned, assignError = pcall(interface.setPlayer, rootEntity, record.nativeOwnerPlayerId)
+      if not assigned then
+        return nil, "station ownership assignment failed: " .. tostring(assignError)
+      end
+    end
+    pending.rootEntity = rootEntity
+    pending.phase = "settling-build"
+    pending.stableSinceTick = nil
+    pending.lastSignature = nil
+    return rootEntity
+  end
+
   local function beginCanonicalConstruction(record)
     local activePlayer = type(game.interface.getPlayer) == "function" and tonumber(game.interface.getPlayer()) or nil
     if activePlayer ~= tonumber(record.issuerPlayerId) then
@@ -975,17 +1015,45 @@ function M.new(deps)
     end
     record.balanceBefore = balanceOf(record.issuerPlayerId)
     record.nativeOwnerBalanceBefore = balanceOf(record.nativeOwnerPlayerId)
+    local pending = {
+      rootEntity = nil,
+      sourceRootEntity = spec.mode ~= "build" and tonumber(
+        record.localRefs and record.localRefs[spec.sourceCid]) or nil,
+      spec = util.deepCopy(spec),
+      before = before,
+      beforeFingerprints = beforeFingerprints,
+      startedTick = state.tick,
+      deadlineTick = state.tick + CONSTRUCTION_SETTLE_TIMEOUT_TICKS,
+      stableSinceTick = nil,
+      lastSignature = nil,
+    }
     local interface = game and game.interface or {}
     local called, entityOrError, rootEntity
     if spec.mode == "build" then
       if interface.buildConstruction == nil then
         return proposalFailure(record, "engine construction build API is unavailable")
       end
-      called, entityOrError = pcall(
-        interface.buildConstruction, spec.fileName, spec.params, spec.transform)
-      rootEntity = called and tonumber(entityOrError) or nil
-      if not rootEntity or rootEntity < 0 then
-        return proposalFailure(record, tostring(called and "construction helper returned no entity" or entityOrError))
+      if #(spec.collateral or {}) > 0 and interface.bulldoze == nil then
+        return proposalFailure(record, "engine collateral bulldoze API is unavailable")
+      end
+      for _, collateral in ipairs(spec.collateral or {}) do
+        local collateralLocalId = record.localRefs and tonumber(record.localRefs[collateral.cid]) or nil
+        if not collateralLocalId then
+          return proposalFailure(record, "construction collateral is not mapped locally")
+        end
+        local demolished, demolishError = pcall(interface.bulldoze, collateralLocalId)
+        if not demolished then return proposalFailure(record, tostring(demolishError)) end
+      end
+      if #(spec.collateral or {}) > 0 then
+        -- Native demolition retires construction graphs over later script ticks.
+        -- Building in the same tick can make the helper resolve its transform
+        -- relative to the doomed obstacle.  Wait until every canonical input is
+        -- observably absent, then replay the captured absolute transform.
+        pending.phase = "clearing-collateral"
+      else
+        local buildError
+        rootEntity, buildError = buildCanonicalConstructionRoot(record, pending)
+        if not rootEntity then return proposalFailure(record, buildError) end
       end
     else
       local sourceLocalId = record.localRefs and tonumber(record.localRefs[spec.sourceCid]) or nil
@@ -1006,25 +1074,20 @@ function M.new(deps)
         called, entityOrError = pcall(interface.bulldoze, sourceLocalId)
       end
       if not called then return proposalFailure(record, tostring(entityOrError)) end
+      pending.rootEntity = rootEntity
+      pending.phase = "settling-change"
     end
-    if spec.mode ~= "remove" and type(game.interface.setPlayer) == "function" then
+    if spec.mode == "upgrade" and type(game.interface.setPlayer) == "function" then
       local assigned, assignError = pcall(game.interface.setPlayer, rootEntity, record.nativeOwnerPlayerId)
       if not assigned then return proposalFailure(record, "station ownership assignment failed: " .. tostring(assignError)) end
     end
     record.status = "building-construction"
-    record.constructionPending = {
+    record.constructionPending = pending
+    return true, {
+      building = pending.phase ~= "clearing-collateral",
+      clearingCollateral = pending.phase == "clearing-collateral",
       rootEntity = rootEntity,
-      sourceRootEntity = spec.mode ~= "build" and tonumber(
-        record.localRefs and record.localRefs[spec.sourceCid]) or nil,
-      spec = util.deepCopy(spec),
-      before = before,
-      beforeFingerprints = beforeFingerprints,
-      startedTick = state.tick,
-      deadlineTick = state.tick + CONSTRUCTION_SETTLE_TIMEOUT_TICKS,
-      stableSinceTick = nil,
-      lastSignature = nil,
     }
-    return true, { building = true, rootEntity = rootEntity }
   end
   
   function proposalPreparation.construction.topologyCandidates(kind, record, added, after)
@@ -1155,6 +1218,28 @@ function M.new(deps)
     local pending = record.constructionPending
     local after, captureError = constructionComponentSets()
     if not after then return proposalFailure(record, tostring(captureError)) end
+    if pending.phase == "clearing-collateral" then
+      local pendingRemovalInputs, pendingRemovalKinds =
+        proposalPreparation.construction.pendingRemovalInputs(record, after)
+      if pendingRemovalInputs > 0 then
+        if state.tick < pending.deadlineTick then
+          return true, {
+            waiting = true,
+            phase = pending.phase,
+            pendingRemovalInputs = pendingRemovalInputs,
+            pendingRemovalKinds = pendingRemovalKinds,
+          }
+        end
+        return proposalFailure(record, {
+          error = "construction collateral did not retire before the build deadline",
+          pendingRemovalInputs = pendingRemovalInputs,
+          pendingRemovalKinds = pendingRemovalKinds,
+        })
+      end
+      local rootEntity, buildError = buildCanonicalConstructionRoot(record, pending)
+      if not rootEntity then return proposalFailure(record, buildError) end
+      return true, { building = true, rootEntity = rootEntity }
+    end
     local added = constructionSetDelta(after, pending.before)
     local removed = constructionSetDelta(pending.before, after)
     local counts, removedCounts = constructionDeltaCounts(added), constructionDeltaCounts(removed)
@@ -1177,10 +1262,11 @@ function M.new(deps)
     local candidateEdges = proposalPreparation.construction.topologyCandidates("edge", record, added, after)
     local ready = #candidateNodes == expectedNodes and #candidateEdges == expectedEdges
     local upgradeChanged = true
-    local pendingRemovalInputs, pendingRemovalKinds = 0, {}
+    local pendingRemovalInputs, pendingRemovalKinds =
+      proposalPreparation.construction.pendingRemovalInputs(record, after)
     if mode == "build" then
       ready = ready and rootSet[pending.rootEntity] == true
-        and beforeRootSet[pending.rootEntity] ~= true
+        and beforeRootSet[pending.rootEntity] ~= true and pendingRemovalInputs == 0
     elseif mode == "upgrade" then
       ready = ready and rootSet[pending.rootEntity] == true
       upgradeChanged = false
@@ -1204,8 +1290,6 @@ function M.new(deps)
       -- Build 35924). Never acknowledge such a no-op on the wire.
       ready = ready and upgradeChanged
     else
-      pendingRemovalInputs, pendingRemovalKinds =
-        proposalPreparation.construction.pendingRemovalInputs(record, after)
       ready = rootSet[pending.rootEntity] ~= true
         and expectedNodes == 0 and expectedEdges == 0
         and pendingRemovalInputs == 0
@@ -1235,8 +1319,8 @@ function M.new(deps)
         expected = {
           node = expectedNodes, edge = expectedEdges, kind = pending.spec.kind,
           upgradeChanged = mode == "upgrade" and upgradeChanged or nil,
-          pendingRemovalInputs = mode == "remove" and pendingRemovalInputs or nil,
-          pendingRemovalKinds = mode == "remove" and pendingRemovalKinds or nil,
+          pendingRemovalInputs = mode ~= "upgrade" and pendingRemovalInputs or nil,
+          pendingRemovalKinds = mode ~= "upgrade" and pendingRemovalKinds or nil,
         },
       })
     end

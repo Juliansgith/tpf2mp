@@ -11,6 +11,24 @@ addModifier = function(name, fn) modifiers[name] = fn end
 
 assert(loadfile(project .. "/tpf2_mp_1/mod.lua"))()
 local definition = assert(data())
+local startingCashParam, economyDifficultyParam
+for _, param in ipairs(definition.info.params or {}) do
+  if param.key == "startingCash" then startingCashParam = param; break end
+end
+for _, param in ipairs(definition.info.params or {}) do
+  if param.key == "economyDifficulty" then economyDifficultyParam = param; break end
+end
+assert(startingCashParam and startingCashParam.defaultIndex == 1
+    and startingCashParam.values[1] == "25 million"
+    and startingCashParam.values[2] == "50 million"
+    and startingCashParam.values[3] == "100 million",
+  "mod UI no longer defaults to the documented 50 million starting budget")
+assert(economyDifficultyParam and economyDifficultyParam.defaultIndex == 0
+    and economyDifficultyParam.values[1] == "Normal (100% revenue)"
+    and economyDifficultyParam.values[2] == "Hard (60% revenue)"
+    and economyDifficultyParam.values[3] == "Easy (150% revenue)"
+    and economyDifficultyParam.values[4] == "Relaxed (200% revenue)",
+  "world-creation UI no longer exposes the four save-owned economy modes")
 definition.runFn({}, {
   ["!tpf2_mp"] = {
     peer = 0,
@@ -21,6 +39,7 @@ definition.runFn({}, {
     proxyMode = 0,
     pauseOnSwitch = 0,
     startingCash = 0,
+    economyDifficulty = 1,
     epochLimit = 2,
     valuationTarget = 2,
     liveValidator = 0,
@@ -36,6 +55,10 @@ assert(cfg.startNetwork == true and cfg.launcherManaged == true,
   "launcher did not activate launcher-managed network mode")
 assert(cfg.startingCash == 50000000,
   "explicit launcher research budget did not override the mod dropdown")
+assert(cfg.economyDifficulty == "hard",
+  "world-creation economy difficulty was not persisted into runtime config")
+assert(cfg.maxEpochs == 288 and cfg.valuationTargetCents == 50000000000,
+  "five-minute match length or cohort-scaled victory target was not configured")
 assert(cfg.agentMode == "vanilla", "launcher agent policy did not override the mod dropdown")
 assert(cfg.townDevelopment == true, "launcher town-development policy was not applied")
 

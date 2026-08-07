@@ -340,7 +340,7 @@ function M.new(deps)
         lastSlotIndex = releaseSchedule.slotIndex,
         lastScheduledDepartureAt = releaseSchedule.scheduledDepartureAt,
       }
-    end
+    else sync.scheduleReservations[lineCid .. "#" .. tostring(stopIndex)] = nil end
     local record = localVehicles[vehicleCid]
     if record then
       record.lineCid = lineCid

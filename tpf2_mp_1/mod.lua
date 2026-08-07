@@ -5,14 +5,15 @@
 local presentationOk, presentation = pcall(require, "tpf2_mp/presentation")
 
 function data()
-  local minorVersion = 24
+  local minorVersion = 28
   local agentModeKeys = { "skeleton", "vanilla", "empty" }
+  local economyDifficultyKeys = { "normal", "hard", "easy", "relaxed" }
   local peerValues = { "player1 (host)", "player2 (client)" }
   local peerIds = { "player1", "player2" }
   local sessionValues = { "local-dev", "match-1", "match-2", "sync-lab" }
-  local epochLimits = { 0, 12, 24, 48 }
-  local valuationTargets = { 0, 25000000, 50000000, 100000000 }
-  local startingCashValues = { 5000000, 10000000, 20000000 }
+  local epochLimits = { 0, 144, 288, 576 }
+  local valuationTargets = { 0, 25000000000, 50000000000, 100000000000 }
+  local startingCashValues = { 25000000, 50000000, 100000000 }
 
   local function env(name, fallback)
     if os and os.getenv then
@@ -73,14 +74,18 @@ function data()
         { key = "neutralizer", name = "Experimental native-income neutralizer", values = { "Off", "On" }, defaultIndex = 0 },
         { key = "proxyMode", name = "Standalone ownership mode", values = { "Native turn proxy (recommended)", "Legacy post-build attribution" }, defaultIndex = 0 },
         { key = "pauseOnSwitch", name = "Pause simulation on company switch", values = { "Yes", "No" }, defaultIndex = 0 },
-        { key = "startingCash", name = "Company starting cash", values = { "5 million", "10 million", "20 million" }, defaultIndex = 0 },
-        { key = "epochLimit", name = "Match length (settlement epochs)", values = { "Unlimited", "12", "24", "48" }, defaultIndex = 2 },
-        { key = "valuationTarget", name = "Victory model value", values = { "Disabled", "$250k", "$500k", "$1m" }, defaultIndex = 2 },
+        { key = "startingCash", name = "Company starting cash", values = { "25 million", "50 million", "100 million" }, defaultIndex = 1 },
+        { key = "economyDifficulty", name = "TPF2MP economy difficulty",
+          values = { "Normal (100% revenue)", "Hard (60% revenue)",
+            "Easy (150% revenue)", "Relaxed (200% revenue)" },
+          defaultIndex = 0 },
+        { key = "epochLimit", name = "Match length (financial hours)", values = { "Unlimited", "12 hours", "24 hours", "48 hours" }, defaultIndex = 2 },
+        { key = "valuationTarget", name = "Victory model value", values = { "Disabled", "$250m", "$500m", "$1b" }, defaultIndex = 2 },
         { key = "townDevelopment", name = "Physical town growth (experimental)",
           values = { "Off (capacities only)", "On (ordered native development)" },
           defaultIndex = 0 },
         { key = "bankruptcy", name = "Bankruptcy elimination",
-          values = { "On (3 insolvent settlements)", "Off (build together)", "Harsh (1 settlement)" },
+          values = { "On (3-hour grace)", "Off (build together)", "Harsh (1-hour grace)" },
           defaultIndex = 0 },
         { key = "credit", name = "Competitive credit",
           values = { "Standard", "Tight", "Generous" }, defaultIndex = 0 },
@@ -124,11 +129,18 @@ function data()
       cfg.journalNeutralizerEnabled = tonumber(selected.neutralizer) == 1
       cfg.localProxyEnabled = tonumber(selected.proxyMode) ~= 1
       cfg.pauseOnSwitch = tonumber(selected.pauseOnSwitch) ~= 1
-      local selectedStartingCash = startingCashValues[(tonumber(selected.startingCash) or 0) + 1]
-        or startingCashValues[1]
+      local selectedStartingCash = startingCashValues[(tonumber(selected.startingCash) or 1) + 1]
+        or startingCashValues[2]
       cfg.startingCash = math.max(0, math.floor(
         tonumber(env("TPF2MP_STARTING_CASH", tostring(selectedStartingCash)))
           or selectedStartingCash))
+      local selectedDifficulty = tostring(env("TPF2MP_ECONOMY_DIFFICULTY",
+        launched.economyDifficulty
+          or economyDifficultyKeys[(tonumber(selected.economyDifficulty) or 0) + 1]
+          or "normal")):lower()
+      local validDifficulties = { normal = true, hard = true, easy = true, relaxed = true }
+      cfg.economyDifficulty = validDifficulties[selectedDifficulty]
+        and selectedDifficulty or "normal"
       cfg.maxEpochs = epochLimits[(tonumber(selected.epochLimit) or 2) + 1] or epochLimits[3]
       cfg.valuationTargetCents = valuationTargets[(tonumber(selected.valuationTarget) or 2) + 1] or valuationTargets[3]
       local parameterValidation = tonumber(selected.liveValidator) == 1

@@ -22,6 +22,9 @@ local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local economyModule = require "tpf2_mp/economy"
+local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
+local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
+local economyPublicViewModule = require "tpf2_mp/economy_public_view"
 local financeModule = require "tpf2_mp/finance"
 local bridgeModule = require "tpf2_mp/bridge"
 local util = require "tpf2_mp/util"
@@ -104,6 +107,7 @@ local function baseConfig(overrides)
     operationalCapture = false,
     operationalSampleTicks = 120,
     startingCash = 5000000,
+    economyDifficulty = "normal",
     maxEpochs = 24,
     valuationTargetCents = 50000000,
     neutralizer = false,
@@ -202,14 +206,85 @@ do
     "GUI-safe public snapshot did not use canonical network accounts")
   assert(snapshot.companies["company:1"].nativeBalance == nil,
     "GUI-safe public snapshot published an unavailable native balance")
+  assert(type(snapshot.economyPresentation) == "table"
+      and snapshot.economyPresentation.activeCompanyCid == "company:1",
+    "public snapshot omitted the authoritative economy presentation view")
+end
+
+do
+  local view = economyPublicViewModule.build({
+    economy = {
+      params = { economyDifficulty = "easy" },
+      markets = { ["market:test"] = { demand = 640, metadata = {
+        townA = "town:test:a", townB = "town:test:b",
+        townSizeA = 400, townSizeB = 480,
+      } } },
+      towns = {
+        ["town:test:a"] = { size = 420 },
+        ["town:test:b"] = { size = 500 },
+      },
+      services = {
+        ["line:event:economy:1"] = {
+          lineCid = "line:event:economy:1", marketCid = "market:test",
+          companyCid = "company:1", name = "Fast Link", fareCents = 1200,
+          journeySeconds = 900, headwaySeconds = 600, capacity = 80,
+          metadata = { topSpeedKmh = 160, cruiseSpeedKmh = 112,
+            vehicleCount = 1, departuresPerHourPerDirection = 6 },
+        },
+      },
+      vehicleCosts = {
+        ["vehicle:event:economy:1"] = {
+          companyCid = "company:1", annualVehicleUpkeepCents = 120000000,
+        },
+      },
+      lastResults = {
+        intervalSeconds = 300,
+        companies = { ["company:1"] = { grossRevenueCents = 240000,
+          vehicleUpkeepCents = 13699, infrastructureUpkeepCents = 500,
+          netRevenueCents = 225801 } },
+        markets = { ["market:test"] = {
+          gcOutsideCents = 2500,
+          services = { ["line:event:economy:1"] = {
+            allocated = 200, grossRevenueCents = 240000,
+            vehicleUpkeepCents = 13699, netRevenueCents = 226301,
+            factors = { fareCents = 1200, timeCostCents = 112,
+              waitCostCents = 75, gcCents = 1387 },
+          } },
+        } },
+      },
+    },
+    canonical = { byCanonical = {
+      ["line:event:economy:1"] = {
+        kind = "line", localId = 70, metadata = {},
+      },
+      ["vehicle:event:economy:1"] = {
+        kind = "vehicle", localId = 71, metadata = {
+          owner = "company:1", lineCid = "line:event:economy:1",
+          purchasePriceDollars = 7200000,
+          vehicleCostSource = "consensus-native-maintenance",
+        },
+      },
+    } },
+  }, "company:1")
+  assert(view.localLines["70"] == "line:event:economy:1"
+      and view.localVehicles["71"] == "vehicle:event:economy:1"
+      and view.vehicles["vehicle:event:economy:1"].projectedHourlyVehicleUpkeepCents == 40000000
+      and view.vehicles["vehicle:event:economy:1"].intervalVehicleUpkeepCents == 3333333
+      and view.services["line:event:economy:1"].fareAtOutsideParityCents == 2313
+      and view.services["line:event:economy:1"].hourlyMarketDemand == 640
+      and view.services["line:event:economy:1"].modelTownSizeA == 420
+      and view.economyDifficulty == "easy",
+    "economy presentation did not project exact selected-line/vehicle figures")
 end
 
 do
   local firstStop = {
     stationGroupCid = "station_group:test:1", station = 0, terminal = 0,
+    alternativeTerminals = { { station = 0, terminal = 1 }, { station = 0, terminal = 2 } },
   }
   local secondStop = {
     stationGroupCid = "station_group:test:2", station = 0, terminal = 0,
+    alternativeTerminals = {},
   }
   local transaction = {
     kind = "line.update",
@@ -231,6 +306,12 @@ do
   assert(rejected == nil
       and replayError == "native line postcondition does not match the ordered transaction",
     "a replay peer accepted a line state beyond the ordered intermediate state")
+
+  local wrongAlternatives = util.deepCopy(exact)
+  wrongAlternatives.stops[1].alternativeTerminals = { { station = 0, terminal = 2 } }
+  assert(operationRuntimeModule.reconcileLinePostcondition(
+      transaction, "line:test", wrongAlternatives, false) == nil,
+    "a replay peer accepted divergent alternative terminal selections")
 
   local optimistic, optimisticError = operationRuntimeModule.reconcileLinePostcondition(
     transaction, "line:test", advanced, true)
@@ -476,6 +557,26 @@ do
         and emitted[1].payload.action.type == "line.register"
         and #controller.deferredFollowups() == 0,
       "coalesced registration did not drain in one ordered round")
+
+    controller.reset()
+    emitted = {}
+    controller.scheduleFollowup({
+      type = "line.register", lineCid = "line:event:deleted:1",
+      companyCid = "company:1",
+    })
+    controller.scheduleFollowup({
+      type = "line.register", lineCid = "line:event:surviving:1",
+      companyCid = "company:1",
+    })
+    assert(controller.cancelLineRegistration("line:event:deleted:1") == 1
+        and #controller.deferredFollowups() == 1
+        and controller.deferredFollowups()[1].action.lineCid == "line:event:surviving:1",
+      "deleting a line did not cancel its stale registration without disturbing FIFO order")
+    assert(controller.cancelLineRegistration("line:event:deleted:1") == 0,
+      "line-registration cancellation was not idempotent")
+    assert(controller.processDeferred() == true and #emitted == 1
+        and emitted[1].payload.action.lineCid == "line:event:surviving:1",
+      "a deleted line registration starved the surviving line behind it")
 
     controller.reset()
     emitted = {}
@@ -1138,6 +1239,7 @@ do
     TPF2MP_SESSION_ID = "injected-session",
     TPF2MP_BRIDGE_DIR = "C:/bridge/injected",
     TPF2MP_STARTING_CASH = "75000000",
+    TPF2MP_ECONOMY_DIFFICULTY = "relaxed",
     TPF2MP_NETWORK_CLOCK_RUN_TICKS = "900",
     TPF2MP_STARTING_COMPANY_PLAYER_IDS = "9478,9479,9478",
     TPF2MP_RESTORE_RESUME = "1",
@@ -1162,6 +1264,9 @@ do
     "injected peer/session identity was lost")
   assert(cfg.root == "C:/bridge/injected" and cfg.startingCash == 75000000,
     "injected bridge/economy configuration was lost")
+  assert(cfg.economyDifficulty == "relaxed"
+      and cfg.revenueMultiplierPpm == 2000000,
+    "save-owned economy difficulty was not normalized as an exact preset")
   assert(cfg.networkClockRunTicks == 900,
     "injected network clock run window was lost")
   assert(#cfg.startingCompanyPlayerIds == 2
@@ -1197,6 +1302,16 @@ do
     "new state did not retain its schema versions")
   assert(first.networkMode == "network" and first.bridge.peerId == "player1",
     "new state did not retain its runtime identity")
+  assert(first.match.rules.economyDifficulty == "normal"
+      and first.match.rules.revenueMultiplierPpm == 1000000
+      and first.economy.params.economyDifficulty == "normal",
+    "new state did not bind the selected economy mode into authored state")
+
+  local easy = stateSchema.new(baseConfig({ economyDifficulty = "easy" }), versions)
+  assert(easy.match.rules.economyDifficulty == "easy"
+      and easy.match.rules.revenueMultiplierPpm == 1500000
+      and easy.economy.params.revenueMultiplierPpm == 1500000,
+    "non-default world difficulty did not reach both rules and economy state")
 
   first.version = 7
   first.world.networkClock = nil
@@ -1211,6 +1326,53 @@ do
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
+
+  local legacyEconomy = stateSchema.new(cfg, versions)
+  legacyEconomy.economy.version = 5
+  legacyEconomy.match.rules.maxEpochs = 24
+  legacyEconomy.match.rules.valuationTargetCents = 50000000
+  local durationMigrated = stateSchema.migrate(legacyEconomy, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23,
+    checkpointVersion = 3,
+  })
+  assert(durationMigrated.economy.version == economyModule.VERSION
+      and durationMigrated.match.rules.maxEpochs == 288
+      and durationMigrated.match.rules.valuationTargetCents == 50000000000
+      and durationMigrated.match.rules.economyDifficulty == "normal"
+      and durationMigrated.economy.params.revenueMultiplierPpm == 1000000,
+    "hourly match duration/value was not preserved across the five-minute migration")
+
+  local preDifficulty = stateSchema.new(baseConfig(), versions)
+  preDifficulty.economy.version = 6
+  preDifficulty.match.rules.economyDifficulty = nil
+  preDifficulty.match.rules.revenueMultiplierPpm = nil
+  preDifficulty.economy.params.economyDifficulty = nil
+  preDifficulty.economy.params.revenueMultiplierPpm = nil
+  local migratedNormal = stateSchema.migrate(preDifficulty, {
+    newState = function()
+      return stateSchema.new(baseConfig({ economyDifficulty = "relaxed" }), versions)
+    end,
+    config = function() return baseConfig({ economyDifficulty = "relaxed" }) end,
+    stateVersion = 23,
+    checkpointVersion = 3,
+  })
+  assert(migratedNormal.match.rules.economyDifficulty == "normal"
+      and migratedNormal.economy.params.revenueMultiplierPpm == 1000000,
+    "a pre-difficulty save inherited a machine-local setting instead of migrating to Normal")
+
+  local legacyUnlimited = stateSchema.new(cfg, versions)
+  legacyUnlimited.economy.version = 5
+  legacyUnlimited.match.rules.maxEpochs = 0
+  local unlimitedMigrated = stateSchema.migrate(legacyUnlimited, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23,
+    checkpointVersion = 3,
+  })
+  assert(unlimitedMigrated.match.rules.maxEpochs == 0,
+    "unlimited legacy match acquired a duration during migration")
 
   local prior = stateSchema.new(baseConfig({ startNetwork = false }), versions)
   prior.initialized = true
@@ -1417,6 +1579,8 @@ do
   economyModule.upsertMarket(model, {
     cid = "market:digest", name = "Digest market", demand = 1000,
     votCentsPerHour = 450, gcOutsideCents = 2500, thetaCents = 250,
+    metadata = { townA = "town:digest:a", townB = "town:digest:b",
+      townSizeA = 80, townSizeB = 120, corridorMeters = 3000 },
   })
   economyModule.upsertService(model, {
     lineCid = "line:digest", marketCid = "market:digest", companyCid = "company:1",
@@ -1463,11 +1627,16 @@ do
     { "params.maxWaitSeconds", function(value) value.params.maxWaitSeconds = value.params.maxWaitSeconds + 1 end },
     { "params.transferSeconds", function(value) value.params.transferSeconds = value.params.transferSeconds + 1 end },
     { "params.crowdThresholdPpm", function(value) value.params.crowdThresholdPpm = value.params.crowdThresholdPpm + 1 end },
+    { "params.economyDifficulty", function(value) value.params.economyDifficulty = "easy" end },
+    { "params.revenueMultiplierPpm", function(value) value.params.revenueMultiplierPpm = 1500000 end },
     { "market.name", function(value) value.markets["market:digest"].name = "Other" end },
     { "market.demand", function(value) value.markets["market:digest"].demand = 1001 end },
     { "market.votCentsPerHour", function(value) value.markets["market:digest"].votCentsPerHour = 451 end },
     { "market.gcOutsideCents", function(value) value.markets["market:digest"].gcOutsideCents = 2501 end },
     { "market.thetaCents", function(value) value.markets["market:digest"].thetaCents = 251 end },
+    { "market.demandResid", function(value) value.markets["market:digest"].demandResid = value.markets["market:digest"].demandResid + 1 end },
+    { "town.size", function(value) value.towns["town:digest:a"].size = value.towns["town:digest:a"].size + 1 end },
+    { "town.growthResid", function(value) value.towns["town:digest:a"].growthResid = value.towns["town:digest:a"].growthResid + 1 end },
     { "service.marketCid", function(value) value.services["line:digest"].marketCid = "market:other" end },
     { "service.companyCid", function(value) value.services["line:digest"].companyCid = "company:2" end },
     { "service.name", function(value) value.services["line:digest"].name = "Other" end },
@@ -1482,6 +1651,8 @@ do
     { "service.shareResid", function(value) value.services["line:digest"].shareResid = value.services["line:digest"].shareResid + 1 end },
     { "service.lagLoadPpm", function(value) value.services["line:digest"].lagLoadPpm = value.services["line:digest"].lagLoadPpm + 1 end },
     { "service.lastFareCents", function(value) value.services["line:digest"].lastFareCents = value.services["line:digest"].lastFareCents + 1 end },
+    { "service.capacityResid", function(value) value.services["line:digest"].capacityResid = value.services["line:digest"].capacityResid + 1 end },
+    { "service.revenueMultiplierResid", function(value) value.services["line:digest"].revenueMultiplierResid = value.services["line:digest"].revenueMultiplierResid + 1 end },
     { "service.metadata", function(value) value.services["line:digest"].metadata = {
       stationGroupCids = { "station_group:digest:a", "station_group:digest:b" },
     } end },
@@ -1524,7 +1695,14 @@ do
     },
     world = {
       vehicleSync = {
-        schemaVersion = 2, enabled = true, vehicles = {}, scheduleReservations = {},
+        schemaVersion = 2, enabled = true, vehicles = {},
+        scheduleReservations = {
+          ["line:event:test:1#0"] = {
+            lineCid = "line:event:test:1", stopIndex = 0,
+            periodSeconds = 60, phaseSeconds = 5,
+            lastSlotIndex = 1, lastScheduledDepartureAt = 65,
+          },
+        },
       },
     },
     economy = {
@@ -1579,33 +1757,25 @@ do
       and emitted[1].payload.state == "held" and emitted[1].payload.round == 1,
     "first terminal arrival was not held and reported")
   local policy = emitted[1].payload.schedule
-  assert(policy.enabled == true and policy.periodSeconds == 60,
-    "registered service did not report its canonical departure policy")
-  local slotIndex = math.floor((currentTime - policy.phaseSeconds) / policy.periodSeconds) + 1
-  local scheduledDeparture = policy.phaseSeconds + slotIndex * policy.periodSeconds
+  assert(policy.enabled == false,
+    "registered service headway leaked into physical station synchronization")
+  local promptDeparture = currentTime + 10
   local releaseOk = runtime.applyRelease({
     type = "vehicle.sync_release",
     vehicleCid = "vehicle:event:test:1",
     lineCid = "line:event:test:1",
     round = 1,
     stopIndex = 0,
-    releaseAtGameTime = scheduledDeparture,
+    releaseAtGameTime = promptDeparture,
     releaseWhilePaused = false,
-    schedule = {
-      schemaVersion = 1,
-      enabled = true,
-      periodSeconds = policy.periodSeconds,
-      phaseSeconds = policy.phaseSeconds,
-      slotIndex = slotIndex,
-      scheduledDepartureAt = scheduledDeparture,
-    },
+    schedule = { schemaVersion = 1, enabled = false },
   })
   assert(releaseOk == true, "ordered station release was rejected")
-  currentTime, currentSpeed, current.tick = scheduledDeparture - 1, 0, 3
+  currentTime, currentSpeed, current.tick = promptDeparture - 1, 0, 3
   runtime.update()
   assert(#commands == 1,
-    "paused vehicle released before its canonical scheduled departure")
-  currentTime, current.tick = scheduledDeparture, 4
+    "paused vehicle released before its canonical prompt departure")
+  currentTime, current.tick = promptDeparture, 4
   runtime.update()
   assert(#commands == 2 and commands[2].stopped == false
       and emitted[#emitted].payload.state == "released",
@@ -1614,13 +1784,13 @@ do
   assert(digestView.schemaVersion == 3
       and digestView.vehicles[1].lastAuthorizedRound == 1
       and digestView.vehicles[1].stopIndex == 0
-      and digestView.vehicles[1].schedule.slotIndex == slotIndex
-      and digestView.scheduleReservations[1].lastSlotIndex == slotIndex
-      and digestView.passengerPresentation.schemaVersion == 1
+      and digestView.vehicles[1].schedule.enabled == false
+      and #digestView.scheduleReservations == 0
+      and digestView.passengerPresentation.schemaVersion == 2
       and digestView.passengerPresentation.vehicles[1].vehicleCid
         == "vehicle:event:test:1"
       and digestView.passengerPresentation.vehicles[1].lastRound == 1,
-    "authorized vehicle schedule/passenger ledger is absent from the convergence view")
+    "prompt vehicle release/passenger ledger is absent from the convergence view")
   transportVehicle.state, current.tick = 1, 5
   runtime.update()
   current.economy.services["line:event:test:1"] = nil
@@ -1637,6 +1807,164 @@ do
       and current.probes.vehicleSync.faults == 1,
     "departure before authority release did not fault closed")
   api = priorApi
+end
+
+do
+  local gameTime, busy = 159, false
+  local submitted, diagnostics = {}, {}
+  local current = {
+    initialized = true,
+    match = { status = "running" },
+    networkMode = "network",
+    bridge = { peerId = "player1" },
+    tick = 1,
+    economy = economyModule.newState(),
+  }
+  economyModule.startScheduler(current.economy, 100, 60)
+  local runtime = economyClockRuntimeModule.new({
+    getState = function() return current end,
+    submitIntent = function(action)
+      submitted[#submitted + 1] = util.deepCopy(action)
+      return true, { queued = true }
+    end,
+    localWorkState = function()
+      return { pending = busy, barrierReason = busy and "test-barrier" or nil }
+    end,
+    diagnosticLog = function(kind, payload)
+      diagnostics[#diagnostics + 1] = { kind = kind, payload = util.deepCopy(payload) }
+    end,
+    clockSnapshot = function() return { time = gameTime } end,
+  })
+  local ok, reason = runtime.update()
+  assert(ok == false and reason == "not-due" and #submitted == 0,
+    "economy clock submitted before its accounting boundary")
+  gameTime, busy, current.tick = 160, true, 2
+  ok, reason = runtime.update()
+  assert(ok == false and reason == "test-barrier" and #submitted == 0,
+    "economy clock crossed an active authority barrier")
+  busy, current.tick = false, 3
+  ok = runtime.update()
+  assert(ok == true and #submitted == 1
+      and submitted[1].type == "economy.settle"
+      and submitted[1].scheduled == true
+      and submitted[1].boundaryGameTimeSeconds == 160,
+    "host did not submit the exact due economy boundary")
+  current.tick = 4
+  ok, reason = runtime.update()
+  assert(ok == false and reason == "submitted" and #submitted == 1,
+    "pending economy boundary was submitted more than once")
+  economyModule.evaluateAll(current.economy, 160)
+  gameTime, current.tick = 220, 5
+  current.bridge.peerId = "player2"
+  ok, reason = runtime.update()
+  assert(ok == false and reason == "host-only" and #submitted == 1,
+    "a client attempted to author an economy settlement")
+  assert(diagnostics[1] and diagnostics[1].kind == "economy-clock-submit",
+    "automatic economy submission was not observable")
+end
+
+do
+  local previousApi = rawget(_G, "api")
+  local maintenanceById = { [41] = 900000, [42] = 600000 }
+  api = {
+    type = { ComponentType = { MAINTENANCE_COST = "MAINTENANCE_COST" } },
+    engine = { getComponent = function(localId, componentType)
+      if componentType == "MAINTENANCE_COST" and maintenanceById[localId] then
+        return { maintenanceCost = maintenanceById[localId] }
+      end
+    end },
+  }
+  local current = {
+    economy = economyModule.newState(),
+    canonical = { byCanonical = {} },
+    companies = {},
+    world = {},
+  }
+  local runtime = economyAssetCostRuntimeModule.new({
+    getState = function() return current end,
+  })
+  current.canonical.byCanonical["edge:new:1"] = { metadata = { private = true } }
+  local build = {
+    companyCid = "company:1",
+    localInputs = {},
+    result = { outputs = { { cid = "edge:new:1", kind = "edge" } } },
+  }
+  local first = runtime.recordProposal(build, -100)
+  assert(first.spendCents == 10000 and first.addedCapitalCents == 10000
+      and current.canonical.byCanonical["edge:new:1"].metadata.capitalCostCents == 10000
+      and current.economy.companyCosts["company:1"].infrastructureCapitalCents == 10000,
+    "private proposal spend was not added to its canonical capital basis")
+  assert(runtime.recordProposal(build, -100) == nil,
+    "proposal capital was recorded twice")
+
+  current.canonical.byCanonical["edge:new:2"] = { metadata = { private = true } }
+  local replacement = {
+    companyCid = "company:1",
+    localInputs = { { cid = "edge:new:1", capitalCostCents = 10000 } },
+    result = { outputs = { { cid = "edge:new:2", kind = "edge" } } },
+  }
+  local second = runtime.recordProposal(replacement, -50)
+  assert(second.retiredCapitalCents == 10000 and second.addedCapitalCents == 15000
+      and current.economy.companyCosts["company:1"].infrastructureCapitalCents == 15000,
+    "replacement failed to carry old capital plus new authoritative spend")
+  local demolition = {
+    companyCid = "company:1",
+    localInputs = { { cid = "edge:new:2", capitalCostCents = 15000 } },
+    result = { outputs = {} },
+  }
+  local removed = runtime.recordProposal(demolition, 20)
+  assert(removed.addedCapitalCents == 0
+      and current.economy.companyCosts["company:1"].infrastructureCapitalCents == 0,
+    "demolition did not retire the canonical infrastructure cost basis")
+
+  current.canonical.byCanonical["vehicle:new:1"] = {
+    kind = "vehicle", localId = 41, metadata = {},
+  }
+  assert(runtime.recordVehicle({ result = { outputs = {} } }, -1) == nil,
+    "malformed operation record reached vehicle costing")
+  local purchase = {
+    companyCid = "company:1",
+    transaction = { kind = "vehicle.buy" },
+    result = { outputs = { { cid = "vehicle:new:1", kind = "vehicle" } } },
+    completion = { postcondition = { annualMaintenanceDollars = 900000 } },
+  }
+  local vehicle = runtime.recordVehicle(purchase, -7200000)
+  assert(vehicle.purchasePriceDollars == 7200000
+      and vehicle.annualVehicleUpkeepCents == 90000000
+      and current.economy.vehicleCosts["vehicle:new:1"].annualVehicleUpkeepCents
+        == 90000000
+      and current.canonical.byCanonical["vehicle:new:1"].metadata.vehicleCostSource
+        == "consensus-native-maintenance",
+    "resolved native maintenance did not become the vehicle's authored upkeep")
+
+  maintenanceById[41] = 750000
+  local replacement = runtime.recordVehicle({
+    companyCid = "company:1",
+    transaction = { kind = "vehicle.replace", data = { targetCid = "vehicle:new:1" } },
+    result = { postcondition = { annualMaintenanceDollars = 750000 } },
+  }, -500000)
+  assert(replacement.purchasePriceDollars == 7200000
+      and replacement.annualVehicleUpkeepCents == 75000000
+      and current.canonical.byCanonical["vehicle:new:1"].metadata.purchasePriceDollars == 7200000,
+    "vehicle replacement did not refresh upkeep while retaining original capital history")
+
+  current.canonical.byCanonical["vehicle:pre:2"] = {
+    kind = "vehicle", localId = 42, metadata = { owner = "company:2" },
+  }
+  local backfill = runtime.backfillVehicles()
+  assert(backfill.priced == 1
+      and current.economy.vehicleCosts["vehicle:pre:2"].annualVehicleUpkeepCents == 60000000
+      and current.canonical.byCanonical["vehicle:pre:2"].metadata.vehicleCostSource
+        == "manifest-native-maintenance",
+    "manifest-bound pre-existing vehicle did not receive its native upkeep")
+
+  local sold = runtime.recordVehicle({
+    companyCid = "company:1",
+    transaction = { kind = "vehicle.sell", data = { targetCid = "vehicle:new:1" } },
+  }, 1000000)
+  assert(sold.removed == true and current.economy.vehicleCosts["vehicle:new:1"] == nil,
+    "sold vehicle continued accruing authored upkeep")
+  api = previousApi
 end
 
 print("PASS runtime config/state, proposal, intent, clock, validation, native authority, and GUI module boundaries")

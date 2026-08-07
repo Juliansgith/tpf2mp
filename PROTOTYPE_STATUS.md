@@ -1,8 +1,8 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-07 for prototype `0.24.0-alpha`, state schema `24`,
-checkpoint format `4`, edge proposal schema `5`, construction proposal schema
-`7`, and native hook `0.13.0`.
+Last updated: 2026-08-07 for prototype `0.28.0-alpha`, state schema `26`,
+checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema
+`5`, construction proposal schema `7`, and native hook `0.13.0`.
 
 ## Executive status
 
@@ -26,11 +26,10 @@ TPF2MP contains two usable but differently mature modes:
   two-process purchase/assignment/movement proof. Shared-clock v2 and a
   canonical per-station train hold/release barrier now pass a populated
   two-process run with four releases, zero faults, and matching final state.
-  State 24 retains an enabled demand service as the barrier's one
-  timetable, removes its native hold bit from lifecycle authority, persists
-  host-reserved slots, prunes completed rounds, and exposes load telemetry.
-  Ordinary lines use the same barrier with a short guarded release and no
-  invented timetable. Both paths now have exact two-process proof, and human
+  State 24 removes the native hold bit from lifecycle authority, prunes
+  completed rounds, and exposes load telemetry. Model headway remains a demand
+  input; registered and ordinary lines now both use a short guarded physical
+  release after every peer arrives. The prompt path has exact two-process proof, and human
   speed-3 play recovered after deliberately delaying one peer. The rest
   of the vehicle lifecycle, complex topology, scripted callbacks,
   autonomous drift, and a two-computer session remain open.
@@ -58,10 +57,10 @@ zero pending rounds, zero faults, a 1.86-second average round latency, and a
 2.38-second maximum. Both peers ended at core `fba1630d`, model `98f01295`,
 structure `15189409`, and mobility `8e5d90e6`; the audit verifies 15/15 commit
 convergences, 2/0/0 physical proposals, and 3/0/0 checkpoint barriers. The
-registered-schedule mechanism retains the exact-build baseline in
-`train-scheduled-state22-20260806-1010`, and a later human run proved its
-long-pause/speed-3 rendezvous behavior before the artificial fallback was
-removed from ordinary lines.
+  older scheduled mechanism retains a readable exact-build baseline in
+  `train-scheduled-state22-20260806-1010`. It is no longer the production
+  policy: a 2026-08-07 registered-line run exposed a 364.2-game-second hold and
+  active-round timeout, so all new station rounds use prompt release.
 
 The older `runtime/localhost-live/populated-network-ownershipfix-20260803`
 remains the static ownership baseline. It passed with two
@@ -234,7 +233,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   game-script and Python protocol suites and exact-build engine receipts.
   Stock depot, modular-station edit/removal, and graphless asset build/removal
   also pass ordinary-UI two-process capture and checkpoint consensus.
-- Canonical line and railway-vehicle operation codecs with strict validation,
+- Canonical line and portable vehicle operation codecs with strict validation,
   peer/company authorization, materialization, result validation, finance
   routing, physical consensus, and checkpoint sequencing. Hook 0.13 decodes the
   exact Build 35924 CreateLine/DeleteLine/UpdateLine native payloads after the
@@ -320,21 +319,74 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Competitive economy
 
-- Demand model 3 retains integer generalized cost, the pinned logit table,
-  carried share residuals, lagged crowding, induced demand, and deterministic
-  capacity allocation.
+- Demand model 7 retains integer generalized cost, the pinned logit table,
+  carried share residuals, lagged crowding, induced demand, deterministic
+  capacity allocation, and passenger/cargo market weighting.
+- Hard, Normal, Easy, and Relaxed are world-creation choices that scale gross
+  revenue to 60%, 100%, 150%, or 200%. The selected key and exact integer
+  multiplier are ordered match rules and saved economy state; they are
+  read-only after initialization. Purchase price, resolved upkeep, demand,
+  service facts, and scoring inputs are otherwise unchanged. Pre-v7 saves
+  migrate to Normal rather than inheriting a machine-local menu selection.
+- Passenger service advances canonical endpoint populations with an exact
+  growth remainder. All corridors linked to those towns refresh their gravity
+  demand upward from the authored sizes, independently of native crowd policy
+  and independently of whether optional physical town development is enabled.
 - An upward fare shock uses the authored `lastFareCents` latch and immediately
   adopts a lower equilibrium, while non-price deterioration keeps the smoother
   250-per-thousand down-glide. Options at least eight theta above the best
   choice now receive zero weight. Together these close both retained-rider
   harvesting and the one-passenger max-fare rounding exploit without reviving
   the crowding relay oscillation.
+- Player 1 automatically authors the exact next accounting tick every 300
+  seconds of synchronized simulation time. Hourly demand and bidirectional
+  service capacity are prorated with exact integer residual carry, so 12 ticks
+  conserve the hourly rate. A physical/checkpoint barrier delays but never
+  skips a due boundary; catch-up remains ordered. Manual settle/demo controls
+  are hidden outside developer/validator mode.
+- Passenger revenue is delivery-based. Boarding stores the current fare;
+  alighting at the next synchronized station advances cumulative completed
+  passengers and earned cents; the next tick pays only the monotonic cursor
+  delta. Repeated snapshots pay zero and backwards snapshots fail closed. The
+  default fare is `$5 + $1.50/km`, while a displayed passenger is a financial
+  cohort of 1,000. Cargo model delivery uses `$1,000/unit-km` at fare index
+  1,000; automatic arbitrary-industry corridor binding remains open.
+- Each purchased canonical vehicle records the exact consensus purchase delta
+  and the engine-resolved annual `MAINTENANCE_COST` after vanilla/mod resource
+  modifiers. Replacement refreshes it, sale retires it, and uniquely
+  manifest-bound starting vehicles are backfilled from the same component.
+  One sixth of purchase price remains only a fail-soft legacy fallback. Upkeep
+  continues while parked or unassigned and every vehicle has its own exact
+  interval residual. The native annual number is compressed into a three-hour
+  competitive financial year. Private proposal spend becomes active infrastructure capital at ten percent annual upkeep;
+  replacements carry old capital plus new spend, removals retire it, and public
+  town roads are excluded.
+- Every result and ledger separates gross revenue, vehicle upkeep,
+  infrastructure upkeep, operating cost, and signed net revenue. Score, credit,
+  bankruptcy, and canonical-wallet payout use net. Signed sub-dollar residuals
+  make repeated positive/negative settlements exactly cumulative despite the
+  native wallet's integer-dollar boundary.
+- Native trip income, maintenance, and loan-interest journal entries are not
+  authoritative. Native wallets are continuously reconciled to canonical
+  accounts. The normal account and earnings controls now show canonical balance
+  plus completed-trip revenue pending and projected hourly net; vehicle, line,
+  station, finance, manager, and statistics windows receive authoritative
+  TPF2MP panels. Misleading native
+  load/queue/history widgets are hidden or labelled cosmetic. The engine-only
+  world-space trip-income popup can still appear but never changes competitive
+  cash. Native purchase and annual-maintenance figures remain visible because
+  they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
-  exact in Lua 5.1 and Python. Model-v2 cutoff behavior remains available for
-  archived replay; new and migrated matches use v3.
-- The current gate is 71 cross-language differential scenarios, an authored-
-  digest field mutation test, 40 Lua invariants, and a reusable repeating-fare
-  adversary. Human cadence and balance remain live-test questions.
+  exact in Lua 5.1 and Python. Model-v2-v6 behavior remains available for
+  archived replay. The offline gate now includes 88 Lua tests and 75
+  cross-language v2-v7 scenarios, including completed-trip cursors,
+  bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
+  vehicle costs, infrastructure costs, losses, exact residual carry,
+  scheduled-boundary rejection, four difficulty presets, canonical town
+  growth, and a 104-event replay. A replaceable 1850-2030 era matrix checks
+  that newer reference tiers add real capacity/net incentive while difficulty
+  never changes demand, capacity, or upkeep. Exact vanilla/mod vehicle facts
+  and human balance remain live-test questions.
 
 ### Passenger presentation and cargo observation
 
@@ -352,8 +404,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   releases are idempotent; route edits account discarded/backlogged riders.
 - State 24 persists this ledger. Checkpoint format 4 validates its full
   canonical stop sequence, line/company identity, capacity, trip endpoints,
-  and release round against the synchronized vehicle projection. The in-game
-  TPF2MP HUD shows exact selected train, line, and station counts.
+  and release round against the synchronized vehicle projection. The standard
+  vehicle, line, station, manager, and statistics windows now show exact selected
+  train, line, and station counts. The old separate HUD rows remain only as a
+  fail-soft fallback when a supported stock component cannot be located.
 - Native people remain bounded scenery. Exact-build reverse engineering shows
   `Debug_SetSimPersonState` contains only a person ID and boolean, with no
   train/station target; the cosmetic adapter therefore issues zero writes.
@@ -388,13 +442,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 75 core Lua tests and 73 cross-language economy scenarios;
+  - 88 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 104-event replay
     integrations;
-  - 56 mod Lua and all 8 investigation/tool Lua syntax checks;
+  - 72 mod Lua and 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 100 Python protocol/network/checkpoint/recovery/report tests.
+  - 104 Python protocol/network/checkpoint/recovery/report tests.
 
 ## Not yet established
 
@@ -420,13 +474,18 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 - Safe synchronized commands for every one of the 23 currently rejected command
   categories or proof that no consequential route bypasses the authority layer.
 - Cargo-positive cross-peer telemetry and cargo presentation. Passenger counts
-  are exact in the TPF2MP HUD; the stock native agent glyph remains cosmetic.
+  are exact in the standard UI; the stock native agent glyph remains scenery.
+  Until a cargo ledger exists, the standard cargo total is suppressed as `--`.
 - Host-authored town and industry growth. Unproven autonomous systems remain
-  frozen during authority tests.
+  frozen during authority tests. Canonical model-town growth is implemented;
+  this open item is specifically native physical presentation and industry
+  production/cargo authority.
 - Exact-boundary native save capture, automatic two-peer rollback/relaunch,
   host migration, authentication/encryption, or hostile-Internet deployment.
-- Competitive credit, insolvency/bankruptcy, full native operating economics,
-  balance, onboarding, and public-release quality.
+- Live automatic-economy proof with a freshly purchased consist and newly built
+  infrastructure; balance, pre-existing-save cost-basis policy, broader vehicle
+  sale/replacement capture, onboarding, and public-release quality. Native
+  floating income text remains explicitly cosmetic.
 
 ## Next gate
 
@@ -443,7 +502,7 @@ cycles with intermediate samples, pause, submit one supported private track
 from each peer, save on the host, confirm a linked recovery archive, and collect
 both evidence bundles.
 
-After that passes, live-prove the railway-vehicle lifecycle one category at a
+After that passes, live-prove each remaining vehicle lifecycle category one at a
 time. Keep all other native command visitors fail-closed until
 their canonical payload, host authorization, replay, finance, result binding,
 and checkpoint chain are complete.

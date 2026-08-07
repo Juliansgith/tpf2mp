@@ -848,7 +848,7 @@ local stationTransaction = {
   remove = { edges = {}, nodes = {} },
   constructions = {{
     slot = "construction:1", mode = "build", adapter = "stock-rail-station",
-    kind = "rail_station", sourceCid = "",
+    kind = "rail_station", sourceCid = "", collateral = {},
     fileName = stationPrefix .. "modular_station.con",
     transform = { 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 600, 100, 5, 1 },
     params = {
@@ -1035,7 +1035,7 @@ local depotTransaction = {
   remove = { edges = {}, nodes = {} },
   constructions = {{
     slot = "construction:1", mode = "build", adapter = "portable-construction",
-    kind = "depot", sourceCid = "", fileName = "depot/train/test_depot.con",
+    kind = "depot", sourceCid = "", collateral = {}, fileName = "depot/train/test_depot.con",
     transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1000, 0, 5, 1 },
     params = { catenary = true, trackType = "standard.lua", year = 1992 }, modules = {},
   }},
@@ -1075,7 +1075,7 @@ local assetTransaction = {
   remove = { edges = {}, nodes = {} },
   constructions = {{
     slot = "construction:1", mode = "build", adapter = "portable-construction",
-    kind = "asset", sourceCid = "", fileName = "asset/test/example.con",
+    kind = "asset", sourceCid = "", collateral = {}, fileName = "asset/test/example.con",
     transform = { 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 1100, 20, 5, 1 },
     params = { seed = 3, variant = "blue" }, modules = {},
   }},
@@ -1105,7 +1105,7 @@ local assetUpgradeTransaction = {
   remove = { edges = {}, nodes = {} },
   constructions = {{
     slot = "construction:1", mode = "upgrade", adapter = "portable-construction",
-    kind = "asset", sourceCid = assetCid, fileName = "asset/test/example_new.con",
+    kind = "asset", sourceCid = assetCid, collateral = {}, fileName = "asset/test/example_new.con",
     transform = { 2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 1, 0, 1100, 20, 5, 1 },
     params = { seed = 4, variant = "green" }, modules = {},
   }},
@@ -1131,7 +1131,7 @@ local assetRemoveTransaction = {
   remove = { edges = {}, nodes = {} },
   constructions = {{
     slot = "construction:1", mode = "remove", adapter = "portable-construction",
-    kind = "asset", sourceCid = assetCid, fileName = "",
+    kind = "asset", sourceCid = assetCid, collateral = {}, fileName = "",
     transform = {}, params = {}, modules = {},
   }},
 }
@@ -1160,7 +1160,7 @@ local stationUpgradeTransaction = {
   remove = { edges = {}, nodes = {} },
   constructions = {{
     slot = "construction:1", mode = "upgrade", adapter = "portable-construction",
-    kind = "station", sourceCid = stationConstructionCid,
+    kind = "station", sourceCid = stationConstructionCid, collateral = {},
     fileName = stationPrefix .. "modular_station.con",
     transform = { 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, 600, 100, 5, 1 },
     params = { seed = 3, year = 1992 },
@@ -1203,7 +1203,7 @@ local stationRemoveTransaction = {
   remove = { edges = removalEdges, nodes = removalNodes },
   constructions = {{
     slot = "construction:1", mode = "remove", adapter = "portable-construction",
-    kind = "construction", sourceCid = stationConstructionCid, fileName = "",
+    kind = "construction", sourceCid = stationConstructionCid, collateral = {}, fileName = "",
     transform = {}, params = {}, modules = {},
   }},
 }

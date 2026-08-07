@@ -51,8 +51,12 @@ function M.render(gui, snapshot, options)
   gui.status:setText(status)
   local lines = {
     "Session: " .. tostring(snapshot.sessionId or "?") .. " | digest " .. tostring(snapshot.digest or "?"),
-    string.format("Match: %s | epoch limit %s | value target %.2f | winner %s",
+    string.format("Match: %s | economy %s %.0f%% | epoch limit %s | value target %.2f | winner %s",
       tostring(snapshot.match and snapshot.match.status or "setup"),
+      tostring(snapshot.match and snapshot.match.rules
+        and snapshot.match.rules.economyDifficulty or "normal"),
+      (snapshot.match and snapshot.match.rules
+        and snapshot.match.rules.revenueMultiplierPpm or 1000000) / 10000,
       tostring(snapshot.match and snapshot.match.rules and snapshot.match.rules.maxEpochs or "-"),
       (snapshot.match and snapshot.match.rules and snapshot.match.rules.valuationTargetCents or 0) / 100,
       tostring(snapshot.match and snapshot.match.winnerCid or "-")),
@@ -201,19 +205,32 @@ function M.render(gui, snapshot, options)
   local errorText = gui.lastError or snapshot.lastError or (snapshot.bridge and snapshot.bridge.lastError)
   if errorText then lines[#lines + 1] = "ERROR: " .. tostring(errorText) end
   local results = snapshot.lastResults or {}
+  local economyClock = snapshot.economyScheduler or {}
+  if economyClock.nextBoundaryGameTimeSeconds then
+    lines[#lines + 1] = string.format(
+      "Authored economy: automatic 5-minute accounting | last %s | next game-time %s | latest gross $%.2f - upkeep $%.2f = net $%.2f",
+      tostring(economyClock.lastBoundaryGameTimeSeconds or "start"),
+      tostring(economyClock.nextBoundaryGameTimeSeconds),
+      (results.totalGrossRevenueCents or results.totalRevenueCents or 0) / 100,
+      (results.totalOperatingCostCents or 0) / 100,
+      (results.totalNetRevenueCents or results.totalRevenueCents or 0) / 100)
+  end
   local scoreboard = snapshot.scoreboard or {}
   for _, companyCid in ipairs(snapshot.companyOrder or {}) do
     local company = snapshot.companies and snapshot.companies[companyCid] or {}
     local score = results.companies and results.companies[companyCid] or {}
     local total = scoreboard[companyCid] or {}
     lines[#lines + 1] = string.format(
-      "%s: balance %.0f, loan %.0f | assets %d | epoch demand %d, revenue %.2f | value %.2f, reach %d, wins %d",
+      "%s: balance %.0f, loan %.0f | assets %d | tick deliveries %d | gross $%.2f - vehicle $%.2f - infrastructure $%.2f = net $%.2f | value %.2f, reach %d, wins %d",
       company.name or companyCid,
       company.effectiveBalance or company.balance or 0,
       company.loan or 0,
       company.assets and company.assets.total or 0,
       score.demand or 0,
-      (score.revenueCents or 0) / 100,
+      (score.grossRevenueCents or score.revenueCents or 0) / 100,
+      (score.vehicleUpkeepCents or 0) / 100,
+      (score.infrastructureUpkeepCents or 0) / 100,
+      (score.netRevenueCents or score.revenueCents or 0) / 100,
       (total.modelValueCents or 0) / 100,
       total.marketsReached or 0,
       total.marketWins or 0
@@ -248,13 +265,15 @@ function M.render(gui, snapshot, options)
       if target > share + 2000 then trend = "GAINING"
       elseif target + 2000 < share then trend = "LOSING" end
       lines[#lines + 1] = string.format(
-        "  %s: %d carried, %d.%d%% share -> %d.%d%% %s | $%.2f revenue",
+        "  %s: %d carried, %d.%d%% share -> %d.%d%% %s | gross $%.2f - train $%.2f = line net $%.2f",
         service.name or lineCid,
         service.allocated or 0,
         math.floor(share / 10000), math.floor(share % 10000 / 1000),
         math.floor(target / 10000), math.floor(target % 10000 / 1000),
         trend,
-        (service.revenueCents or 0) / 100)
+        (service.grossRevenueCents or service.revenueCents or 0) / 100,
+        (service.vehicleUpkeepCents or 0) / 100,
+        (service.netRevenueCents or service.revenueCents or 0) / 100)
       lines[#lines + 1] = string.format(
         "      costs the passenger $%.2f = fare %.2f + time %.2f + wait %.2f"
           .. " + transfers %.2f + crowding %.2f - comfort %.2f",
@@ -280,7 +299,7 @@ function M.render(gui, snapshot, options)
     if shownBoards >= 8 then break end
     shownBoards = shownBoards + 1
     local board = boards[groupCid]
-    lines[#lines + 1] = string.format("Station %s: waiting %d %s | %d pax/epoch over %d line(s)",
+    lines[#lines + 1] = string.format("Station %s: waiting %d %s | %d pax/5m over %d line(s)",
       board.name or groupCid,
       board.waiting or 0,
       M.crowdIcons(board.waiting or 0),
@@ -448,7 +467,7 @@ function M.render(gui, snapshot, options)
     local networkAccounts = snapshot.networkAccounts or {}
     local reconciliation = networkAccounts.reconciliation or {}
     lines[#lines + 1] = string.format(
-      "Canonical finance: %s | entries %d | native reconciliations %d/%d failed",
+      "Canonical finance: %s (authoritative; native trip income is quarantined) | entries %d | native reconciliations %d/%d failed",
       networkAccounts.initialized == true and "active" or "NOT READY",
       #(networkAccounts.entries or {}),
       tonumber(reconciliation.attempts) or 0,
@@ -478,7 +497,7 @@ function M.render(gui, snapshot, options)
       sample and (" | " .. tostring(sample.fileName or sample.kindHint or "construction")) or ""
     )
   end
-  lines[#lines + 1] = "Implemented multiplayer slice: canonical roads/tracks/signals, portable depot/construction/asset build and removal, modular station placement/edit/removal, plus host-ordered line and railway-vehicle operations. Unsupported opaque mod callbacks fail closed; host-owned autonomous simulation remains a research gate."
+  lines[#lines + 1] = "Implemented multiplayer slice: canonical roads/tracks/signals, portable depot/construction/asset build and removal, modular station placement/edit/removal, plus host-ordered line and portable vehicle operations. Unsupported opaque mod callbacks fail closed; non-rail carriers and host-owned autonomous simulation remain live-proof gates."
   gui.details:setText(table.concat(lines, "\n"))
 end
 

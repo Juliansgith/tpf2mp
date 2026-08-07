@@ -1,11 +1,13 @@
 local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
+local revenue = require "tpf2_mp/economy_revenue"
 
 local M = {}
 
-M.SCHEMA_VERSION = 1
-M.EPOCH_SECONDS = 3600
+M.SCHEMA_VERSION = 2
+M.EPOCH_SECONDS = 300
 M.MAX_COUNT = 1000000000
+M.MAX_CENTS = revenue.ACCUMULATOR_LIMIT
 M.FALLBACK_SEATS = 100
 
 local function count(value)
@@ -14,6 +16,14 @@ end
 
 local function add(left, right)
   return math.min(M.MAX_COUNT, count(left) + count(right))
+end
+
+local function cents(value)
+  return math.min(M.MAX_CENTS, math.max(0, util.integer(value, 0)))
+end
+
+local function addCents(left, right)
+  return math.min(M.MAX_CENTS, cents(left) + cents(right))
 end
 
 local function array(value)
@@ -51,10 +61,11 @@ local function seatsFor(service)
   local direct = count(metadata.seatsPerVehicle)
   if direct > 0 then return direct end
   local vehicles = count(metadata.vehicleCount)
-  local departures = departuresFor(service)
+  local headway = math.max(30, util.integer(service and service.headwaySeconds, 3600))
+  local departures = math.max(1, math.floor(3600 / math.min(3600, headway)))
   local capacity = count(service and service.capacity)
   if vehicles > 0 and capacity > 0 then
-    local derived = math.floor(capacity / (vehicles * departures))
+    local derived = math.floor(capacity / (2 * departures))
     if derived > 0 then return derived end
   end
   return M.FALLBACK_SEATS
@@ -86,6 +97,15 @@ function M.migrate(value)
   value.epoch = math.max(0, util.integer(value.epoch, 0))
   value.lines = type(value.lines) == "table" and value.lines or {}
   value.vehicles = type(value.vehicles) == "table" and value.vehicles or {}
+  for _, line in pairs(value.lines) do
+    line.earnedRevenueCents = cents(line.earnedRevenueCents)
+  end
+  for _, vehicle in pairs(value.vehicles) do
+    vehicle.earnedRevenueCents = cents(vehicle.earnedRevenueCents)
+    if vehicle.boardedFareCents ~= nil then
+      vehicle.boardedFareCents = math.max(0, util.integer(vehicle.boardedFareCents, 0))
+    end
+  end
   return value
 end
 
@@ -111,9 +131,13 @@ local function routeRecord(service, stops, allocated, epoch, previous, carryQueu
     departuresAToB = 0,
     departuresBToA = 0,
     seatsPerVehicle = seatsFor(service),
-    boardedTotal = 0,
-    alightedTotal = 0,
-    overflowTotal = sameRoute and count(previous and previous.overflowTotal) or 0,
+    -- These three fields are lifetime monotonic counters consumed by the
+    -- settlement delivery cursor. A new accounting interval or route edit
+    -- must never make the next snapshot move backwards.
+    boardedTotal = count(previous and previous.boardedTotal),
+    alightedTotal = count(previous and previous.alightedTotal),
+    earnedRevenueCents = cents(previous and previous.earnedRevenueCents),
+    overflowTotal = count(previous and previous.overflowTotal),
   }
 end
 
@@ -150,6 +174,7 @@ local function ensureLine(state, economyState, lineCid, carryQueues)
         vehicle.aboard = 0
         vehicle.originStationGroupCid = nil
         vehicle.destinationStationGroupCid = nil
+        vehicle.boardedFareCents = nil
       end
     end
   end
@@ -211,6 +236,7 @@ local function vehicleRecord(state, economyState, action, metadata)
     lastRound = 0,
     boardedTotal = 0,
     alightedTotal = 0,
+    earnedRevenueCents = 0,
     discardedTotal = discardedFromPriorLine,
   }
   record.lineCid = action.lineCid
@@ -307,11 +333,16 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
   local alighted = 0
   if vehicle.destinationStationGroupCid == stopCid and vehicle.aboard > 0 then
     alighted = vehicle.aboard
+    local earned = revenue.passengerDeliveryCents(
+      alighted, vehicle.boardedFareCents or service.fareCents)
     vehicle.aboard = 0
     vehicle.originStationGroupCid = nil
     vehicle.destinationStationGroupCid = nil
+    vehicle.boardedFareCents = nil
     vehicle.alightedTotal = add(vehicle.alightedTotal, alighted)
+    vehicle.earnedRevenueCents = addCents(vehicle.earnedRevenueCents, earned)
     line.alightedTotal = add(line.alightedTotal, alighted)
+    line.earnedRevenueCents = addCents(line.earnedRevenueCents, earned)
   end
 
   local direction, destination, departuresField, waitingField
@@ -335,6 +366,7 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
       vehicle.aboard = add(vehicle.aboard, boarded)
       vehicle.originStationGroupCid = stopCid
       vehicle.destinationStationGroupCid = destination
+      vehicle.boardedFareCents = service.fareCents
       vehicle.boardedEpoch = state.epoch
       vehicle.boardedTotal = add(vehicle.boardedTotal, boarded)
       line.boardedTotal = add(line.boardedTotal, boarded)
@@ -353,6 +385,7 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
     capacity = vehicle.capacity,
     waitingAToB = line.waitingAToB,
     waitingBToA = line.waitingBToA,
+    earnedRevenueCents = line.earnedRevenueCents,
   }
 end
 
@@ -369,6 +402,7 @@ function M.onOperation(value, economyState, transaction, companyCid)
       prior.aboard = 0
       prior.originStationGroupCid = nil
       prior.destinationStationGroupCid = nil
+      prior.boardedFareCents = nil
     end
     local line = ensureLine(state, economyState, data.lineCid, false)
     if not line then
@@ -384,6 +418,7 @@ function M.onOperation(value, economyState, transaction, companyCid)
       lastRound = 0,
       boardedTotal = 0,
       alightedTotal = 0,
+      earnedRevenueCents = 0,
       discardedTotal = 0,
     }
     state.vehicles[data.targetCid].lineCid = data.lineCid
@@ -427,6 +462,7 @@ function M.digestView(value)
       seatsPerVehicle = math.max(1, count(item.seatsPerVehicle)),
       boardedTotal = count(item.boardedTotal),
       alightedTotal = count(item.alightedTotal),
+      earnedRevenueCents = cents(item.earnedRevenueCents),
       overflowTotal = count(item.overflowTotal),
     }
   end
@@ -442,6 +478,7 @@ function M.digestView(value)
       lastRound = math.max(0, util.integer(item.lastRound, 0)),
       boardedTotal = count(item.boardedTotal),
       alightedTotal = count(item.alightedTotal),
+      earnedRevenueCents = cents(item.earnedRevenueCents),
       discardedTotal = count(item.discardedTotal),
     }
     optional(record, "boardedEpoch", item.boardedEpoch and math.max(0, util.integer(item.boardedEpoch, 0)))
@@ -449,6 +486,8 @@ function M.digestView(value)
     optional(record, "lastStationGroupCid", item.lastStationGroupCid)
     optional(record, "originStationGroupCid", item.originStationGroupCid)
     optional(record, "destinationStationGroupCid", item.destinationStationGroupCid)
+    optional(record, "boardedFareCents", item.boardedFareCents
+      and math.max(0, util.integer(item.boardedFareCents, 0)))
     vehicles[#vehicles + 1] = record
   end
   return {
@@ -457,6 +496,22 @@ function M.digestView(value)
     lines = lines,
     vehicles = vehicles,
   }
+end
+
+-- The host embeds this cumulative, core-digested view in each ordered economy
+-- settlement. Every peer compares it with its own station-release ledger
+-- before accepting the payout, so only completed synchronized trips earn cash.
+function M.economySnapshot(value)
+  local state = M.migrate(value)
+  local lines = {}
+  for _, lineCid in ipairs(util.sortedKeys(state.lines)) do
+    local line = state.lines[lineCid]
+    lines[lineCid] = {
+      deliveredPassengers = count(line.alightedTotal),
+      earnedRevenueCents = cents(line.earnedRevenueCents),
+    }
+  end
+  return { schemaVersion = 1, presentationEpoch = state.epoch, lines = lines }
 end
 
 local function nameOf(registry, cid, fallback)
@@ -474,7 +529,8 @@ function M.publicView(value, economyState, registry)
     epoch = state.epoch,
     lines = {}, stations = {}, vehicles = {},
     localVehicles = {}, localStations = {}, localLines = {},
-    totals = { waiting = 0, aboard = 0, capacity = 0, boarded = 0, alighted = 0 },
+    totals = { waiting = 0, aboard = 0, capacity = 0, boarded = 0,
+      alighted = 0, earnedRevenueCents = 0 },
   }
   for _, lineCid in ipairs(util.sortedKeys(state.lines)) do
     local item = state.lines[lineCid]
@@ -488,6 +544,8 @@ function M.publicView(value, economyState, registry)
     result.totals.waiting = add(result.totals.waiting, line.waiting)
     result.totals.boarded = add(result.totals.boarded, line.boardedTotal)
     result.totals.alighted = add(result.totals.alighted, line.alightedTotal)
+    result.totals.earnedRevenueCents = addCents(
+      result.totals.earnedRevenueCents, line.earnedRevenueCents)
     local firstThroughput, secondThroughput = splitAllocation(line.allocated, line.epoch)
     local routeStops = line.stops or { line.terminalA, line.terminalB }
     local seenStops = {}

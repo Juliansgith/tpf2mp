@@ -73,7 +73,16 @@ inline constexpr std::size_t kLineStopSize = 0xA8;
 inline constexpr std::size_t kLineStopStationGroupOffset = 0x00;
 inline constexpr std::size_t kLineStopStationOffset = 0x04;
 inline constexpr std::size_t kLineStopTerminalOffset = 0x08;
+// Line::Stop's copy helper at RVA 0x001D8140 invokes the same typed vector
+// copier for source/destination +0x10. This is the public
+// alternativeTerminals vector exposed by api.type.Line.Stop. Its element is
+// api.type.StationTerminal: two adjacent int32 fields (station, terminal).
+inline constexpr std::size_t kLineStopAlternativeTerminalsOffset = 0x10;
+inline constexpr std::size_t kStationTerminalSize = 0x08;
 inline constexpr std::size_t kMaximumLineStops = 256;
+inline constexpr std::size_t kMaximumAlternativeTerminalsPerStop = 64;
+inline constexpr std::size_t kMaximumAlternativeTerminalCapacity = 256;
+inline constexpr std::size_t kMaximumAlternativeTerminalsTotal = 1024;
 
 // Build 35924 vehicle-command payloads recovered from the exact visitor
 // implementations pinned below. SetLine's implementation at 0x009D9B10 reads

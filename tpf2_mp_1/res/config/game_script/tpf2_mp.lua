@@ -3,6 +3,8 @@ local json = require "tpf2_mp/json"
 local hash = require "tpf2_mp/hash"
 local canonical = require "tpf2_mp/canonical"
 local economy = require "tpf2_mp/economy"
+local economyDemo = require "tpf2_mp/economy_demo"
+local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
@@ -17,13 +19,15 @@ local stateSchema = require "tpf2_mp/state_schema"
 local nativeHook = require "tpf2_mp/native_hook"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
-local guiPassengerHud = require "tpf2_mp/gui_passenger_hud"
+local guiStockPresentation = require "tpf2_mp/gui_stock_presentation"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
+local economyActionRuntime = require "tpf2_mp/economy_action_runtime"
 local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
@@ -38,7 +42,7 @@ local operationalCaptureRuntimeModule = require "tpf2_mp/operational_capture_run
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 24
+local STATE_VERSION = 26
 local CHECKPOINT_VERSION = 4
 local EVENT_RECORD_VERSION = 1
 
@@ -52,6 +56,10 @@ local function newState()
   })
 end
 local state = newState()
+local economyAssetCosts = economyAssetCostRuntimeModule.new({ getState = function() return state end })
+local recordProposalInfrastructure = economyAssetCosts.recordProposal
+local recordVehiclePurchaseCost = economyAssetCosts.recordVehicle
+local backfillVehicleCosts = economyAssetCosts.backfillVehicles
 local matchRuntime = matchRuntimeModule.new({ getState = function() return state end })
 local rankedWinner = matchRuntime.rankedWinner
 local finishMatch = matchRuntime.finish
@@ -76,6 +84,7 @@ local applyCommitted
 local MAX_DEFERRED_NETWORK_INTENTS = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS
 local networkIntentController
 local networkClock
+local economyClock
 local vehicleSync
 local freezeNetworkGame
 local freezeNetworkCalendar
@@ -622,8 +631,13 @@ end
 local function normaliseMatchRules(rules)
   rules = type(rules) == "table" and rules or {}
   local cfg = config()
+  local observedClock = world.clockSnapshot()
+  local observedStart = util.integer(observedClock and observedClock.time, 0)
+  local economyStartGameTimeSeconds = math.max(0, util.integer(
+    rules.economyStartGameTimeSeconds, observedStart))
   local bankruptcyEnabled = rules.bankruptcyEnabled
   if bankruptcyEnabled == nil then bankruptcyEnabled = cfg.bankruptcyEnabled end
+  local difficultyRule = economy.difficultyRule(rules.economyDifficulty or cfg.economyDifficulty)
   return {
     startingCash = math.max(0, util.integer(rules.startingCash, cfg.startingCash)),
     maxEpochs = math.max(0, util.integer(rules.maxEpochs, cfg.maxEpochs)),
@@ -639,11 +653,16 @@ local function normaliseMatchRules(rules)
       cfg.creditRevenueMultiple)),
     creditInterestPermille = math.max(0, util.integer(rules.creditInterestPermille,
       cfg.creditInterestPermille)),
+    economyDifficulty = difficultyRule.key, revenueMultiplierPpm = difficultyRule.revenueMultiplierPpm,
+    economyEpochSeconds = economy.EPOCH_SECONDS,
+    economyStartGameTimeSeconds = economyStartGameTimeSeconds,
   }
 end
 
 local function initialiseMatch(rules)
   if state.initialized then return false, "match is already initialised" end
+  local difficultyOk, difficultyError = economy.validateDifficultyRule(rules)
+  if not difficultyOk then return false, difficultyError end
   local matchRules = normaliseMatchRules(rules)
   local proxyMode = state.networkMode == "standalone" and config().localProxy
   if proxyMode and state.finance.neutralizer.enabled then
@@ -684,6 +703,9 @@ local function initialiseMatch(rules)
       sessionId = state.bridge.sessionId,
     })
   end
+  for _, companyCid in ipairs(state.companyOrder) do
+    economy.applyInfrastructureChange(state.economy, companyCid, 0, 0)
+  end
   state.initialized = true
   state.probes.capabilities = world.capabilityProbe()
   local proxySetup
@@ -707,6 +729,7 @@ local function initialiseMatch(rules)
   end
   local worldManifest = world.canonicalManifest(
     state.canonical, state.networkMode == "network" and state.world or nil)
+  local vehicleCostBackfill = backfillVehicleCosts()
   -- The ordered checkpoint needs the portable digest and summary, not the
   -- complete row inventory.  Keeping hundreds of generated construction and
   -- asset rows in persistent game-script state causes Build 35924 to copy a
@@ -736,6 +759,7 @@ local function initialiseMatch(rules)
     finishReason = nil,
     rules = matchRules,
   }
+  economy.configureMatch(state.economy, matchRules)
   local publicCompanies = {}
   for _, cid in ipairs(state.companyOrder) do
     publicCompanies[cid] = { cid = cid, name = state.companies[cid].name }
@@ -748,6 +772,7 @@ local function initialiseMatch(rules)
     proxySetup = proxySetup,
     nativeOwnershipProjection = util.deepCopy(nativeOwnershipProjection),
     funding = funding,
+    vehicleCostBackfill = util.deepCopy(vehicleCostBackfill),
     match = util.deepCopy(state.match),
     note = state.world.proxyMode
       and "The native UI is a turn proxy; active assets and net turn finances return to the selected company on cycle/reconcile."
@@ -776,79 +801,7 @@ local function lineIdFromAction(action)
 end
 
 local function seedDemo()
-  local first = state.companyOrder[1]
-  local second = state.companyOrder[2]
-  if not first or not second then return false, "initialise the match first" end
-  economy.upsertMarket(state.economy, {
-    cid = "market:prototype-corridor",
-    name = "Prototype intercity corridor",
-    demand = 1000,
-    votCentsPerHour = 450,
-    gcOutsideCents = 2500,
-    thetaCents = 250,
-  })
-  economy.upsertService(state.economy, {
-    lineCid = "line:prototype-company-1",
-    marketCid = "market:prototype-corridor",
-    companyCid = first,
-    name = state.companies[first].name .. " service",
-    headwaySeconds = 900,
-    journeySeconds = 2400,
-    fareCents = 1000,
-    capacity = 600,
-    quality = 100,
-    transfers = 0,
-  })
-  economy.upsertService(state.economy, {
-    lineCid = "line:prototype-company-2",
-    marketCid = "market:prototype-corridor",
-    companyCid = second,
-    name = state.companies[second].name .. " service",
-    headwaySeconds = 1100,
-    journeySeconds = 2200,
-    fareCents = 900,
-    capacity = 600,
-    quality = 100,
-    transfers = 0,
-  })
-  economy.upsertMarket(state.economy, {
-    cid = "market:prototype-freight",
-    name = "Prototype freight corridor",
-    kind = "cargo",
-    demand = 800,
-  })
-  economy.upsertService(state.economy, {
-    lineCid = "line:prototype-freight-1",
-    marketCid = "market:prototype-freight",
-    companyCid = first,
-    name = state.companies[first].name .. " freight",
-    headwaySeconds = 3600,
-    journeySeconds = 5400,
-    fareCents = 700,
-    capacity = 400,
-    quality = 100,
-    transfers = 0,
-  })
-  economy.upsertService(state.economy, {
-    lineCid = "line:prototype-freight-2",
-    marketCid = "market:prototype-freight",
-    companyCid = second,
-    name = state.companies[second].name .. " freight",
-    headwaySeconds = 2700,
-    journeySeconds = 4800,
-    fareCents = 800,
-    capacity = 400,
-    quality = 100,
-    transfers = 0,
-  })
-  -- Seeding is a setup/preview action, not an authoritative settlement. Run
-  -- the evaluator on a copy so opening the demo does not consume an epoch.
-  local previewState = util.deepCopy(state.economy)
-  local preview = economy.evaluateAll(previewState)
-  preview.epoch = state.economy.epoch
-  preview.preview = true
-  state.economy.lastResults = util.deepCopy(preview)
-  return true, preview
+  return economyDemo.seed(state, economy)
 end
 
 local function proposalResourceName(kind, index)
@@ -1039,9 +992,7 @@ local finaliseCanonicalOperation = operationRuntime.finalise
 local emitOperationCompletion = operationRuntime.emitCompletion
 local handlers = {}
 
-handlers["match.initialise"] = function(action)
-  return initialiseMatch(action and action.rules)
-end
+handlers["match.initialise"] = function(action) return initialiseMatch(action and action.rules) end
 
 handlers["match.finish"] = function(action)
   return finishMatch(action.reason or "manual", action.winnerCid)
@@ -1222,6 +1173,7 @@ handlers["network.operation_outcome"] = function(action)
           reason = "operation-consensus",
           operationId = operationId,
           commitSeq = tonumber(action.commitSeq),
+          tick = state.tick,
         })
       nativeReconciliation = type(reconciliationOrError) == "table"
         and reconciliationOrError or { error = tostring(reconciliationOrError) }
@@ -1233,6 +1185,7 @@ handlers["network.operation_outcome"] = function(action)
       end
     end
   end
+  if success then recordVehiclePurchaseCost(record, authoritativeFinanceDelta) end
   local outcome = {
     operationId = operationId,
     commitSeq = tonumber(action.commitSeq),
@@ -1363,6 +1316,7 @@ handlers["network.proposal_outcome"] = function(action)
           reason = "proposal-consensus",
           proposalId = proposalId,
           commitSeq = tonumber(action.commitSeq),
+          tick = state.tick,
         })
       nativeReconciliation = type(reconciliationOrError) == "table"
         and reconciliationOrError or { error = tostring(reconciliationOrError) }
@@ -1378,6 +1332,7 @@ handlers["network.proposal_outcome"] = function(action)
       end
     end
   end
+  if success then recordProposalInfrastructure(record, authoritativeFinanceDelta) end
   local outcome = {
     proposalId = proposalId,
     commitSeq = tonumber(action.commitSeq),
@@ -1487,6 +1442,23 @@ autoRegisterLineFor = function(transaction, outputCid)
   })
 end
 
+-- A loaded save can contain complete routes with no later line/vehicle operation.
+-- initialisation in that case, so operation-driven registration alone leaves
+-- a perfectly valid service invisible to the authored economy.  Wait until
+-- the initial two-peer checkpoint has converged, then let each owning peer
+-- enqueue only its own runnable pre-existing lines.  The normal ordered
+-- line.register path still derives and carries the facts; this scan never
+-- authors market data independently on both peers.
+local function autoRegisterExistingServices(reason)
+  if state.networkMode ~= "network" or not networkIntentController then return 0 end
+  return world.autoRegisterExistingServices(state, {
+    activeCompany = activeCompany,
+    submit = networkIntentController.scheduleFollowup,
+    log = diagnosticLog,
+    reason = reason,
+  })
+end
+
 authoredFollowupRuntime.installHandlers(handlers, {
   getState = function() return state end; requireRunningMatch = requireRunningMatch;
   world = world; diagnosticLog = diagnosticLog,
@@ -1508,6 +1480,7 @@ handlers["line.register"] = function(action)
     end
     economy.upsertMarket(state.economy, action.market)
     economy.upsertService(state.economy, action.service)
+    economyActionRuntime.applyVehicleCosts(state.economy, economy, action.vehicleCosts)
     result = { lineCid = action.lineCid, marketCid = action.market.cid, owner = companyCid, authoritativeFacts = true }
   else
     local ok
@@ -1544,16 +1517,29 @@ end
 handlers["economy.settle"] = function(action, eventId)
   local running, runningError = requireRunningMatch()
   if not running then return false, runningError end
+  local deliverySnapshot, deliveryError = economyActionRuntime.verifiedDelivery(
+    state, passengerPresentation, action.deliverySnapshot)
+  if not deliverySnapshot then return false, deliveryError end
   local results
   if action.results then
-    local accepted, resultOrError = economy.acceptAuthoritativeResults(state.economy, action.results)
+    local accepted, resultOrError = economy.acceptAuthoritativeResults(
+      state.economy, action.results, deliverySnapshot)
     if not accepted then return false, resultOrError end
     results = resultOrError
   else
-    results = economy.evaluateAll(state.economy)
+    results = economy.evaluateAll(
+      state.economy, action.boundaryGameTimeSeconds, deliverySnapshot)
   end
   local recorded, recordError = economy.recordSettlement(state.economy, results)
   if not recorded then return false, recordError end
+  local payoutDollars = {}
+  for _, companyCid in ipairs(util.sortedKeys(results.companies or {})) do
+    local companyResult = results.companies[companyCid]
+    payoutDollars[companyCid] = economy.walletDeltaDollars(
+      state.economy, companyCid,
+      companyResult.netRevenueCents ~= nil
+        and companyResult.netRevenueCents or companyResult.revenueCents)
+  end
   local presented, presentationError = passengerPresentation.beginEpoch(
     state.world.passengerPresentation, state.economy)
   if not presented then return false, presentationError end
@@ -1580,7 +1566,8 @@ handlers["economy.settle"] = function(action, eventId)
   if state.networkMode == "network" then
     local solvency, bankruptCid = finance.chargeCreditAndAssessSolvency(
       state.finance, state.companyOrder, state.economy.ledger,
-      { reason = "economy-settlement", eventId = eventId }, state.match.rules)
+      { reason = "economy-settlement", eventId = eventId }, state.match.rules,
+      state.economy.scheduler.epochSeconds)
     state.probes.solvency = solvency
     state.probes.bankruptCid = bankruptCid
   end
@@ -1590,7 +1577,7 @@ handlers["economy.settle"] = function(action, eventId)
     state.finance.lastPayouts = {}
     for _, companyCid in ipairs(util.sortedKeys(results.companies or {})) do
       local companyResult = results.companies[companyCid]
-      local amount = math.floor((companyResult.revenueCents or 0) / 100)
+      local amount = payoutDollars[companyCid] or 0
       local applied, entryOrError = finance.applyNetworkDelta(state.finance, companyCid, amount, {
         kind = "economy-settlement",
         eventId = eventId,
@@ -1616,6 +1603,7 @@ handlers["economy.settle"] = function(action, eventId)
           reason = "economy-settlement",
           eventId = eventId,
           epoch = results.epoch,
+          tick = state.tick,
         })
       nativeReconciliation = type(reconciliationOrError) == "table"
         and reconciliationOrError or { error = tostring(reconciliationOrError) }
@@ -1625,7 +1613,8 @@ handlers["economy.settle"] = function(action, eventId)
       end
     end
   else
-    ok, errors = finance.payResults(state.finance, state.companies, results)
+    ok, errors = finance.payResults(
+      state.finance, state.companies, results, payoutDollars)
   end
   local matchResult = evaluateMatchEnd()
   return ok, {
@@ -1997,8 +1986,8 @@ handlers["probe.export_research"] = function()
     "Company starting cash is an explicit, idempotent match-setup grant; it is audited separately and is not a money-conserving operational transfer.",
     "Build 35924 asserts when legacy setPlayer is used directly on BASE_EDGE. Tracked edges therefore use logical ownership and normally stay on the desk; a depot/station transfer may cascade attached edges to their rightful company. Either native holder is valid, rival holders fail closed, and rival builder proposals are vetoed before commit.",
     "Autonomous town/industry evolution is not yet a complete host-driven replicated event system; unsupported subsystems must remain frozen for network experiments.",
-    "Native person and cargo entity IDs are intentionally local scenery. Direct SIM_* component telemetry is retained, while the synchronized passenger ledger and TPF2MP HUD—not native agents—are authoritative for station queues, train loads, revenue, and score.",
-    "Debug_SetSimPersonState carries only an eight-byte person-id/boolean payload and cannot address a train or station. Native cosmetic writes therefore fail closed with zero commands issued; the stock native load glyph can differ from the exact TPF2MP passenger HUD. Cargo presentation remains telemetry-only.",
+    "Native person and cargo entity IDs are intentionally local scenery. Direct SIM_* component telemetry is retained, while the synchronized passenger ledger and authored stock-UI projection—not native agents—are authoritative for station queues, train loads, revenue, and score.",
+    "Debug_SetSimPersonState carries only an eight-byte person-id/boolean payload and cannot address a train or station. Native cosmetic writes therefore fail closed with zero commands issued; misleading stock load, station-board, finance-history, and transported widgets are hidden or relabelled while exact authored replacements are inserted into their standard windows. Cargo presentation remains telemetry-only and its stock total is suppressed.",
   }
   local ok, outbound = bridge.emit(state.bridge, "research", report, state.tick)
   local researchError
@@ -2441,6 +2430,7 @@ local function normaliseOperationCapture(action)
           stationGroupCid = cid,
           station = util.clamp(util.integer(stop.station, 0), 0, 4095),
           terminal = util.clamp(util.integer(stop.terminal, 0), 0, 4095),
+          alternativeTerminals = util.deepCopy(stop.alternativeTerminals or {}),
         }
       end
     else
@@ -2450,7 +2440,7 @@ local function normaliseOperationCapture(action)
         local cid, cidError = bindLocal(groupId, "station_group")
         if not cid then return nil, cidError end
         encodedStops[#encodedStops + 1] = {
-          stationGroupCid = cid, station = 0, terminal = 0,
+          stationGroupCid = cid, station = 0, terminal = 0, alternativeTerminals = {},
         }
       end
     end
@@ -2718,12 +2708,8 @@ local function normaliseForNetwork(action)
     if not company then return nil, companyError end
     local lineId = canonical.resolveLocal(state.canonical, copy.lineCid)
     if not lineId then return nil, "canonical line has no local host binding" end
-    local preview = util.deepCopy(state.economy)
-    local ok, result = world.makeLineService(state.canonical, economy, preview, lineId, companyCid)
-    if not ok then return nil, result end
-    copy.companyCid = companyCid
-    copy.market = util.deepCopy(preview.markets[result.marketCid])
-    copy.service = util.deepCopy(preview.services[result.lineCid])
+    copy, companyError = economyActionRuntime.lineRegistration(state, world, economy, copy.lineCid, lineId, companyCid)
+    if not copy then return nil, companyError end
   elseif copy.type == "operation.execute" then
     local companyCid, company, companyError = requireCompany()
     if not company then return nil, companyError end
@@ -2732,8 +2718,17 @@ local function normaliseForNetwork(action)
     end
   elseif copy.type == "economy.settle" then
     if state.bridge.peerId ~= "player1" then return nil, "only the host peer can settle the authoritative economy" end
-    local preview = util.deepCopy(state.economy)
-    copy.results = economy.evaluateAll(preview)
+    local scheduled = copy.scheduled == true
+    if not scheduled and not config().developerEconomyControls then
+      return nil, "manual economy settlement is available only in developer mode"
+    end
+    local expectedBoundary = economy.nextBoundary(state.economy)
+    if not expectedBoundary then return nil, "authored economy clock is not initialised" end
+    local boundary = util.integer(copy.boundaryGameTimeSeconds, expectedBoundary)
+    if boundary ~= expectedBoundary then
+      return nil, "economy settlement is not the next accounting boundary"
+    end
+    copy = economyActionRuntime.settlement(state, economy, passengerPresentation, boundary, scheduled)
   elseif copy.type == "town.develop" then
     if state.bridge.peerId ~= "player1" then return nil, "only the host peer can order town development" end
     for key in pairs(copy) do
@@ -2774,6 +2769,23 @@ applyCommitted = function(action, actor, commitSeq)
     local invoked, first, second = xpcall(function() return handler(action, eventId, authoritySeq) end, debug.traceback)
     if invoked then success, result = first, second else success, result = false, first end
   end
+  if success and state.networkMode ~= "network" then
+    if action.type == "proposal.finalise" or action.type == "proposal.construction_step" then
+      local proposalId = tostring(action.proposalId or (type(result) == "table" and result.proposalId) or "")
+      local record = state.world.proposals.byId[proposalId]
+      if record and record.status == "applied" then
+        recordProposalInfrastructure(record, -util.integer(record.transaction.cost, 0))
+      end
+    elseif action.type == "operation.finalise" then
+      local operationId = tostring(action.operationId
+        or (type(result) == "table" and result.operationId) or "")
+      local record = state.world.operations.byId[operationId]
+      if record and record.status == "applied" then
+        recordVehiclePurchaseCost(record,
+          type(result) == "table" and result.financeDelta or nil)
+      end
+    end
+  end
   local after = coreDigest()
   local afterModel = authoredDigest()
   local event = {
@@ -2803,6 +2815,12 @@ applyCommitted = function(action, actor, commitSeq)
     if not checkpointed then
       diagnosticLog("checkpoint-error", { tick = state.tick, error = tostring(checkpointError) })
     end
+  elseif success and action.type == "network.checkpoint_outcome"
+    and action.success == true and action.reason == "match-initialised" then
+    -- This outcome proves both peers started from the same authored and
+    -- structural boundary.  Queueing here also avoids submitting a nested
+    -- intent from inside match.initialise itself.
+    autoRegisterExistingServices(action.reason)
   elseif success and action.type == "network.proposal_outcome"
     and (action.success == true or action.recoverable == true) and authoritySeq then
     local reason = (action.success == true and "physical-consensus:" or "physical-rejection:")
@@ -2822,9 +2840,24 @@ applyCommitted = function(action, actor, commitSeq)
     -- world its rival also sees.
     local record = state.world.operations.byId[tostring(action.operationId or "")]
     if record then
+      -- A line may be deleted before its commit-derived registration reaches
+      -- the head of the authored follow-up FIFO.  Drop that now-impossible
+      -- job so it cannot retry forever and starve registrations behind it.
+      if record.transaction.kind == "line.delete" and networkIntentController then
+        networkIntentController.cancelLineRegistration(record.transaction.data.targetCid)
+      end
       local outputCid = record.result and record.result.outputs
         and record.result.outputs[1] and record.result.outputs[1].cid or nil
       autoRegisterLineFor(record.transaction, outputCid)
+      if type(record.previousLineCid) == "string" and record.previousLineCid ~= ""
+        and not (record.transaction.data
+          and record.transaction.data.lineCid == record.previousLineCid) then
+        autoRegisterLineFor({
+          kind = "vehicle.assign",
+          companyCid = record.companyCid,
+          data = { lineCid = record.previousLineCid },
+        }, nil)
+      end
     end
     local reason = "operation-consensus:" .. tostring(action.operationId or "unknown")
     local checkpointed, checkpointError = exportCheckpointBarrier(
@@ -2902,6 +2935,13 @@ networkClock = networkClockRuntimeModule.new({
 freezeNetworkGame = networkClock.freezeGame
 freezeNetworkCalendar = networkClock.freezeCalendar
 
+economyClock = economyClockRuntimeModule.new({
+  getState = function() return state end,
+  submitIntent = submitIntent,
+  localWorkState = networkIntentController.localWorkState,
+  diagnosticLog = diagnosticLog,
+})
+
 vehicleSync = vehicleSyncRuntimeModule.new({
   getState = function() return state end,
   diagnosticLog = diagnosticLog,
@@ -2919,6 +2959,8 @@ local function pumpNetworkBridge(includeHealth)
   if not consumeOk then state.bridge.lastError = tostring(consumeError) end
   local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
   if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
+  local economyClockOk, economyClockError = xpcall(economyClock.update, debug.traceback)
+  if not economyClockOk then state.probes.lastError = tostring(economyClockError) end
   local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
   if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
   local deferredOk, deferredError = xpcall(processDeferredNetworkIntent, debug.traceback)
@@ -2965,7 +3007,7 @@ local function renderGui()
   local result = guiView.render(gui, snapshot, {
     maxDeferredNetworkIntents = MAX_DEFERRED_NETWORK_INTENTS,
   })
-  pcall(guiPassengerHud.update, gui, snapshot)
+  pcall(guiStockPresentation.update, gui, snapshot)
   return result
 end
 local function queueAction(action)
@@ -3027,9 +3069,18 @@ local function ensureWindow()
     { "Finish Match", function() return { type = "match.finish", reason = "manual-ui" } end },
     { "Cycle Company", function() return { type = "company.cycle" } end },
     { "Reconcile Turn", function() return { type = "company.reconcile" } end },
-    { "Seed Demo Market", function() return { type = "economy.seed_demo" } end },
-    { "Settle Epoch", function() return { type = "economy.settle" } end },
   })
+  if config().developerEconomyControls then
+    addRow(rootLayout, {
+      { "Seed Demo Market (Dev)", function() return { type = "economy.seed_demo" } end },
+      { "Settle Epoch (Dev Host)", function()
+      local snapshot = gui.snapshot or {}
+      assert(snapshot.networkMode ~= "network" or snapshot.peerId == "player1",
+        "only Player 1 (the host) can settle the authoritative economy")
+      return { type = "economy.settle" }
+      end },
+    })
+  end
   addRow(rootLayout, {
     { "Add Selected Stop", function()
       gui.routeDraft[#gui.routeDraft + 1] = assert(gui.selectedEntityId,
@@ -3194,6 +3245,7 @@ local maintainOperationalCapture = operationalCaptureRuntime.maintain
 local function resetTransientRuntime()
   networkIntentController.reset()
   networkClock.reset()
+  economyClock.reset()
   vehicleSync.reset()
   -- Custody of an origin-applied (already natively mutated) operation lives
   -- in module-locals: the deferred queue, the awaiting-order latch, and the
@@ -3242,6 +3294,8 @@ local script = {
     state.tick = (state.tick or 0) + 1
     local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
     if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
+    local economyClockOk, economyClockError = xpcall(economyClock.update, debug.traceback)
+    if not economyClockOk then state.probes.lastError = tostring(economyClockError) end
     local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
     if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
     if state.tick % 300 == 0 then
@@ -3346,8 +3400,20 @@ local script = {
       return
     end
     if name == "intent" then
-      local ok, err = pcall(submitIntent, param)
-      if not ok then state.lastError = tostring(err); publishSnapshot() end
+      local called, accepted, result = pcall(submitIntent, param)
+      if not called then
+        state.lastError = tostring(accepted)
+        publishSnapshot()
+      elseif accepted ~= true then
+        local detail = type(result) == "table" and result.error or result
+        state.lastError = tostring(detail or "intent rejected")
+        diagnosticLog("intent-rejected", {
+          type = type(param) == "table" and tostring(param.type or "") or "",
+          error = state.lastError,
+          tick = state.tick,
+        })
+        publishSnapshot()
+      end
     elseif name == "proposal.result" then
       local proposalId = type(param) == "table" and tostring(param.proposalId or "") or ""
       pendingProposalResults[proposalId] = util.deepCopy(param)
@@ -3438,16 +3504,18 @@ local script = {
     end
   end,
 
-  guiInit = function()
-    return guiEventRuntime.init()
-  end,
+  guiInit = function() return guiEventRuntime.init() end,
 
   guiUpdate = function()
-    return guiEventRuntime.update()
+    local result = guiEventRuntime.update()
+    pcall(guiStockPresentation.update, gui, gui.snapshot or {})
+    return result
   end,
 
   guiHandleEvent = function(id, name, param)
-    return guiEventRuntime.handleEvent(id, name, param)
+    local result = guiEventRuntime.handleEvent(id, name, param)
+    pcall(guiStockPresentation.handleEvent, gui, gui.snapshot or {}, id, name, param)
+    return result
   end,
 }
 
