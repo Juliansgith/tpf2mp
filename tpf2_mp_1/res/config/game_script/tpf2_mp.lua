@@ -7,6 +7,8 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local presentation = require "tpf2_mp/presentation"
+local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
@@ -15,6 +17,7 @@ local stateSchema = require "tpf2_mp/state_schema"
 local nativeHook = require "tpf2_mp/native_hook"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
+local guiPassengerHud = require "tpf2_mp/gui_passenger_hud"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
@@ -35,8 +38,8 @@ local operationalCaptureRuntimeModule = require "tpf2_mp/operational_capture_run
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 23
-local CHECKPOINT_VERSION = 3
+local STATE_VERSION = 24
+local CHECKPOINT_VERSION = 4
 local EVENT_RECORD_VERSION = 1
 
 local function config() return runtimeConfig.read() end
@@ -216,6 +219,15 @@ local function publishSnapshot()
   -- script's shared save state. Avoid serialising the same snapshot as a
   -- second command event; the load callback updates gui.snapshot.
   return true
+end
+
+local function refreshPassengerCosmetics()
+  local presentationView = passengerPresentation.publicView(
+    state.world.passengerPresentation, state.economy, state.canonical)
+  local ok, result = passengerCosmetics.applyDesiredCounts(
+    state.probes.passengerCosmetics, presentationView)
+  if ok then state.probes.passengerCosmetics = result end
+  return ok, result
 end
 
 accountOf = function(playerId)
@@ -1502,6 +1514,9 @@ handlers["line.register"] = function(action)
     ok, result = world.makeLineService(state.canonical, economy, state.economy, lineId, companyCid)
     if not ok then return false, result end
   end
+  local presented, presentationError = passengerPresentation.reconcileService(
+    state.world.passengerPresentation, state.economy, result.lineCid or action.lineCid)
+  if not presented then return false, presentationError end
   pcall(game.interface.setPlayer, lineId, proxyTargetPlayer(companyCid) or company.playerId)
   state.world.logicalOwners[tostring(lineId)] = companyCid
   refreshOwnershipProbe()
@@ -1539,6 +1554,9 @@ handlers["economy.settle"] = function(action, eventId)
   end
   local recorded, recordError = economy.recordSettlement(state.economy, results)
   if not recorded then return false, recordError end
+  local presented, presentationError = passengerPresentation.beginEpoch(
+    state.world.passengerPresentation, state.economy)
+  if not presented then return false, presentationError end
   -- Deterministic town growth: identical ordered results on every peer
   -- produce identical native capacity commands; the structural probe
   -- verifies convergence. Fail-soft and recorded, never digest material.
@@ -1907,6 +1925,10 @@ handlers["probe.structural"] = function()
   }
 end
 
+handlers["probe.passenger_cosmetics"] = function()
+  return refreshPassengerCosmetics()
+end
+
 handlers["probe.export_research"] = function()
   local report = world.researchSnapshot(state.world, state.canonical, state.companies)
   report.tick = state.tick
@@ -1929,6 +1951,10 @@ handlers["probe.export_research"] = function()
   report.match = util.deepCopy(state.match); report.agentPolicy = util.deepCopy(state.probes.agentPolicy)
   report.modelDigest = authoredDigest(); report.townDevelopment = util.deepCopy(state.probes.townDevelopment)
   report.coreDigest = coreDigest(); report.townDevelopmentQueue = util.deepCopy(state.probes.townDevelopmentQueue)
+  report.passengerPresentation = passengerPresentation.digestView(
+    state.world.passengerPresentation)
+  report.passengerPresentationDigest = hash.value(report.passengerPresentation)
+  report.passengerCosmetics = util.deepCopy(state.probes.passengerCosmetics)
   report.proposals = {
     queued = state.world.proposals.queued or 0,
     applied = state.world.proposals.applied or 0,
@@ -1962,7 +1988,7 @@ handlers["probe.export_research"] = function()
     "Proposal schema 5 canonically serializes road/track changes plus named signal/waypoint edge objects, including retained objects across edge replacement, with quoted cost and no machine-local IDs. Schema 7 adds stock rail-station placement and bounded generic named .con/.module payloads for depots, ordinary constructions, ASSET_DEFAULT roots, upgrades, modular station edits, and removal. Both paths use repository names, strict ownership, preflight and physical consensus. Opaque/script callbacks and ambiguous dependency migration fail closed; every peer still requires an identical pinned mod pack.",
     "Construction uses all-peer prepare before native mutation, then two-peer physical completion consensus, ordered success/fault controls, a bounded timeout, and fail-closed dependency gating. A readiness rejection is non-fatal because neither world changed. Match start and each successful physical result are followed by a host-verified checkpoint barrier; in-place native geometry rollback is deliberately not claimed.",
     "Shared-clock v2 projects staggered peer heartbeats to one host time, orders future-time pause/speed rendezvous, corrects bounded overshoot, emits paused heartbeats, and adaptively caps the effective speed from engine/backlog health. Populated localhost is live-proven; two-computer long-pause and slowdown/recovery proof remains.",
-    "Assigned canonical trains are held at every native terminal until both peers report the same vehicle, line, stop and sequential leg round, then receive one ordered future-time release. Format-3 checkpoints digest that authority state. Four populated localhost rounds are live-proven. This does not teleport trains; a different stop index faults closed.",
+    "Assigned canonical trains are held at every native terminal until both peers report the same vehicle, line, stop and sequential leg round, then receive one ordered future-time release. Format-4 checkpoints digest that authority state together with exact model passenger queues/loads. Four populated localhost rounds are live-proven. This does not teleport trains; a different stop index faults closed.",
     "Line/vehicle creation IDs are discovered from the native callback result or an exact before/after component-set delta, then bound to event-derived canonical IDs.",
     "The GUI rejects known mutating actions against rival logical entities. Native visitors now stop selected unsupported line, vehicle, naming, speed, terrain, date, and cheat commands in network mode; unlisted/autonomous categories still require dedicated authority analysis.",
     "Populated local hot-seat validation covers stations, depots, lines, two running trains and real passenger/cargo trips. Canonical network sale/replacement/maintenance and long-running income/expense still require live destructive tests.",
@@ -1971,8 +1997,8 @@ handlers["probe.export_research"] = function()
     "Company starting cash is an explicit, idempotent match-setup grant; it is audited separately and is not a money-conserving operational transfer.",
     "Build 35924 asserts when legacy setPlayer is used directly on BASE_EDGE. Tracked edges therefore use logical ownership and normally stay on the desk; a depot/station transfer may cascade attached edges to their rightful company. Either native holder is valid, rival holders fail closed, and rival builder proposals are vetoed before commit.",
     "Autonomous town/industry evolution is not yet a complete host-driven replicated event system; unsupported subsystems must remain frozen for network experiments.",
-    "Native person and cargo entity IDs are intentionally treated as local; only canonical aggregate counts are compared across peers. Direct SIM_* component fallback is implemented but must be re-proven in a populated Build 35924 session.",
-    "Passenger/cargo steering is not implemented, so native loads and queues can still disagree with the authoritative competitive score.",
+    "Native person and cargo entity IDs are intentionally local scenery. Direct SIM_* component telemetry is retained, while the synchronized passenger ledger and TPF2MP HUD—not native agents—are authoritative for station queues, train loads, revenue, and score.",
+    "Debug_SetSimPersonState carries only an eight-byte person-id/boolean payload and cannot address a train or station. Native cosmetic writes therefore fail closed with zero commands issued; the stock native load glyph can differ from the exact TPF2MP passenger HUD. Cargo presentation remains telemetry-only.",
   }
   local ok, outbound = bridge.emit(state.bridge, "research", report, state.tick)
   local researchError
@@ -2935,9 +2961,12 @@ local validationFail = validationRuntime.fail
 
 local gui = guiState.new()
 local function renderGui()
-  return guiView.render(gui, gui.snapshot or publicSnapshot(), {
+  local snapshot = gui.snapshot or publicSnapshot()
+  local result = guiView.render(gui, snapshot, {
     maxDeferredNetworkIntents = MAX_DEFERRED_NETWORK_INTENTS,
   })
+  pcall(guiPassengerHud.update, gui, snapshot)
+  return result
 end
 local function queueAction(action)
   gui.queue[#gui.queue + 1] = action
@@ -3097,6 +3126,9 @@ local function ensureWindow()
   addRow(rootLayout, {
     { "Run Sync Probe", function() return { type = "probe.run" } end },
     { "Sample Pax / Cargo", function() return { type = "probe.mobility" } end },
+    { "Refresh Passenger Display", function()
+      return { type = "probe.passenger_cosmetics", localOnly = true }
+    end },
     { "Export Research", function() return { type = "probe.export_research" } end },
     { "Export Snapshot", function() return { type = "snapshot.export" } end },
     { "Prepare Restore Point", function() return { type = "recovery.prepare" } end },
@@ -3212,6 +3244,10 @@ local script = {
     if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
     local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
     if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
+    if state.tick % 300 == 0 then
+      local cosmeticOk, cosmeticError = xpcall(refreshPassengerCosmetics, debug.traceback)
+      if not cosmeticOk then state.probes.passengerCosmetics.lastError = tostring(cosmeticError) end
+    end
     enforceProxyLoanLimit()
     local constructionOk, constructionResult, constructionError =
       xpcall(processCanonicalConstructionProposals, debug.traceback)

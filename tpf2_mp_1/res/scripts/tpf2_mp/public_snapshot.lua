@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 local economy = require "tpf2_mp/economy"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
+local passengerPresentation = require "tpf2_mp/passenger_presentation"
 
 local M = {}
 
@@ -77,6 +78,7 @@ function M.new(env)
       capture = util.deepCopy(currentState().probes.capture),
       operational = util.deepCopy(currentState().probes.operational),
       vehicleSync = util.deepCopy(currentState().probes.vehicleSync),
+      passengerCosmetics = util.deepCopy(currentState().probes.passengerCosmetics),
       lastError = currentState().probes.lastError,
       structuralDigest = structural and structural.digest or nil,
       worldManifestDigest = currentState().probes.worldManifest and currentState().probes.worldManifest.digest or nil,
@@ -101,6 +103,10 @@ function M.new(env)
       lineCount = structural and #(structural.lines or {}) or 0,
       industryCount = structural and structural.industryCount or 0,
     }
+    local passengerView = passengerPresentation.publicView(
+      currentState().world.passengerPresentation,
+      currentState().economy,
+      currentState().canonical)
     return {
       version = currentState().version,
       tick = currentState().tick,
@@ -119,8 +125,10 @@ function M.new(env)
       lastResults = util.deepCopy(currentState().economy.lastResults),
       ledger = util.deepCopy(currentState().economy.ledger),
       scoreboard = economy.scoreboard(currentState().economy, currentState().companies),
-      -- Per-peer display only; never digest material.
-      stationBoards = world.stationBoards(currentState().economy, currentState().canonical),
+      -- Names/local ids are display-only, but every count is projected from
+      -- the digested authored passenger ledger.
+      passengerPresentation = passengerView,
+      stationBoards = passengerView.stations,
       autonomyFrozen = currentState().world.autonomyFrozen,
       neutralizer = util.deepCopy(currentState().finance.neutralizer),
       transfers = util.deepCopy(currentState().finance.transfers),

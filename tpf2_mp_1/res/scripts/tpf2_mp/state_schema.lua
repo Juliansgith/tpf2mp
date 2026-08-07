@@ -3,6 +3,8 @@ local canonical = require "tpf2_mp/canonical"
 local economy = require "tpf2_mp/economy"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
+local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 
 local M = {}
 
@@ -240,6 +242,7 @@ function M.new(cfg, versions)
         vehicles = {},
         scheduleReservations = {},
       },
+      passengerPresentation = passengerPresentation.newState(),
       turn = nil,
       lastTransition = nil,
     },
@@ -291,6 +294,7 @@ function M.new(cfg, versions)
         lastEvent = nil,
         lastError = nil,
       },
+      passengerCosmetics = passengerCosmetics.newProbe(),
       capture = {
         preCommitCount = 0,
         nativePreCommitCount = 0,
@@ -562,6 +566,19 @@ function M.migrate(saved, context)
       item.schedule = { schemaVersion = 1, enabled = false }
     end
   end
+  local hadPassengerPresentation = type(saved.world.passengerPresentation) == "table"
+  saved.world.passengerPresentation = passengerPresentation.migrate(
+    saved.world.passengerPresentation or defaults.world.passengerPresentation)
+  if not hadPassengerPresentation then
+    local aligned, alignmentResult = passengerPresentation.alignWithVehicleSync(
+      saved.world.passengerPresentation, saved.economy, saved.world.vehicleSync)
+    if aligned then
+      saved.world.passengerPresentation = alignmentResult
+    else
+      saved.lastError = "passenger presentation migration failed: "
+        .. tostring(alignmentResult)
+    end
+  end
   if saved.world.pauseOnSwitch == nil then saved.world.pauseOnSwitch = config().pauseOnSwitch end
   if saved.world.proxyMode == nil then saved.world.proxyMode = false end
   saved.eventLog = saved.eventLog or { nextSeq = 1, items = {} }
@@ -585,6 +602,13 @@ function M.migrate(saved, context)
     end
   end
   saved.probes.vehicleSync.reportedReleases = saved.probes.vehicleSync.reportedReleases or {}
+  saved.probes.passengerCosmetics = saved.probes.passengerCosmetics
+    or util.deepCopy(defaults.probes.passengerCosmetics)
+  for key, value in pairs(defaults.probes.passengerCosmetics) do
+    if saved.probes.passengerCosmetics[key] == nil then
+      saved.probes.passengerCosmetics[key] = util.deepCopy(value)
+    end
+  end
   saved.probes.networkAuthority = saved.probes.networkAuthority
     or util.deepCopy(defaults.probes.networkAuthority)
   saved.probes.networkCalendar = saved.probes.networkCalendar

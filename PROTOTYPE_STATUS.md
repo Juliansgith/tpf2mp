@@ -1,7 +1,7 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-07 for prototype `0.23.0-alpha`, state schema `23`,
-checkpoint format `3`, edge proposal schema `5`, construction proposal schema
+Last updated: 2026-08-07 for prototype `0.24.0-alpha`, state schema `24`,
+checkpoint format `4`, edge proposal schema `5`, construction proposal schema
 `7`, and native hook `0.13.0`.
 
 ## Executive status
@@ -26,7 +26,7 @@ TPF2MP contains two usable but differently mature modes:
   two-process purchase/assignment/movement proof. Shared-clock v2 and a
   canonical per-station train hold/release barrier now pass a populated
   two-process run with four releases, zero faults, and matching final state.
-  State 23 retains an enabled demand service as the barrier's one
+  State 24 retains an enabled demand service as the barrier's one
   timetable, removes its native hold bit from lifecycle authority, persists
   host-reserved slots, prunes completed rounds, and exposes load telemetry.
   Ordinary lines use the same barrier with a short guarded release and no
@@ -40,7 +40,7 @@ has not crossed the finished-product gate.
 
 ## Strongest current evidence
 
-State 23 adds two newer gates. `round3-town-construction-pos-20260807` ran
+State 24 retains two newer gates. `round3-town-construction-pos-20260807` ran
 three eight-call physical-town rounds on two exact processes and converged
 Northfleet at capacities `633 → 657 → 687 → 704`, ending at core/model/
 structure `b418e90f`/`ca0582b4`/`2de890d4`. The receipt-bound restore session
@@ -128,7 +128,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   stations/groups, depots, lines, and railway vehicles.
 - Machine-local numeric IDs remain in per-peer binding maps and do not enter the
   portable transaction/checkpoint digest.
-- State schema 23 makes shared-save ownership authoritative, persists the
+- State schema 24 makes shared-save ownership authoritative, persists the
   generation-numbered shared clock and canonical train-release rounds, and includes constructions, assets, and
   edge objects in the stable world manifest. The same
   pre-existing network no longer becomes Company 1 on one peer and Company 2 on
@@ -336,7 +336,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   digest field mutation test, 40 Lua invariants, and a reusable repeating-fare
   adversary. Human cadence and balance remain live-test questions.
 
-### Passenger/cargo observation
+### Passenger presentation and cargo observation
 
 - Canonical read-only mobility samples contain aggregate line/vehicle counts
   without local IDs and participate in cross-peer comparison.
@@ -345,13 +345,24 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   peers.
 - Direct cargo entity/terminal/vehicle paths were available, but the source save
   contained zero cargo. A cargo-positive live proof remains required.
-- Passenger/cargo state is observed, not yet host-steered. Native visual loads
-  must eventually agree directionally with the authoritative market model.
+- Passenger schema 1 turns each settled model allocation into exact endpoint
+  queues and advances train loads only inside the already ordered
+  `vehicle.sync_release` station-round action. Intermediate stops preserve the
+  load; opposite terminals alight and board deterministically; duplicate
+  releases are idempotent; route edits account discarded/backlogged riders.
+- State 24 persists this ledger. Checkpoint format 4 validates its full
+  canonical stop sequence, line/company identity, capacity, trip endpoints,
+  and release round against the synchronized vehicle projection. The in-game
+  TPF2MP HUD shows exact selected train, line, and station counts.
+- Native people remain bounded scenery. Exact-build reverse engineering shows
+  `Debug_SetSimPersonState` contains only a person ID and boolean, with no
+  train/station target; the cosmetic adapter therefore issues zero writes.
+  Cargo presentation remains telemetry-only.
 
 ### Recovery and UX
 
-- Format-3 checkpoints add the canonical train-release projection to the core
-  and convergence key. Formats 1/2 remain readable, and digest-chained events
+- Format-4 checkpoints add the exact passenger ledger to the canonical
+  train-release projection, core, and convergence key. Formats 1/2/3 remain readable, and digest-chained events
   can be independently replayed in Python. Four-event and 104-event
   cross-language traces pass.
 - Recovery plans identify and hash the latest all-peer agreed boundary.
@@ -377,13 +388,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 56 Lua unit tests and 73 cross-language economy scenarios;
+  - 75 core Lua tests and 73 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 104-event replay
     integrations;
-  - 35 mod Lua and all 8 investigation/tool Lua syntax checks;
+  - 56 mod Lua and all 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 59 Python protocol/network/checkpoint/recovery/report tests.
+  - 100 Python protocol/network/checkpoint/recovery/report tests.
 
 ## Not yet established
 
@@ -408,8 +419,8 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   new station barrier bounds drift without exact-coordinate correction.
 - Safe synchronized commands for every one of the 23 currently rejected command
   categories or proof that no consequential route bypasses the authority layer.
-- Cargo-positive cross-peer telemetry and host control of native
-  passenger/cargo presentation.
+- Cargo-positive cross-peer telemetry and cargo presentation. Passenger counts
+  are exact in the TPF2MP HUD; the stock native agent glyph remains cosmetic.
 - Host-authored town and industry growth. Unproven autonomous systems remain
   frozen during authority tests.
 - Exact-boundary native save capture, automatic two-peer rollback/relaunch,

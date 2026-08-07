@@ -55,6 +55,7 @@ function M.new(env)
         shareResid = value.shareResid,
         lagLoadPpm = value.lagLoadPpm,
         lastFareCents = value.lastFareCents,
+        metadata = util.deepCopy(value.metadata or {}),
       }
     end
     return {

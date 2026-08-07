@@ -32,6 +32,10 @@ Domain modules under `res/scripts/tpf2_mp`:
 
 - `canonical.lua` owns canonical/local identity bindings and canonical digests.
 - `economy.lua` owns deterministic demand, settlement, and scoring.
+- `passenger_presentation.lua` owns exact endpoint queues, per-train loads,
+  ordered-release boarding/alighting, migration, and the canonical digest/public
+  projections. `passenger_cosmetics.lua` owns read-only native-person telemetry
+  and the fail-closed optional-write boundary.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, and autonomy;
   `world_operational_telemetry.lua` owns read-only clock, journal, autonomy,
@@ -76,7 +80,9 @@ Runtime-controller modules:
   bootstrap.
 - `vehicle_sync_runtime.lua` owns local canonical train arrival detection,
   native station holds, ordered release application/retry, and the digested
-  station-round projection. It never writes a native vehicle position.
+  station-round projection. `vehicle_sync_state.lua` owns its checkpoint view;
+  `vehicle_sync_passengers.lua` atomically couples passenger state to releases
+  and vehicle operations. None writes a native vehicle position.
 - `validation_runtime.lua` owns both disposable standalone and two-process
   validation state machines. It has no production authority when validation is
   disabled.
@@ -98,6 +104,8 @@ GUI/native-adapter modules:
 - `gui_network_bootstrap.lua` re-arms native game/calendar pause authority in
   the GUI Lua state after a saved world replaces the pre-load engine state.
 - `gui_view.lua` formats the prototype overlay from a public snapshot.
+- `gui_passenger_hud.lua` mounts selection-aware exact model passenger counts
+  into the stock HUD; native people are explicitly labelled scenery.
 - `gui_entry_points.lua` idempotently mounts the overlay reopen controls into
   the stock `gameInfo.layout` and the parent of the pause menu's quit button.
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer
@@ -179,6 +187,9 @@ executable profile verification in the same commit.
 9. Native vehicle coordinates remain per-peer presentation state. Assigned
    canonical trains may start a leg only after the complete fixed peer roster
    has reported and received the same canonical station-round release.
+10. Passenger queue/load changes occur only inside authored settlement or
+    station-release actions. Native person IDs and stock agent counts never
+    enter revenue, score, the passenger ledger, or a checkpoint.
 
 ## Adding a synchronized vehicle action
 

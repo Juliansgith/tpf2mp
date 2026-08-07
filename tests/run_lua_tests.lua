@@ -14,6 +14,8 @@ local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local guiView = require "tpf2_mp/gui_view"
 local presentation = require "tpf2_mp/presentation"
+local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local nativeHook = require "tpf2_mp/native_hook"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
@@ -1809,6 +1811,209 @@ test("station boards aggregate model allocations per station group", function()
   equal(boards["sg:alpha"].waiting, boards["sg:beta"].waiting, "same service, same board contribution")
   equal(boards["sg:alpha"].lines[1].lineAllocated, allocated,
     "the per-line row still reports the whole service load")
+end)
+
+local function passengerPresentationEconomy(kind, allocation)
+  local state = economy.newState()
+  economy.upsertMarket(state, {
+    cid = "market:presentation", kind = kind or "passenger", demand = 100,
+    votCentsPerHour = 450, gcOutsideCents = 2500, thetaCents = 250,
+  })
+  economy.upsertService(state, {
+    lineCid = "line:presentation", marketCid = "market:presentation",
+    companyCid = "company:1", headwaySeconds = 900, journeySeconds = 1200,
+    fareCents = 500, capacity = 320, quality = 100, transfers = 0,
+    metadata = {
+      stationGroupCids = { "station:a", "station:middle", "station:b" },
+      seatsPerVehicle = 40, vehicleCount = 2,
+    },
+  })
+  state.epoch = 1
+  state.lastResults = { markets = {
+    ["market:presentation"] = { services = {
+      ["line:presentation"] = { allocated = allocation or 65 },
+    } },
+  }, companies = {} }
+  return state
+end
+
+local function passengerRelease(vehicleCid, round, stopIndex)
+  return {
+    type = "vehicle.sync_release", vehicleCid = vehicleCid,
+    lineCid = "line:presentation", round = round, stopIndex = stopIndex,
+  }
+end
+
+test("passenger presentation conserves queues and loads across ordered releases", function()
+  local economyState = passengerPresentationEconomy("passenger", 65)
+  local state = passengerPresentation.newState()
+  local ok, result = passengerPresentation.beginEpoch(state, economyState)
+  truthy(ok, result)
+  local line = state.lines["line:presentation"]
+  equal(line.waitingAToB, 32)
+  equal(line.waitingBToA, 33, "the odd passenger must stay in the ledger")
+  equal(line.departuresPlanned, 4)
+  equal(line.seatsPerVehicle, 40)
+
+  ok, result = passengerPresentation.applyRelease(state, economyState,
+    passengerRelease("vehicle:one", 1, 0), { owner = "company:1" })
+  truthy(ok, result)
+  equal(result.boarded, 8)
+  equal(result.aboard, 8)
+  equal(line.waitingAToB, 24)
+
+  ok, result = passengerPresentation.applyRelease(state, economyState,
+    passengerRelease("vehicle:one", 2, 1), { owner = "company:1" })
+  truthy(ok, result)
+  equal(result.boarded, 0, "intermediate stops must preserve the terminal load")
+  equal(result.alighted, 0)
+  equal(result.aboard, 8)
+
+  ok, result = passengerPresentation.applyRelease(state, economyState,
+    passengerRelease("vehicle:one", 3, 2), { owner = "company:1" })
+  truthy(ok, result)
+  equal(result.alighted, 8)
+  equal(result.boarded, 9)
+  equal(result.aboard, 9)
+
+  local beforeDuplicate = hash.value(passengerPresentation.digestView(state))
+  ok, result = passengerPresentation.applyRelease(state, economyState,
+    passengerRelease("vehicle:one", 3, 2), { owner = "company:1" })
+  truthy(ok and result.duplicate, "the same committed release must be idempotent")
+  equal(hash.value(passengerPresentation.digestView(state)), beforeDuplicate,
+    "a duplicate release changed the authored ledger")
+
+  ok, result = passengerPresentation.applyRelease(state, economyState,
+    passengerRelease("vehicle:two", 1, 0), { owner = "company:1" })
+  truthy(ok, result)
+  equal(result.boarded, 8)
+  local waiting = line.waitingAToB + line.waitingBToA
+  local aboard = state.vehicles["vehicle:one"].aboard
+    + state.vehicles["vehicle:two"].aboard
+  equal(waiting + aboard + line.alightedTotal, 65,
+    "passengers were created or lost between queue, train, and completed trip")
+
+  local registry = canonical.newState()
+  for cid, localId in pairs({
+    ["line:presentation"] = 11, ["vehicle:one"] = 21, ["vehicle:two"] = 22,
+    ["station:a"] = 31, ["station:middle"] = 32, ["station:b"] = 33,
+  }) do
+    registry.byCanonical[cid] = { localId = localId, metadata = { name = cid .. " name" } }
+  end
+  local public = passengerPresentation.publicView(state, economyState, registry)
+  equal(public.localVehicles["21"], "vehicle:one")
+  equal(public.localStations["31"], "station:a")
+  equal(public.localStations["32"], "station:middle")
+  equal(public.stations["station:middle"].waiting, 0,
+    "an intermediate station needs an exact zero board, not a missing display")
+  equal(public.localLines["11"], "line:presentation")
+  equal(public.totals.aboard, aboard)
+  equal(public.totals.waiting, waiting)
+end)
+
+test("passenger presentation carries backlog, invalidates edited routes, and excludes cargo", function()
+  local economyState = passengerPresentationEconomy("passenger", 65)
+  local state = passengerPresentation.newState()
+  truthy(passengerPresentation.beginEpoch(state, economyState))
+  truthy(passengerPresentation.applyRelease(state, economyState,
+    passengerRelease("vehicle:one", 1, 0), { owner = "company:1" }))
+
+  economyState.epoch = 2
+  economyState.lastResults.markets["market:presentation"].services
+    ["line:presentation"].allocated = 20
+  truthy(passengerPresentation.beginEpoch(state, economyState))
+  local line = state.lines["line:presentation"]
+  equal(line.waitingAToB, 34, "old queue plus new terminal demand was not carried")
+  equal(line.waitingBToA, 43)
+  equal(state.vehicles["vehicle:one"].aboard, 8,
+    "settlement must not teleport a train empty")
+
+  economyState.services["line:presentation"].metadata.stationGroupCids = {
+    "station:a", "station:new-middle", "station:c",
+  }
+  truthy(passengerPresentation.reconcileService(state, economyState, "line:presentation"))
+  line = state.lines["line:presentation"]
+  equal(line.waitingAToB, 10)
+  equal(line.waitingBToA, 10)
+  equal(line.overflowTotal, 77, "edited-route queues must be accounted, not teleported")
+  equal(state.vehicles["vehicle:one"].aboard, 0)
+  equal(state.vehicles["vehicle:one"].discardedTotal, 8)
+
+  local cargoEconomy = passengerPresentationEconomy("cargo", 65)
+  local cargoState = passengerPresentation.newState()
+  truthy(passengerPresentation.beginEpoch(cargoState, cargoEconomy))
+  equal(next(cargoState.lines), nil, "cargo demand entered the passenger ledger")
+end)
+
+test("passenger presentation aligns pre-ledger saves but rejects real-state drift", function()
+  local economyState = passengerPresentationEconomy("passenger", 65)
+  local state = passengerPresentation.newState()
+  local sync = { vehicles = { ["vehicle:old"] = {
+    vehicleCid = "vehicle:old", lineCid = "line:presentation", companyCid = "company:1",
+    lastAuthorizedRound = 7, stopIndex = 2,
+  } } }
+  local ok, result = passengerPresentation.alignWithVehicleSync(state, economyState, sync)
+  truthy(ok, result)
+  equal(state.vehicles["vehicle:old"].lastRound, 7)
+  equal(state.vehicles["vehicle:old"].lastStopIndex, 2)
+  equal(state.vehicles["vehicle:old"].lastStationGroupCid, "station:b")
+  equal(state.vehicles["vehicle:old"].aboard, 0,
+    "migration must not invent historical passengers")
+
+  state.vehicles["vehicle:old"].aboard = 1
+  sync.vehicles["vehicle:old"].lastAuthorizedRound = 8
+  ok, result = passengerPresentation.alignWithVehicleSync(state, economyState, sync)
+  equal(ok, false, "a live passenger ledger mismatch was silently repaired")
+  truthy(tostring(result):find("lags", 1, true) ~= nil)
+end)
+
+test("native passenger cosmetics are telemetry-only and never issue a command", function()
+  local previousApi = api
+  local sent, made = 0, 0
+  local types = {
+    SIM_PERSON = "SIM_PERSON", SIM_PERSON_AT_VEHICLE = "SIM_PERSON_AT_VEHICLE",
+    SIM_PERSON_AT_TERMINAL = "SIM_PERSON_AT_TERMINAL",
+    SIM_ENTITY_AT_VEHICLE = "SIM_ENTITY_AT_VEHICLE",
+    SIM_ENTITY_AT_TERMINAL = "SIM_ENTITY_AT_TERMINAL",
+  }
+  local entities = {
+    SIM_PERSON = { 1, 2, 3 },
+    SIM_ENTITY_AT_VEHICLE = { 1, 99 },
+    SIM_ENTITY_AT_TERMINAL = { 2, 3 },
+  }
+  api = {
+    type = { ComponentType = types },
+    engine = {
+      forEachEntityWithComponent = function(callback, componentType)
+        for _, entity in ipairs(entities[componentType] or {}) do callback(entity) end
+      end,
+      getComponent = function(entity, componentType)
+        if componentType == types.SIM_PERSON and entity <= 3 then return {} end
+        return nil
+      end,
+    },
+    cmd = {
+      make = { debugSetSimPersonState = function(entity, active)
+        made = made + 1
+        return { entity = entity, active = active }
+      end },
+      sendCommand = function() sent = sent + 1 end,
+    },
+  }
+  local ok, probe = passengerCosmetics.applyDesiredCounts(nil, {
+    totals = { aboard = 1200, waiting = 3400 },
+  })
+  api = previousApi
+  truthy(ok)
+  equal(probe.nativeAboard, 1)
+  equal(probe.nativeWaiting, 2)
+  equal(probe.requestedAboard, 1200)
+  equal(probe.requestedWaiting, 3400)
+  equal(probe.appliedWrites, 0)
+  equal(probe.targetWritesEnabled, false)
+  equal(probe.targetAddressable, false)
+  equal(made, 2, "the shape probe must only construct the two boolean variants")
+  equal(sent, 0, "the unsafe untargeted debug command was issued")
 end)
 
 test("town growth targets are deterministic, split, capped, and quiet when idle", function()

@@ -55,6 +55,20 @@ def render_markdown(report: Mapping[str, Any]) -> str:
     gui_capabilities = report.get("guiCapabilities", {})
     native_hook = report.get("nativeHook", {})
     mobility = report.get("mobility", {})
+    passenger = report.get("passengerPresentation", {})
+    passenger_lines = passenger.get("lines", []) if isinstance(passenger, Mapping) else []
+    passenger_vehicles = passenger.get("vehicles", []) if isinstance(passenger, Mapping) else []
+    passenger_lines = passenger_lines if isinstance(passenger_lines, list) else []
+    passenger_vehicles = passenger_vehicles if isinstance(passenger_vehicles, list) else []
+    authoritative_waiting = sum(
+        int(item.get("waitingAToB", 0)) + int(item.get("waitingBToA", 0))
+        for item in passenger_lines if isinstance(item, Mapping)
+    )
+    authoritative_aboard = sum(
+        int(item.get("aboard", 0))
+        for item in passenger_vehicles if isinstance(item, Mapping)
+    )
+    passenger_cosmetics = report.get("passengerCosmetics", {})
     match = report.get("match", {})
     checkpoint = report.get("checkpoint", {})
     proposals = report.get("proposals", {})
@@ -158,6 +172,17 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Passenger/cargo line uses: "
             f"{_value(mobility.get('totals', {}).get('passengerLineUses') if isinstance(mobility, Mapping) and isinstance(mobility.get('totals'), Mapping) else None)} / "
             f"{_value(mobility.get('totals', {}).get('cargoLineUses') if isinstance(mobility, Mapping) and isinstance(mobility.get('totals'), Mapping) else None)}",
+            f"- Authoritative passenger ledger digest/epoch: "
+            f"`{_value(report.get('passengerPresentationDigest'))}` / "
+            f"{_value(passenger.get('epoch') if isinstance(passenger, Mapping) else None)}",
+            f"- Authoritative passenger lines/vehicles/aboard/waiting: "
+            f"{len(passenger_lines)} / {len(passenger_vehicles)} / "
+            f"{authoritative_aboard} / {authoritative_waiting}",
+            f"- Native cosmetic aboard/waiting; target writes/applied: "
+            f"{_value(passenger_cosmetics.get('nativeAboard') if isinstance(passenger_cosmetics, Mapping) else None)} / "
+            f"{_value(passenger_cosmetics.get('nativeWaiting') if isinstance(passenger_cosmetics, Mapping) else None)}; "
+            f"{_value(passenger_cosmetics.get('targetWritesEnabled') if isinstance(passenger_cosmetics, Mapping) else None)} / "
+            f"{_value(passenger_cosmetics.get('appliedWrites') if isinstance(passenger_cosmetics, Mapping) else None)}",
             "",
             "## Logical ownership",
             "",

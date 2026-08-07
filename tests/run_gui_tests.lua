@@ -4,6 +4,7 @@ package.path = project .. "/tpf2_mp_1/res/scripts/?.lua;" .. package.path
 local sentEvents = {}
 local enabled = {}
 local textViews = {}
+local guiById = {}
 local nativeCommandObserver = nil
 local nativeBuildGate = { enabled = true, authorizations = 0, allowed = 0, suppressed = 0 }
 local nativeSpeedRequests = {}
@@ -66,6 +67,8 @@ local TextView = {
   new = function(text)
     local view = object({ text = text or "" })
     function view:setText(value) self.text = tostring(value) end
+    function view:setId(id) self.id = id; guiById[id] = self end
+    function view:setTooltip(value) self.tooltip = tostring(value) end
     textViews[#textViews + 1] = view
     return view
   end,
@@ -82,7 +85,10 @@ local Button = {
 local Component = {
   new = function(id)
     local value = object({ id = id })
+    guiById[id] = value
     function value:setLayout(layout) self.layout = layout end
+    function value:setId(newId) self.id = newId; guiById[newId] = self end
+    function value:setTooltip(text) self.tooltip = tostring(text) end
     return value
   end,
 }
@@ -102,6 +108,9 @@ local BoxLayout = {
     return value
   end,
 }
+
+local gameInfoLayout = BoxLayout.new("HORIZONTAL")
+guiById["gameInfo.layout"] = gameInfoLayout
 
 game = {
   config = {
@@ -158,6 +167,7 @@ api = {
   gui = {
     comp = { TextView = TextView, Button = Button, Component = Component, Window = Window },
     layout = { BoxLayout = BoxLayout },
+    util = { getById = function(id) return guiById[id] end },
   },
   type = {
     ComponentType = {
@@ -1095,6 +1105,28 @@ assert(replayRuntime.processProposalQueue() == true
 proposalCodec.materialise = originalMaterialise
 api.cmd.make.buildProposal = originalBuildFactory
 rawset(_G, "tpf2mp_native_authorize_build", originalAuthorizeBuild)
+
+local passengerHud = require "tpf2_mp/gui_passenger_hud"
+local passengerGui = {
+  selectedEntityKind = "vehicle",
+  selectedEntityId = 60,
+}
+assert(passengerHud.update(passengerGui, {
+  passengerPresentation = {
+    localVehicles = { ["60"] = "vehicle:event:test:1" },
+    localLines = {}, localStations = {}, stations = {},
+    totals = { aboard = 17, waiting = 29 },
+    vehicles = { ["vehicle:event:test:1"] = {
+      aboard = 17, capacity = 40, originName = "Alpha",
+      destinationName = "Beta", lineName = "Intercity",
+    } },
+  },
+  probes = { passengerCosmetics = { nativeAboard = 1, nativeWaiting = 2 } },
+}) == true
+    and passengerGui.passengerHud.text.text:find("17/40 aboard", 1, true)
+    and passengerGui.passengerHud.text.text:find("Alpha -> Beta", 1, true)
+    and passengerGui.passengerHud.root.tooltip:find("Authoritative synchronized", 1, true),
+  "the exact passenger HUD did not render the selected canonical vehicle")
 
 assert(enabled["finances.borrow"] == false and enabled["finances.repay"] == false, "finance controls were not disabled")
 

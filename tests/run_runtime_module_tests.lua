@@ -163,8 +163,8 @@ end
 
 do
   local current = stateSchema.new(baseConfig(), {
-    stateVersion = 23,
-    checkpointVersion = 3,
+    stateVersion = 24,
+    checkpointVersion = 4,
   })
   current.initialized = true
   current.companyOrder = { "company:1", "company:2" }
@@ -1482,6 +1482,9 @@ do
     { "service.shareResid", function(value) value.services["line:digest"].shareResid = value.services["line:digest"].shareResid + 1 end },
     { "service.lagLoadPpm", function(value) value.services["line:digest"].lagLoadPpm = value.services["line:digest"].lagLoadPpm + 1 end },
     { "service.lastFareCents", function(value) value.services["line:digest"].lastFareCents = value.services["line:digest"].lastFareCents + 1 end },
+    { "service.metadata", function(value) value.services["line:digest"].metadata = {
+      stationGroupCids = { "station_group:digest:a", "station_group:digest:b" },
+    } end },
   }
   for _, mutation in ipairs(mutations) do
     current.economy = util.deepCopy(original)
@@ -1608,11 +1611,16 @@ do
       and emitted[#emitted].payload.state == "released",
     "vehicle did not release/report at the ordered target")
   local digestView = vehicleSyncRuntimeModule.digestView(current.world)
-  assert(digestView.vehicles[1].lastAuthorizedRound == 1
+  assert(digestView.schemaVersion == 3
+      and digestView.vehicles[1].lastAuthorizedRound == 1
       and digestView.vehicles[1].stopIndex == 0
       and digestView.vehicles[1].schedule.slotIndex == slotIndex
-      and digestView.scheduleReservations[1].lastSlotIndex == slotIndex,
-    "authorized vehicle schedule is absent from the convergence view")
+      and digestView.scheduleReservations[1].lastSlotIndex == slotIndex
+      and digestView.passengerPresentation.schemaVersion == 1
+      and digestView.passengerPresentation.vehicles[1].vehicleCid
+        == "vehicle:event:test:1"
+      and digestView.passengerPresentation.vehicles[1].lastRound == 1,
+    "authorized vehicle schedule/passenger ledger is absent from the convergence view")
   transportVehicle.state, current.tick = 1, 5
   runtime.update()
   current.economy.services["line:event:test:1"] = nil

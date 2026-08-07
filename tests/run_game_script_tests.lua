@@ -165,8 +165,8 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 23,
-  "state schema was not migrated to the coordinated recovery/town-development version")
+assert(initialized.version == 24,
+  "state schema was not migrated to the passenger-presentation version")
 assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
 
 local checkpointMessage
@@ -181,7 +181,7 @@ assert(checkpointMessage, "baseline checkpoint was not emitted")
 assert(bridgeModule.verify(checkpointMessage), "baseline checkpoint envelope failed verification")
 assert(checkpointMessage.kind == "checkpoint", "baseline checkpoint used the wrong message kind")
 local checkpoint = checkpointMessage.payload
-assert(checkpoint.checkpointVersion == 3, "checkpoint format version is wrong")
+assert(checkpoint.checkpointVersion == 4, "checkpoint format version is wrong")
 assert(checkpoint.financialDigest == hash.value(checkpoint.financial), "checkpoint financial digest is invalid")
 assert(checkpoint.financial.companies["company:1"].balance == 5000000,
   "checkpoint did not capture canonical company finances")

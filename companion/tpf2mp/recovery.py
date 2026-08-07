@@ -56,7 +56,7 @@ def analyse_recovery_anchor(audit_path: Path | str, session: str | None = None) 
                 faults.append({"seq": seq, "type": action.get("type"), **dict(action)})
         elif message.get("kind") == "record" and message.get("record_type") == "checkpoint":
             payload = verify_checkpoint(message.get("payload", {}))
-            if payload.get("checkpointVersion") not in {2, CHECKPOINT_VERSION}:
+            if payload.get("checkpointVersion") not in {2, 3, CHECKPOINT_VERSION}:
                 continue
             peer = str(message.get("peer", "unknown"))
             if payload.get("sessionId") != selected_session or payload.get("peerId") != peer:

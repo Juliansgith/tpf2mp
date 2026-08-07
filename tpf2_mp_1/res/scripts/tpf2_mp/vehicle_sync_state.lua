@@ -1,5 +1,6 @@
 local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
+local passengerPresentation = require "tpf2_mp/passenger_presentation"
 
 local M = {}
 local MAX_EXACT_INTEGER = 9007199254740991
@@ -122,10 +123,12 @@ function M.digestView(worldState)
     }
   end
   return {
-    schemaVersion = 2,
+    schemaVersion = 3,
     enabled = source.enabled ~= false,
     vehicles = vehicles,
     scheduleReservations = reservations,
+    passengerPresentation = passengerPresentation.digestView(
+      worldState and worldState.passengerPresentation),
   }
 end
 

@@ -1307,7 +1307,19 @@ class CheckpointTests(unittest.TestCase):
             "autonomyFrozen": False,
         }
         canonical: list[dict] = []
-        vehicle_sync = {"schemaVersion": 1, "enabled": True, "vehicles": []}
+        passenger_presentation = {
+            "schemaVersion": 1,
+            "epoch": 0,
+            "lines": [],
+            "vehicles": [],
+        }
+        vehicle_sync = {
+            "schemaVersion": 3,
+            "enabled": True,
+            "vehicles": [],
+            "scheduleReservations": [],
+            "passengerPresentation": passenger_presentation,
+        }
         core = dict(model)
         core["canonical"] = canonical
         core["vehicleSynchronization"] = vehicle_sync
@@ -1325,8 +1337,8 @@ class CheckpointTests(unittest.TestCase):
             }
         }
         payload = {
-            "checkpointVersion": 3,
-            "stateVersion": 11,
+            "checkpointVersion": 4,
+            "stateVersion": 24,
             "protocol": 1,
             "sessionId": "checkpoint-test",
             "peerId": "player1",
@@ -1346,8 +1358,8 @@ class CheckpointTests(unittest.TestCase):
         }
         payload["convergenceKey"] = checksum(
             {
-                "checkpointVersion": 3,
-                "stateVersion": 11,
+                "checkpointVersion": payload["checkpointVersion"],
+                "stateVersion": payload["stateVersion"],
                 "protocol": 1,
                 "sessionId": "checkpoint-test",
                 "lastCommitSeq": 1,
@@ -1360,6 +1372,99 @@ class CheckpointTests(unittest.TestCase):
         )
         payload["checkpointDigest"] = checksum(payload)
         return payload
+
+    @staticmethod
+    def resign_checkpoint(payload: dict) -> dict:
+        payload["modelDigest"] = checksum(payload["model"])
+        payload["canonicalDigest"] = checksum(payload["canonical"])
+        payload["vehicleSynchronizationDigest"] = checksum(
+            payload["vehicleSynchronization"]
+        )
+        core = json.loads(json.dumps(payload["model"]))
+        core["canonical"] = payload["canonical"]
+        core["vehicleSynchronization"] = payload["vehicleSynchronization"]
+        payload["coreDigest"] = checksum(core)
+        payload["convergenceKey"] = checksum({
+            "checkpointVersion": payload["checkpointVersion"],
+            "stateVersion": payload["stateVersion"],
+            "protocol": payload["protocol"],
+            "sessionId": payload["sessionId"],
+            "lastCommitSeq": payload["eventCursor"]["lastCommitSeq"],
+            "modelDigest": payload["modelDigest"],
+            "canonicalDigest": payload["canonicalDigest"],
+            "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
+            "coreDigest": payload["coreDigest"],
+            "financialDigest": payload["financialDigest"],
+        })
+        payload.pop("checkpointDigest", None)
+        payload["checkpointDigest"] = checksum(payload)
+        return payload
+
+    @classmethod
+    def populated_passenger_checkpoint(cls) -> dict:
+        payload = cls.checkpoint_payload()
+        stops = [
+            "station_group:event:presentation:a",
+            "station_group:event:presentation:b",
+        ]
+        payload["model"]["economy"]["services"]["line:event:presentation:1"] = {
+            "lineCid": "line:event:presentation:1",
+            "marketCid": "market:event:presentation:1",
+            "companyCid": "company:1",
+            "metadata": {"stationGroupCids": stops},
+        }
+        payload["vehicleSynchronization"]["vehicles"] = [{
+            "vehicleCid": "vehicle:event:presentation:1",
+            "lineCid": "line:event:presentation:1",
+            "companyCid": "company:1",
+            "lastAuthorizedRound": 3,
+            "stopIndex": 0,
+            "releaseAtGameTime": 100,
+            "releaseWhilePaused": False,
+            "schedule": {"schemaVersion": 1, "enabled": False},
+        }]
+        payload["vehicleSynchronization"]["passengerPresentation"] = {
+            "schemaVersion": 1,
+            "epoch": 2,
+            "lines": [{
+                "lineCid": "line:event:presentation:1",
+                "companyCid": "company:1",
+                "marketCid": "market:event:presentation:1",
+                "epoch": 2,
+                "terminalA": "station_group:event:presentation:a",
+                "terminalB": "station_group:event:presentation:b",
+                "stops": stops,
+                "stopCount": 2,
+                "routeDigest": checksum(stops),
+                "allocated": 65,
+                "waitingAToB": 24,
+                "waitingBToA": 33,
+                "departuresPlanned": 4,
+                "departuresAToB": 1,
+                "departuresBToA": 0,
+                "seatsPerVehicle": 40,
+                "boardedTotal": 8,
+                "alightedTotal": 0,
+                "overflowTotal": 0,
+            }],
+            "vehicles": [{
+                "vehicleCid": "vehicle:event:presentation:1",
+                "lineCid": "line:event:presentation:1",
+                "companyCid": "company:1",
+                "capacity": 40,
+                "aboard": 8,
+                "lastRound": 3,
+                "boardedEpoch": 2,
+                "lastStopIndex": 0,
+                "lastStationGroupCid": "station_group:event:presentation:a",
+                "originStationGroupCid": "station_group:event:presentation:a",
+                "destinationStationGroupCid": "station_group:event:presentation:b",
+                "boardedTotal": 8,
+                "alightedTotal": 0,
+                "discardedTotal": 0,
+            }],
+        }
+        return cls.resign_checkpoint(payload)
 
     def test_checkpoint_and_event_integrity_and_replay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1573,12 +1678,58 @@ class CheckpointTests(unittest.TestCase):
             "companyCid": "company:1",
             "lastAuthorizedRound": 1,
             "releaseWhilePaused": False,
+            "schedule": {"schemaVersion": 1, "enabled": False},
         }]
         with self.assertRaisesRegex(ProtocolError, "missing its stop/release anchor"):
             verify_checkpoint(payload)
 
+    def test_checkpoint_binds_exact_passenger_ledger_to_vehicle_sync(self) -> None:
+        payload = self.populated_passenger_checkpoint()
+        verified = verify_checkpoint(payload)
+        self.assertEqual(
+            verified["vehicleSynchronization"]["passengerPresentation"]["vehicles"][0]["aboard"],
+            8,
+        )
+
+        for mutate, error in (
+            (
+                lambda value: value["vehicleSynchronization"]["passengerPresentation"]
+                ["vehicles"][0].__setitem__("aboard", 41),
+                "count is invalid",
+            ),
+            (
+                lambda value: value["vehicleSynchronization"]["passengerPresentation"]
+                ["vehicles"][0].__setitem__("lastRound", 2),
+                "round disagrees",
+            ),
+            (
+                lambda value: value["vehicleSynchronization"]["passengerPresentation"]
+                ["vehicles"][0].__setitem__(
+                    "destinationStationGroupCid", "station_group:event:wrong"
+                ),
+                "trip disagrees",
+            ),
+            (
+                lambda value: value["model"]["economy"]["services"]
+                ["line:event:presentation:1"]["metadata"].__setitem__(
+                    "stationGroupCids",
+                    [
+                        "station_group:event:presentation:a",
+                        "station_group:event:different",
+                    ],
+                ),
+                "disagrees with its economy service",
+            ),
+        ):
+            tampered = json.loads(json.dumps(payload))
+            mutate(tampered)
+            self.resign_checkpoint(tampered)
+            with self.assertRaisesRegex(ProtocolError, error):
+                verify_checkpoint(tampered)
+
     def test_checkpoint_v3_accepts_and_binds_departure_schedule_state(self) -> None:
         payload = self.checkpoint_payload()
+        payload["checkpointVersion"] = 3
         schedule = {
             "schemaVersion": 1,
             "enabled": True,
@@ -1790,6 +1941,19 @@ class ResearchReportTests(unittest.TestCase):
                     },
                     "scope": "Lua sendCommand call-through plus native command observers",
                 },
+                "passengerPresentationDigest": "13579bdf",
+                "passengerPresentation": {
+                    "schemaVersion": 1,
+                    "epoch": 3,
+                    "lines": [{"waitingAToB": 7, "waitingBToA": 5}],
+                    "vehicles": [{"aboard": 11}],
+                },
+                "passengerCosmetics": {
+                    "nativeAboard": 1,
+                    "nativeWaiting": 2,
+                    "targetWritesEnabled": False,
+                    "appliedWrites": 0,
+                },
                 "proposals": {"queued": 2, "applied": 1, "failed": 1, "retained": 2},
                 "proposalConsensus": {"completed": 1, "failed": 0, "sessionFault": None},
                 "checkpointConsensus": {
@@ -1844,6 +2008,9 @@ class ResearchReportTests(unittest.TestCase):
             self.assertIn("Direct engine-state applies (queue bypass): 19", markdown)
             self.assertIn("Queued command tags: BuildProposal=2", markdown)
             self.assertIn("Retained native command timeline entries: 1", markdown)
+            self.assertIn("Authoritative passenger ledger digest/epoch: `13579bdf` / 3", markdown)
+            self.assertIn("Authoritative passenger lines/vehicles/aboard/waiting: 1 / 1 / 11 / 12", markdown)
+            self.assertIn("Native cosmetic aboard/waiting; target writes/applied: 1 / 2; no / 0", markdown)
             self.assertIn(
                 "Vehicle capture queued / captured / consumed / invalid / dropped: 0 / 2 / 2 / 0 / 0",
                 markdown,

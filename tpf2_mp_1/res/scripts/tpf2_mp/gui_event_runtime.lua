@@ -1179,7 +1179,7 @@ function M.new(deps)
         -- ordinary UI intents until the operation result is returned.
       elseif #gui.queue > 0 then
         dispatchQueuedAction()
-      elseif gui.frames % 120 == 0 then
+      elseif gui.frames % ((gui.selectedEntityId and 30) or 120) == 0 then
         queueAction({ type = "snapshot.request", localOnly = true })
       end
   end

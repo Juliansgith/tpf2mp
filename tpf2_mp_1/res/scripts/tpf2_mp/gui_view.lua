@@ -155,6 +155,17 @@ function M.render(gui, snapshot, options)
       tonumber(hostVehicleSync.pendingRounds) or 0,
       tonumber(hostVehicleSync.releases) or 0,
       tonumber(hostVehicleSync.faults) or 0)
+    local passenger = snapshot.passengerPresentation or {}
+    local passengerTotals = passenger.totals or {}
+    local cosmetics = snapshot.probes and snapshot.probes.passengerCosmetics or {}
+    lines[#lines + 1] = string.format(
+      "Passenger presentation: %d aboard / %d seats | %d waiting | native scenery %d aboard, %d waiting | target writes %s",
+      tonumber(passengerTotals.aboard) or 0,
+      tonumber(passengerTotals.capacity) or 0,
+      tonumber(passengerTotals.waiting) or 0,
+      tonumber(cosmetics.nativeAboard) or 0,
+      tonumber(cosmetics.nativeWaiting) or 0,
+      cosmetics.targetWritesEnabled == true and "enabled" or "fail-closed")
     local clockCapture = gui.nativeClockCapture or {}
     local indicator = clockCapture.indicator or {}
     lines[#lines + 1] = string.format(
@@ -269,7 +280,7 @@ function M.render(gui, snapshot, options)
     if shownBoards >= 8 then break end
     shownBoards = shownBoards + 1
     local board = boards[groupCid]
-    lines[#lines + 1] = string.format("Station %s: waiting ~%d %s | %d pax/epoch over %d line(s)",
+    lines[#lines + 1] = string.format("Station %s: waiting %d %s | %d pax/epoch over %d line(s)",
       board.name or groupCid,
       board.waiting or 0,
       M.crowdIcons(board.waiting or 0),

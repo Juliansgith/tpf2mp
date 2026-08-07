@@ -3,12 +3,10 @@ local bridge = require "tpf2_mp/bridge"
 local canonical = require "tpf2_mp/canonical"
 local world = require "tpf2_mp/world"
 local vehicleSyncState = require "tpf2_mp/vehicle_sync_state"
-
-local M = {}
-local disabledSchedule = vehicleSyncState.disabledSchedule
+local vehicleSyncPassengers = require "tpf2_mp/vehicle_sync_passengers"
+local M, disabledSchedule = {}, vehicleSyncState.disabledSchedule
 
 M.digestView = vehicleSyncState.digestView
-
 function M.new(deps)
   assert(type(deps) == "table" and type(deps.getState) == "function",
     "vehicle sync runtime state provider is required")
@@ -311,7 +309,15 @@ function M.new(deps)
         and entry.releaseWhilePaused == action.releaseWhilePaused
         and vehicleSyncState.equalSchedules(entry.schedule, releaseSchedule)
       if not same then return false, "conflicting duplicate vehicle release" end
+      local aligned, alignmentError = vehicleSyncPassengers.applyRelease(
+        state.world, state.economy, sync, action, binding.metadata)
+      if not aligned then return false, alignmentError end
       return true, util.deepCopy(entry)
+    end
+    local presented, presentationResult = vehicleSyncPassengers.applyRelease(
+      state.world, state.economy, sync, action, binding.metadata)
+    if not presented then
+      return false, presentationResult
     end
     sync.vehicles[vehicleCid] = {
       vehicleCid = vehicleCid,
@@ -351,6 +357,10 @@ function M.new(deps)
     local data = transaction and transaction.data or nil
     if type(transaction) ~= "table" or type(data) ~= "table" then return false end
     local sync = state.world.vehicleSync
+    local function applyPassengerOperation()
+      return vehicleSyncPassengers.applyOperation(
+        state.world, state.economy, transaction, record.companyCid)
+    end
     if transaction.kind == "vehicle.assign" then
       local binding = state.canonical.byCanonical[data.targetCid]
       local prior = sync.vehicles[data.targetCid] or {}
@@ -365,11 +375,11 @@ function M.new(deps)
         schedule = util.deepCopy(prior.schedule or disabledSchedule()),
       }
       localVehicles[data.targetCid] = nil
-      return true
+      return applyPassengerOperation()
     elseif transaction.kind == "vehicle.sell" then
       sync.vehicles[data.targetCid] = nil
       localVehicles[data.targetCid] = nil
-      return true
+      return applyPassengerOperation()
     elseif transaction.kind == "line.delete" then
       for vehicleCid, entry in pairs(sync.vehicles) do
         if entry.lineCid == data.targetCid then
@@ -380,7 +390,7 @@ function M.new(deps)
       for key, reservation in pairs(sync.scheduleReservations or {}) do
         if reservation.lineCid == data.targetCid then sync.scheduleReservations[key] = nil end
       end
-      return true
+      return applyPassengerOperation()
     end
     return false
   end

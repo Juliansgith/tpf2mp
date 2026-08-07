@@ -14,8 +14,8 @@ from .protocol import (
     validate_vehicle_schedule,
 )
 
-CHECKPOINT_VERSION = 3
-SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, CHECKPOINT_VERSION}
+CHECKPOINT_VERSION = 4
+SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, 3, CHECKPOINT_VERSION}
 EVENT_RECORD_VERSION = 1
 
 
@@ -32,6 +32,186 @@ def _positive_int(value: Any, name: str, minimum: int = 0) -> int:
     if result < minimum:
         raise ProtocolError(f"{name} is below {minimum}")
     return result
+
+
+def _array_or_lua_empty(value: Any, name: str) -> list[Any]:
+    if isinstance(value, Mapping) and not value:
+        return []
+    if not isinstance(value, list):
+        raise ProtocolError(f"{name} is not an array")
+    return value
+
+
+def _canonical(value: Any, prefix: str, name: str) -> str:
+    if not isinstance(value, str) or not value.startswith(prefix + ":") \
+            or len(value) <= len(prefix) + 1 or len(value) > 320:
+        raise ProtocolError(f"{name} is invalid")
+    return value
+
+
+def _validate_passenger_presentation(
+    value: Any,
+    synchronized_vehicles: Mapping[str, Mapping[str, Any]],
+    model: Mapping[str, Any],
+) -> dict[str, Any]:
+    presentation = _mapping(value, "checkpoint passenger presentation")
+    if set(presentation) != {"schemaVersion", "epoch", "lines", "vehicles"} \
+            or presentation.get("schemaVersion") != 1:
+        raise ProtocolError("checkpoint passenger presentation header is invalid")
+    epoch = _positive_int(presentation["epoch"], "passenger presentation epoch")
+    if epoch > 1_000_000_000:
+        raise ProtocolError("checkpoint passenger presentation epoch is too large")
+
+    economy_value = model.get("economy")
+    economy_model = dict(economy_value) if isinstance(economy_value, Mapping) else {}
+    services_value = economy_model.get("services")
+    model_services = dict(services_value) if isinstance(services_value, Mapping) else {}
+
+    lines = _array_or_lua_empty(presentation["lines"], "checkpoint passenger lines")
+    seen_lines: set[str] = set()
+    line_by_cid: dict[str, dict[str, Any]] = {}
+    previous_line_cid: str | None = None
+    line_fields = {
+        "lineCid", "companyCid", "marketCid", "epoch", "terminalA", "terminalB",
+        "stops", "stopCount", "routeDigest", "allocated", "waitingAToB", "waitingBToA",
+        "departuresPlanned", "departuresAToB", "departuresBToA", "seatsPerVehicle",
+        "boardedTotal", "alightedTotal", "overflowTotal",
+    }
+    bounded_counts = {
+        "allocated", "waitingAToB", "waitingBToA", "departuresAToB",
+        "departuresBToA", "boardedTotal", "alightedTotal", "overflowTotal",
+    }
+    for item_value in lines:
+        item = _mapping(item_value, "checkpoint passenger line")
+        if set(item) != line_fields:
+            raise ProtocolError("checkpoint passenger line fields are invalid")
+        line_cid = _canonical(item["lineCid"], "line", "passenger line id")
+        _canonical(item["companyCid"], "company", "passenger line company")
+        _canonical(item["marketCid"], "market", "passenger line market")
+        terminal_a = _canonical(item["terminalA"], "station_group", "passenger terminal A")
+        terminal_b = _canonical(item["terminalB"], "station_group", "passenger terminal B")
+        if line_cid in seen_lines or terminal_a == terminal_b \
+                or (previous_line_cid is not None and line_cid <= previous_line_cid):
+            raise ProtocolError("checkpoint passenger line is duplicated or has one terminal")
+        seen_lines.add(line_cid)
+        line_by_cid[line_cid] = item
+        previous_line_cid = line_cid
+        if _positive_int(item["epoch"], "passenger line epoch") != epoch:
+            raise ProtocolError("checkpoint passenger line epoch is inconsistent")
+        stop_count = _positive_int(item["stopCount"], "passenger line stopCount", 2)
+        stops = _array_or_lua_empty(item["stops"], "checkpoint passenger line stops")
+        if len(stops) != stop_count:
+            raise ProtocolError("checkpoint passenger line stop count is inconsistent")
+        for index, stop in enumerate(stops):
+            _canonical(stop, "station_group", f"passenger line stop {index}")
+        if stops[0] != terminal_a or stops[-1] != terminal_b:
+            raise ProtocolError("checkpoint passenger line endpoints disagree with its stops")
+        service_value = model_services.get(line_cid)
+        service = dict(service_value) if isinstance(service_value, Mapping) else {}
+        metadata_value = service.get("metadata")
+        metadata = dict(metadata_value) if isinstance(metadata_value, Mapping) else {}
+        service_stops = metadata.get("stationGroupCids")
+        if service.get("lineCid") != line_cid \
+                or service.get("companyCid") != item["companyCid"] \
+                or service.get("marketCid") != item["marketCid"] \
+                or service_stops != stops:
+            raise ProtocolError("checkpoint passenger line disagrees with its economy service")
+        planned = _positive_int(item["departuresPlanned"], "passenger departuresPlanned", 1)
+        seats = _positive_int(item["seatsPerVehicle"], "passenger seatsPerVehicle", 1)
+        if stop_count > 256 or planned > 1_000_000_000 or seats > 1_000_000_000:
+            raise ProtocolError("checkpoint passenger line bound is exceeded")
+        if not isinstance(item["routeDigest"], str) or len(item["routeDigest"]) != 8 \
+                or any(character not in "0123456789abcdef" for character in item["routeDigest"]):
+            raise ProtocolError("checkpoint passenger route digest is invalid")
+        if item["routeDigest"] != checksum(stops):
+            raise ProtocolError("checkpoint passenger route digest disagrees with its stops")
+        for field in bounded_counts:
+            if _positive_int(item[field], f"passenger line {field}") > 1_000_000_000:
+                raise ProtocolError(f"checkpoint passenger line {field} is too large")
+
+    vehicles = _array_or_lua_empty(
+        presentation["vehicles"], "checkpoint passenger vehicles"
+    )
+    required_vehicle = {
+        "vehicleCid", "lineCid", "companyCid", "capacity", "aboard", "lastRound",
+        "boardedTotal", "alightedTotal", "discardedTotal",
+    }
+    optional_vehicle = {
+        "boardedEpoch", "lastStopIndex", "lastStationGroupCid",
+        "originStationGroupCid", "destinationStationGroupCid",
+    }
+    seen_vehicles: set[str] = set()
+    previous_vehicle_cid: str | None = None
+    for item_value in vehicles:
+        item = _mapping(item_value, "checkpoint passenger vehicle")
+        if not required_vehicle <= set(item) or set(item) - required_vehicle - optional_vehicle:
+            raise ProtocolError("checkpoint passenger vehicle fields are invalid")
+        vehicle_cid = _canonical(item["vehicleCid"], "vehicle", "passenger vehicle id")
+        line_cid = _canonical(item["lineCid"], "line", "passenger vehicle line")
+        _canonical(item["companyCid"], "company", "passenger vehicle company")
+        if vehicle_cid in seen_vehicles or line_cid not in seen_lines \
+                or (previous_vehicle_cid is not None and vehicle_cid <= previous_vehicle_cid):
+            raise ProtocolError("checkpoint passenger vehicle is duplicated or has no line")
+        seen_vehicles.add(vehicle_cid)
+        previous_vehicle_cid = vehicle_cid
+        line = line_by_cid[line_cid]
+        if item["companyCid"] != line["companyCid"]:
+            raise ProtocolError("checkpoint passenger vehicle company disagrees with its line")
+        capacity = _positive_int(item["capacity"], "passenger vehicle capacity", 1)
+        aboard = _positive_int(item["aboard"], "passenger vehicle aboard")
+        last_round = _positive_int(item["lastRound"], "passenger vehicle round")
+        if capacity > 1_000_000_000 or aboard > capacity or last_round > 1_000_000_000:
+            raise ProtocolError("checkpoint passenger vehicle count is invalid")
+        for field in ("boardedTotal", "alightedTotal", "discardedTotal"):
+            if _positive_int(item[field], f"passenger vehicle {field}") > 1_000_000_000:
+                raise ProtocolError(f"checkpoint passenger vehicle {field} is too large")
+        if "boardedEpoch" in item and (
+            _positive_int(item["boardedEpoch"], "passenger vehicle boardedEpoch") > epoch
+        ):
+            raise ProtocolError("checkpoint passenger vehicle epoch is in the future")
+        if "lastStopIndex" in item and (
+            _positive_int(item["lastStopIndex"], "passenger vehicle stopIndex") > 255
+            or item["lastStopIndex"] >= line["stopCount"]
+        ):
+            raise ProtocolError("checkpoint passenger vehicle stopIndex is too large")
+        for field in (
+            "lastStationGroupCid", "originStationGroupCid", "destinationStationGroupCid"
+        ):
+            if field in item:
+                _canonical(item[field], "station_group", f"passenger vehicle {field}")
+        if "lastStationGroupCid" in item and item["lastStationGroupCid"] not in line["stops"]:
+            raise ProtocolError("checkpoint passenger vehicle last station is not on its line")
+        if aboard > 0 and not {
+            "originStationGroupCid", "destinationStationGroupCid"
+        } <= set(item):
+            raise ProtocolError("loaded passenger vehicle is missing its trip endpoints")
+        if aboard > 0 and {
+            item["originStationGroupCid"], item["destinationStationGroupCid"]
+        } != {line["terminalA"], line["terminalB"]}:
+            raise ProtocolError("loaded passenger vehicle trip disagrees with its line terminals")
+        has_origin = "originStationGroupCid" in item
+        has_destination = "destinationStationGroupCid" in item
+        if has_origin != has_destination or (
+            has_origin and {
+                item["originStationGroupCid"], item["destinationStationGroupCid"]
+            } != {line["terminalA"], line["terminalB"]}
+        ):
+            raise ProtocolError("checkpoint passenger vehicle trip fields are inconsistent")
+
+        synchronized = synchronized_vehicles.get(vehicle_cid)
+        if synchronized is None or synchronized.get("lineCid") != line_cid \
+                or synchronized.get("companyCid") != item["companyCid"]:
+            raise ProtocolError("checkpoint passenger vehicle has no matching synchronized vehicle")
+        if synchronized.get("lastAuthorizedRound") != last_round:
+            raise ProtocolError("checkpoint passenger vehicle round disagrees with synchronization")
+        if last_round > 0 and (
+            "lastStopIndex" not in item
+            or "lastStationGroupCid" not in item
+            or synchronized.get("stopIndex") != item["lastStopIndex"]
+            or item["lastStationGroupCid"] != line["stops"][item["lastStopIndex"]]
+        ):
+            raise ProtocolError("checkpoint passenger vehicle stop disagrees with synchronization")
+    return presentation
 
 
 def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -67,9 +247,12 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
         )
         sync_schema = vehicle_sync.get("schemaVersion")
         expected_sync_fields = {"schemaVersion", "enabled", "vehicles"}
-        if sync_schema == 2:
+        if sync_schema in {2, 3}:
             expected_sync_fields.add("scheduleReservations")
-        if set(vehicle_sync) != expected_sync_fields or sync_schema not in {1, 2} \
+        if sync_schema == 3:
+            expected_sync_fields.add("passengerPresentation")
+        supported_sync_schemas = {1, 2} if checkpoint_version == 3 else {3}
+        if set(vehicle_sync) != expected_sync_fields or sync_schema not in supported_sync_schemas \
                 or not isinstance(vehicle_sync.get("enabled"), bool):
             raise ProtocolError("checkpoint vehicle synchronization header is invalid")
         vehicles = vehicle_sync.get("vehicles")
@@ -77,6 +260,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(vehicles, list) and not lua_empty:
             raise ProtocolError("checkpoint synchronized vehicles are not an array")
         seen_vehicles: set[str] = set()
+        synchronized_vehicles: dict[str, dict[str, Any]] = {}
         for item_value in [] if lua_empty else vehicles:
             item = _mapping(item_value, "checkpoint synchronized vehicle")
             required = {
@@ -85,7 +269,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
             allowed = required | {
                 "companyCid", "stopIndex", "releaseAtGameTime",
             }
-            if sync_schema == 2:
+            if sync_schema in {2, 3}:
                 required.add("schedule")
                 allowed.add("schedule")
             if not required <= set(item) or set(item) - allowed:
@@ -98,6 +282,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                     or len(line_cid) > 320:
                 raise ProtocolError("checkpoint synchronized vehicle line is invalid")
             seen_vehicles.add(vehicle_cid)
+            synchronized_vehicles[vehicle_cid] = item
             last_round = _positive_int(
                 item["lastAuthorizedRound"], "vehicle lastAuthorizedRound"
             )
@@ -126,7 +311,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "stopIndex" not in item or "releaseAtGameTime" not in item
             ):
                 raise ProtocolError("authorized vehicle round is missing its stop/release anchor")
-            if sync_schema == 2:
+            if sync_schema in {2, 3}:
                 schedule = validate_vehicle_schedule(item["schedule"], release=True)
                 if schedule["enabled"] and (
                     float(item.get("releaseAtGameTime", -1))
@@ -134,7 +319,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                     or item["releaseWhilePaused"]
                 ):
                     raise ProtocolError("checkpoint vehicle schedule/release anchor is inconsistent")
-        if sync_schema == 2:
+        if sync_schema in {2, 3}:
             reservations = vehicle_sync.get("scheduleReservations")
             empty_reservations = isinstance(reservations, Mapping) and not reservations
             if not isinstance(reservations, list) and not empty_reservations:
@@ -165,6 +350,10 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                         or float(scheduled) != phase + slot * period:
                     raise ProtocolError("checkpoint schedule reservation is invalid")
                 seen_reservations.add(key)
+        if sync_schema == 3:
+            _validate_passenger_presentation(
+                vehicle_sync.get("passengerPresentation"), synchronized_vehicles, model
+            )
         actual_vehicle_sync = checksum(vehicle_sync)
         if checkpoint.get("vehicleSynchronizationDigest") != actual_vehicle_sync:
             raise ProtocolError("checkpoint vehicle synchronization digest mismatch")
@@ -335,6 +524,7 @@ def _upsert_service(economy: dict[str, Any], service: Mapping[str, Any]) -> None
         "capacity": _integer(service.get("capacity"), 100, 0, 1_000_000_000),
         "quality": _integer(service.get("quality"), 100, 0, 1000),
         "enabled": service.get("enabled") is not False,
+        "metadata": copy.deepcopy(service.get("metadata", {})),
     }
 
 
@@ -462,6 +652,7 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         "sharePpm": share_ppm,
         "shareResid": share_resid,
         "lagLoadPpm": lag_load_ppm,
+        "metadata": copy.deepcopy(service.get("metadata", {})),
     }
     if _economy_version(economy) >= 3:
         economy["services"][line_cid]["lastFareCents"] = last_fare_cents

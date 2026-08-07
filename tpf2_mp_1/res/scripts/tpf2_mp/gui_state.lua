@@ -3,6 +3,7 @@ local M = {}
 function M.new()
   return {
   window = nil,
+  passengerHud = nil,
   status = nil,
   details = nil,
   queue = {},

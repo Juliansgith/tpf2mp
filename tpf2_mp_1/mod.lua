@@ -5,7 +5,7 @@
 local presentationOk, presentation = pcall(require, "tpf2_mp/presentation")
 
 function data()
-  local minorVersion = 23
+  local minorVersion = 24
   local agentModeKeys = { "skeleton", "vanilla", "empty" }
   local peerValues = { "player1 (host)", "player2 (client)" }
   local peerIds = { "player1", "player2" }

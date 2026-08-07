@@ -127,21 +127,37 @@ These are independent local worlds, not a network-consensus claim. They prove
 that fresh-world construction scaling runs, that literal zero is unsafe, and
 that the replacement loads cleanly.
 
+## Passenger-display follow-up (2026-08-07)
+
+State 24 now owns a separate exact passenger ledger. Settled model allocation
+becomes endpoint queues; the existing ordered station release moves a bounded
+share onto the train, preserves it at intermediate stops, and alights it at the
+opposite terminal. Checkpoint format 4 binds those counts and cursors to the
+canonical vehicle release state. A selection-aware TPF2MP HUD renders the exact
+train, line, and station numbers while the small native crowd remains scenery.
+
+The mapped tag-36 lead was resolved statically. Its real visitor consumes an
+eight-byte `{ personEntityId, booleanSelector }` payload. It contains no train,
+station, terminal, line, or canonical destination, so it cannot safely inject a
+person into a requested target. The shipped adapter probes the command factory
+shape and native ECS counts but issues zero writes. A target-bearing operation
+or an exact-build stock-UI value hook would be required to change that policy.
+
 ## Not done
 
 - Physical town development now exists and passes an exact two-process
   three-round convergence experiment; pacing and visual quality remain open.
 - `setMarker`/`setZone` world-anchored presentation is still unexercised.
-- Cosmetic native-state writes (fake occupants in vehicles) remain native
-  hook work, with `Debug_SetSimPersonState` (tag 36) as the mapped lead.
+- Native target-addressed cosmetic occupants remain unavailable; tag 36 is
+  explicitly insufficient and fails closed.
 - Mobility aggregate comparison is unchanged; under a reduced policy its
   counts simply go small. Retiring it to structural facts is a follow-up
   once a live run shows what the counts actually do.
 
 ## Suite status at time of writing
 
-The complete `tools/run_tests.ps1` gate passes: 71 core Lua tests, 73
+The complete `tools/run_tests.ps1` gate passes: 75 core Lua tests, 73
 cross-language economy vectors, game/GUI/launcher integrations, syntax and
-architecture ratchets, 99 Python tests, and both long replay reports. The
+architecture ratchets, 100 Python tests, and both long replay reports. The
 native Release build and both CTest cases also pass against all 17 signatures
 of the pinned executable.
