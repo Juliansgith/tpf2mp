@@ -992,15 +992,19 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
             if previous_collateral is not None and key <= previous_collateral:
                 raise ProtocolError("construction collateral must be sorted and unique")
             previous_collateral = key
-        if mode != "build" and collateral:
-            raise ProtocolError("construction upgrade/removal cannot contain collateral demolition")
+        if mode == "upgrade" and collateral:
+            raise ProtocolError("construction upgrade cannot contain collateral demolition")
+        source_kind = "asset" if kind == "asset" else "construction"
+        if mode != "build" and any(
+            item["kind"] == source_kind and item["cid"] == source for item in collateral
+        ):
+            raise ProtocolError("construction source cannot also be collateral")
         if mode == "remove":
             if (
                 construction.get("fileName") != ""
                 or construction.get("transform") != {}
                 or construction.get("params") != {}
                 or construction.get("modules") != {}
-                or nodes or edges or object_adds or object_retained
             ):
                 raise ProtocolError("construction removal contains a build payload")
         else:

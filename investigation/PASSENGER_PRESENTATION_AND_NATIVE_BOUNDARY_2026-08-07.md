@@ -85,8 +85,12 @@ but invents no historical riders; a non-pristine mismatch is never repaired.
 
 ## UI and native scenery
 
-`gui_passenger_hud.lua` mounts in the already live-proven `gameInfo.layout`.
-It shows:
+The first implementation mounted a dedicated passenger row in
+`gameInfo.layout`. The 2026-08-08 depot incident proved that any public
+`api.gui` child retained in a native selector/manager layout is unsafe on Build
+35924, so that fallback was removed rather than merely hidden. The live adapter
+now rewrites the existing stock passenger total and uses the standalone
+Multiplayer window for the complete synchronized view:
 
 - selected train: exact aboard/capacity, trip endpoints, and line;
 - selected station/group: exact waiting and passengers per epoch;
@@ -95,8 +99,9 @@ It shows:
 
 Intermediate stations receive an explicit zero board under the current
 endpoint-corridor demand model rather than disappearing from the display.
-Native ECS aboard/waiting counts appear only in the tooltip as scenery
-telemetry.
+Native ECS aboard/waiting counts remain scenery telemetry and never enter the
+competitive ledger. See
+`DEPOT_UI_HANG_AND_GUI_PERFORMANCE_2026-08-08.md` for the native A/B evidence.
 
 ## `Debug_SetSimPersonState` result
 

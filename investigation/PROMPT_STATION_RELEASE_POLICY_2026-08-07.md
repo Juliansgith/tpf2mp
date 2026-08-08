@@ -81,8 +81,9 @@ that Transport Fever 2 itself retains.
 The stock train window still displays native Transport Fever 2 agents. Its
 seat capacity is the real consist capacity, but its occupied-passenger glyph is
 not the authoritative competitive count. The exact synchronized allocation is
-the `TPF2MP PAX` HUD: that ledger advances at ordered economy settlement and
-station release boundaries. Build 35924 exposes no proven target-addressable
+the passenger section of the Multiplayer window and projected stock total; that
+ledger advances at ordered economy settlement and station release boundaries.
+Build 35924 exposes no proven target-addressable
 command that can safely write those exact authored people into one selected
 train or station, so the stock count remains cosmetic rather than silently
 misrepresented as authoritative.
@@ -94,5 +95,5 @@ the same line, settle at least one economy epoch, and let the train complete
 four station rounds. Each early train may wait for its slower peer, but after
 both arrivals the release should be prompt; `scheduledReleases` and
 `slotReservations` should stay zero, `pendingRounds` should return to zero, and
-the session must not fault. Compare the stock native glyph with `TPF2MP PAX`
-separately rather than expecting them to match.
+the session must not fault. Compare the stock native glyph with the Multiplayer
+passenger ledger separately rather than expecting them to match.

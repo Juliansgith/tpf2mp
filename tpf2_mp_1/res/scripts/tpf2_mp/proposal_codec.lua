@@ -924,8 +924,8 @@ local function normaliseConstructionChange(additions, removals, options)
   if #additions > M.MAX_CONSTRUCTIONS or #removals > M.MAX_CONSTRUCTION_COLLATERAL then
     return nil, "canonical construction proposal exceeds its bounded change limit"
   end
-  if #additions == 0 and #removals ~= 1 then
-    return nil, "a canonical bulldoze must name exactly one construction root"
+  if #additions == 0 and #removals < 1 then
+    return nil, "a canonical bulldoze must name at least one construction root"
   end
   local value = #additions == 1 and additions[1].value or nil
   local rawFileName = value and (safeField(value, "fileName") or safeField(value, "name")) or nil
@@ -943,6 +943,18 @@ local function normaliseConstructionChange(additions, removals, options)
     local collateralError
     collateral, collateralError = normaliseConstructionCollateral(removals, options)
     if not collateral then return nil, collateralError end
+  elseif mode == "remove" then
+    -- A road/track BuildProposal can atomically replace topology and bulldoze
+    -- one or more obstructing constructions.  Schema 7 has one primary root,
+    -- so choose it from the canonically sorted removal set and retain the rest
+    -- as collateral.  The distinction is representational only: materialise()
+    -- writes every entry back to constructionsToRemove in one native command.
+    local removalsCanonical, removalError = normaliseConstructionCollateral(removals, options)
+    if not removalsCanonical then return nil, removalError end
+    local primary = table.remove(removalsCanonical, 1)
+    sourceCid = primary.cid
+    sourceRootKind = primary.kind
+    collateral = removalsCanonical
   elseif #removals == 1 then
     local sourceError
     sourceCid, sourceError, sourceRootKind = constructionSourceCid(
@@ -954,7 +966,7 @@ local function normaliseConstructionChange(additions, removals, options)
       slot = "construction:1", mode = mode, adapter = "portable-construction",
       kind = sourceRootKind == "asset" and "asset" or "construction",
       sourceCid = sourceCid, fileName = "",
-      transform = {}, params = {}, modules = {}, collateral = {},
+      transform = {}, params = {}, modules = {}, collateral = collateral,
     }
   end
 
@@ -1600,8 +1612,8 @@ function M.validate(transaction)
       or not exactList(construction.collateral, collateralCount) then
       return false, "construction collateral list is invalid"
     end
-    if construction.mode ~= "build" and collateralCount > 0 then
-      return false, "construction upgrade/removal cannot contain collateral demolition"
+    if construction.mode == "upgrade" and collateralCount > 0 then
+      return false, "construction upgrade cannot contain collateral demolition"
     end
     local previousCollateralKey
     for _, collateral in ipairs(construction.collateral) do
@@ -1615,6 +1627,11 @@ function M.validate(transaction)
         return false, "construction collateral has no canonical source"
       end
       local key = collateral.kind .. ":" .. collateral.cid
+      local sourceKind = construction.kind == "asset" and "asset" or "construction"
+      if construction.mode ~= "build" and collateral.kind == sourceKind
+        and collateral.cid == construction.sourceCid then
+        return false, "construction source cannot also be collateral"
+      end
       if previousCollateralKey and key <= previousCollateralKey then
         return false, "construction collateral must be sorted and unique"
       end
@@ -1624,10 +1641,6 @@ function M.validate(transaction)
       if construction.fileName ~= "" or not exactList(construction.transform, 0)
         or not exactFields(construction.params, {}) or not exactList(construction.modules, 0) then
         return false, "construction removal contains build payload"
-      end
-      if #transaction.nodes > 0 or #transaction.edges > 0 or #edgeObjects.add > 0
-        or #edgeObjects.retain > 0 then
-        return false, "construction removal cannot add topology"
       end
     else
       local fileName, fileError = portableResourceName(construction.fileName, ".con", "construction")
@@ -1705,6 +1718,25 @@ function M.validate(transaction)
   if transaction.digest ~= expectedDigest then return false, "proposal digest mismatch" end
   if transaction.transactionId ~= "proposal:" .. expectedDigest then return false, "proposal transactionId mismatch" end
   return true
+end
+
+-- True only for the native atomic shape used when a street/track edit also
+-- bulldozes obstructing buildings.  Standalone construction bulldozes remain
+-- on the engine-thread helper path; compound topology removals are replayed as
+-- one GUI BuildProposal so neither half can commit independently.
+function M.isTopologyConstructionRemoval(transaction)
+  if type(transaction) ~= "table"
+    or transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION then return false end
+  local construction = type(transaction.constructions) == "table"
+    and transaction.constructions[1] or nil
+  if type(construction) ~= "table" or construction.mode ~= "remove" then return false end
+  local edgeObjects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
+  -- Explicit removals alone describe an ordinary construction/station
+  -- bulldoze and stay on the engine-thread construction helper. The compound
+  -- GUI path is only for a topology edit that creates/replaces something in
+  -- the same native click while demolishing collateral buildings.
+  return #(transaction.nodes or {}) > 0 or #(transaction.edges or {}) > 0
+    or #(edgeObjects.add or {}) > 0 or #(edgeObjects.retain or {}) > 0
 end
 
 -- Network proposals must identify data-driven resources by repository name.
@@ -1846,7 +1878,8 @@ function M.materialise(transaction, options)
   options = options or {}
   local valid, validationError = M.validate(transaction)
   if not valid then return nil, validationError end
-  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
+  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
+    and not M.isTopologyConstructionRemoval(transaction) then
     return nil, "construction proposals require engine-thread materialisation"
   end
   local gameApi = options.api or api
@@ -1996,6 +2029,29 @@ function M.materialise(transaction, options)
     local localId, err = resolveLocalReference({ cid = cid }, slotIds, options)
     if localId == nil then return nil, err end
     proposal.streetProposal.edgeObjectsToRemove[index] = localId
+  end
+  if M.isTopologyConstructionRemoval(transaction) then
+    local removals = safeField(proposal, "constructionsToRemove")
+    if removals == nil and type(proposal) == "table" then
+      proposal.constructionsToRemove = {}
+      removals = proposal.constructionsToRemove
+    end
+    if removals == nil then return nil, "construction removal vector is unavailable" end
+    local construction = transaction.constructions[1]
+    local references = {
+      { cid = construction.sourceCid },
+    }
+    for _, collateral in ipairs(construction.collateral) do
+      references[#references + 1] = { cid = collateral.cid }
+    end
+    for index, reference in ipairs(references) do
+      local localId, resolveError = resolveLocalReference(reference, slotIds, options)
+      if localId == nil then return nil, resolveError end
+      local assigned, assignError = pcall(function() removals[index] = localId end)
+      if not assigned then
+        return nil, "construction removal assignment failed: " .. tostring(assignError)
+      end
+    end
   end
   return proposal, { slotIds = slotIds, digest = transaction.digest }
 end

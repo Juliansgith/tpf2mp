@@ -5,7 +5,7 @@ TPF2MP is an executable research prototype for competitive Transport Fever 2. It
 1. A playable local hot-seat mode with two native companies, separate wallets, separate logical assets, a turn-desk proxy, contested demand, fares, scoring, match rules, save state, and checkpoints.
 2. A simultaneous-networking laboratory with a TCP commit sequencer, canonical identities, an exact-build native command gate, and canonical road/track, edge-object, and construction replay.
 
-The second item is not yet finished same-world multiplayer. Prototype `0.28`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, and construction proposal schema `7` now cover canonical construction, lines, stock train purchase/assignment, station-leg synchronization, exact model passenger queues/loads and completed-trip revenue, save-owned economy difficulty, canonical model-town growth, authored physical town development, receipt-bound coordinated restore, and authoritative projection into the standard game UI. Exact two-process runs converge the canonical/model/structural domains, while unsupported command families and the first true two-computer usability gate remain open. See [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md), [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md), and [the investigation index](investigation/README.md) for the precise evidence boundary.
+The second item is not yet finished same-world multiplayer. Prototype `0.29`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, and construction proposal schema `7` now cover canonical construction, atomic topology-plus-building demolition, lines, stock train purchase/assignment, station-leg synchronization, exact model passenger queues/loads and completed-trip revenue, save-owned economy difficulty, canonical model-town growth, authored physical town development, receipt-bound coordinated restore, and authoritative projection into the standard game UI. Exact two-process runs converge the canonical/model/structural domains, while unsupported command families and the first true two-computer usability gate remain open. See [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md), [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md), and [the investigation index](investigation/README.md) for the precise evidence boundary.
 
 ## What works now
 
@@ -104,7 +104,7 @@ Run PowerShell from this directory:
 .\tools\package_release.ps1
 ```
 
-This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.28.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
+This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.29.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
 
 An extracted package installs with:
 
@@ -277,7 +277,7 @@ The plan names the exact convergence boundary and new session ID. Host sessions 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - runtime layers, module ownership,
   authority invariants, and the supported path for adding command families.
 
-- `tpf2_mp_1/` — installable prototype 0.28; state schema 26, economy model 7, checkpoint format 4, passenger-presentation schema 2, edge schema 5, and construction schema 7.
+- `tpf2_mp_1/` — installable prototype 0.29; state schema 26, economy model 7, checkpoint format 4, passenger-presentation schema 2, edge schema 5, and construction schema 7.
 - `companion/tpf2mp/` — dependency-free protocol, bridge, host/client sequencer, manifests, replay, and reports.
 - `native/` — pinned Build 35924 DLL/injector, signatures, MinHook pin, tests, and documentation.
 - `tests/` — Lua unit/integration/replay tests and Python protocol/TCP tests.

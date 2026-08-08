@@ -2,20 +2,29 @@
 
 Date: 2026-08-07 (Europe/Amsterdam)
 
-Status: implemented and offline-tested in prototype `0.26.0-alpha`; a fresh
-two-process visual pass remains required.
+Status: safe existing-leaf projection is implemented and live-tested in
+prototype `0.29.0-alpha`.
 
 Cadence and revenue wording in this report is superseded by
 [Five-minute delivered economy](FIVE_MINUTE_DELIVERED_ECONOMY_2026-08-07.md).
 The GUI replacement inventory itself remains current.
 
+Safety correction, 2026-08-08: the original generic-Component strips and
+15-frame native-tree scan caused a live Build 35924 `UI::ContentView` assertion
+while opening a depot. A native A/B pass proved that bare TextView leaves are
+also unsafe in retained stock manager layouts. All custom stock-layout children
+and fallback rows were therefore removed; event refresh is deferred three
+frames, discovery is event-driven with a 240-frame safety pass, and GUI state/
+snapshot projection is throttled. See
+[Depot-open UI hang and GUI performance correction](DEPOT_UI_HANG_AND_GUI_PERFORMANCE_2026-08-08.md).
+
 ## Decision
 
-Competitive facts must not live in a second dashboard while the normal game UI
-continues to present contradictory native-simulation values. The standard UI is
-therefore the primary presentation surface for every authored value that has a
-stable, supported GUI attachment point. The old `TPF2MP ECO` and `TPF2MP PAX`
-rows remain only as fail-soft fallbacks if a stock component cannot be found.
+The standard UI remains the primary surface where an existing native leaf can
+be rewritten safely. Detailed synchronized facts stay in the isolated
+Multiplayer window where TPF2MP owns the whole layout. No public `api.gui`
+widget is grafted into a stock layout: Build 35924's hidden-window selector
+cannot safely retain it. If a stable stock ID is missing, projection fails soft.
 
 The adapter is presentation-only. It consumes the public snapshot and never
 enters canonical state, checkpoints, finance, or command authority.
@@ -28,12 +37,12 @@ enters canonical state, checkpoints, finance, or command authority.
 | Top earnings | Replaced with net revenue for the latest authored hour. |
 | Top passenger total | Replaced with cumulative authored boardings; the tooltip also shows exact aboard and waiting totals. |
 | Top cargo total | Suppressed as `--` until an authoritative cargo ledger exists. |
-| Vehicle window | Adds exact authored load/capacity, endpoint leg, line, purchase price, annual/hourly upkeep, and line gross/net. Native load is hidden; transported/finance history is labelled cosmetic. |
-| Line window | Adds fare, speed, journey, headway, capacity, allocation, waiting, share, gross, fleet cost, and net. Native transported history is labelled cosmetic. |
-| Station window | Adds exact authored waiting and epoch throughput per service. The native agent board is hidden. |
-| Line and vehicle managers | Add an authoritative selected-object view or a bounded company service/fleet summary. |
-| Company finances | Replaces the incompatible native finance body with canonical balance and latest/cumulative gross-cost-net. |
-| Line, vehicle, and station statistics | Replaces native tables with bounded authored service, fleet, and station summaries. |
+| Vehicle window | Native load is hidden and transported/finance history is labelled cosmetic. Its native window tooltip points to synchronized context; full load/cost details are in Multiplayer. |
+| Line window | Native transported history is labelled cosmetic and the window receives authoritative context in its tooltip; full fare/share/net details are in Multiplayer. |
+| Station window | The native agent board is hidden and the window tooltip identifies synchronized endpoint queues; full per-service queues are in Multiplayer. |
+| Line and vehicle managers | Native layouts remain intact. Stable controls receive synchronized-context tooltips; full fleet/service summaries are in Multiplayer. |
+| Company finances | Canonical balance is projected into the top account. The incompatible native body remains visible as cosmetic history and is not replaced in-place. |
+| Line, vehicle, and station statistics | Native tables remain visible but receive a cosmetic-history tooltip; authoritative summaries are in Multiplayer. |
 | Buy/detail price and annual maintenance | Preserved. These are the exact post-modifier native values that purchase consensus records and the custom economy consumes. |
 | World-space arrival-income popup | Not replaceable through the documented GUI component tree. It can still flash, but is cosmetic and continuous reconciliation prevents it from affecting competitive cash. |
 
@@ -44,33 +53,33 @@ does not expose a stable supported component to replace.
 ## GUI lifecycle and safety
 
 `gui_stock_presentation.lua` resolves stock components by stable ID on demand;
-it never retains native GUI userdata across frames. It scans at a bounded
-15-frame cadence and on relevant manager events. Entity windows are found from
+it never retains native GUI userdata across frames. Relevant events schedule a
+refresh after the native callback returns; a slow 240-frame pass is only a
+safety net. Entity windows are found from
 `temp.view.entity_<local id>` and manager windows from their stable child IDs.
 
-An authoritative strip is inserted directly below the stock window title. A
-conflicting native widget is hidden only after that replacement strip attaches
-successfully. Missing IDs and API failures therefore leave stock UI intact and
-activate the legacy TPF2MP rows instead of producing a blank window. Cargo is
-shown as unknown rather than promoting native scenery to competitive truth.
+No child is inserted into a stock window. Existing conflicting widgets are
+hidden or relabelled only when their stable IDs/native names are found. Missing
+IDs and API failures leave stock UI intact. Cargo is shown as unknown rather
+than promoting native scenery to competitive truth.
 
 ## Evidence boundary
 
 The GUI harness constructs the real hierarchy shape and verifies toolbar/account
-replacement, all seven window adapters, selected-object refresh, fallback-HUD
-suppression, native load/station/finance/statistics hiding, and cosmetic history
-labels. Source-boundary tests require the adapter and keep both new modules below
-their size budgets.
+replacement, zero custom stock children, deferred selected-object refresh,
+native load/station hiding, preserved manager/statistics layouts, cosmetic
+history labels, and authoritative tooltips. Source-boundary tests keep the
+adapter below its size budget.
 
-The remaining human acceptance pass is deliberately visual:
+The exact populated crash save has passed five native depot/Vehicle Manager
+open-close cycles on both live processes. A later presentation-polish pass can:
 
-1. initialize a fresh two-process match and settle one authored hour;
-2. compare both top bars and finance windows;
-3. select the same line, station, and train on both peers;
-4. confirm authored load/queue/net values agree and no conflicting stock board
-   or history is presented as authoritative;
-5. buy a modded or vanilla consist and confirm the unchanged stock annual
-   maintenance equals the authoritative vehicle panel.
+1. compare both top bars after a five-minute settlement;
+2. select the same line, station, and train on both peers;
+3. confirm the Multiplayer detail view agrees while native history is clearly
+   cosmetic;
+4. buy a modded or vanilla consist and compare its unchanged stock annual
+   maintenance with the authoritative ledger.
 
 The supported UI extension points and component lookup API are documented by
 Urban Games:

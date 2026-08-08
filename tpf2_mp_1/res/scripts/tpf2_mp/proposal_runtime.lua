@@ -5,6 +5,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
+local proposalCollateralRuntime = require "tpf2_mp/proposal_collateral_runtime"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 
 local M = {}
@@ -16,6 +17,8 @@ local M = {}
 -- equivalent worlds.  Keep the wait bounded, but allow enough headroom for
 -- large stations and post-bulldoze entity retirement to settle.
 local CONSTRUCTION_SETTLE_TIMEOUT_TICKS = 600
+
+M.verifyTopologyCollateralRemoved = proposalCollateralRuntime.verifyRemoved
 
 function M.new(deps)
   assert(type(deps) == "table", "proposal runtime dependencies are required")
@@ -703,6 +706,15 @@ function M.new(deps)
     if not matched or #matched.unmatchedNodes > 0 or #matched.unmatchedEdges > 0
       or #matched.unmatchedEdgeObjects > 0 then
       return proposalFailure(record, tostring(matchError or "proposal created unexpected topology"))
+    end
+    if proposalCodec.isTopologyConstructionRemoval(transaction) then
+      -- Native success is not sufficient: a malformed/incomplete replay could
+      -- create the track while silently retaining the obstructing building.
+      -- Verify the original component kind disappeared before retiring its
+      -- canonical binding or charging the company. Entity ids may be reused by
+      -- the same command, hence the kind check rather than entityExists alone.
+      local removed, removalError = M.verifyTopologyCollateralRemoved(record.localInputs, world)
+      if not removed then return proposalFailure(record, removalError) end
     end
     for _, edge in ipairs(transaction.edges) do
       if edge.private then
@@ -1415,7 +1427,8 @@ function M.new(deps)
     for _, proposalId in ipairs(util.sortedKeys(state.world.proposals.byId or {})) do
       local record = state.world.proposals.byId[proposalId]
       if type(record) == "table" and record.transaction
-        and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION then
+        and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+        and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
         if record.status == "queued"
           or (record.status == "building-construction" and record.constructionPending) then
           -- The helper mutates the native world over several ticks.  Record every

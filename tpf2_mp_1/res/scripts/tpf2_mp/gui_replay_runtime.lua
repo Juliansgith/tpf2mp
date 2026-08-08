@@ -221,10 +221,12 @@ function M.new(deps)
       local record = proposals[proposalId]
       if type(record) == "table" and record.status == "queued" and not gui.proposalIssued[proposalId] then
         gui.proposalIssued[proposalId] = true
-        -- Schema 4 uses game.interface.buildConstruction on the engine thread;
-        -- issuing a second GUI BuildProposal would duplicate the compound graph.
+        -- Construction builds/upgrades and standalone bulldozes use the engine
+        -- thread helper. A topology edit with collateral demolition is the one
+        -- schema-7 exception: its native atomic form is a GUI BuildProposal.
         if record.transaction
-          and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION then
+          and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+          and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
           return true
         end
         local localRefs = record.localRefs or {}

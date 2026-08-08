@@ -22,6 +22,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_cost_runtime.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_demo.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
+    'tpf2_mp_1\res\scripts\tpf2_mp\proposal_collateral_runtime.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
     'tpf2_mp_1\res\scripts\tpf2_mp\network_followup_queue.lua' = 170
     'tpf2_mp_1\res\scripts\tpf2_mp\network_bridge_consumer.lua' = 100
@@ -39,6 +40,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_town_development.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\operational_capture_runtime.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_load_runtime.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_line_command_codec.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_entry_points.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_quarantine.lua' = 120
@@ -104,6 +106,7 @@ $requiredModules = @(
     'tpf2_mp/gui_entry_points',
     'tpf2_mp/gui_capture',
     'tpf2_mp/gui_view',
+    'tpf2_mp/gui_load_runtime',
     'tpf2_mp/gui_stock_presentation',
     'tpf2_mp/gui_event_runtime',
     'tpf2_mp/native_hook'

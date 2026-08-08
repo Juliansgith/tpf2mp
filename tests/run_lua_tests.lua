@@ -755,6 +755,72 @@ test("proposal codec materialises and geometrically binds live-proven linear edg
   equal(matched.edges["edge:1"], 8001)
 end)
 
+test("proposal codec replays topology and collateral construction demolition atomically", function()
+  local raw = linearProposal(-1, -2, -3, "track", 7, true)
+  -- Reverse native order deliberately: canonical source/collateral selection
+  -- must not depend on the process-local construction vector order.
+  raw.__constructionRemovals = { { entity = 902 }, { entity = 901 } }
+  local transaction, transactionError = proposalCodec.normalise(raw, "company:1", {
+    resolveCanonical = function(kind, localId)
+      if kind == "construction" and localId == 901 then return "construction:pre:house-a" end
+      if kind == "construction" and localId == 902 then return "construction:pre:house-b" end
+    end,
+    entityKind = function() return "construction" end,
+    resourceName = function(kind, index) return kind .. "/" .. tostring(index) .. ".lua" end,
+  })
+  truthy(transaction, transactionError)
+  equal(transaction.schemaVersion, proposalCodec.CONSTRUCTION_SCHEMA_VERSION)
+  equal(transaction.constructions[1].mode, "remove")
+  equal(transaction.constructions[1].sourceCid, "construction:pre:house-a")
+  equal(transaction.constructions[1].collateral[1].cid, "construction:pre:house-b")
+  truthy(proposalCodec.isTopologyConstructionRemoval(transaction))
+  truthy(proposalCodec.validatePortable(transaction))
+
+  local fakeApi = {
+    type = {
+      SimpleProposal = { new = function() return {
+        constructionsToRemove = {},
+        streetProposal = {
+          nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
+          edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+        },
+      } end },
+      SegmentAndEntity = { new = function() return { comp = {} } end },
+      PlayerOwned = { new = function() return {} end },
+      NodeAndEntity = { new = function() return { comp = {} } end },
+      Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
+      BaseEdgeStreet = { new = function() return {} end },
+      BaseEdgeTrack = { new = function() return {} end },
+    },
+    res = {
+      streetTypeRep = { find = function() return 4 end },
+      trackTypeRep = { find = function() return 7 end },
+    },
+  }
+  local materialised, materialiseError = proposalCodec.materialise(transaction, {
+    api = fakeApi,
+    nativePlayerId = 100,
+    resolveLocal = function(cid)
+      if cid == "construction:pre:house-a" then return 901 end
+      if cid == "construction:pre:house-b" then return 902 end
+    end,
+  })
+  truthy(materialised, materialiseError)
+  equal(materialised.constructionsToRemove[1], 901)
+  equal(materialised.constructionsToRemove[2], 902)
+  equal(materialised.streetProposal.edgesToAdd[1].trackEdge.trackType, 7)
+
+  local duplicate = util.deepCopy(transaction)
+  duplicate.constructions[1].collateral[1] = {
+    kind = "construction", cid = duplicate.constructions[1].sourceCid,
+  }
+  duplicate.digest = proposalCodec.digest(duplicate)
+  duplicate.transactionId = "proposal:" .. duplicate.digest
+  local duplicateOk, duplicateError = proposalCodec.validate(duplicate)
+  equal(duplicateOk, false)
+  truthy(tostring(duplicateError):find("source cannot also be collateral", 1, true), duplicateError)
+end)
+
 test("proposal codec canonicalises the measured smallest modular passenger station", function()
   local first, firstError = proposalCodec.normalise(smallestStationProposal(0), "company:1", {
     resourceName = function(kind, index) return kind .. "/" .. index .. ".lua" end,

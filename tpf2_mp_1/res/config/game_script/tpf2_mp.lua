@@ -19,6 +19,7 @@ local stateSchema = require "tpf2_mp/state_schema"
 local nativeHook = require "tpf2_mp/native_hook"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
+local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiStockPresentation = require "tpf2_mp/gui_stock_presentation"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
@@ -1084,6 +1085,9 @@ handlers["proposal.construction_step"] = function(action)
   if not record or not record.transaction
     or record.transaction.schemaVersion ~= proposalCodec.CONSTRUCTION_SCHEMA_VERSION then
     return false, "construction proposal is unavailable locally"
+  end
+  if proposalCodec.isTopologyConstructionRemoval(record.transaction) then
+    return false, "compound topology demolition must use GUI BuildProposal replay"
   end
   if action.localOnly ~= true then return false, "construction step must remain machine-local" end
   if record.status == "queued" then return beginCanonicalConstruction(record) end
@@ -3007,7 +3011,6 @@ local function renderGui()
   local result = guiView.render(gui, snapshot, {
     maxDeferredNetworkIntents = MAX_DEFERRED_NETWORK_INTENTS,
   })
-  pcall(guiStockPresentation.update, gui, snapshot)
   return result
 end
 local function queueAction(action)
@@ -3270,6 +3273,15 @@ local function resetTransientRuntime()
   end
 end
 
+local guiLoadRuntime = guiLoadRuntimeModule.new({
+  gui = gui, stateVersion = STATE_VERSION, migrate = migrate,
+  getState = function() return state end,
+  setState = function(value) state = value end,
+  isEngineThread = isEngineThread, resetTransientRuntime = resetTransientRuntime,
+  config = config, activeCompany = activeCompany,
+  publicSnapshot = publicSnapshot, renderGui = renderGui,
+})
+
 local script = {
   init = function()
     if not isEngineThread() then return end
@@ -3377,20 +3389,7 @@ local script = {
   end,
 
   load = function(saved)
-    state = migrate(saved)
-    if isEngineThread() then resetTransientRuntime() end
-    if not isEngineThread() then
-      -- The disposable two-process validator has no human-facing controls.
-      -- Mutating the UI tree from this high-frequency load callback can enter
-      -- Build 35924's stored-function renderer recursively. The GUI state must
-      -- still receive engine state so it can materialise ordered proposals.
-      if config().networkAutoValidate then return end
-      -- The GUI entity view can lag newly-created PLAYER entities by one
-      -- state transfer.  Keep load() a pure projection of serialized state;
-      -- canonical network accounts are already sufficient for this display.
-      gui.snapshot = publicSnapshot({ allowNativeAccounts = false })
-      if gui.status then renderGui() end
-    end
+    return guiLoadRuntime.load(saved)
   end,
 
   handleEvent = function(src, id, name, param)

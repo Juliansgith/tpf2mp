@@ -793,6 +793,37 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "build payload"):
             validate_action({"type": "proposal.build", "transaction": bad_remove})
 
+        compound = json.loads(json.dumps(removal))
+        topology = proposal_transaction()
+        compound.update({
+            "nodes": topology["nodes"],
+            "edges": topology["edges"],
+            "edgeObjects": topology["edgeObjects"],
+            "remove": topology["remove"],
+        })
+        compound["constructions"][0].update({
+            "kind": "construction",
+            "sourceCid": "construction:pre:house-a",
+            "collateral": [
+                {"kind": "construction", "cid": "construction:pre:house-b"},
+            ],
+        })
+        redigest_proposal(compound)
+        accepted_compound = validate_action({"type": "proposal.build", "transaction": compound})
+        self.assertEqual(len(accepted_compound["transaction"]["edges"]), 1)
+        self.assertEqual(
+            accepted_compound["transaction"]["constructions"][0]["collateral"][0]["cid"],
+            "construction:pre:house-b",
+        )
+
+        duplicate_source = json.loads(json.dumps(compound))
+        duplicate_source["constructions"][0]["collateral"][0]["cid"] = (
+            duplicate_source["constructions"][0]["sourceCid"]
+        )
+        redigest_proposal(duplicate_source)
+        with self.assertRaisesRegex(ProtocolError, "source cannot also be collateral"):
+            validate_action({"type": "proposal.build", "transaction": duplicate_source})
+
     def test_stock_station_transaction_and_compound_outputs_are_strict(self) -> None:
         transaction = station_proposal_transaction()
         accepted = validate_action({"type": "proposal.build", "transaction": transaction})

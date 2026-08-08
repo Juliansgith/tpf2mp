@@ -110,6 +110,12 @@ function M.new(deps)
   
   local function eventEntityIds(param)
     local result, seenIds, seenTables = {}, {}, {}
+    local remaining, truncated = 256, false
+    local function consume()
+      if remaining <= 0 then truncated = true; return false end
+      remaining = remaining - 1
+      return true
+    end
     local function add(value)
       local entity = tonumber(value)
       if entity and entity >= 0 and entity == math.floor(entity) and not seenIds[entity] then
@@ -119,7 +125,8 @@ function M.new(deps)
     end
     local function walk(value, depth, acceptNumbers)
       local valueType = type(value)
-      if depth > 8 or (valueType ~= "table" and valueType ~= "userdata") or seenTables[value] then return end
+      if depth > 5 or (valueType ~= "table" and valueType ~= "userdata")
+        or seenTables[value] or not consume() then return end
       seenTables[value] = true
       local function inspect(field, item, numericKey)
         if ENTITY_EVENT_FIELDS[field] then
@@ -129,6 +136,7 @@ function M.new(deps)
         elseif ENTITY_EVENT_CONTAINERS[field] then
           if type(item) == "table" then
             for _, nested in pairs(item) do
+              if not consume() then break end
               if type(nested) == "table" or type(nested) == "userdata" then
                 add(safeField(nested, "entity") or safeField(nested, "entityId") or safeField(nested, "id"))
                 walk(nested, depth + 1, true)
@@ -143,6 +151,7 @@ function M.new(deps)
       end
       if valueType == "table" then
         for key, item in pairs(value) do
+          if not consume() then break end
           inspect(tostring(key), item, type(key) == "number")
           if #result >= 128 then break end
         end
@@ -152,6 +161,9 @@ function M.new(deps)
       end
     end
     walk(param, 0, false)
+    if truncated then
+      gui.eventEntityScanTruncations = (gui.eventEntityScanTruncations or 0) + 1
+    end
     table.sort(result)
     return result
   end

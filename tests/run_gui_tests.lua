@@ -65,10 +65,13 @@ end
 
 local TextView = {
   new = function(text)
-    local view = object({ text = text or "" })
+    local view = object({ text = text or "", visible = true, name = "TextView" })
     function view:setText(value) self.text = tostring(value) end
     function view:setId(id) self.id = id; guiById[id] = self end
     function view:setTooltip(value) self.tooltip = tostring(value) end
+    function view:setVisible(value) self.visible = value == true end
+    function view:getName() return self.name end
+    function view:setName(value) self.name = tostring(value) end
     textViews[#textViews + 1] = view
     return view
   end,
@@ -1136,37 +1139,31 @@ assert(replayRuntime.processProposalQueue() == true
     and #sentEvents == resultCountBeforeQuarantineRelease + 1
     and sentEvents[#sentEvents].name == "proposal.result",
   "proposal replay quarantine did not release at the engine result boundary")
+
+-- Schema 7 normally belongs to the engine-thread construction helper, except
+-- when its construction removal is collateral to topology. That exact native
+-- proposal must cross the ordinary GUI BuildProposal route atomically.
+replayState.world.proposals.byId["gui-topology-collateral"] = {
+  proposalId = "gui-topology-collateral",
+  status = "queued",
+  transaction = {
+    schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+    nodes = {}, edges = { {} },
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = {}, nodes = {} },
+    constructions = { { mode = "remove" } },
+  },
+  localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
+}
+assert(replayRuntime.processProposalQueue() == true
+    and replayGui.proposalReplayQuarantine
+    and replayGui.proposalReplayQuarantine.proposalId == "gui-topology-collateral",
+  "schema-7 topology demolition did not use atomic GUI BuildProposal replay")
+replayGui.proposalReplayQuarantine = nil
 proposalCodec.materialise = originalMaterialise
 api.cmd.make.buildProposal = originalBuildFactory
 rawset(_G, "tpf2mp_native_authorize_build", originalAuthorizeBuild)
 
-local passengerHud = require "tpf2_mp/gui_passenger_hud"
-local passengerGui = {
-  selectedEntityKind = "vehicle",
-  selectedEntityId = 60,
-}
-assert(passengerHud.update(passengerGui, {
-  passengerPresentation = {
-    localVehicles = { ["60"] = "vehicle:event:test:1" },
-    localLines = {}, localStations = {}, stations = {},
-    totals = { aboard = 17, waiting = 29 },
-    vehicles = { ["vehicle:event:test:1"] = {
-      aboard = 17, capacity = 40, originName = "Alpha",
-      destinationName = "Beta", lineName = "Intercity",
-    } },
-  },
-  probes = { passengerCosmetics = { nativeAboard = 1, nativeWaiting = 2 } },
-}) == true
-    and passengerGui.passengerHud.text.text:find("17/40 aboard", 1, true)
-    and passengerGui.passengerHud.text.text:find("Alpha -> Beta", 1, true)
-    and passengerGui.passengerHud.root.tooltip:find("Authoritative synchronized", 1, true),
-  "the exact passenger HUD did not render the selected canonical vehicle")
-
-local economyHud = require "tpf2_mp/gui_economy_hud"
-local economyGui = {
-  selectedEntityKind = "vehicle",
-  selectedEntityId = 60,
-}
 local economySnapshot = {
   activeCompanyCid = "company:1",
   economyPresentation = {
@@ -1197,27 +1194,10 @@ local economySnapshot = {
     } },
   },
 }
-assert(economyHud.update(economyGui, economySnapshot) == true
-    and economyGui.economyHud.text.text:find("$8.00m buy", 1, true)
-    and economyGui.economyHud.text.text:find("$1.20m/yr", 1, true)
-    and economyGui.economyHud.root.tooltip:find("resolved native component", 1, true),
-  "economy HUD did not render exact selected-vehicle purchase/upkeep figures")
-economyGui.selectedEntityKind, economyGui.selectedEntityId = "line", 70
-assert(economyHud.update(economyGui, economySnapshot) == true
-    and economyGui.economyHud.text.text:find("160 km/h", 1, true)
-    and economyGui.economyHud.text.text:find("$12.00", 1, true)
-    and economyGui.economyHud.text.text:find("outside parity $23.13", 1, true)
-    and economyGui.economyHud.root.tooltip:find("outside option", 1, true),
-  "economy HUD did not explain selected-line speed, fare, and outside competition")
-economyGui.selectedEntityKind, economyGui.selectedEntityId = nil, nil
-assert(economyHud.update(economyGui, economySnapshot) == true
-    and economyGui.economyHud.text.text:find("$6.4k completed-trip revenue pending", 1, true)
-    and economyGui.economyHud.text.text:find("last 5m $1.1k net", 1, true),
-  "economy HUD did not render active-company gross/cost/net figures")
 
--- Authoritative presentation now occupies the standard HUD and stock windows.
--- The two older TPF2MP game-bar rows remain only as a fallback for a build or
--- UI overhaul in which those stable stock component IDs disappear.
+-- Authoritative presentation rewrites existing stock leaves only. Build 35924
+-- crashes if an api.gui child is retained in a hidden native manager layout,
+-- so this test also proves that the adapter creates no tpf2mp.stock widgets.
 local function registerText(id, text)
   local value = TextView.new(text or "")
   value:setId(id)
@@ -1324,49 +1304,55 @@ assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
     and guiById["menu.financesButton.number"].text == "50,000,000"
     and guiById["menu.financesButton.label"].text == "TPF2MP account",
   "authoritative projection did not overwrite the stock game bar")
-assert(guiById["tpf2mp.stock.entity.60"]
-    and guiById["tpf2mp.stock.lineManager"]
-    and guiById["tpf2mp.stock.vehicleManager"]
-    and guiById["tpf2mp.stock.finances"]
-    and guiById["tpf2mp.stock.lineStatistics"]
-    and guiById["tpf2mp.stock.vehicleStatistics"]
-    and guiById["tpf2mp.stock.stationStatistics"],
-  "authoritative panels were not inserted into all supported stock windows")
+assert(guiById["tpf2mp.stock.entity.60"] == nil
+    and guiById["tpf2mp.stock.lineManager"] == nil
+    and guiById["tpf2mp.stock.vehicleManager"] == nil
+    and guiById["tpf2mp.stock.finances"] == nil
+    and guiById["tpf2mp.stock.lineStatistics"] == nil
+    and guiById["tpf2mp.stock.vehicleStatistics"] == nil
+    and guiById["tpf2mp.stock.stationStatistics"] == nil,
+  "stock presentation inserted a native-layout child")
 assert(nativeVehicleCargo.visible == false
     and nativeFinancesLabel.text == "Native history (cosmetic)"
-    and nativeFinances.visible == false
-    and guiById["menu.stats.lines.table"].visible == false
-    and guiById["menu.stats.vehicles.table"].visible == false
-    and guiById["menu.stats.stations.table"].visible == false,
-  "misleading native load, finance, or statistics content remained visible")
-assert(guiById["tpf2mp.passengerHud"].visible == false
-    and guiById["tpf2mp.economyHud"].visible == false,
-  "legacy fallback HUD rows remained visible after stock projection succeeded")
+    and nativeFinances.visible == true
+    and guiById["menu.stats.lines.table"].visible == true
+    and guiById["menu.stats.vehicles.table"].visible == true
+    and guiById["menu.stats.stations.table"].visible == true
+    and guiById["vehicleManager.buyVehicles"].tooltip
+    and guiById["menu.stats.lines.table"].tooltip:find("cosmetic", 1, true),
+  "safe stock relabel/tooltip projection did not preserve native layouts")
 
+local stockScans = stockGui.stockPresentation.scans
 stockPresentation.handleEvent(stockGui, stockSnapshot, "lineManager", "select", { line = 70 })
+stockPresentation.update(stockGui, stockSnapshot)
+assert(stockGui.stockPresentation.scans == stockScans,
+  "stock UI traversed the native layout from the originating event frame")
+stockGui.frames = stockGui.frames + 3
+stockPresentation.update(stockGui, stockSnapshot)
 assert(stockGui.selectedLineId == 70
-    and guiById["tpf2mp.stock.lineManager.primary"].text:find("Intercity", 1, true),
-  "stock line-manager selection did not refresh its authoritative context")
+    and guiById["lineManager.newLine"].tooltip
+    and stockGui.stockPresentation.scans == stockScans + 1,
+  "stock line-manager selection did not receive one deferred safe refresh")
 
-local _, lineNative = stockWindow("temp.view.entity_70", "line-extension")
+local lineWindow, lineNative = stockWindow("temp.view.entity_70", "line-extension")
 local nativeTransported = registerText("test.native.line.transported", "Transported")
 nativeTransported.parent = lineNative
 lineNative.layout:addItem(nativeTransported)
 stockGui.selectedEntityKind, stockGui.selectedEntityId = "line", 70
 assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
-    and guiById["tpf2mp.stock.entity.70.primary"].text:find("fare $12.00", 1, true)
+    and lineWindow.tooltip:find("demand model", 1, true)
     and nativeTransported.text == "Native transported (cosmetic)",
-  "stock line window did not replace native performance presentation")
+  "stock line window did not receive safe authoritative context")
 
-local _, stationNative = stockWindow("temp.view.entity_80", "stationgroup-window")
+local stationWindow, stationNative = stockWindow("temp.view.entity_80", "stationgroup-window")
 local nativeStationBoard = stockNode("StationGroupDisplayComp")
 nativeStationBoard.parent = stationNative
 stationNative.layout:addItem(nativeStationBoard)
 stockGui.selectedEntityKind, stockGui.selectedEntityId = "station_group", 80
 assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
-    and guiById["tpf2mp.stock.entity.80.primary"].text:find("29 waiting", 1, true)
+    and stationWindow.tooltip:find("synchronized endpoint queues", 1, true)
     and nativeStationBoard.visible == false,
-  "stock station window did not replace the native scenery board")
+  "stock station window did not receive safe authoritative context")
 
 -- A generated userdata marshalling exception must return an explicit failed
 -- result. Merely catching it at guiUpdate would leave operationIssued latched

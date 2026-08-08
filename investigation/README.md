@@ -1,6 +1,15 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-07 (Europe/Amsterdam), prototype `0.28.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
+Last updated: 2026-08-08 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
+
+[Depot-open UI hang and GUI performance correction](DEPOT_UI_HANG_AND_GUI_PERFORMANCE_2026-08-08.md)
+records the exact Build 35924 ContentView assertion, preserved hang evidence,
+unsafe GUI reentrancy, the no-stock-child correction, repeated native depot
+open/close proof, bounded deferred scans, and GUI projection performance policy.
+
+[Atomic topology edits with collateral demolition](TOPOLOGY_COLLATERAL_DEMOLITION_2026-08-08.md)
+records the portable multi-building removal shape, one-command BuildProposal
+replay, physical removal postcondition, and the station-bulldoze boundary.
 
 [Save-owned difficulty and canonical model-town growth](SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md)
 records the four immutable new-world revenue modes, legacy-to-Normal migration,

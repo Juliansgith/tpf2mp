@@ -130,11 +130,12 @@ GUI/native-adapter modules:
 - `gui_authoritative_text.lua` formats canonical company, service, vehicle,
   station, fleet, and toolbar projections without retaining native GUI objects.
 - `gui_stock_presentation.lua` is the standard-UI adapter. It overwrites the
-  normal account/earnings/passenger totals, inserts authoritative strips into
-  entity/manager/finance/statistics windows, and only then hides or relabels
-  conflicting native load/queue/history controls. Missing stock IDs fail soft.
-- `gui_passenger_hud.lua` and `gui_economy_hud.lua` are compatibility fallbacks
-  used only before initialization or when the standard toolbar cannot be found.
+  normal account/earnings/passenger totals and mutates only existing native
+  leaves: conflicting load/queue/history controls are hidden, relabelled, or
+  given an authoritative tooltip. It never inserts a mod-created child into a
+  stock layout; Build 35924's hidden-manager `CSelector` rejects public
+  `api.gui` layout children during a later checked downcast. Missing stock IDs
+  fail soft, and full synchronized details remain in the Multiplayer window.
 - `gui_entry_points.lua` idempotently mounts the overlay reopen controls into
   the stock `gameInfo.layout` and the parent of the pause menu's quit button.
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer

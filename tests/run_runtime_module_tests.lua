@@ -9,6 +9,8 @@ local guiView = require "tpf2_mp/gui_view"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
+local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
+local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
@@ -28,6 +30,54 @@ local economyPublicViewModule = require "tpf2_mp/economy_public_view"
 local financeModule = require "tpf2_mp/finance"
 local bridgeModule = require "tpf2_mp/bridge"
 local util = require "tpf2_mp/util"
+
+do
+  local gui = { frames = 0, status = {} }
+  local current, engineThread = nil, false
+  local migrated, reset, projected, rendered = 0, 0, 0, 0
+  local function saved(errorValue)
+    return {
+      version = 26, initialized = true, networkMode = "network",
+      bridge = { sessionId = "load-test" }, lastError = errorValue,
+    }
+  end
+  local runtime = guiLoadRuntimeModule.new({
+    gui = gui, stateVersion = 26,
+    migrate = function(value) migrated = migrated + 1; value.version = 26; return value end,
+    getState = function() return current end,
+    setState = function(value) current = value end,
+    isEngineThread = function() return engineThread end,
+    resetTransientRuntime = function() reset = reset + 1 end,
+    config = function() return { networkAutoValidate = false } end,
+    activeCompany = function() return "company:1", {} end,
+    publicSnapshot = function()
+      projected = projected + 1
+      return {
+        initialized = current.initialized == true,
+        activeCompanyCid = "company:1", networkMode = current.networkMode,
+        sessionId = current.bridge.sessionId, lastError = current.lastError,
+      }
+    end,
+    renderGui = function() rendered = rendered + 1 end,
+  })
+  local first = saved(nil)
+  runtime.load(first)
+  assert(current == first and migrated == 0 and projected == 1 and rendered == 1,
+    "current GUI state was remigrated or its first snapshot was not projected")
+  gui.frames = 29
+  runtime.load(first)
+  assert(projected == 1, "GUI snapshot cadence projected before thirty frames")
+  gui.frames = 30
+  runtime.load(first)
+  assert(projected == 2, "GUI snapshot cadence did not refresh at thirty frames")
+  local errored = saved("new error")
+  runtime.load(errored)
+  assert(projected == 3, "priority GUI state change waited for the ordinary cadence")
+  engineThread = true
+  runtime.load(saved(nil))
+  assert(migrated == 1 and reset == 1,
+    "engine load bypassed migration or transient-runtime reset")
+end
 
 do
   local previousApi = rawget(_G, "api")
@@ -335,6 +385,7 @@ do
     },
   }
   local function proposalRuntime()
+    local engineSteps = current.engineSteps
     return proposalRuntimeModule.new({
       getState = function() return current end,
       requireRunningMatch = function() return true end,
@@ -345,7 +396,10 @@ do
       inspectCreatedNodes = function() return {} end,
       inspectCreatedEdges = function() return {} end,
       nodePosition = function() return nil end,
-      applyCommitted = function() return true end,
+      applyCommitted = function()
+        if engineSteps then engineSteps.count = engineSteps.count + 1 end
+        return true
+      end,
     })
   end
   local first, second = proposalRuntime(), proposalRuntime()
@@ -360,6 +414,49 @@ do
   }
   assert(first.preparation.owner("edge:replacement", 20) == "company:2",
     "proposal runtime retained a stale script.load state table")
+
+  local removalOk, removalError = proposalRuntimeModule.verifyTopologyCollateralRemoved({
+    { kind = "construction", cid = "construction:pre:house", localId = 90 },
+    { kind = "edge", cid = "edge:old", localId = 91 },
+  }, {
+    entityExists = function(localId) return localId == 91 end,
+    kindOf = function() return "edge" end,
+  })
+  assert(removalOk and removalError == nil,
+    "topology collateral verifier rejected a removed construction or reused edge id")
+  local retained, retainedError = proposalRuntimeModule.verifyTopologyCollateralRemoved({
+    { kind = "construction", cid = "construction:pre:house", localId = 90 },
+  }, {
+    entityExists = function() return true end,
+    kindOf = function() return "construction" end,
+  })
+  assert(retained == false and retainedError:find("remained after topology replay", 1, true),
+    "topology collateral verifier accepted a construction left in the world")
+
+  local steps = { count = 0 }
+  current = {
+    engineSteps = steps,
+    bridge = { peerId = "player1" },
+    canonical = { byCanonical = {} },
+    world = {
+      logicalOwners = {}, pinnedCustody = {},
+      proposals = { byId = {
+        compound = {
+          status = "queued",
+          transaction = {
+            schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+            nodes = {}, edges = { {} },
+            edgeObjects = { add = {}, retain = {}, remove = {} },
+            remove = { edges = {}, nodes = {} },
+            constructions = { { mode = "remove" } },
+          },
+        },
+      } },
+    },
+  }
+  proposalRuntime().processConstructions()
+  assert(steps.count == 0,
+    "compound topology demolition was incorrectly routed to the construction helper")
 end
 
 do

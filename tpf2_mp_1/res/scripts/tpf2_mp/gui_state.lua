@@ -3,8 +3,6 @@ local M = {}
 function M.new()
   return {
   window = nil,
-  passengerHud = nil,
-  economyHud = nil,
   stockPresentation = nil,
   status = nil,
   details = nil,
@@ -16,6 +14,8 @@ function M.new()
   selectedEntityId = nil,
   selectedEntityKind = nil,
   snapshot = nil,
+  lastSnapshotProjectionFrame = -1000,
+  snapshotProjections = 0,
   frames = 0,
   nextCaptureId = 1,
   pendingVehicleCaptures = {},

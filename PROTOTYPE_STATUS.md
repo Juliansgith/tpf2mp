@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-07 for prototype `0.28.0-alpha`, state schema `26`,
+Last updated: 2026-08-08 for prototype `0.29.0-alpha`, state schema `26`,
 checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema
 `5`, construction proposal schema `7`, and native hook `0.13.0`.
 
@@ -36,6 +36,17 @@ TPF2MP contains two usable but differently mature modes:
 
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
+
+Prototype 0.29 additionally serializes a topology edit and every obstructing
+construction removal into one atomic native BuildProposal. Offline integration
+proves the compound path remains separate from ordinary station bulldozing; a
+fresh through-house/tunnel live pass is pending. A live depot-open hang was
+traced to mod-created children retained in hidden stock windows plus renderer
+reentrancy. Stock UI now mutates existing native leaves only, uses deferred
+bounded discovery, current-schema GUI-state acceptance, and 30-frame snapshot
+projection. The exact populated crash save then survived five native depot/
+Vehicle Manager open-close cycles; the two views showed roughly 135-163 and
+159 FPS during the captured idle checks, and the full companion audit passed.
 
 ## Strongest current evidence
 

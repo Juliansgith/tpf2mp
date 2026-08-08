@@ -81,10 +81,11 @@ demand, capacity relief, and manually chosen fare headroom.
 
 The stock buy/detail UI remains the source presentation for native purchase and
 annual maintenance. TPF2MP consumes the resulting component rather than
-overwriting resource prices. Prototype `0.26` projects the competitive layer
-into the normal account, earnings, vehicle, line, station, manager, finance,
-and statistics surfaces. The legacy selection-aware `TPF2MP ECO` row is now a
-fallback only:
+overwriting resource prices. Prototype `0.29` projects account, earnings, and
+passenger totals into existing stock leaves and keeps the full competitive
+detail in the isolated Multiplayer window. The former `TPF2MP ECO` fallback row
+was removed after Build 35924 proved public children unsafe in stock layouts.
+The synchronized detail contract remains:
 
 - selected vehicle: exact purchase price, annual upkeep, hourly upkeep, and
   assigned-line gross/net;
