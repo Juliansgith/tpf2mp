@@ -49,6 +49,40 @@ function Read-JsonFile([string]$Path) {
     catch { return $null }
 }
 
+function Copy-DiagnosticFile([string]$Source, [string]$Destination, [long]$MaximumBytes = 8388608) {
+    if (-not $Source -or -not (Test-Path -LiteralPath $Source -PathType Leaf)) { return $null }
+    $resolvedSource = Resolve-Tpf2mpFullPath $Source
+    $resolvedDestination = Resolve-Tpf2mpFullPath $Destination
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resolvedDestination) | Out-Null
+    $input = [IO.File]::Open($resolvedSource, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+    try {
+        $originalBytes = $input.Length
+        $start = [Math]::Max(0L, $originalBytes - $MaximumBytes)
+        if ($start -gt 0) { [void]$input.Seek($start, [IO.SeekOrigin]::Begin) }
+        $output = [IO.File]::Open($resolvedDestination, [IO.FileMode]::Create,
+            [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        try {
+            $buffer = New-Object byte[] 65536
+            do {
+                $read = $input.Read($buffer, 0, $buffer.Length)
+                if ($read -gt 0) { $output.Write($buffer, 0, $read) }
+            } while ($read -gt 0)
+        }
+        finally { $output.Dispose() }
+    }
+    finally { $input.Dispose() }
+    $copy = Get-Item -LiteralPath $resolvedDestination
+    return [ordered]@{
+        source = $resolvedSource
+        copy = $resolvedDestination
+        originalBytes = $originalBytes
+        capturedBytes = $copy.Length
+        tailTruncated = $start -gt 0
+        sha256 = (Get-FileHash -LiteralPath $resolvedDestination -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+}
+
 $game = Find-Tpf2mpGameExecutable $GameExecutable
 $mods = Find-Tpf2mpLocalModsPath $LocalModsPath
 $localData = Split-Path -Parent $mods
@@ -82,6 +116,33 @@ foreach ($peerId in $peers) {
     }
     $sessionState = Read-Tpf2mpSessionState $safeSession $peerId
     $companionStatus = Read-JsonFile (Join-Path $bridge 'companion_state\companion_status.json')
+    $sessionArtifacts = @()
+    $sessionRoot = Get-Tpf2mpSessionRoot $safeSession $peerId
+    $artifactRoot = Join-Path $evidenceRoot "session\$peerId"
+    $fixedArtifacts = [ordered]@{
+        'session-state.json' = Join-Path $sessionRoot 'session-state.json'
+        'recovery-watcher-status.json' = Join-Path $sessionRoot 'recovery-watcher-status.json'
+    }
+    foreach ($entry in $fixedArtifacts.GetEnumerator()) {
+        $artifact = Copy-DiagnosticFile $entry.Value (Join-Path $artifactRoot $entry.Key)
+        if ($artifact) { $sessionArtifacts += $artifact }
+    }
+    if ($sessionState) {
+        foreach ($field in @(
+            'stdout', 'stderr', 'gameStdout', 'gameStderr',
+            'menuCoordinatorStdout', 'menuCoordinatorStderr',
+            'recoveryWatcherStdout', 'recoveryWatcherStderr'
+        )) {
+            $property = $sessionState.PSObject.Properties[$field]
+            if ($property -and $property.Value) {
+                $extension = [IO.Path]::GetExtension([string]$property.Value)
+                if (-not $extension) { $extension = '.log' }
+                $artifact = Copy-DiagnosticFile ([string]$property.Value) `
+                    (Join-Path $artifactRoot ($field + $extension))
+                if ($artifact) { $sessionArtifacts += $artifact }
+            }
+        }
+    }
     $latest = [ordered]@{}
     foreach ($kind in @('research', 'snapshot', 'checkpoint', 'completion', 'validation')) {
         $candidate = @($messages | Where-Object { $_.Message.kind -eq $kind } | Select-Object -Last 1)
@@ -106,6 +167,7 @@ foreach ($peerId in $peers) {
         bridgeFound = $bridgeExists
         copiedBridge = if ($bridgeExists) { $copyRoot } else { $null }
         sessionState = $sessionState
+        sessionArtifacts = $sessionArtifacts
         companionStatus = $companionStatus
         messageCount = $messages.Count
         kinds = $kindCounts
@@ -173,7 +235,14 @@ foreach ($processId in $candidatePids) {
 
 $auditReplay = [ordered]@{ attempted = $false; valid = $null; log = $null; error = $null }
 $hostBridge = Resolve-Bridge 'player1'
-$auditPath = Join-Path $hostBridge "audit\$safeSession.ndjson"
+$capturedHostBridge = if ($peerEvidence.Contains('player1')) {
+    $peerEvidence['player1'].copiedBridge
+} else { $null }
+$auditPath = if ($capturedHostBridge) {
+    Join-Path $capturedHostBridge "audit\$safeSession.ndjson"
+} else {
+    Join-Path $hostBridge "audit\$safeSession.ndjson"
+}
 if (Test-Path -LiteralPath $auditPath -PathType Leaf) {
     $auditReplay.attempted = $true
     $auditReplay.log = Join-Path $evidenceRoot 'audit-replay.txt'
@@ -193,7 +262,7 @@ if (Test-Path -LiteralPath $auditPath -PathType Leaf) {
 $sourceFingerprint = Get-TreeFingerprint $sourceMod
 $installedFingerprint = Get-TreeFingerprint $installedMod
 $summary = [ordered]@{
-    schemaVersion = 2
+    schemaVersion = 3
     capturedAt = (Get-Date).ToString('o')
     session = $safeSession
     requestedPeer = $Peer

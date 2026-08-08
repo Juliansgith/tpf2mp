@@ -117,6 +117,10 @@ try {
     }
     Write-Host "PowerShell syntax: $($powerShellFiles.Count) files passed"
 
+    & (Join-Path $projectRoot 'tests\run_fault_evidence_watcher_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Automatic first-fault evidence watcher test failed' }
+
     . (Join-Path $projectRoot 'tools\network_common.ps1')
     $identityCases = @(
         @('tpf2mp.exe host --session match-1 --peer player1 --port 29742', 'match-1', 'player1', $true),
@@ -301,8 +305,8 @@ return { ["tpf2_mp.lua"] = { companies = {
         $traceReport = Join-Path $temporary 'long-replay-trace.md'
         & $python -m tpf2mp checkpoint-report --peer player1 --session replay-trace --bridge $traceBridge --anchor first --output $traceReport
         if ($LASTEXITCODE -ne 0) { throw "Long cross-language replay failed with exit code $LASTEXITCODE" }
-        if (-not (Select-String -LiteralPath $traceReport -SimpleMatch 'Event records verified after anchor: `104`' -Quiet)) {
-            throw 'Long cross-language replay report did not verify all 104 post-checkpoint events'
+        if (-not (Select-String -LiteralPath $traceReport -SimpleMatch 'Event records verified after anchor: `1024`' -Quiet)) {
+            throw 'Long cross-language replay report did not verify all 1024 post-checkpoint events'
         }
     }
     finally {

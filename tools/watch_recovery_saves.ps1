@@ -8,6 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string]$GameExecutable,
     [Parameter(Mandatory = $true)][string]$GameStartedAtUtc,
     [string]$BundleRoot,
+    [string]$EvidenceCollectorPath,
     [ValidateRange(1, 60)][int]$PollSeconds = 2,
     [ValidateRange(2, 120)][int]$StableSeconds = 6,
     [ValidateRange(1, 48)][int]$LifetimeHours = 12,
@@ -20,6 +21,14 @@ Set-StrictMode -Version Latest
 
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
+$evidenceCollector = Resolve-Tpf2mpFullPath $(if ($EvidenceCollectorPath) {
+    $EvidenceCollectorPath
+} else {
+    Join-Path $PSScriptRoot 'collect_live_evidence.ps1'
+})
+if (-not (Test-Path -LiteralPath $evidenceCollector -PathType Leaf)) {
+    throw "First-fault evidence collector is missing: $evidenceCollector"
+}
 $safeSession = Assert-Tpf2mpSessionId $Session
 $bridge = Resolve-Tpf2mpFullPath $BridgePath
 $saveRoot = Find-Tpf2mpSaveDirectory -SaveDirectory $SaveDirectory
@@ -38,7 +47,7 @@ $expectedSavePrefix = "tpf2mp_${safeSession}_${Peer}"
 New-Item -ItemType Directory -Force -Path $recoveryRoot, $requestRoot, $resultRoot | Out-Null
 
 $watch = [ordered]@{
-    schemaVersion = 2
+    schemaVersion = 3
     session = $safeSession
     peer = $Peer
     status = 'starting'
@@ -57,6 +66,12 @@ $watch = [ordered]@{
     latestArchivePointer = $null
     latestRecoveryPlan = $null
     archiveCount = 0
+    firstFault = $null
+    firstFaultObservedAtUtc = $null
+    firstFaultEvidenceAttempted = $false
+    firstFaultEvidenceDirectory = $null
+    firstFaultEvidenceSummary = $null
+    firstFaultEvidenceError = $null
     limitation = 'A restore point is valid only after both independently saved peers file ordered receipts for the same READY boundary.'
     error = $null
     startedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -91,6 +106,38 @@ function Get-CompanionStatus {
     catch { return $null }
     if ($status.session -ne $safeSession -or $status.peer -ne $Peer) { return $null }
     return $status
+}
+
+function Capture-FirstFaultEvidence([object]$CompanionStatus) {
+    if (-not $CompanionStatus -or $watch.firstFaultEvidenceAttempted) { return }
+    $faultProperty = $CompanionStatus.PSObject.Properties['sessionFault']
+    if (-not $faultProperty) { return }
+    $fault = [string]$faultProperty.Value
+    if ([string]::IsNullOrWhiteSpace($fault)) { return }
+
+    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
+    $output = Join-Path $sessionRoot "fault-evidence\$stamp"
+    $watch.firstFault = $fault.Substring(0, [Math]::Min($fault.Length, 512))
+    $watch.firstFaultObservedAtUtc = [DateTime]::UtcNow.ToString('o')
+    $watch.firstFaultEvidenceAttempted = $true
+    $watch.firstFaultEvidenceDirectory = $output
+    $watch.firstFaultEvidenceError = $null
+    Write-RecoveryWatcherStatus ([string]$watch.status)
+
+    try {
+        & $evidenceCollector -Session $safeSession -Peer $Peer -BridgePath $bridge `
+            -OutputDirectory $output -BundleRoot $bundle -GameExecutable $expectedGame
+        if (-not $?) { throw 'First-fault evidence collector returned failure.' }
+        $summary = Join-Path $output 'evidence.json'
+        if (-not (Test-Path -LiteralPath $summary -PathType Leaf)) {
+            throw 'First-fault evidence collector did not write evidence.json.'
+        }
+        $watch.firstFaultEvidenceSummary = $summary
+    }
+    catch {
+        $watch.firstFaultEvidenceError = $_.Exception.Message
+    }
+    Write-RecoveryWatcherStatus ([string]$watch.status) $watch.error
 }
 
 function Test-ContainsInteger([object]$Values, [int]$Expected) {
@@ -183,11 +230,12 @@ $requestBoundary = 0
 try {
     Write-RecoveryWatcherStatus 'waiting-for-ready-boundary'
     while ((Get-Date) -lt $deadline) {
+        $status = Get-CompanionStatus
+        Capture-FirstFaultEvidence $status
         if (-not (Get-ExactRecoveryGame)) {
             Write-RecoveryWatcherStatus 'stopped-game-exited'
             break
         }
-        $status = Get-CompanionStatus
         $readyBoundary = 0
         if ($status -and $status.anchorReady -eq $true) {
             [void][int]::TryParse([string]$status.anchorBoundarySeq, [ref]$readyBoundary)

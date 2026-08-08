@@ -403,12 +403,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v6 behavior remains available for
-  archived replay. The offline gate now includes 88 Lua tests and 75
+  archived replay. The offline gate now includes 91 Lua tests and 75
   cross-language v2-v7 scenarios, including completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
   scheduled-boundary rejection, four difficulty presets, canonical town
-  growth, and a 104-event replay. A replaceable 1850-2030 era matrix checks
+  growth, and a deterministic randomized 1,024-event replay. A replaceable
+  1850-2030 era matrix checks
   that newer reference tiers add real capacity/net incentive while difficulty
   never changes demand, capacity, or upkeep. Exact vanilla/mod vehicle facts
   and human balance remain live-test questions.
@@ -442,14 +443,19 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 - Format-4 checkpoints add the exact passenger ledger to the canonical
   train-release projection, core, and convergence key. Formats 1/2/3 remain readable, and digest-chained events
-  can be independently replayed in Python. Four-event and 104-event
-  cross-language traces pass.
+  can be independently replayed in Python. Four-event and deterministic
+  randomized 1,024-event cross-language traces pass.
 - Recovery plans identify and hash the latest all-peer agreed boundary.
 - Host sessions automatically watch for the first later stable native save,
   link it to a verified plan, archive the save triplet, hash every file, and
   expose watcher state in the launcher/session status.
 - The watcher verifies exact PID/path/start time and stops on process exit or PID
   reuse. It passed an end-to-end boundary-8 archive proof.
+- Before that liveness check, every peer now snapshots its first published
+  session fault exactly once. The bounded local bundle includes the copied
+  bridge/audit, session-specific game and companion log tails, native status,
+  and source/install fingerprint; the launcher and status command expose its
+  summary path. This is diagnostic only and never uploads or restores state.
 - Build 35924 has no supported exact-tick game-script save command. The archive
   is explicitly a later native-save candidate associated with a boundary, not a
   proof of exact-tick rollback. Automatic coordinated restore is still open.
@@ -467,13 +473,15 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 90 core Lua tests and 75 cross-language economy scenarios;
-  - game-script, ownership, GUI, hot-seat, network-company, and 104-event replay
+  - 91 core Lua tests and 75 cross-language economy scenarios;
+  - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
   - 75 mod Lua and 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 105 Python protocol/network/checkpoint/recovery/report tests.
+  - 106 Python protocol/network/checkpoint/recovery/report tests;
+  - a functional first-fault watcher/real-bundle fixture, including the
+    already-exited-game ordering case.
 
 ## Not yet established
 

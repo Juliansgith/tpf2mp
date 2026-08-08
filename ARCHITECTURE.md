@@ -179,6 +179,11 @@ captured table reference would therefore mutate stale state after loading.
 - `bridge.py`, `checkpoint.py`, `restore.py`, and `recovery.py` own durable local
   transport, independent replay, all-peer restore plans, and native-save
   archives respectively.
+- The long-running `watch_recovery_saves.ps1` process also owns a strictly local
+  one-shot first-fault trigger. `collect_live_evidence.ps1` owns immutable bridge
+  copying, copied-audit replay, bounded session-log tails, native status, and
+  source/install fingerprints; neither tool mutates authority or performs a
+  restore.
 
 ## Native modules
 
@@ -266,8 +271,9 @@ Vehicle work should follow this path:
 
 `tools/run_tests.ps1` is the offline behavioral contract. It covers pure Lua,
 runtime-module boundaries, engine persistence, company mapping, hot-seat,
-GUI/native capture, long replay, PowerShell syntax, launcher smoke tests, Python
-protocol/network tests, and cross-language checkpoint replay.
+GUI/native capture, 1,024-event randomized long replay, first-fault bundle
+fixtures, PowerShell syntax, launcher smoke tests, Python protocol/network
+tests, and cross-language checkpoint replay.
 
 Native changes additionally require `tools/build_native_hook.ps1`. Release-tree
 or installer changes require `tools/package_release.ps1`, which performs an

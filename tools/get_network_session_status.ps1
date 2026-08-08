@@ -83,9 +83,17 @@ else {
         bridgePath = $state.bridgePath
         pinnedStartingSave = if ($state.PSObject.Properties['pinnedStartingSave']) { $state.pinnedStartingSave } else { $null }
         recoveryWatcherStatus = if ($recoveryWatcher) { $recoveryWatcher.status } else { $null }
-        recoveryWatcherBoundary = if ($recoveryWatcher) { $recoveryWatcher.lastAgreedBoundary } else { $null }
+        recoveryWatcherBoundary = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['lastArchivedBoundary']) {
+            $recoveryWatcher.lastArchivedBoundary
+        } else { $null }
         recoveryArchiveCount = if ($recoveryWatcher) { $recoveryWatcher.archiveCount } else { 0 }
         recoveryWatcherError = if ($recoveryWatcher) { $recoveryWatcher.error } else { $null }
+        firstFaultEvidence = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['firstFaultEvidenceSummary']) {
+            $recoveryWatcher.firstFaultEvidenceSummary
+        } else { $null }
+        firstFaultEvidenceError = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['firstFaultEvidenceError']) {
+            $recoveryWatcher.firstFaultEvidenceError
+        } else { $null }
         latestRecoveryArchive = if ($recoveryPointer) { $recoveryPointer.archiveDirectory } else { $null }
         stdout = $state.stdout
         stderr = $state.stderr

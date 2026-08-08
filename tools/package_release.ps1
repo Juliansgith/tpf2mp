@@ -199,6 +199,9 @@ unfinished boundaries before testing.
 Host sessions automatically watch for a later stable native save after an
 all-peer checkpoint and archive it against a verified recovery plan. This is a
 checkpoint-linked candidate, not an exact-tick snapshot or automatic rollback.
+Every peer also captures one bounded local evidence bundle when the companion
+first faults. The launcher and get-network-session-status command expose its
+path; inspect logs for local paths or gameplay details before sharing them.
 '@
 $quickStart | Set-Content -LiteralPath (Join-Path $releaseRoot 'QUICK_START.md') -Encoding UTF8
 

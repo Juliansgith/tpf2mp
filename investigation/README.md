@@ -7,6 +7,11 @@ records the exact Build 35924 layouts for tags 7-14/30, the pointer-free V2
 envelope, stock config correlation, fail-closed bounds, automated proof, and
 the remaining live/destructive acceptance boundary.
 
+[Automatic first-fault evidence and randomized replay stress](AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md)
+records the recovery-watcher fault trigger, crash-safe local bundle contents,
+bounded log policy, copied-audit replay, functional fixtures, and the 1,024-event
+cross-language trace.
+
 [Collision-safe topology node identity](COLLISION_SAFE_TOPOLOGY_NODE_IDENTITY_2026-08-08.md)
 records the live road-crossing ambiguity, incident-edge-anchored canonical node
 identity, unchanged wire schema, adversarial divergent-ID proof, and remaining
@@ -366,6 +371,7 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md](AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md) - one-shot per-peer fault snapshots, bounded session logs, copied-audit verification, and 1,024-event deterministic randomized replay stress.
 - [SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md](SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md) - immutable new-world revenue modes, exact residuals, canonical model towns/demand growth, legacy migration, and era audit.
 - [VEHICLE_COST_COMPATIBILITY_AND_ECONOMY_HUD_2026-08-07.md](VEHICLE_COST_COMPATIBILITY_AND_ECONOMY_HUD_2026-08-07.md) - resolved native annual vehicle costs across vanilla/mod resources, generic `vehicle/*.mdl` protocol scope, corrected speed/frequency/capacity incentive, `$50m` default capital, authoritative HUD fields, and the live acceptance boundary.
 - [FIVE_MINUTE_DELIVERED_ECONOMY_2026-08-07.md](FIVE_MINUTE_DELIVERED_ECONOMY_2026-08-07.md) - current automatic five-minute completed-trip economy, playable calibration, migration, and replay contract.

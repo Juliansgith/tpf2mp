@@ -92,20 +92,34 @@ assert(loadfile(project .. "/tpf2_mp_1/res/config/game_script/tpf2_mp.lua"))()
 local script = assert(data())
 script.init()
 script.handleEvent("trace", "tpf2mp", "intent", { type = "match.initialise" })
-script.handleEvent("trace", "tpf2mp", "intent", { type = "economy.seed_demo" })
-
-for epoch = 1, 96 do
-  if epoch > 1 and (epoch - 1) % 12 == 0 then
+local eventTarget, settlementCount = 1024, 0
+local seed, frozen = 20260808, false
+local function nextValue(limit)
+  seed = (seed * 48271) % 2147483647
+  return seed % limit
+end
+for eventIndex = 1, eventTarget do
+  local roll = nextValue(1000)
+  if eventIndex == 1 or roll < 55 then
     script.handleEvent("trace", "tpf2mp", "intent", { type = "economy.seed_demo" })
+  elseif roll < 105 then
+    frozen = not frozen
+    script.handleEvent("trace", "tpf2mp", "intent", { type = "world.freeze", freeze = frozen })
+  else
+    settlementCount = settlementCount + 1
+    script.handleEvent("trace", "tpf2mp", "intent", { type = "economy.settle" })
   end
-  script.handleEvent("trace", "tpf2mp", "intent", { type = "economy.settle" })
 end
 
 local saved = script.save()
-assert(saved.economy.epoch == 96, "long replay trace stopped at epoch "
+assert(settlementCount > 850, "long replay trace generated too few settlements")
+assert(saved.economy.epoch == settlementCount, "long replay trace stopped at epoch "
   .. tostring(saved.economy.epoch) .. ": " .. tostring(saved.lastError))
-assert(saved.economy.ledger.settlementCount == 96, "long replay trace lost a settlement")
+assert(saved.economy.ledger.settlementCount == settlementCount,
+  "long replay trace lost a settlement")
 assert(saved.match.status == "running", "disabled match limits unexpectedly finished the trace")
-assert(saved.eventLog.nextSeq == 106, "long replay trace recorded the wrong event count")
+assert(saved.eventLog.nextSeq == eventTarget + 2,
+  "long replay trace recorded the wrong event count")
 assert(saved.checkpoint.exports == 1, "long replay trace lost its automatic baseline checkpoint")
-print("PASS 104-event post-checkpoint deterministic replay trace generated")
+print("PASS " .. eventTarget
+  .. "-event deterministic randomized post-checkpoint replay trace generated")

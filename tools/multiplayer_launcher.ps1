@@ -507,9 +507,19 @@ $timer.Add_Tick({
                     -and (Test-Path -LiteralPath ([string]$state.recoveryWatcherStatusPath) -PathType Leaf)) {
                     try {
                         $recovery = Get-Content -LiteralPath ([string]$state.recoveryWatcherStatusPath) -Raw | ConvertFrom-Json
-                        $boundary = if ($recovery.lastAgreedBoundary) { " checkpoint $($recovery.lastAgreedBoundary)" } else { '' }
-                        $recoveryHint.Text = "Automatic recovery: $($recovery.status)$boundary. A stable save after consensus is archived and verified."
-                        $recoveryHint.ForeColor = if ($recovery.status -eq 'failed') { $danger } else { $muted }
+                        $boundary = if ($recovery.PSObject.Properties['lastArchivedBoundary'] `
+                            -and $recovery.lastArchivedBoundary) {
+                            " checkpoint $($recovery.lastArchivedBoundary)"
+                        } else { '' }
+                        $faultEvidence = if ($recovery.PSObject.Properties['firstFaultEvidenceSummary'] `
+                            -and $recovery.firstFaultEvidenceSummary) {
+                            " First-fault evidence: $($recovery.firstFaultEvidenceSummary)"
+                        } elseif ($recovery.PSObject.Properties['firstFaultEvidenceError'] `
+                            -and $recovery.firstFaultEvidenceError) {
+                            " First-fault capture failed: $($recovery.firstFaultEvidenceError)"
+                        } else { '' }
+                        $recoveryHint.Text = "Automatic recovery: $($recovery.status)$boundary. A stable save after consensus is archived and verified.$faultEvidence"
+                        $recoveryHint.ForeColor = if ($recovery.status -eq 'failed' -or $faultEvidence) { $danger } else { $muted }
                     }
                     catch { }
                 }
