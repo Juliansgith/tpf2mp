@@ -366,7 +366,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   create passenger markets; already registered stale services are revalidated
   and retired by an ordered portable disable, which also removes their model
   queues and loads. Freight infrastructure still replicates physically, but
-  real industry recipes/stocks/deliveries are not yet authoritative.
+  real industry recipes/stocks/deliveries are not yet authoritative. A
+  disposable exact-build run invoked the production classifier on live
+  repository userdata and measured the stock NOHAB/BC4/open-wagon cases as
+  empty, passenger-only, cargo-only, and mixed exactly as intended.
 - Hard, Normal, Easy, and Relaxed are world-creation choices that scale gross
   revenue to 60%, 100%, 150%, or 200%. The selected key and exact integer
   multiplier are ordered match rules and saved economy state; they are

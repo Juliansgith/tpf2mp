@@ -106,5 +106,20 @@ recovery after a later supported edit. The complete gate passes with 94/94 core
 Lua tests, 75 cross-language economy scenarios, runtime/game/network/GUI
 integrations, 108 Python tests, and the 1,024-event independent replay.
 
-Fresh exact-build passenger and cargo-line UI acceptance remains a human/live
-gate because the game is not being left running unattended.
+The `20260809-015411` disposable Build 35924 capability run copied and invoked
+the exact production `vehicle_resource_facts.lua` module against live
+`modelRep` userdata. It measured:
+
+| Consist | Kind | Passenger | Cargo | Unknown |
+|---|---:|---:|---:|---:|
+| NOHAB | empty | 0 | 0 | 0 |
+| NOHAB + 2 BC4 | passenger | 40 | 0 | 0 |
+| NOHAB + open 1910 | cargo | 0 | 8 | 0 |
+| NOHAB + BC4 + open 1910 | mixed | 20 | 8 | 0 |
+
+The probe runner now treats any regression in those exact classifications as
+a failed capability gate. Native hook call-through also passed in the same
+run: 37 Lua states, one wrapped command, 4,766 queued commands, and 4,766
+applies with no unknown layouts/tags. Fresh passenger- and cargo-line UI
+acceptance remains a human two-process gate; this result proves repository
+classification, not the complete line/station lookup path.

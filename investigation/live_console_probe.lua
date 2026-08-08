@@ -7,6 +7,13 @@ for _, moduleName in ipairs({ "tpf2_mp_probe/json", "tpf2_mp/json" }) do
 end
 if not json then error("TPF2MP disposable probe JSON module is unavailable") end
 
+local vehicleResourceFacts
+local vehicleResourceFactsError
+do
+  local ok, value = pcall(require, "tpf2_mp_probe/vehicle_resource_facts")
+  if ok then vehicleResourceFacts = value else vehicleResourceFactsError = tostring(value) end
+end
+
 local M = {}
 local sendAction
 
@@ -86,6 +93,29 @@ local function probeVehicleModel(name)
     end
   end
   return result
+end
+
+-- Exercise the exact production classifier against live repository userdata.
+-- The surrounding capability probe copies this module without modification;
+-- keeping the result compact makes it safe to persist in stdout/run-status.
+local function probeProductionConsist(modelNames)
+  if not (vehicleResourceFacts and type(vehicleResourceFacts.consist) == "function") then
+    return { success = false, error = vehicleResourceFactsError or "classifier unavailable" }
+  end
+  local ok, facts = pcall(vehicleResourceFacts.consist, modelNames)
+  if not ok then return { success = false, error = tostring(facts) } end
+  if type(facts) ~= "table" then
+    return { success = false, error = "classifier returned no facts" }
+  end
+  return {
+    success = true,
+    kind = facts.kind,
+    seats = tonumber(facts.seats),
+    passengerCapacity = tonumber(facts.passengerCapacity),
+    cargoCapacity = tonumber(facts.cargoCapacity),
+    unknownCapacity = tonumber(facts.unknownCapacity),
+    limitSpeedMs = tonumber(facts.limitSpeedMs),
+  }
 end
 
 local function probeVehicleTypeDefaults()
@@ -361,6 +391,23 @@ function M.capabilities()
       nohab = probeVehicleModel("vehicle/train/nohab_m1_v2.mdl"),
       bc4 = probeVehicleModel("vehicle/waggon/bc4_v2.mdl"),
       open1910 = probeVehicleModel("vehicle/waggon/open_1910.mdl"),
+    },
+    productionTransportFacts = {
+      locomotive = probeProductionConsist({ "vehicle/train/nohab_m1_v2.mdl" }),
+      passenger = probeProductionConsist({
+        "vehicle/train/nohab_m1_v2.mdl",
+        "vehicle/waggon/bc4_v2.mdl",
+        "vehicle/waggon/bc4_v2.mdl",
+      }),
+      freight = probeProductionConsist({
+        "vehicle/train/nohab_m1_v2.mdl",
+        "vehicle/waggon/open_1910.mdl",
+      }),
+      mixed = probeProductionConsist({
+        "vehicle/train/nohab_m1_v2.mdl",
+        "vehicle/waggon/bc4_v2.mdl",
+        "vehicle/waggon/open_1910.mdl",
+      }),
     },
   })
 end

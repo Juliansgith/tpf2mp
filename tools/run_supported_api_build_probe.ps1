@@ -204,6 +204,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\canonical.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua') -Destination $libraryTarget
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'investigation\live_console_probe.lua') -Destination $libraryTarget
     Write-Host "Minimal probe resources injected; evidence directory: $runDirectory"
 
@@ -375,6 +376,29 @@ try {
         throw "Timed out after $ProbeTimeoutSeconds seconds waiting for probe completion"
     }
     $probePassed = if ($CapabilityOnly) { [bool]$capabilitiesLine } else { $probeLine -match '"success":true' }
+    if ($CapabilityOnly -and $probePassed) {
+        $capabilityPayload = ConvertFrom-ProbeMarker -Line $capabilitiesLine
+        $facts = $capabilityPayload.productionTransportFacts
+        $probePassed = $facts `
+            -and $facts.passenger.success -eq $true `
+            -and $facts.passenger.kind -eq 'passenger' `
+            -and [double]$facts.passenger.passengerCapacity -gt 0 `
+            -and [double]$facts.passenger.cargoCapacity -eq 0 `
+            -and [double]$facts.passenger.unknownCapacity -eq 0 `
+            -and $facts.freight.success -eq $true `
+            -and $facts.freight.kind -eq 'cargo' `
+            -and [double]$facts.freight.passengerCapacity -eq 0 `
+            -and [double]$facts.freight.cargoCapacity -gt 0 `
+            -and [double]$facts.freight.unknownCapacity -eq 0 `
+            -and $facts.mixed.success -eq $true `
+            -and $facts.mixed.kind -eq 'mixed' `
+            -and [double]$facts.mixed.passengerCapacity -gt 0 `
+            -and [double]$facts.mixed.cargoCapacity -gt 0 `
+            -and [double]$facts.mixed.unknownCapacity -eq 0
+        if (-not $probePassed) {
+            throw 'The production passenger/cargo classifier did not match live repository userdata.'
+        }
+    }
     Write-Host $capabilitiesLine
     if ($probeLine) { Write-Host $probeLine }
     if ($NativeHook) {
