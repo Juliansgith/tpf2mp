@@ -88,7 +88,7 @@ function M.new(deps)
       err = "network action normalisation failed: " .. tostring(networkAction)
       networkAction = nil
     end
-    if not networkAction then state.lastError = tostring(err); publishSnapshot(); return false, err end
+    if not networkAction then state.lastError = tostring(err); publishSnapshot(); return false, err, "normalise" end
     local emitCalled, ok, messageOrError = pcall(
       bridge.emit, state.bridge, "intent", { action = networkAction }, state.tick)
     if not emitCalled then
@@ -112,7 +112,7 @@ function M.new(deps)
       state.lastError = tostring(messageOrError)
     end
     publishSnapshot()
-    return ok, messageOrError
+    return ok, messageOrError, "emit"
   end
 
   -- An origin-applied operation is a vanilla pass-through command that has
@@ -413,7 +413,7 @@ function M.new(deps)
       return true
     end
     if lane == "physical" then table.remove(deferredNetworkIntents, 1) end
-    local ok, result = emitNetworkIntent(emissionAction)
+    local ok, result, failurePhase = emitNetworkIntent(emissionAction)
     if ok then
       local retained = false
       if lane == "followup" then retained = followups.consume(pending, emissionAction) end
@@ -439,7 +439,7 @@ function M.new(deps)
           originCaptureToken = tostring(pending.action.originCaptureToken),
         })
       end
-      if lane == "followup" then
+      if lane == "followup" and not followups.handleFailure(pending, emissionAction, failurePhase, failureText) then
         -- No native mutation has happened for a follow-up yet, so retain it
         -- across a transient bridge failure instead of losing authored work.
         pending.failures = (pending.failures or 0) + 1

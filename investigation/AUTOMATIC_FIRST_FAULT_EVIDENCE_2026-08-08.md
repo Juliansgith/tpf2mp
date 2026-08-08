@@ -14,10 +14,17 @@ does not alter authority, recovery, or game state.
 The fault check runs before the watcher tests game-process liveness. A fault
 that is immediately followed by a game crash therefore still captures the
 bridge, companion state, native-hook status, and logs that remain on disk. The
-watcher records the original fault, observation time, attempted flag, evidence
-directory, `evidence.json` path, and any collector error in its atomic schema-3
-status. It attempts the first fault exactly once; later errors cannot overwrite
+watcher records the original fault, observation time, attempted flag, attempt
+count/directories, evidence directory, `evidence.json` path, and any collector
+error in its atomic schema-4 status. It retains the first fault exactly once. A
+transient collector failure receives at most three immediate, independent
+output-directory attempts for that same fault; later faults cannot overwrite
 the earliest cause.
+
+The exact executable/PID/start-time guard now has a visible 30-day default
+lifetime (configurable up to one year), recorded with an absolute expiry in the
+status. This is still finite and fail-closed, but it no longer silently drops
+ordinary long-running-match coverage after the former 12-hour default.
 
 ## Bundle contents
 
@@ -45,8 +52,9 @@ verified restore point or a fresh match is still required.
 ## Automated evidence
 
 The PowerShell integration fixture publishes a fault for a deliberately absent
-game PID. It proves the watcher captures first-fault evidence before reporting
-`stopped-game-exited`, passes the exact session/peer/bridge identity, and keeps
+game PID and deliberately fails its first collector invocation. It proves the
+watcher succeeds on attempt two before reporting `stopped-game-exited`, passes
+the exact session/peer/bridge identity, advertises the 30-day guard, and keeps
 the original fault. A second fixture runs the real collector against an
 isolated installed-mod tree and verifies exact session-log bytes, game-log
 capture, and matching source/install fingerprints.

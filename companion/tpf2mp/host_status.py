@@ -27,6 +27,8 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         "requiredPeers": list(host.required_peers),
         "nextCommitSeq": host.next_seq,
         "outboxCursor": host.bridge.outbox_cursor,
+        "outboxPrunedThrough": host.bridge.outbox_pruned_through,
+        "outboxEphemeralRetention": host.bridge.outbox_ephemeral_retention,
         "pendingProposalPrepareSeq": pending_prepare and pending_prepare.get("prepareSeq"),
         "pendingProposalSeq": pending_proposal and pending_proposal.get("commitSeq"),
         "pendingOperationSeq": pending_operation and pending_operation.get("commitSeq"),

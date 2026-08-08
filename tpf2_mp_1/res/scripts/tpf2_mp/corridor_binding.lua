@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
 local revenue = require "tpf2_mp/economy_revenue"
 local townDemand = require "tpf2_mp/economy_town_demand"
+local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
 
 local M = {}
 
@@ -43,59 +44,7 @@ M.SERVICE_FACTS = {
   maxDemand = townDemand.MAX_DEMAND,
 }
 
-local function modelRepository()
-  local repository = api and api.res and api.res.modelRep or nil
-  if repository and repository.get ~= nil and repository.find ~= nil then return repository end
-  return nil
-end
-
-local function compartmentSeats(compartment)
-  local best = 0
-  local configs = compartment and (compartment.loadConfigs or compartment) or {}
-  local iterated = pcall(function()
-    for _, config in pairs(configs) do
-      local total = 0
-      for _, entry in pairs((config and config.cargoEntries) or {}) do
-        total = total + (tonumber(entry and entry.capacity) or 0)
-      end
-      if total > best then best = total end
-    end
-  end)
-  if not iterated then return 0 end
-  return best
-end
-
--- Sums seats and finds the limiting top speed for a consist by model name
--- through repository metadata, when this build exposes modelRep.get. Returns
--- nil when any part cannot be resolved: the caller falls back to estimates
--- and records which path ran, so live sessions can verify the computed path.
-function M.consistTransportFacts(modelNames)
-  local repository = modelRepository()
-  if not repository or type(modelNames) ~= "table" or #modelNames == 0 then return nil end
-  local seats, limitSpeedMs = 0, nil
-  for _, name in ipairs(modelNames) do
-    local found, index = pcall(repository.find, name)
-    if not found or tonumber(index) == nil or tonumber(index) < 0 then return nil end
-    local ok, record = pcall(repository.get, tonumber(index))
-    if not ok or record == nil then return nil end
-    local metadata = record.metadata or record
-    local transport = metadata and metadata.transportVehicle or nil
-    if not transport then return nil end
-    local partSeats = 0
-    local scanned = pcall(function()
-      for _, compartment in pairs(transport.compartmentsList or transport.compartments or {}) do
-        partSeats = partSeats + compartmentSeats(compartment)
-      end
-    end)
-    if not scanned then return nil end
-    seats = seats + partSeats
-    local speed = tonumber(transport.topSpeed)
-    if speed and speed > 0 and (limitSpeedMs == nil or speed < limitSpeedMs) then
-      limitSpeedMs = speed
-    end
-  end
-  return { seats = seats, limitSpeedMs = limitSpeedMs }
-end
+M.consistTransportFacts = vehicleResourceFacts.consist
 
 function M.gravityDemand(capacityA, capacityB, distanceMeters)
   return townDemand.gravityDemand(capacityA, capacityB, distanceMeters)
@@ -272,11 +221,11 @@ function M.new(deps)
   assert(type(deps) == "table", "corridor binding dependencies are required")
   local bindExisting = assert(deps.bindExisting, "bindExisting dependency is required")
   local lineStopGroups = assert(deps.lineStopGroups, "lineStopGroups dependency is required")
+  local lineServiceKind = assert(deps.lineServiceKind, "lineServiceKind dependency is required")
   local stationGroupTown = assert(deps.stationGroupTown, "stationGroupTown dependency is required")
   local townCapacity = assert(deps.townCapacity, "townCapacity dependency is required")
   local townBuildingCount = assert(
     deps.townBuildingCount, "townBuildingCount dependency is required")
-  local lineVehicleCount = assert(deps.lineVehicleCount, "lineVehicleCount dependency is required")
   local lineVehicleIds = assert(deps.lineVehicleIds, "lineVehicleIds dependency is required")
   local nameOf = assert(deps.nameOf, "nameOf dependency is required")
   local safeEntity = assert(deps.safeEntity, "safeEntity dependency is required")
@@ -441,7 +390,6 @@ function M.new(deps)
         and type(line.cid) == "string"
         and type(line.stops) == "table" and #line.stops >= 2
         and (tonumber(line.vehicles) or 0) > 0
-        and state.economy.services[line.cid] == nil
         and resolveLocal(state.canonical, line.cid) ~= nil
       if eligible then
         local called, accepted, result = pcall(deps.submit, {
@@ -570,21 +518,9 @@ function M.new(deps)
     return total > 0 and total or nil
   end
 
-  -- Portable model names of one representative consist on the line, read
-  -- from the first vehicle's TRANSPORT_VEHICLE component. Bounded, fail-soft.
-  local function firstConsistModelNames(lineId)
-    local system = api and api.engine and api.engine.system
-      and api.engine.system.transportVehicleSystem or nil
-    if not (system and system.getLineVehicles) then return nil end
-    local ok, vehicleIds = pcall(system.getLineVehicles, lineId)
-    if not ok or (type(vehicleIds) ~= "table" and type(vehicleIds) ~= "userdata") then return nil end
-    local firstVehicle
-    local iterated = pcall(function()
-      for _, vehicleId in pairs(vehicleIds) do firstVehicle = tonumber(vehicleId); break end
-    end)
-    if not iterated or not firstVehicle then return nil end
+  local function consistModelNames(vehicleId)
     local componentOk, transportVehicle = pcall(api.engine.getComponent,
-      firstVehicle, api.type.ComponentType.TRANSPORT_VEHICLE)
+      vehicleId, api.type.ComponentType.TRANSPORT_VEHICLE)
     if not componentOk or not transportVehicle then return nil end
     local config = transportVehicle.transportVehicleConfig
     local parts = config and config.vehicles or nil
@@ -605,6 +541,24 @@ function M.new(deps)
     end)
     if not walked or #names == 0 then return nil end
     return names
+  end
+
+  -- Classify every assigned consist, not one representative vehicle. This
+  -- prevents a passenger-first mixed fleet from smuggling freight capacity
+  -- into the passenger economy and gives heterogeneous fleets average seats
+  -- plus their conservative slowest speed.
+  local function lineConsistTransportFacts(vehicleIds)
+    local consists = {}
+    local walked = pcall(function()
+      for _, vehicleId in ipairs(vehicleIds) do
+        local names = consistModelNames(vehicleId)
+        local facts = names and vehicleResourceFacts.consist(names) or nil
+        if not facts then error("unreadable consist") end
+        consists[#consists + 1] = facts
+      end
+    end)
+    if not walked then return nil end
+    return vehicleResourceFacts.combine(consists)
   end
 
   local function nativeAnnualMaintenanceCents(vehicleId)
@@ -673,6 +627,30 @@ function M.new(deps)
     if not lineCid then return false, err end
     local groups = lineStopGroups(lineId)
     if #groups < 2 then return false, "line needs at least two station groups" end
+    local stationKind, stationKindDetail = lineServiceKind(lineId)
+    local vehicleIds = lineVehicleIds(lineId)
+    local vehicles = #vehicleIds
+    local consistFacts = lineConsistTransportFacts(vehicleIds)
+    local consistKind = consistFacts and consistFacts.kind or "empty"
+    if stationKind == "cargo" or consistKind == "cargo" then
+      return false, "cargo service requires the industry authority adapter"
+    end
+    if stationKind == "mixed" or consistKind == "mixed" then
+      return false, "mixed passenger/cargo service is not authoritative yet"
+    end
+    if consistKind == "unknown" then
+      return false, "consist cargo type is not safely readable"
+    end
+    if vehicles > 0 and not consistFacts then
+      return false, "assigned consist resources are not safely readable"
+    end
+    if vehicles > 0 and consistKind == "empty" then
+      return false, "assigned consists have no readable transport capacity"
+    end
+    if stationKind ~= "passenger" then
+      return false, "line stop mode is not safely readable ("
+        .. tostring(stationKindDetail or stationKind) .. ")"
+    end
     local townA, townAError = stationGroupTown(groups[1])
     local townB, townBError = stationGroupTown(groups[#groups])
     if not townA or not townB or townA == townB then
@@ -686,9 +664,8 @@ function M.new(deps)
     local first, second = townCidA, townCidB
     if second < first then first, second = second, first end
     local marketCid = "market:" .. hash.value({ first, second })
-    local vehicles = lineVehicleCount(lineId)
     local annualVehicleUpkeepCents, pricedVehicles, vehicleCids = 0, 0, {}
-    for _, vehicleId in ipairs(lineVehicleIds(lineId)) do
+    for _, vehicleId in ipairs(vehicleIds) do
       local vehicleCid = resolveCanonical(registry, "vehicle", vehicleId)
       if vehicleCid then vehicleCids[#vehicleCids + 1] = vehicleCid end
       local vehicleBinding = vehicleCid and registry.byCanonical[vehicleCid] or nil
@@ -722,11 +699,6 @@ function M.new(deps)
       if groupCid then stationGroupCids[#stationGroupCids + 1] = groupCid end
     end
 
-    local consistFacts
-    do
-      local names = firstConsistModelNames(lineId)
-      if names then consistFacts = M.consistTransportFacts(names) end
-    end
     local computed = binding.computedServiceFacts(groups, vehicles, consistFacts)
 
     local capacityA = townMarketSize(townA)

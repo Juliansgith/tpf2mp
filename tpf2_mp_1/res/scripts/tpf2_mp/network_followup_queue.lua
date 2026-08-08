@@ -1,10 +1,12 @@
 local util = require "tpf2_mp/util"
+local serviceRegistrationRuntime = require "tpf2_mp/service_registration_runtime"
 
 local M = {}
 
 function M.new(deps)
   local getState = assert(deps.getState, "getState dependency is required")
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
+  local registrations = serviceRegistrationRuntime.new(getState, diagnosticLog)
   local maximum = math.max(1, tonumber(deps.maximum) or 512)
   local items = {}
 
@@ -131,6 +133,7 @@ function M.new(deps)
 
   local function consume(pending, emittedAction)
     if pending.action.type ~= "town.develop" then
+      if pending.action.type == "line.register" then registrations.submitted(emittedAction) end
       table.remove(items, 1)
       return false
     end
@@ -145,6 +148,16 @@ function M.new(deps)
     return true
   end
 
+  local function handleFailure(pending, emittedAction, phase, message)
+    if not registrations.permanentFailure(emittedAction, phase) then return false end
+    -- Facts derivation cannot change while the same line action sits in the
+    -- queue. Drop and diagnose it; a fresh edit/assignment schedules a fresh
+    -- registration. Bridge failures remain on the ordinary retry path.
+    table.remove(items, 1)
+    registrations.quarantine(emittedAction, message)
+    return true
+  end
+
   return {
     schedule = schedule,
     count = count,
@@ -155,6 +168,7 @@ function M.new(deps)
     dropHead = function() table.remove(items, 1) end,
     emissionAction = emissionAction,
     consume = consume,
+    handleFailure = handleFailure,
   }
 end
 

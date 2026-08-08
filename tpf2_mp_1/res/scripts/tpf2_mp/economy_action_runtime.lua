@@ -1,5 +1,6 @@
 local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
+local serviceQuarantine = require "tpf2_mp/economy_service_quarantine"
 
 local M = {}
 
@@ -9,7 +10,9 @@ function M.lineRegistration(state, world, economy, lineCid, lineId, companyCid)
   local preview = util.deepCopy(state.economy)
   local ok, result = world.makeLineService(
     state.canonical, economy, preview, lineId, companyCid)
-  if not ok then return nil, result end
+  if not ok then
+    return serviceQuarantine.disabledAction(state, lineCid, companyCid, result), result
+  end
   local action = {
     type = "line.register", lineCid = lineCid, companyCid = companyCid,
     market = util.deepCopy(preview.markets[result.marketCid]),

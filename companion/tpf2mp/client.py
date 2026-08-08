@@ -42,6 +42,8 @@ class CommitClient:
                 "port": self.port,
                 "nextHostSeq": self.next_host_seq,
                 "outboxCursor": self.bridge.outbox_cursor,
+                "outboxPrunedThrough": self.bridge.outbox_pruned_through,
+                "outboxEphemeralRetention": self.bridge.outbox_ephemeral_retention,
                 "lastCommitSeq": self._last_commit(),
                 "lastError": self.last_error,
                 "matchFingerprint": self.match_fingerprint,

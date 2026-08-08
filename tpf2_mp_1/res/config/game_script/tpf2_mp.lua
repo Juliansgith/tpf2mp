@@ -1948,6 +1948,7 @@ handlers["probe.export_research"] = function()
     state.world.passengerPresentation)
   report.passengerPresentationDigest = hash.value(report.passengerPresentation)
   report.passengerCosmetics = util.deepCopy(state.probes.passengerCosmetics)
+  report.serviceRegistration = util.deepCopy(state.probes.serviceRegistration)
   report.proposals = {
     queued = state.world.proposals.queued or 0,
     applied = state.world.proposals.applied or 0,

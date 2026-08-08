@@ -88,6 +88,15 @@ else {
         } else { $null }
         recoveryArchiveCount = if ($recoveryWatcher) { $recoveryWatcher.archiveCount } else { 0 }
         recoveryWatcherError = if ($recoveryWatcher) { $recoveryWatcher.error } else { $null }
+        recoveryWatcherLifetimeHours = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['lifetimeHours']) {
+            $recoveryWatcher.lifetimeHours
+        } else { $null }
+        recoveryWatcherExpiresAtUtc = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['expiresAtUtc']) {
+            $recoveryWatcher.expiresAtUtc
+        } else { $null }
+        firstFaultEvidenceAttempts = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['firstFaultEvidenceAttempts']) {
+            $recoveryWatcher.firstFaultEvidenceAttempts
+        } else { 0 }
         firstFaultEvidence = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['firstFaultEvidenceSummary']) {
             $recoveryWatcher.firstFaultEvidenceSummary
         } else { $null }

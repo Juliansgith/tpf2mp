@@ -80,6 +80,7 @@ function M.new(env)
       operational = util.deepCopy(currentState().probes.operational),
       vehicleSync = util.deepCopy(currentState().probes.vehicleSync),
       passengerCosmetics = util.deepCopy(currentState().probes.passengerCosmetics),
+      serviceRegistration = util.deepCopy(currentState().probes.serviceRegistration),
       lastError = currentState().probes.lastError,
       structuralDigest = structural and structural.digest or nil,
       worldManifestDigest = currentState().probes.worldManifest and currentState().probes.worldManifest.digest or nil,

@@ -14,6 +14,7 @@ _ATOMIC_REPLACE_ATTEMPTS = 50
 _ATOMIC_REPLACE_DELAY_SECONDS = 0.02
 _RETRYABLE_REPLACE_ERRNOS = {errno.EACCES, errno.EBUSY, errno.EPERM}
 _RETRYABLE_REPLACE_WINERRORS = {5, 32, 33}
+_EPHEMERAL_OUTBOX_RETENTION = 4096
 
 
 def _sequence(path: Path) -> int:
@@ -64,29 +65,49 @@ class GameBridge:
             directory.mkdir(parents=True, exist_ok=True)
         self.cursor_path = self.state_dir / f"outbox_cursor_{session}.json"
         self.status_path = self.state_dir / "companion_status.json"
+        self.outbox_ephemeral_retention = _EPHEMERAL_OUTBOX_RETENTION
+        self.outbox_pruned_through = 0
         self.outbox_cursor = self._load_cursor()
 
     def _load_cursor(self) -> int:
         try:
             value = json.loads(self.cursor_path.read_text(encoding="utf-8"))
             if value.get("session") == self.session:
-                return int(value.get("last_local_seq", 0))
+                cursor = max(0, int(value.get("last_local_seq", 0)))
+                # Schema-1 cursor files predate bounded retention. Treat their
+                # old acknowledged prefix as already outside the new retention
+                # window instead of issuing thousands of deletes on restart.
+                self.outbox_pruned_through = min(
+                    cursor,
+                    max(0, int(value.get(
+                        "pruned_through",
+                        max(0, cursor - _EPHEMERAL_OUTBOX_RETENTION),
+                    ))),
+                )
+                return cursor
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
         return 0
 
     def _save_cursor(self) -> None:
-        data = canonical_json({"session": self.session, "last_local_seq": self.outbox_cursor})
+        data = canonical_json({
+            "schemaVersion": 2,
+            "session": self.session,
+            "last_local_seq": self.outbox_cursor,
+            "pruned_through": self.outbox_pruned_through,
+            "ephemeral_retention_messages": _EPHEMERAL_OUTBOX_RETENTION,
+        })
         atomic_write(self.cursor_path, (data + "\n").encode("utf-8"))
 
     def pending_outbound(self, limit: int = 64) -> Iterator[tuple[int, dict[str, Any]]]:
-        paths = sorted(self.outbox.glob("*.json"), key=_sequence)
-        yielded = 0
-        for path in paths:
-            seq = _sequence(path)
-            if seq <= self.outbox_cursor:
-                continue
-            if yielded >= limit:
+        # The game queue is immutable and contiguous. Looking up exactly the
+        # cursor's successor is O(limit); globbing and sorting the complete
+        # session history here made every 10 Hz companion poll O(history).
+        # A missing successor is a queue gap, never permission to skip ahead.
+        seq = self.outbox_cursor + 1
+        for _ in range(max(0, limit)):
+            path = self.outbox / f"{seq:012d}.json"
+            if not path.exists():
                 break
             try:
                 message = decode_line(path.read_bytes())
@@ -98,8 +119,28 @@ class GameBridge:
                 raise ProtocolError(f"filename/message sequence mismatch at {path}")
             if str(message.get("peer")) != self.peer:
                 raise ProtocolError(f"peer mismatch in {path}: {message.get('peer')}")
-            yielded += 1
             yield seq, message
+            seq += 1
+
+    def _prune_acknowledged_outbox(self) -> None:
+        target = max(0, self.outbox_cursor - _EPHEMERAL_OUTBOX_RETENTION)
+        if target <= self.outbox_pruned_through:
+            return
+        # Keep every durable checkpoint/event/intent/completion/research record
+        # in the bridge for offline tools. Only clock-health heartbeats are
+        # replaceable telemetry; retain a generous tail of those while bounding
+        # a 30-day session's inode count.
+        for seq in range(self.outbox_pruned_through + 1, target + 1):
+            path = self.outbox / f"{seq:012d}.json"
+            try:
+                message = decode_line(path.read_bytes())
+                if message.get("kind") == "clock_health":
+                    path.unlink(missing_ok=True)
+            except (OSError, ProtocolError):
+                # Missing files are already pruned. An unexpected unreadable
+                # acknowledged record is retained for evidence, never erased.
+                pass
+        self.outbox_pruned_through = target
 
     def acknowledge_outbound(self, seq: int) -> None:
         if seq < self.outbox_cursor:
@@ -107,6 +148,7 @@ class GameBridge:
         if seq > self.outbox_cursor + 1 and self.outbox_cursor != 0:
             raise ProtocolError(f"outbox acknowledgement gap: {self.outbox_cursor} -> {seq}")
         self.outbox_cursor = seq
+        self._prune_acknowledged_outbox()
         self._save_cursor()
 
     def write_inbound(self, message: Mapping[str, Any]) -> Path:

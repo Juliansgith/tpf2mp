@@ -16,6 +16,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_difficulty.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_town_demand.lua' = 210
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_action_runtime.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_service_quarantine.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_public_view.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_clock_runtime.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_asset_cost_runtime.lua' = 100
@@ -24,6 +25,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_collateral_runtime.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
+    'tpf2_mp_1\res\scripts\tpf2_mp\service_registration_runtime.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\network_followup_queue.lua' = 170
     'tpf2_mp_1\res\scripts\tpf2_mp\network_bridge_consumer.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_runtime.lua' = 360
@@ -50,6 +52,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
     'companion\tpf2mp\network.py' = 1450
     'companion\tpf2mp\client.py' = 200
+    'companion\tpf2mp\bridge.py' = 200
     'companion\tpf2mp\anchor.py' = 300
     'companion\tpf2mp\anchor_prepare.py' = 260
     'companion\tpf2mp\anchor_io.py' = 300
@@ -68,6 +71,8 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_station_reading.lua' = 120
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_line_reading.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua' = 150
 }
 
 foreach ($relative in $budgets.Keys) {
@@ -159,6 +164,9 @@ if (-not $worldSource.Contains('require "tpf2_mp/world_town_reading"')) {
 if (-not $worldSource.Contains('require "tpf2_mp/world_station_reading"')) {
     throw 'World runtime no longer composes the station association reading boundary.'
 }
+if (-not $worldSource.Contains('require "tpf2_mp/world_line_reading"')) {
+    throw 'World runtime no longer composes the line transport-mode reading boundary.'
+}
 $economySource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\economy.lua') -Raw
 foreach ($requiredModule in @('economy_difficulty', 'economy_town_demand')) {
@@ -166,11 +174,19 @@ foreach ($requiredModule in @('economy_difficulty', 'economy_town_demand')) {
         throw "Economy runtime no longer composes $requiredModule."
     }
 }
+$economyActionSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\economy_action_runtime.lua') -Raw
+if (-not $economyActionSource.Contains('require "tpf2_mp/economy_service_quarantine"')) {
+    throw 'Economy action runtime no longer composes the ordered service-quarantine boundary.'
+}
 # Town size for the economy must stay policy-independent. Native land-use
 # capacity is scaled by the crowd policy, so reading it into gravity demand
 # lets a cosmetic setting rescale the match economy.
 $corridorSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\corridor_binding.lua') -Raw
+if (-not $corridorSource.Contains('require "tpf2_mp/vehicle_resource_facts"')) {
+    throw 'Corridor binding no longer composes the portable vehicle-resource facts boundary.'
+}
 if ($corridorSource -match 'local\s+capacity[AB]\s*=\s*townCapacity\(') {
     throw 'Corridor binding reads presentation-scaled town capacity into gravity demand.'
 }

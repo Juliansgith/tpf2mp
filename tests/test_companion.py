@@ -1436,6 +1436,87 @@ class BridgeTests(unittest.TestCase):
             second = bridge.write_inbound(commit)
             self.assertEqual(first, second)
 
+    def test_outbound_poll_is_cursor_direct_and_retention_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = GameBridge(directory, "session", "player1")
+            bridge.outbox_cursor = 4097
+            message = sign(
+                {
+                    "protocol": 1,
+                    "session": "session",
+                    "peer": "player1",
+                    "local_seq": 4098,
+                    "tick": 0,
+                    "kind": "telemetry",
+                    "payload": {},
+                }
+            )
+            old = bridge.outbox / "000000000001.json"
+            old_health = sign(
+                {
+                    "protocol": 1, "session": "session", "peer": "player1",
+                    "local_seq": 1, "tick": 0, "kind": "clock_health", "payload": {},
+                }
+            )
+            old.write_bytes((canonical_json(old_health) + "\n").encode())
+            durable = bridge.outbox / "000000000002.json"
+            old_checkpoint = sign(
+                {
+                    "protocol": 1, "session": "session", "peer": "player1",
+                    "local_seq": 2, "tick": 0, "kind": "checkpoint", "payload": {},
+                }
+            )
+            durable.write_bytes((canonical_json(old_checkpoint) + "\n").encode())
+            atomic_write(
+                bridge.outbox / "000000004098.json",
+                (canonical_json(message) + "\n").encode(),
+            )
+            with mock.patch(
+                "tpf2mp.bridge.Path.glob",
+                side_effect=AssertionError("outbound polling enumerated history"),
+            ):
+                pending = list(bridge.pending_outbound())
+            self.assertEqual([item[0] for item in pending], [4098])
+            bridge.acknowledge_outbound(4098)
+            self.assertFalse(old.exists())
+            self.assertTrue(durable.exists())
+            cursor = json.loads(bridge.cursor_path.read_text(encoding="utf-8"))
+            self.assertEqual(cursor["schemaVersion"], 2)
+            self.assertEqual(cursor["pruned_through"], 2)
+            self.assertEqual(cursor["ephemeral_retention_messages"], 4096)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "companion_state"
+            state.mkdir(parents=True)
+            (state / "outbox_cursor_session.json").write_text(
+                canonical_json({"session": "session", "last_local_seq": 6000}) + "\n",
+                encoding="utf-8",
+            )
+            migrated = GameBridge(root, "session", "player1")
+            self.assertEqual(migrated.outbox_cursor, 6000)
+            self.assertEqual(migrated.outbox_pruned_through, 1904)
+
+    def test_outbound_poll_never_skips_a_missing_sequence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = GameBridge(directory, "session", "player1")
+            later = sign(
+                {
+                    "protocol": 1,
+                    "session": "session",
+                    "peer": "player1",
+                    "local_seq": 2,
+                    "tick": 0,
+                    "kind": "telemetry",
+                    "payload": {},
+                }
+            )
+            atomic_write(
+                bridge.outbox / "000000000002.json",
+                (canonical_json(later) + "\n").encode(),
+            )
+            self.assertEqual(list(bridge.pending_outbound()), [])
+
 
 class CheckpointTests(unittest.TestCase):
     def test_completed_passenger_revenue_cursor_pays_exactly_once(self) -> None:

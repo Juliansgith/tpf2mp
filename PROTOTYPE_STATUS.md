@@ -52,6 +52,12 @@ The same live lab exposed two co-located native nodes when track crossed a road.
 Those nodes now use a sorted canonical incident-edge anchor; divergent-ID add,
 replacement, and removal paths pass offline, while a fresh live crossing pass
 remains pending.
+The preserved lab also exposed 5,469/6,048 immutable outbox files. Companion
+polling had sorted the full history at 10 Hz; a real-directory benchmark
+measured 15.460 ms versus 0.015912 ms for the exact cursor successor. Polling
+is now constant-time per message and gaps fail closed. Durable evidence remains;
+only acknowledged clock-health traffic older than a 4,096-message tail is
+pruned.
 
 ## Strongest current evidence
 
@@ -347,6 +353,20 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 - Demand model 7 retains integer generalized cost, the pinned logit table,
   carried share residuals, lagged crowding, induced demand, deterministic
   capacity allocation, and passenger/cargo market weighting.
+- Automatic line-registration follow-ups now distinguish permanent local
+  facts-derivation failures from transient bridge failures. Unsupported
+  same-town, industry, or stale routes leave the authored queue, appear in a
+  bounded panel/research diagnostic, and can recover after a later edit;
+  transient bridge failures continue retrying. This prevents an unsupported
+  service from keeping anchor readiness false forever without misclassifying
+  it as passenger demand.
+- Exact stop/platform cargo flags and consist cargo-entry types now classify
+  passenger, cargo, mixed, and unreadable lines before registration. Only
+  explicit `PASSENGERS` entries count as seats. Freight or mixed lines cannot
+  create passenger markets; already registered stale services are revalidated
+  and retired by an ordered portable disable, which also removes their model
+  queues and loads. Freight infrastructure still replicates physically, but
+  real industry recipes/stocks/deliveries are not yet authoritative.
 - Hard, Normal, Easy, and Relaxed are world-creation choices that scale gross
   revenue to 60%, 100%, 150%, or 200%. The selected key and exact integer
   multiplier are ordered match rules and saved economy state; they are
@@ -403,7 +423,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v6 behavior remains available for
-  archived replay. The offline gate now includes 91 Lua tests and 75
+  archived replay. The offline gate now includes 94 Lua tests and 75
   cross-language v2-v7 scenarios, including completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
@@ -451,8 +471,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   expose watcher state in the launcher/session status.
 - The watcher verifies exact PID/path/start time and stops on process exit or PID
   reuse. It passed an end-to-end boundary-8 archive proof.
-- Before that liveness check, every peer now snapshots its first published
-  session fault exactly once. The bounded local bundle includes the copied
+- Before that liveness check, every peer now preserves its first published
+  session fault without allowing a later fault to replace it. A transient
+  collector failure receives at most three attempts for that same fault, and
+  the exact-process watcher exposes a 30-day finite expiry. The bounded local bundle includes the copied
   bridge/audit, session-specific game and companion log tails, native status,
   and source/install fingerprint; the launcher and status command expose its
   summary path. This is diagnostic only and never uploads or restores state.
@@ -473,13 +495,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 91 core Lua tests and 75 cross-language economy scenarios;
+  - 94 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 75 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 79 mod Lua and 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 106 Python protocol/network/checkpoint/recovery/report tests;
+  - 108 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 

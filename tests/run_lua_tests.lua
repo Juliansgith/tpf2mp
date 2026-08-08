@@ -13,6 +13,9 @@ local economy = require "tpf2_mp/economy"
 local economyCosts = require "tpf2_mp/economy_costs"
 local economyRevenue = require "tpf2_mp/economy_revenue"
 local economyDifficulty = require "tpf2_mp/economy_difficulty"
+local economyServiceQuarantine = require "tpf2_mp/economy_service_quarantine"
+local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
+local corridorBindingModule = require "tpf2_mp/corridor_binding"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
@@ -2089,6 +2092,104 @@ test("station-group town reading keeps the station map as a fallback", function(
   truthy(diagnostic:find("matched=0", 1, true), "failure omitted group-match evidence")
 end)
 
+test("line transport-mode reading distinguishes passenger, cargo, and indexed mixed groups", function()
+  local components = {
+    LINE = {
+      [100] = { stops = {
+        { stationGroup = 901, station = 0 }, { stationGroup = 902, station = 0 },
+      } },
+      [101] = { stops = {
+        { stationGroup = 903, station = 1 }, { stationGroup = 904, station = 0 },
+      } },
+      [102] = { stops = {
+        { stationGroup = 903 }, { stationGroup = 904, station = 0 },
+      } },
+      [103] = { stops = {
+        { stationGroup = 905, station = 0 }, { stationGroup = 904, station = 0 },
+      } },
+    },
+    STATION_GROUP = {
+      [901] = { stations = { 41 } }, [902] = { stations = { 42 } },
+      [903] = { stations = { 43, 44 } }, [904] = { stations = { 45 } },
+      [905] = { stations = { [0] = 46, [1] = 47 } },
+    },
+    STATION = {
+      [41] = { cargo = false }, [42] = { cargo = false },
+      [43] = { cargo = false }, [44] = { cargo = true }, [45] = { cargo = true },
+      [46] = { cargo = true }, [47] = { cargo = false },
+    },
+  }
+  local fakeApi = {
+    type = { ComponentType = {
+      LINE = "LINE", STATION_GROUP = "STATION_GROUP", STATION = "STATION",
+    } },
+    engine = {
+      getComponent = function(id, kind)
+        return components[kind] and components[kind][id] or nil
+      end,
+      system = {},
+    },
+  }
+  local lineReading = require("tpf2_mp/world_line_reading").new({
+    getApi = function() return fakeApi end, entityNumber = tonumber,
+  })
+  local passenger, passengerDetail = lineReading.lineServiceKind(100)
+  truthy(passenger == "passenger", "passenger line classification failed: " .. tostring(passengerDetail))
+  equal(lineReading.lineServiceKind(101), "cargo",
+    "zero-based stop.station did not select the cargo platform in a mixed group")
+  equal(lineReading.lineServiceKind(103), "cargo",
+    "native zero-based station containers selected the adjacent platform")
+  local unreadable, detail = lineReading.lineServiceKind(102)
+  equal(unreadable, nil)
+  truthy(detail:find("mixed", 1, true), "ambiguous mixed group did not fail closed")
+end)
+
+test("freight service binding fails closed before creating passenger demand", function()
+  local binding = corridorBindingModule.new({
+    bindExisting = function() return "line:event:cargo:1" end,
+    lineStopGroups = function() return { 901, 902 } end,
+    lineServiceKind = function() return "cargo", "indexed station" end,
+    stationGroupTown = function() error("cargo line reached passenger town binding") end,
+    townCapacity = function() return 100 end,
+    townBuildingCount = function() return 100 end,
+    lineVehicleCount = function() return 0 end,
+    lineVehicleIds = function() return {} end,
+    nameOf = tostring,
+    safeEntity = function() return nil end,
+    positionOfEntity = function() return { 0, 0 } end,
+    developmentPositionsOfTown = function() return {} end,
+    resolveLocal = function() return nil end,
+    resolveCanonical = function() return nil end,
+  })
+  local state = economy.newState()
+  local ok, message = binding.makeLineService({}, economy, state, 77, "company:1")
+  equal(ok, false)
+  truthy(message:find("cargo service", 1, true), "freight rejection was not actionable")
+  equal(next(state.markets), nil, "freight line created a passenger market before rejection")
+  equal(next(state.services), nil, "freight line created a passenger service before rejection")
+end)
+
+test("an unsupported edit orders a portable disabled copy of an existing service", function()
+  local state = { economy = economy.newState() }
+  economy.upsertMarket(state.economy, {
+    cid = "market:old", kind = "passenger", demand = 100,
+  })
+  economy.upsertService(state.economy, {
+    lineCid = "line:event:old", marketCid = "market:old", companyCid = "company:1",
+    enabled = true, capacity = 80,
+  })
+  local action = economyServiceQuarantine.disabledAction(
+    state, "line:event:old", "company:1",
+    "line endpoints do not map to two distinct towns (both resolve to town 987654)")
+  truthy(action and action.service.enabled == false,
+    "unsupported existing service did not produce an ordered disable action")
+  equal(action.service.metadata.registrationQuarantine, "unsupported-corridor")
+  truthy(not json.encode(action):find("987654", 1, true),
+    "machine-local route diagnostic leaked into a portable quarantine action")
+  equal(state.economy.services["line:event:old"].enabled, true,
+    "quarantine action construction mutated authoritative state before ordering")
+end)
+
 -- The crowd policy scales native building capacity at load, and gravity demand
 -- goes as the product of two town sizes -- so sizing towns by capacity let a
 -- cosmetic setting rescale the whole match economy by roughly its square. Town
@@ -2166,7 +2267,7 @@ test("computed service facts derive journey, headway, and capacity from geometry
   equal(hash.value(facts), hash.value(repeatFacts), "computed facts must be repeatable")
 end)
 
-test("initial checkpoint bootstraps only runnable pre-existing company lines", function()
+test("initial checkpoint revalidates every runnable pre-existing company line", function()
   local registry = canonical.newState()
   truthy(canonical.bind(registry, "line:pre:own", "line", 700))
   truthy(canonical.bind(registry, "line:pre:idle", "line", 701))
@@ -2190,14 +2291,16 @@ test("initial checkpoint bootstraps only runnable pre-existing company lines", f
     log = function(event, values) diagnostics[#diagnostics + 1] = { event = event, values = values } end,
     reason = "match-initialised",
   })
-  equal(queued, 1)
-  equal(summary.queued, 1)
-  equal(summary.skipped, 3)
+  equal(queued, 2)
+  equal(summary.queued, 2)
+  equal(summary.skipped, 2)
   equal(summary.failed, 0)
-  equal(#submitted, 1)
+  equal(#submitted, 2)
   equal(submitted[1].type, "line.register")
   equal(submitted[1].lineCid, "line:pre:own")
   equal(submitted[1].companyCid, "company:1")
+  equal(submitted[2].lineCid, "line:pre:registered",
+    "a saved service was not revalidated against current transport facts")
   equal(diagnostics[#diagnostics].event, "existing-service-register-scan")
 end)
 
@@ -2208,24 +2311,58 @@ test("consist transport facts read repository metadata fail-soft", function()
       compartmentsList = { { loadConfigs = { { cargoEntries = { { capacity = 0 } } } } } } } } },
     ["coach.mdl"] = { metadata = { transportVehicle = { topSpeed = 50,
       compartmentsList = {
-        { loadConfigs = { { cargoEntries = { { capacity = 40 }, { capacity = 40 } } } } },
-        { loadConfigs = { { cargoEntries = { { capacity = 24 } } },
-                          { cargoEntries = { { capacity = 80 } } } } },
+        { loadConfigs = { { cargoEntries = {
+          { capacity = 40, type = "PASSENGERS" },
+          { capacity = 40, type = "PASSENGERS" },
+        } } } },
+        { loadConfigs = { { cargoEntries = { { capacity = 24, type = "PASSENGERS" } } },
+                          { cargoEntries = { { capacity = 80, type = "PASSENGERS" } } } } },
       } } } },
+    ["freight.mdl"] = { metadata = { transportVehicle = { topSpeed = 35,
+      compartmentsList = { { loadConfigs = {
+        { cargoEntries = { { capacity = 48, type = "COAL" } } },
+        { cargoEntries = { { capacity = 48, type = "STONE" } } },
+      } } } } } },
+    ["ambiguous.mdl"] = { metadata = { transportVehicle = { topSpeed = 30,
+      compartmentsList = { { loadConfigs = {
+        { cargoEntries = { { capacity = 30 } } },
+      } } } } } },
   }
   local names = { "loco.mdl", "coach.mdl" }
-  local indexByName = { ["loco.mdl"] = 1, ["coach.mdl"] = 2 }
-  local byIndex = { models["loco.mdl"], models["coach.mdl"] }
+  local indexByName = {
+    ["loco.mdl"] = 1, ["coach.mdl"] = 2,
+    ["freight.mdl"] = 3, ["ambiguous.mdl"] = 4,
+  }
+  local byIndex = {
+    models["loco.mdl"], models["coach.mdl"],
+    models["freight.mdl"], models["ambiguous.mdl"],
+  }
   api = { res = { modelRep = {
     find = function(name) return indexByName[name] or -1 end,
     get = function(index) return byIndex[index] end,
   } } }
   local facts = world.consistTransportFacts(names)
-  api = previousApi
   truthy(facts, "metadata-backed consist facts were not produced")
   -- coach: compartment one 80 seats, compartment two best config 80 seats.
   equal(facts.seats, 160)
+  equal(facts.kind, "passenger")
+  equal(facts.cargoCapacity, 0)
   equal(facts.limitSpeedMs, 44, "the slowest part limits the consist")
+  local freight = world.consistTransportFacts({ "loco.mdl", "freight.mdl" })
+  equal(freight.kind, "cargo")
+  equal(freight.seats, 0, "freight capacity leaked into passenger seats")
+  equal(freight.cargoCapacity, 48)
+  local ambiguous = world.consistTransportFacts({ "loco.mdl", "ambiguous.mdl" })
+  equal(ambiguous.kind, "unknown")
+  equal(ambiguous.unknownCapacity, 30)
+  local shortCoach = vehicleResourceFacts.consist({ "coach.mdl" })
+  local mixedFleet = vehicleResourceFacts.combine({ facts, freight })
+  equal(mixedFleet.kind, "mixed", "a passenger-first freight fleet was not rejected")
+  equal(mixedFleet.consistCount, 2)
+  local passengerFleet = vehicleResourceFacts.combine({ facts, shortCoach })
+  equal(passengerFleet.kind, "passenger")
+  equal(passengerFleet.seats, 160, "heterogeneous fleet seats were not averaged")
+  equal(passengerFleet.limitSpeedMs, 44, "fleet speed did not retain its slowest consist")
   api = { res = {} }
   equal(world.consistTransportFacts(names), nil, "missing repository must fail soft")
   api = previousApi
@@ -2384,6 +2521,13 @@ test("passenger presentation carries backlog, invalidates edited routes, and exc
   local cargoState = passengerPresentation.newState()
   truthy(passengerPresentation.beginEpoch(cargoState, cargoEconomy))
   equal(next(cargoState.lines), nil, "cargo demand entered the passenger ledger")
+
+  local disabledEconomy = passengerPresentationEconomy("passenger", 65)
+  disabledEconomy.services["line:presentation"].enabled = false
+  local disabledState = passengerPresentation.newState()
+  truthy(passengerPresentation.beginEpoch(disabledState, disabledEconomy))
+  equal(next(disabledState.lines), nil,
+    "a quarantined disabled service retained a passenger queue")
 end)
 
 test("passenger presentation aligns pre-ledger saves but rejects real-state drift", function()

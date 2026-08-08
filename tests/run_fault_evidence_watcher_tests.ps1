@@ -39,6 +39,13 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$attemptFile = Join-Path (Split-Path -Parent $OutputDirectory) 'collector-attempts.txt'
+$attempt = if (Test-Path -LiteralPath $attemptFile) {
+    [int](Get-Content -LiteralPath $attemptFile -Raw)
+} else { 0 }
+$attempt++
+[IO.File]::WriteAllText($attemptFile, [string]$attempt, [Text.UTF8Encoding]::new($false))
+if ($attempt -eq 1) { throw 'synthetic transient collector failure' }
 [ordered]@{
     session = $Session
     peer = $Peer
@@ -59,13 +66,25 @@ try {
 
     $watcherStatusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
     $watcher = Get-Content -LiteralPath $watcherStatusPath -Raw | ConvertFrom-Json
-    if ($watcher.schemaVersion -ne 3 -or $watcher.status -ne 'stopped-game-exited') {
+    if ($watcher.schemaVersion -ne 4 -or $watcher.status -ne 'stopped-game-exited') {
         throw 'Fault watcher did not preserve its terminal status after capturing evidence.'
+    }
+    if ($watcher.lifetimeHours -ne 720 -or -not $watcher.expiresAtUtc) {
+        throw 'Fault watcher did not advertise the 30-day long-session guard.'
+    }
+    $watcherExpiry = [DateTime]::Parse([string]$watcher.expiresAtUtc).ToUniversalTime()
+    $watcherStart = [DateTime]::Parse([string]$watcher.startedAtUtc).ToUniversalTime()
+    if ([Math]::Abs(($watcherExpiry - $watcherStart).TotalHours - 720) -gt 1) {
+        throw 'Fault watcher expiry does not match its advertised lifetime.'
     }
     if ($watcher.firstFaultEvidenceAttempted -ne $true `
         -or $watcher.firstFault -ne 'first-fault-test:physical-digest-mismatch' `
         -or $watcher.firstFaultEvidenceError) {
         throw 'Fault watcher did not record the first session fault exactly once.'
+    }
+    if ($watcher.firstFaultEvidenceAttempts -ne 2 `
+        -or @($watcher.firstFaultEvidenceAttemptDirectories).Count -ne 2) {
+        throw 'Fault watcher did not retry a transient evidence-collector failure exactly once.'
     }
     if (-not (Test-Path -LiteralPath $watcher.firstFaultEvidenceSummary -PathType Leaf)) {
         throw 'Fault watcher did not retain its evidence summary.'
@@ -75,7 +94,7 @@ try {
         -or $evidence.bridge -ne [IO.Path]::GetFullPath($bridge)) {
         throw 'Fault watcher passed the wrong session identity to its evidence collector.'
     }
-    Write-Host 'PASS first session fault is captured even after the game process exits'
+    Write-Host 'PASS first session fault survives a transient collector failure and game exit'
 
     $logRoot = Join-Path $TemporaryRoot 'fault-watcher\logs'
     $companionLog = Join-Path $logRoot 'companion.stdout.log'

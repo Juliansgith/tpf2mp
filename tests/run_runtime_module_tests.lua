@@ -618,10 +618,11 @@ do
     },
     finance = {},
   }
-  local emitted = {}
+  local emitted, bridgeAvailable = {}, true
   local originalEmit = bridgeModule.emit
   local ok, failure = xpcall(function()
     bridgeModule.emit = function(_, kind, payload)
+      if not bridgeAvailable then return false, "synthetic bridge outage" end
       emitted[#emitted + 1] = { kind = kind, payload = util.deepCopy(payload) }
       return true, { local_seq = #emitted }
     end
@@ -674,6 +675,87 @@ do
     assert(controller.processDeferred() == true and #emitted == 1
         and emitted[1].payload.action.lineCid == "line:event:surviving:1",
       "a deleted line registration starved the surviving line behind it")
+
+    controller.reset()
+    emitted = {}
+    local registrationSupported = false
+    local quarantineController = networkIntentRuntimeModule.new({
+      getState = function() return current end,
+      normaliseForNetwork = function(action)
+        if action.type == "line.register" and not registrationSupported then
+          return nil, "line endpoints do not map to two distinct towns"
+        end
+        return util.deepCopy(action)
+      end,
+      normaliseOperationCapture = function(action) return action end,
+      applyCommitted = function() return true, {} end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function() end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+    quarantineController.scheduleFollowup({
+      type = "line.register", lineCid = "line:event:feeder:1",
+      companyCid = "company:1",
+    })
+    assert(quarantineController.processDeferred() == true
+        and #quarantineController.deferredFollowups() == 0
+        and quarantineController.localWorkState().pending == false
+        and current.probes.serviceRegistration.quarantined == 1
+        and current.probes.serviceRegistration.current["line:event:feeder:1"],
+      "a permanently unsupported line registration poisoned the authored follow-up lane")
+    assert(#emitted == 0,
+      "a line registration that failed normalization reached the bridge")
+    registrationSupported = true
+    quarantineController.scheduleFollowup({
+      type = "line.register", lineCid = "line:event:feeder:1",
+      companyCid = "company:1",
+    })
+    assert(quarantineController.processDeferred() == true
+        and #emitted == 1
+        and current.probes.serviceRegistration.current["line:event:feeder:1"] == nil
+        and current.probes.serviceRegistration.recovered == 1,
+      "a later supported edit did not recover a quarantined line registration")
+    quarantineController.reset()
+    quarantineController.scheduleFollowup({
+      type = "line.register", lineCid = "line:event:legacy-cargo:1",
+      companyCid = "company:1",
+      market = { cid = "market:legacy" },
+      service = { metadata = { registrationQuarantine = "cargo-authority-unavailable" } },
+      vehicleCosts = {},
+    })
+    assert(quarantineController.processDeferred() == true
+        and #quarantineController.deferredFollowups() == 0
+        and current.probes.serviceRegistration.current["line:event:legacy-cargo:1"]
+        and current.probes.serviceRegistration.current["line:event:legacy-cargo:1"].error
+          == "cargo-authority-unavailable",
+      "an ordered stale-service disable lost its visible quarantine diagnostic")
+
+    local retryController = networkIntentRuntimeModule.new({
+      getState = function() return current end,
+      normaliseForNetwork = function(action) return util.deepCopy(action) end,
+      normaliseOperationCapture = function(action) return action end,
+      applyCommitted = function() return true, {} end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function() end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+    bridgeAvailable, emitted = false, {}
+    retryController.scheduleFollowup({
+      type = "line.register", lineCid = "line:event:outage:1",
+      companyCid = "company:1",
+    })
+    assert(retryController.processDeferred() == true
+        and #retryController.deferredFollowups() == 1
+        and retryController.deferredFollowups()[1].failures == 1,
+      "a transient bridge failure discarded an authored registration")
+    bridgeAvailable, current.tick = true, current.tick + 15
+    assert(retryController.processDeferred() == true and #emitted == 1
+        and #retryController.deferredFollowups() == 0,
+      "a retained registration did not recover after its bridge retry delay")
 
     controller.reset()
     emitted = {}

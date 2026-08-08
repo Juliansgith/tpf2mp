@@ -516,9 +516,15 @@ $timer.Add_Tick({
                             " First-fault evidence: $($recovery.firstFaultEvidenceSummary)"
                         } elseif ($recovery.PSObject.Properties['firstFaultEvidenceError'] `
                             -and $recovery.firstFaultEvidenceError) {
-                            " First-fault capture failed: $($recovery.firstFaultEvidenceError)"
+                            $attempts = if ($recovery.PSObject.Properties['firstFaultEvidenceAttempts']) {
+                                [int]$recovery.firstFaultEvidenceAttempts
+                            } else { 1 }
+                            " First-fault capture failed after $attempts attempt(s): $($recovery.firstFaultEvidenceError)"
                         } else { '' }
-                        $recoveryHint.Text = "Automatic recovery: $($recovery.status)$boundary. A stable save after consensus is archived and verified.$faultEvidence"
+                        $expiry = if ($recovery.PSObject.Properties['expiresAtUtc'] -and $recovery.expiresAtUtc) {
+                            " Guard expires $($recovery.expiresAtUtc)."
+                        } else { '' }
+                        $recoveryHint.Text = "Automatic recovery: $($recovery.status)$boundary. A stable save after consensus is archived and verified.$expiry$faultEvidence"
                         $recoveryHint.ForeColor = if ($recovery.status -eq 'failed' -or $faultEvidence) { $danger } else { $muted }
                     }
                     catch { }

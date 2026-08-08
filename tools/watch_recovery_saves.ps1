@@ -11,7 +11,7 @@ param(
     [string]$EvidenceCollectorPath,
     [ValidateRange(1, 60)][int]$PollSeconds = 2,
     [ValidateRange(2, 120)][int]$StableSeconds = 6,
-    [ValidateRange(1, 48)][int]$LifetimeHours = 12,
+    [ValidateRange(1, 8760)][int]$LifetimeHours = 720,
     [switch]$OneShot
 )
 
@@ -47,7 +47,7 @@ $expectedSavePrefix = "tpf2mp_${safeSession}_${Peer}"
 New-Item -ItemType Directory -Force -Path $recoveryRoot, $requestRoot, $resultRoot | Out-Null
 
 $watch = [ordered]@{
-    schemaVersion = 3
+    schemaVersion = 4
     session = $safeSession
     peer = $Peer
     status = 'starting'
@@ -69,10 +69,14 @@ $watch = [ordered]@{
     firstFault = $null
     firstFaultObservedAtUtc = $null
     firstFaultEvidenceAttempted = $false
+    firstFaultEvidenceAttempts = 0
+    firstFaultEvidenceAttemptDirectories = @()
     firstFaultEvidenceDirectory = $null
     firstFaultEvidenceSummary = $null
     firstFaultEvidenceError = $null
     limitation = 'A restore point is valid only after both independently saved peers file ordered receipts for the same READY boundary.'
+    lifetimeHours = $LifetimeHours
+    expiresAtUtc = $deadline.ToUniversalTime().ToString('o')
     error = $null
     startedAtUtc = [DateTime]::UtcNow.ToString('o')
     updatedAtUtc = [DateTime]::UtcNow.ToString('o')
@@ -116,26 +120,34 @@ function Capture-FirstFaultEvidence([object]$CompanionStatus) {
     if ([string]::IsNullOrWhiteSpace($fault)) { return }
 
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
-    $output = Join-Path $sessionRoot "fault-evidence\$stamp"
     $watch.firstFault = $fault.Substring(0, [Math]::Min($fault.Length, 512))
     $watch.firstFaultObservedAtUtc = [DateTime]::UtcNow.ToString('o')
     $watch.firstFaultEvidenceAttempted = $true
-    $watch.firstFaultEvidenceDirectory = $output
-    $watch.firstFaultEvidenceError = $null
-    Write-RecoveryWatcherStatus ([string]$watch.status)
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        $output = Join-Path $sessionRoot "fault-evidence\$stamp-attempt-$attempt"
+        $watch.firstFaultEvidenceAttempts = $attempt
+        $watch.firstFaultEvidenceAttemptDirectories = @(
+            $watch.firstFaultEvidenceAttemptDirectories) + @($output)
+        $watch.firstFaultEvidenceDirectory = $output
+        $watch.firstFaultEvidenceError = $null
+        Write-RecoveryWatcherStatus ([string]$watch.status)
 
-    try {
-        & $evidenceCollector -Session $safeSession -Peer $Peer -BridgePath $bridge `
-            -OutputDirectory $output -BundleRoot $bundle -GameExecutable $expectedGame
-        if (-not $?) { throw 'First-fault evidence collector returned failure.' }
-        $summary = Join-Path $output 'evidence.json'
-        if (-not (Test-Path -LiteralPath $summary -PathType Leaf)) {
-            throw 'First-fault evidence collector did not write evidence.json.'
+        try {
+            & $evidenceCollector -Session $safeSession -Peer $Peer -BridgePath $bridge `
+                -OutputDirectory $output -BundleRoot $bundle -GameExecutable $expectedGame
+            if (-not $?) { throw 'First-fault evidence collector returned failure.' }
+            $summary = Join-Path $output 'evidence.json'
+            if (-not (Test-Path -LiteralPath $summary -PathType Leaf)) {
+                throw 'First-fault evidence collector did not write evidence.json.'
+            }
+            $watch.firstFaultEvidenceSummary = $summary
+            $watch.firstFaultEvidenceError = $null
+            break
         }
-        $watch.firstFaultEvidenceSummary = $summary
-    }
-    catch {
-        $watch.firstFaultEvidenceError = $_.Exception.Message
+        catch {
+            $watch.firstFaultEvidenceError = $_.Exception.Message
+            Write-RecoveryWatcherStatus ([string]$watch.status) $watch.error
+        }
     }
     Write-RecoveryWatcherStatus ([string]$watch.status) $watch.error
 }

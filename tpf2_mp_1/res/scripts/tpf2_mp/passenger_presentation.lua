@@ -33,7 +33,7 @@ end
 local function passengerService(economyState, lineCid)
   local service = economyState and economyState.services
     and economyState.services[lineCid] or nil
-  if not service then return nil end
+  if not service or service.enabled == false then return nil end
   local market = economyState.markets and economyState.markets[service.marketCid] or nil
   if market and market.kind ~= nil and market.kind ~= "passenger" then return nil end
   local stops = service.metadata and service.metadata.stationGroupCids or nil

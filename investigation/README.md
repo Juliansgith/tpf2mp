@@ -1,6 +1,21 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-08 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[File-bridge long-session scaling](FILE_BRIDGE_LONG_SESSION_SCALING_2026-08-09.md)
+records the real 5,469-file O(history) poll, 972x lookup benchmark, strict
+cursor-direct replacement, schema-2 cursor, and bounded 4,096-message evidence
+tail.
+
+[Freight classification and the remaining industry-authority schema](FREIGHT_CLASSIFICATION_AND_INDUSTRY_SCHEMA_2026-08-09.md)
+records exact station/consist mode classification, the ordered stale-service
+disable path, Build 35924's sixteen vanilla recipe shapes, the reason static
+`.con` parsing is not mod-safe authority, and the remaining freight ledger.
+
+[Permanent service-registration failure quarantine](SERVICE_REGISTRATION_QUARANTINE_2026-08-09.md)
+records the same-town/industry/stale-route infinite-retry finding, normalization
+versus bridge-failure policy, bounded diagnostics, recovery after a later line
+edit, and the exact remaining cargo-authority boundary.
 
 [Stock vehicle lifecycle capture](STOCK_VEHICLE_LIFECYCLE_CAPTURE_2026-08-08.md)
 records the exact Build 35924 layouts for tags 7-14/30, the pointer-free V2
@@ -9,7 +24,8 @@ the remaining live/destructive acceptance boundary.
 
 [Automatic first-fault evidence and randomized replay stress](AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md)
 records the recovery-watcher fault trigger, crash-safe local bundle contents,
-bounded log policy, copied-audit replay, functional fixtures, and the 1,024-event
+bounded log policy, copied-audit replay, three-attempt transient-failure policy,
+30-day exact-process guard, functional fixtures, and the 1,024-event
 cross-language trace.
 
 [Collision-safe topology node identity](COLLISION_SAFE_TOPOLOGY_NODE_IDENTITY_2026-08-08.md)

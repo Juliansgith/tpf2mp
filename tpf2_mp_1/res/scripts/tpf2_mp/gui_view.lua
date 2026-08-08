@@ -394,6 +394,16 @@ function M.render(gui, snapshot, options)
       tostring(deferredQueue.awaitingOrder.localSeq or "-"),
       tostring(deferredQueue.awaitingOrder.type or "action"))
   end
+  local registrations = snapshot.probes and snapshot.probes.serviceRegistration or {}
+  local unsupportedCount = util.tableCount(registrations.current or {})
+  if unsupportedCount > 0 then
+    local last = registrations.last or {}
+    lines[#lines + 1] = string.format(
+      "Unsupported service registrations: %d | last %s | %s",
+      unsupportedCount,
+      tostring(last.lineCid or "-"),
+      tostring(last.error or "route facts unavailable"))
+  end
   local mobility = snapshot.probes and snapshot.probes.mobility or nil
   if mobility then
     -- Diagnostics, deliberately below the contest and deliberately labelled:

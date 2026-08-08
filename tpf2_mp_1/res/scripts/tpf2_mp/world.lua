@@ -6,6 +6,7 @@ local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
 local townReadingModule = require "tpf2_mp/world_town_reading"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
+local lineReadingModule = require "tpf2_mp/world_line_reading"
 local identityModule = require "tpf2_mp/world_identity"
 
 local M = {}
@@ -1363,6 +1364,12 @@ local stationReading = stationReadingModule.new({
 })
 local stationGroupTown = stationReading.stationGroupTown
 M.stationGroupTown = stationGroupTown
+local lineReading = lineReadingModule.new({
+  getApi = function() return api end,
+  entityNumber = entityNumber,
+})
+local lineServiceKind = lineReading.lineServiceKind
+M.lineServiceKind = lineServiceKind
 
 -- Raw native land-use capacity. The crowd policy scales this at load, so it is
 -- telemetry and readback-probe input only and must never reach the economy;
@@ -1414,10 +1421,10 @@ M.stationBoards = corridorBindingModule.stationBoards
 local corridorBinding = corridorBindingModule.new({
   bindExisting = function(...) return M.bindExisting(...) end,
   lineStopGroups = lineStopGroups,
+  lineServiceKind = lineServiceKind,
   stationGroupTown = stationGroupTown,
   townCapacity = townCapacity,
   townBuildingCount = townBuildingCount,
-  lineVehicleCount = lineVehicleCount,
   lineVehicleIds = lineVehicleIds,
   nameOf = nameOf,
   safeEntity = safeEntity,

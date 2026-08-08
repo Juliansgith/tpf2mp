@@ -17,6 +17,12 @@ checkpoint barriers, and distributes commits. The native DLL observes or gates
 exact Build 35924 command visitors before an unsupported local mutation can
 escape host authority.
 
+`companion/tpf2mp/bridge.py` owns the durable numbered file cursor. Outbound
+polling may inspect only the exact successor sequence, never enumerate session
+history or skip a gap. Durable protocol/evidence records remain available;
+only acknowledged clock-health traffic older than the 4,096-message tail is
+pruned. The host audit remains the primary replay authority.
+
 No machine-local entity ID is portable. Every peer binds its own native IDs to
 stable canonical identities and reports portable physical postconditions.
 
@@ -47,7 +53,10 @@ Domain modules under `res/scripts/tpf2_mp`:
   durable vehicle costs, including uniquely manifest-bound starting vehicles;
   `economy_clock_runtime.lua` submits only the host's due synchronized boundary;
   `economy_action_runtime.lua` constructs portable line registration and
-  completed-trip settlement actions.
+  completed-trip settlement actions; `economy_service_quarantine.lua`
+  converts an already-registered but newly unsupported service into an
+  ordered portable disabled copy, without leaking native IDs or local read
+  diagnostics.
 - `economy_public_view.lua` builds the display-only local-ID map and exact
   purchase/upkeep/service/company figures used by the standard-UI projection.
 - `economy_demo.lua` contains developer-only seeded-market fixtures and has no
@@ -59,6 +68,8 @@ Domain modules under `res/scripts/tpf2_mp`:
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, and autonomy;
   `world_station_reading.lua` owns station-group to town association reads;
+  `world_line_reading.lua` resolves each exact line stop through its station
+  group and classifies passenger/cargo/mixed transport mode fail-closed;
   `world_operational_telemetry.lua` owns read-only clock, journal, autonomy,
   and composed operational snapshots.
 - `corridor_binding.lua` derives line.register market/service facts (gravity
@@ -66,6 +77,9 @@ Domain modules under `res/scripts/tpf2_mp`:
   boards, settlement-coupled deterministic town growth, and the departure
   slot table; origin-computed or settlement-derived, re-exported through
   `world.lua`.
+- `vehicle_resource_facts.lua` classifies every load configuration in a
+  consist by portable cargo resource type and aggregates all consists assigned
+  to a line into conservative passenger/cargo/mixed capacity and speed facts.
 - `edge_ownership.lua` owns private/public edge custody rules.
 - `proposal_codec.lua` validates and materializes portable construction/edge
   transactions.
@@ -93,8 +107,10 @@ Runtime-controller modules:
 - `network_intent_runtime.lua` owns the local intent FIFO, host-order wait state,
   barrier back-pressure, bridge ingress, acknowledgement, and reset lifecycle.
 - `network_followup_queue.lua` owns non-reentrant, coalesced authored work
-  derived from commits; `network_bridge_consumer.lua` owns ordered inbox
-  application and acknowledgements.
+  derived from commits; `service_registration_runtime.lua` owns its bounded
+  submitted/quarantined/recovered diagnostic and permanent-failure policy;
+  `network_bridge_consumer.lua` owns ordered inbox application and
+  acknowledgements.
 - `authored_followup_runtime.lua` owns strict town-development application,
   save-receipt acknowledgement, and development checkpoint export.
 - `network_clock_runtime.lua` owns ordered native clock application, peer-health
@@ -252,6 +268,11 @@ executable profile verification in the same commit.
     passenger service advances canonical model towns, and their future demand
     is digest-projected and replayed in both Lua and Python. Ordered physical
     town development remains a separate optional presentation experiment.
+15. An authored follow-up retries only failures that can plausibly change
+    without a new player/world action. In particular, bridge emission failure
+    retains a line registration, while a route-facts normalization failure is
+    quarantined and retried only after a fresh edit/assignment. Unsupported
+    local or freight routes must not keep recovery readiness permanently busy.
 
 ## Adding a synchronized vehicle action
 
