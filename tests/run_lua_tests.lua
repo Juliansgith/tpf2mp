@@ -1657,6 +1657,127 @@ test("pre-existing road nodes resolve lazily by geometry across divergent local 
     "stacked public nodes were not rejected as an ambiguous locator")
 end)
 
+test("co-located crossing nodes use portable incident-edge anchors", function()
+  local previousApi, previousGame = api, game
+  local function install(nodes, edges)
+    game = { interface = {
+      getEntity = function(id)
+        if nodes[id] then return { id = id, type = "BASE_NODE" } end
+        if edges[id] then return { id = id, type = "BASE_EDGE" } end
+        return nil
+      end,
+      getTowns = function() return {} end,
+      getLines = function() return {} end,
+      getVehicles = function() return {} end,
+      getDepots = function() return {} end,
+    } }
+    api = {
+      type = { ComponentType = {
+        NAME = "NAME", BASE_NODE = "BASE_NODE", BASE_EDGE = "BASE_EDGE",
+      } },
+      engine = {
+        getComponent = function(id, kind)
+          if kind == "BASE_NODE" then return nodes[id] end
+          if kind == "BASE_EDGE" then return edges[id] end
+          return nil
+        end,
+        forEachEntityWithComponent = function(callback, kind)
+          local values = kind == "BASE_NODE" and nodes
+            or kind == "BASE_EDGE" and edges or {}
+          for id in pairs(values) do callback(id) end
+        end,
+        system = { lineSystem = { getLines = function() return {} end } },
+      },
+    }
+  end
+
+  local originNodes = {
+    [10] = { position = { x = 100, y = 100, z = 0 } },
+    [11] = { position = { x = 100, y = 100, z = 0 } },
+    [12] = { position = { x = 180, y = 100, z = 0 } },
+    [13] = { position = { x = 100, y = 180, z = 0 } },
+  }
+  local originEdges = {
+    [20] = { node0 = 10, node1 = 12 },
+    [21] = { node0 = 11, node1 = 13 },
+  }
+  install(originNodes, originEdges)
+  local origin = canonical.newState()
+  local horizontalCid, horizontalError = world.identifyExisting(origin, 10, "node")
+  local verticalCid, verticalError = world.identifyExisting(origin, 11, "node")
+  truthy(horizontalCid, horizontalError)
+  truthy(verticalCid, verticalError)
+  truthy(horizontalCid:match(
+    "^node:pre:[0-9a-f]+:anchor:edge:pre:[0-9a-f]+$"),
+    "horizontal crossing node has no portable edge anchor")
+  truthy(verticalCid:match(
+    "^node:pre:[0-9a-f]+:anchor:edge:pre:[0-9a-f]+$"),
+    "vertical crossing node has no portable edge anchor")
+  truthy(horizontalCid ~= verticalCid,
+    "co-located crossing nodes collapsed to one canonical identity")
+  equal(#canonical.snapshot(origin), 0,
+    "pre-consensus anchored lookup mutated the origin registry")
+
+  local proposal = linearProposal(-1, -2, -3, "track", 1, false)
+  table.remove(proposal.streetProposal.nodesToAdd, 1)
+  proposal.streetProposal.edgesToAdd[1].comp.node0 = 10
+  proposal.streetProposal.edgesToRemove = { 21 }
+  proposal.streetProposal.nodesToRemove = { 11 }
+  local transaction, transactionError = proposalCodec.normalise(
+    proposal, "company:1", {
+      resolveCanonical = function(kind, localId)
+        return world.identifyExisting(origin, localId, kind)
+      end,
+    })
+  truthy(transaction, transactionError)
+  equal(transaction.edges[1].node0.cid, horizontalCid)
+  equal(transaction.remove.nodes[1], verticalCid)
+  equal(transaction.remove.edges[1], assert(world.identifyExisting(origin, 21, "edge")))
+  truthy(not json.encode(transaction):match('"localId"'),
+    "anchored crossing proposal leaked a machine-local node id")
+
+  local remoteNodes = {
+    [1010] = { position = { x = 100, y = 100, z = 0 } },
+    [1011] = { position = { x = 100, y = 100, z = 0 } },
+    [1012] = { position = { x = 180, y = 100, z = 0 } },
+    [1013] = { position = { x = 100, y = 180, z = 0 } },
+  }
+  local remoteEdges = {
+    [2020] = { node0 = 1010, node1 = 1012 },
+    [2021] = { node0 = 1011, node1 = 1013 },
+  }
+  install(remoteNodes, remoteEdges)
+  local remote = canonical.newState()
+  equal(world.findPreExistingLocal(remote, horizontalCid, "node"), 1010)
+  equal(world.findPreExistingLocal(remote, verticalCid, "node"), 1011)
+  equal(world.resolvePreExisting(remote, horizontalCid, "node", {
+    owner = "company:1",
+  }), 1010)
+  equal(world.resolvePreExisting(remote, verticalCid, "node", {
+    owner = "company:1",
+  }), 1011)
+  equal(remote.byCanonical[horizontalCid].metadata.owner, "company:1")
+  truthy(remote.byCanonical[horizontalCid].metadata.anchorEdgeCid:match("^edge:pre:"))
+
+  install(originNodes, originEdges)
+  local eventOrigin = canonical.newState()
+  truthy(canonical.bind(eventOrigin, "edge:event:crossing:1", "edge", 20))
+  local eventNodeCid = assert(world.identifyExisting(eventOrigin, 10, "node"))
+  truthy(eventNodeCid:find(":anchor:edge:event:crossing:1", 1, true) ~= nil,
+    "event-created incident edge was not usable as a node anchor")
+  install(remoteNodes, remoteEdges)
+  local eventRemote = canonical.newState()
+  truthy(canonical.bind(eventRemote, "edge:event:crossing:1", "edge", 2020))
+  equal(world.findPreExistingLocal(eventRemote, eventNodeCid, "node"), 1010)
+
+  local distantFingerprint = world.fingerprint(1013, "node")
+  local forged = "node:pre:" .. distantFingerprint .. ":anchor:edge:event:crossing:1"
+  local forgedLocal, forgedError = world.findPreExistingLocal(eventRemote, forged, "node")
+  api, game = previousApi, previousGame
+  truthy(forgedLocal == nil and tostring(forgedError):find("no endpoint") ~= nil,
+    "an anchor edge admitted a node fingerprint absent from its endpoints")
+end)
+
 test("pre-consensus existing identity lookup never mutates the origin registry", function()
   local previousApi, previousGame = api, game
   local nodes = {

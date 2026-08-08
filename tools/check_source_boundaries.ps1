@@ -63,6 +63,7 @@ $budgets = [ordered]@{
     'native\src\native_hook_status.cpp' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_identity.lua' = 200
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_station_reading.lua' = 120
@@ -144,6 +145,9 @@ $worldSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\world.lua') -Raw
 if (-not $worldSource.Contains('require "tpf2_mp/native_ownership_projection"')) {
     throw 'World runtime no longer composes the native ownership projection boundary.'
+}
+if (-not $worldSource.Contains('require "tpf2_mp/world_identity"')) {
+    throw 'World runtime no longer composes the collision-safe identity boundary.'
 }
 if (-not $worldSource.Contains('require "tpf2_mp/world_operational_telemetry"')) {
     throw 'World runtime no longer composes the operational telemetry boundary.'

@@ -6,6 +6,7 @@ local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
 local townReadingModule = require "tpf2_mp/world_town_reading"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
+local identityModule = require "tpf2_mp/world_identity"
 
 local M = {}
 
@@ -544,9 +545,9 @@ function M.fingerprint(id, kind)
   -- fallback representation commonly includes the engine-local entity id,
   -- which made an otherwise identical public road junction acquire a
   -- different canonical identity after creation order diverged. Topology is
-  -- therefore identified only by quantised geometry. Exact-position
-  -- collisions remain deliberately ambiguous and are rejected by the lazy
-  -- resolver below.
+  -- therefore identified only by quantised geometry. Exact-position node
+  -- collisions use a portable incident-edge anchor when one exists; remaining
+  -- topology ambiguity is rejected by the lazy resolver below.
   local value = { kind = kind }
   if kind == "node" then
     value.position = positionOfEntity(id)
@@ -607,88 +608,18 @@ function M.fingerprint(id, kind)
   return hash.value(value)
 end
 
--- Resolve an unbound pre-existing canonical identity without changing the
--- registry. This is used by the network PREPARE phase: every peer must prove
--- that it can materialise all inputs before any peer is allowed to mutate its
--- world. Event-created identities cannot be rediscovered geometrically and
--- must already be bound by their earlier committed output.
-function M.findPreExistingLocal(registry, cid, expectedKind)
-  if type(cid) ~= "string" or cid == "" then return nil, "canonical identity is missing" end
-  local existing = canonical.resolveLocal(registry, cid)
-  if existing ~= nil then
-    local binding = registry.byCanonical[cid]
-    if expectedKind and binding and binding.kind ~= expectedKind then
-      return nil, "canonical identity kind differs from expected " .. tostring(expectedKind)
-    end
-    return existing
-  end
-
-  local kind, fingerprint, suffix = cid:match("^([%w_]+):pre:([0-9a-f]+)(.*)$")
-  if not kind or suffix ~= "" then
-    return nil, "canonical identity is not a uniquely discoverable pre-existing object: " .. cid
-  end
-  if expectedKind and kind ~= expectedKind then
-    return nil, "canonical identity kind differs from expected " .. tostring(expectedKind)
-  end
-  local ids = listKind(kind)
-  if not ids then return nil, "pre-existing " .. kind .. " enumeration is unavailable" end
-
-  local matches = {}
-  for _, localId in ipairs(ids) do
-    if M.fingerprint(localId, kind) == fingerprint then matches[#matches + 1] = localId end
-  end
-  if #matches == 0 then
-    return nil, "no local " .. kind .. " matches canonical fingerprint " .. fingerprint
-  end
-  if #matches > 1 then
-    return nil, "canonical " .. kind .. " fingerprint " .. fingerprint
-      .. " is ambiguous across " .. tostring(#matches) .. " local objects"
-  end
-  local occupied = canonical.resolveCanonical(registry, kind, matches[1])
-  if occupied and occupied ~= cid then
-    return nil, "matching local " .. kind .. " is already bound to " .. occupied
-  end
-  return matches[1]
-end
-
--- Produce the portable identity for a local existing object without changing
--- the canonical registry. GUI proposal capture runs before the host orders a
--- PREPARE, so binding here would mutate only the origin peer and make the
--- prepare-core digests disagree. The later committed proposal binds the
--- identity on every peer through resolvePreExisting().
-function M.identifyExisting(registry, id, kind)
-  id = tonumber(id)
-  if id == nil or id < 0 or id ~= math.floor(id) then
-    return nil, "existing entity id is invalid"
-  end
-  kind = kind or M.kindOf(id)
-  if type(kind) ~= "string" or kind == "unknown" or kind == "entity" then
-    return nil, "existing entity kind is not canonically identifiable"
-  end
-  local existing = canonical.resolveCanonical(registry, kind, id)
-  if existing then return existing end
-
-  local fingerprint = M.fingerprint(id, kind)
-  local cid = canonical.preExistingId(kind, fingerprint)
-  local resolved, resolveError = M.findPreExistingLocal(registry, cid, kind)
-  if resolved == nil then return nil, resolveError end
-  if tonumber(resolved) ~= id then
-    return nil, "canonical identity resolves to a different local " .. tostring(kind)
-  end
-  return cid
-end
-
-function M.resolvePreExisting(registry, cid, expectedKind, metadata)
-  local localId, findError = M.findPreExistingLocal(registry, cid, expectedKind)
-  if localId == nil then return nil, findError end
-  if canonical.resolveLocal(registry, cid) ~= nil then return localId end
-  local bindingMetadata = util.deepCopy(metadata or {})
-  bindingMetadata.fingerprint = cid:match(":pre:([0-9a-f]+)$")
-  bindingMetadata.lazyResolved = true
-  local ok, bindError = canonical.bind(registry, cid, expectedKind, localId, bindingMetadata)
-  if not ok then return nil, bindError end
-  return localId
-end
+-- Lazy canonical identity, including co-located topology nodes anchored to a
+-- stable incident edge, lives behind a small boundary to keep world.lua from
+-- becoming the protocol implementation as well as the native-world adapter.
+local identity = identityModule.new({
+  kindOf = M.kindOf,
+  fingerprint = M.fingerprint,
+  listKind = listKind,
+  baseEdge = function(id) return component(id, api.type.ComponentType.BASE_EDGE) end,
+})
+M.findPreExistingLocal = identity.findPreExistingLocal
+M.identifyExisting = identity.identifyExisting
+M.resolvePreExisting = identity.resolvePreExisting
 
 function M.bindExisting(registry, id, kind, metadata)
   kind = kind or M.kindOf(id)

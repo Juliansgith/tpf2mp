@@ -2,6 +2,11 @@
 
 Last updated: 2026-08-08 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
 
+[Collision-safe topology node identity](COLLISION_SAFE_TOPOLOGY_NODE_IDENTITY_2026-08-08.md)
+records the live road-crossing ambiguity, incident-edge-anchored canonical node
+identity, unchanged wire schema, adversarial divergent-ID proof, and remaining
+fresh two-process acceptance pass.
+
 [Depot-open UI hang and GUI performance correction](DEPOT_UI_HANG_AND_GUI_PERFORMANCE_2026-08-08.md)
 records the exact Build 35924 ContentView assertion, preserved hang evidence,
 unsafe GUI reentrancy, the no-stock-child correction, repeated native depot

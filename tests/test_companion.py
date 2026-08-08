@@ -1281,6 +1281,38 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "canonical list"):
             validate_action({"type": "proposal.build", "transaction": transaction})
 
+    def test_proposal_accepts_collision_safe_anchored_node_references(self) -> None:
+        transaction = proposal_transaction("company:1")
+        anchored = "node:pre:f9fc0be2:anchor:edge:pre:18b85762"
+        transaction["edges"][0]["node0"] = {"cid": anchored}
+        transaction["remove"]["nodes"] = [anchored]
+        content = {
+            key: transaction[key]
+            for key in (
+                "schemaVersion", "companyCid", "cost", "nodes", "edges",
+                "edgeObjects", "remove",
+            )
+        }
+        transaction["digest"] = checksum(content)
+        transaction["transactionId"] = f"proposal:{transaction['digest']}"
+        accepted = validate_action({"type": "proposal.build", "transaction": transaction})
+        self.assertEqual(accepted["transaction"]["edges"][0]["node0"], {"cid": anchored})
+        self.assertEqual(accepted["transaction"]["remove"]["nodes"], [anchored])
+
+        malformed = json.loads(json.dumps(transaction))
+        malformed["edges"][0]["node0"] = {"cid": "edge:pre:18b85762"}
+        content = {
+            key: malformed[key]
+            for key in (
+                "schemaVersion", "companyCid", "cost", "nodes", "edges",
+                "edgeObjects", "remove",
+            )
+        }
+        malformed["digest"] = checksum(content)
+        malformed["transactionId"] = f"proposal:{malformed['digest']}"
+        with self.assertRaisesRegex(ProtocolError, "canonical node id"):
+            validate_action({"type": "proposal.build", "transaction": malformed})
+
 
 class BridgeTests(unittest.TestCase):
     def test_atomic_write_retries_transient_replace_denial(self) -> None:

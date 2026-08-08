@@ -31,7 +31,7 @@ TPF2MP contains two usable but differently mature modes:
   input; registered and ordinary lines now both use a short guarded physical
   release after every peer arrives. The prompt path has exact two-process proof, and human
   speed-3 play recovered after deliberately delaying one peer. The rest
-  of the vehicle lifecycle, complex topology, scripted callbacks,
+  of the vehicle lifecycle, broader complex topology, scripted callbacks,
   autonomous drift, and a two-computer session remain open.
 
 The network architecture has crossed the populated-world convergence gate. It
@@ -47,6 +47,10 @@ bounded discovery, current-schema GUI-state acceptance, and 30-frame snapshot
 projection. The exact populated crash save then survived five native depot/
 Vehicle Manager open-close cycles; the two views showed roughly 135-163 and
 159 FPS during the captured idle checks, and the full companion audit passed.
+The same live lab exposed two co-located native nodes when track crossed a road.
+Those nodes now use a sorted canonical incident-edge anchor; divergent-ID add,
+replacement, and removal paths pass offline, while a fresh live crossing pass
+remains pending.
 
 ## Strongest current evidence
 
@@ -189,7 +193,8 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 - Public roads can lazily resolve a pre-existing town-road junction from exact
   canonical position even when that junction was not present in the peer's
   original binding map. Base-node and base-edge fingerprints exclude unstable
-  native names and IDs; ambiguous geometric matches fail closed.
+  native names and IDs. Co-located nodes use a canonical incident-edge anchor;
+  ambiguity without a unique portable anchor still fails closed.
 - Road/track resource resolution is data-driven by repository name, so a
   byte-identical mod-added road or track does not need a TPF2MP hardcoded ID.
   Arbitrary scripted mods still need explicit canonical command adapters and a
@@ -453,13 +458,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 88 core Lua tests and 75 cross-language economy scenarios;
+  - 90 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 104-event replay
     integrations;
-  - 72 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 75 mod Lua and 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 104 Python protocol/network/checkpoint/recovery/report tests.
+  - 105 Python protocol/network/checkpoint/recovery/report tests.
 
 ## Not yet established
 
@@ -472,7 +477,8 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   recover at the next station; automatic disconnect/reconnect recovery remains
   open.
 - Moving populated worlds remaining equivalent over a long unpaused soak.
-- Complex topology splits/joins, bridges, tunnels, terrain mutation, scripted
+- Fresh live proof of the collision-safe road/rail crossing path. Broader
+  complex topology splits/joins, bridges, tunnels, terrain mutation, scripted
   construction callbacks, mod construction variants, and arbitrary command
   families. The bounded stock signals/depot/station/graphless-asset matrix now
   has automated, exact-build, and ordinary two-process UI proof. Stock
