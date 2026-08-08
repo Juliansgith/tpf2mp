@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-08 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.13.0`.
+Last updated: 2026-08-08 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[Stock vehicle lifecycle capture](STOCK_VEHICLE_LIFECYCLE_CAPTURE_2026-08-08.md)
+records the exact Build 35924 layouts for tags 7-14/30, the pointer-free V2
+envelope, stock config correlation, fail-closed bounds, automated proof, and
+the remaining live/destructive acceptance boundary.
 
 [Collision-safe topology node identity](COLLISION_SAFE_TOPOLOGY_NODE_IDENTITY_2026-08-08.md)
 records the live road-crossing ambiguity, incident-edge-anchored canonical node

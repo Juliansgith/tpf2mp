@@ -42,11 +42,12 @@ struct SuppressedLineCommand {
   std::vector<SuppressedLineStop> stops;
 };
 
-// Pointer-free scalar half of a suppressed railway-vehicle command. For
-// SetLine, target/secondary/value are vehicle/line/stop-index. For BuyVehicle,
-// target/secondary are native-player/depot and value is zero; the consist is
-// supplied by the correlated stock GUI event rather than dereferencing an
-// undocumented native TransportVehicleConfig graph in the hook.
+// Pointer-free scalar half of a suppressed railway-vehicle command. SetLine
+// uses vehicle/line/stop-index; BuyVehicle uses native-player/depot/zero and
+// ReplaceVehicle uses vehicle/zero/zero and also correlates with the stock GUI.
+// Lifecycle commands use vehicle/zero/scalar, where booleans are 0/1 and
+// maintenance is basis points. SellVehicle uses first-target/selection-count/0;
+// Lua accepts only count one until the canonical model has atomic batch sale.
 struct SuppressedVehicleCommand {
   int tag{-1};
   std::int32_t target{-1};

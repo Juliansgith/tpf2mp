@@ -1363,11 +1363,22 @@ function M.new(deps)
           if gui.snapshot and gui.snapshot.networkMode == "network" then
             local entity = type(param) == "table" and tonumber(param.entity) or -1
             if entity and entity >= 0 then
-              queueAction({ type = "operation.capture", capture = {
+              local capture = {
                 kind = "vehicle.replace",
                 targetLocalId = entity,
-                vehicleConfig = type(param) == "table" and param.vehicleConfig or nil,
-              } })
+                vehicleConfig = type(param) == "table"
+                  and util.deepCopy(param.vehicleConfig) or nil,
+              }
+              if type(rawget(_G, "tpf2mp_native_take_suppressed_vehicle_command")) == "function" then
+                gui.pendingNativeVehicleGuiCaptures[#gui.pendingNativeVehicleGuiCaptures + 1] = {
+                  expectedTag = 14,
+                  capture = capture,
+                  capturedFrame = gui.frames,
+                  maximumFrame = gui.frames + 240,
+                }
+              else
+                queueAction({ type = "operation.capture", capture = capture })
+              end
             else
               local capture = {
                 kind = "vehicle.buy",
@@ -1376,6 +1387,7 @@ function M.new(deps)
               }
               if type(rawget(_G, "tpf2mp_native_take_suppressed_vehicle_command")) == "function" then
                 gui.pendingNativeVehicleGuiCaptures[#gui.pendingNativeVehicleGuiCaptures + 1] = {
+                  expectedTag = 13,
                   capture = capture,
                   capturedFrame = gui.frames,
                   maximumFrame = gui.frames + 240,

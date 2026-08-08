@@ -997,7 +997,7 @@ script.guiHandleEvent("vehicleManager", "accept", {
     "vehicle/waggon/open_1910.mdl",
   },
 })
-nativeVehicleCommands[#nativeVehicleCommands + 1] = "V1|13|100|750|0"
+nativeVehicleCommands[#nativeVehicleCommands + 1] = "V2|13|100|750|0"
 script.guiUpdate()
 local vanillaBuy = sentEvents[#sentEvents]
 assert(vanillaBuy.name == "intent" and vanillaBuy.param.type == "operation.capture"
@@ -1008,7 +1008,35 @@ assert(vanillaBuy.name == "intent" and vanillaBuy.param.type == "operation.captu
   and vanillaBuy.param.capture.vehicleConfig[2] == "vehicle/waggon/open_1910.mdl",
   "suppressed stock train purchase was not correlated into vehicle.buy")
 
-nativeVehicleCommands[#nativeVehicleCommands + 1] = "V1|6|760|700|-1"
+local replacementConfig = {
+  "vehicle/train/db_v100_v2.mdl",
+  "vehicle/waggon/open_1910.mdl",
+}
+script.guiHandleEvent("vehicleManager", "accept", {
+  entity = 760,
+  vehicleConfig = replacementConfig,
+})
+local replacementEventCount = #sentEvents
+nativeVehicleCommands[#nativeVehicleCommands + 1] = "V2|14|760|0|0"
+local vanillaReplace
+for _ = 1, 8 do
+  script.guiUpdate()
+  for eventIndex = replacementEventCount + 1, #sentEvents do
+    local candidate = sentEvents[eventIndex]
+    if candidate.name == "intent" and candidate.param.type == "operation.capture"
+      and candidate.param.capture.kind == "vehicle.replace" then
+      vanillaReplace = candidate
+      break
+    end
+  end
+  if vanillaReplace then break end
+end
+assert(vanillaReplace and vanillaReplace.param.capture.targetLocalId == 760
+    and vanillaReplace.param.capture.vehicleConfig[1] == replacementConfig[1]
+    and vanillaReplace.param.capture.vehicleConfig[2] == replacementConfig[2],
+  "suppressed stock replacement was not correlated into vehicle.replace")
+
+nativeVehicleCommands[#nativeVehicleCommands + 1] = "V2|6|760|700|-1"
 script.guiUpdate()
 local vanillaAssign = sentEvents[#sentEvents]
 assert(vanillaAssign.name == "intent" and vanillaAssign.param.type == "operation.capture"
@@ -1017,6 +1045,78 @@ assert(vanillaAssign.name == "intent" and vanillaAssign.param.type == "operation
   and vanillaAssign.param.capture.lineLocalId == 700
   and vanillaAssign.param.capture.stopIndex == -1,
   "suppressed stock automatic-stop SetLine was not converted into vehicle.assign")
+
+local lifecycleCases = {
+  { "V2|7|760|0|0", "vehicle.reverse", function(capture)
+      return capture.targetLocalId == 760
+    end, "Reverse" },
+  { "V2|8|760|0|1", "vehicle.stop", function(capture)
+      return capture.targetLocalId == 760 and capture.stopped == true
+    end, "SetUserStopped" },
+  { "V2|9|760|0|8750", "vehicle.maintenance", function(capture)
+      return capture.targetLocalId == 760 and capture.valueBasisPoints == 8750
+    end, "maintenance" },
+  { "V2|10|760|0|0", "vehicle.depart", function(capture)
+      return capture.targetLocalId == 760
+    end, "SetVehicleShouldDepart" },
+  { "V2|11|760|0|0", "vehicle.send_to_depot", function(capture)
+      return capture.targetLocalId == 760 and capture.sellOnArrival == false
+    end, "SendToDepot" },
+  { "V2|12|760|1|0", "vehicle.sell", function(capture)
+      return capture.targetLocalId == 760
+    end, "single SellVehicle" },
+  { "V2|30|760|0|1", "vehicle.manual_departure", function(capture)
+      return capture.targetLocalId == 760 and capture.manual == true
+    end, "manual departure" },
+}
+for _, case in ipairs(lifecycleCases) do
+  local priorEventCount = #sentEvents
+  nativeVehicleCommands[#nativeVehicleCommands + 1] = case[1]
+  local event, capture
+  for _ = 1, 8 do
+    script.guiUpdate()
+    for eventIndex = priorEventCount + 1, #sentEvents do
+      local candidate = sentEvents[eventIndex]
+      local candidateCapture = candidate and candidate.param and candidate.param.capture or {}
+      if candidate.name == "intent" and candidate.param.type == "operation.capture"
+        and candidateCapture.kind == case[2] then
+        event, capture = candidate, candidateCapture
+        break
+      end
+    end
+    if event then break end
+  end
+  assert(event and case[3](capture),
+    "suppressed stock " .. case[4] .. " was not converted into " .. case[2])
+end
+
+-- V1 remains a narrow compatibility decoder for a stale 0.13 hook. It must
+-- never be accepted as evidence for lifecycle tags introduced by V2.
+local decoderGui = {
+  snapshot = { networkMode = "network", activeCompanyCid = "company:1" },
+  frames = 1,
+  pendingNativeVehicleCommands = {}, pendingNativeVehicleGuiCaptures = {},
+  nativeVehicleCapture = {},
+}
+local decodedActions = {}
+local decoderRuntime = require("tpf2_mp/gui_vehicle_capture_runtime").install(decoderGui, {
+  queueAction = function(action) decodedActions[#decodedActions + 1] = action end,
+  maxStops = 256,
+})
+local decoder = decoderRuntime.decode
+assert(decoder("V1|6|760|700|-1") and decoder("V1|13|100|750|0"),
+  "narrow V1 vehicle envelope compatibility regressed")
+for _, invalid in ipairs({
+  "V1|7|760|0|0", "V2|8|760|0|2", "V2|9|760|0|10001",
+  "V2|10|760|1|0", "V2|12|760|0|0", "V2|12|760|257|0",
+  "V2|12|760|1|1", "V2|14|760|0|1", "V2|30|760|0|-1",
+}) do
+  assert(not decoder(invalid), "invalid native lifecycle envelope was admitted: " .. invalid)
+end
+nativeVehicleCommands[#nativeVehicleCommands + 1] = "V2|12|760|2|0"
+assert(decoderRuntime.process() == false and #decodedActions == 0
+    and tostring(decoderGui.lastError):find("atomic batch sale", 1, true),
+  "multi-vehicle stock sale was not blocked before canonical mutation")
 
 -- A canonical replay arrives after the issuing builder's original command was
 -- suppressed.  If that replay replaces a signalled edge, Build 35924 can keep

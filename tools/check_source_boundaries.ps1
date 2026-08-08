@@ -60,6 +60,7 @@ $budgets = [ordered]@{
     'companion\tpf2mp\paused_deadline.py' = 210
     'native\src\hook_dll.cpp' = 1250
     'native\src\native_command_codec.cpp' = 350
+    'native\src\native_vehicle_command_codec.cpp' = 180
     'native\src\native_hook_status.cpp' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
@@ -237,9 +238,16 @@ foreach ($requiredHeader in @('native_command_codec.hpp', 'native_hook_status.hp
         throw "Native hook no longer composes required support header $requiredHeader"
     }
 }
+$nativeCmakeSource = Get-Content -LiteralPath (Join-Path $root 'native\CMakeLists.txt') -Raw
+foreach ($requiredSource in @('src/native_command_codec.cpp', 'src/native_vehicle_command_codec.cpp')) {
+    if (-not $nativeCmakeSource.Contains($requiredSource)) {
+        throw "Native hook support library no longer composes required source $requiredSource"
+    }
+}
 foreach ($movedDefinition in @(
     'struct SuppressedLineCommand {',
     'bool DecodeSuppressedLineCommand(',
+    'bool DecodeSuppressedVehicleCommand(',
     'struct HookStatusView {'
 )) {
     if ($nativeHookSource.Contains($movedDefinition)) {

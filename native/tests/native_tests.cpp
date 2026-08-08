@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 
 int main(int argc, char** argv) {
   static_assert(sizeof(void*) == 8, "native probe must be built for x64");
@@ -31,6 +32,13 @@ int main(int argc, char** argv) {
   static_assert(tpf2mp::profile::kLineStopTerminalOffset == 0x08);
   static_assert(tpf2mp::profile::kLineStopAlternativeTerminalsOffset == 0x10);
   static_assert(tpf2mp::profile::kStationTerminalSize == 0x08);
+  static_assert(tpf2mp::profile::kSetUserStoppedValueOffset == 0x04);
+  static_assert(tpf2mp::profile::kSetVehicleMaintenanceValueOffset == 0x04);
+  static_assert(tpf2mp::profile::kSendToDepotSellOnArrivalOffset == 0x04);
+  static_assert(tpf2mp::profile::kSetVehicleManualDepartureValueOffset == 0x04);
+  static_assert(tpf2mp::profile::kReplaceVehicleTargetOffset == 0x00);
+  static_assert(tpf2mp::profile::kSellVehicleMinimumSize == 0x18);
+  static_assert(tpf2mp::profile::kSellVehicleTargetSize == sizeof(std::int32_t));
   static_assert(sizeof(tpf2mp::native_command::SuppressedStationTerminal) ==
                 tpf2mp::profile::kStationTerminalSize);
   static_assert(tpf2mp::profile::kMaximumAlternativeTerminalsPerStop == 64);
@@ -135,7 +143,7 @@ int main(int argc, char** argv) {
       decoded_set_line.secondary != expected_line ||
       decoded_set_line.value != expected_stop ||
       tpf2mp::native_command::EncodeSuppressedVehicleCommand(decoded_set_line) !=
-          "V1|6|71|42|-1") {
+          "V2|6|71|42|-1") {
     std::cerr << "pointer-free automatic-stop SetLine vehicle codec is invalid\n";
     return 1;
   }
@@ -146,7 +154,7 @@ int main(int argc, char** argv) {
           6, set_line_command.data(), decoded_set_line) ||
       decoded_set_line.value != explicit_stop ||
       tpf2mp::native_command::EncodeSuppressedVehicleCommand(decoded_set_line) !=
-          "V1|6|71|42|3") {
+          "V2|6|71|42|3") {
     std::cerr << "pointer-free explicit-stop SetLine vehicle codec is invalid\n";
     return 1;
   }
@@ -178,8 +186,165 @@ int main(int argc, char** argv) {
   if (!tpf2mp::native_command::DecodeSuppressedVehicleCommand(
           13, buy_command.data(), decoded_buy) ||
       tpf2mp::native_command::EncodeSuppressedVehicleCommand(decoded_buy) !=
-          "V1|13|9|88|0") {
+          "V2|13|9|88|0") {
     std::cerr << "pointer-free BuyVehicle scalar codec is invalid\n";
+    return 1;
+  }
+  auto vehicle_codec_matches = [](const int tag, const void* data,
+                                  const std::int32_t target,
+                                  const std::int32_t secondary,
+                                  const std::int32_t value,
+                                  const std::string_view envelope) {
+    tpf2mp::native_command::SuppressedVehicleCommand decoded;
+    return tpf2mp::native_command::DecodeSuppressedVehicleCommand(tag, data, decoded) &&
+           decoded.target == target && decoded.secondary == secondary &&
+           decoded.value == value &&
+           tpf2mp::native_command::EncodeSuppressedVehicleCommand(decoded) == envelope;
+  };
+  std::array<std::uint8_t, tpf2mp::profile::kReverseVehicleMinimumSize> reverse_command{};
+  std::memcpy(reverse_command.data() + tpf2mp::profile::kReverseVehicleTargetOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  if (!vehicle_codec_matches(7, reverse_command.data(), expected_vehicle, 0, 0,
+                             "V2|7|71|0|0")) {
+    std::cerr << "Reverse vehicle scalar codec is invalid\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kSetUserStoppedMinimumSize> stop_command{};
+  const std::uint8_t enabled = 1;
+  std::memcpy(stop_command.data() + tpf2mp::profile::kSetUserStoppedTargetOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  std::memcpy(stop_command.data() + tpf2mp::profile::kSetUserStoppedValueOffset,
+              &enabled, sizeof(enabled));
+  if (!vehicle_codec_matches(8, stop_command.data(), expected_vehicle, 0, 1,
+                             "V2|8|71|0|1")) {
+    std::cerr << "SetUserStopped vehicle scalar codec is invalid\n";
+    return 1;
+  }
+  const std::uint8_t invalid_boolean = 2;
+  std::memcpy(stop_command.data() + tpf2mp::profile::kSetUserStoppedValueOffset,
+              &invalid_boolean, sizeof(invalid_boolean));
+  tpf2mp::native_command::SuppressedVehicleCommand invalid_vehicle;
+  if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          8, stop_command.data(), invalid_vehicle)) {
+    std::cerr << "SetUserStopped codec admitted a non-boolean byte\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kSetVehicleMaintenanceMinimumSize>
+      maintenance_command{};
+  const float expected_maintenance = 0.625F;
+  std::memcpy(maintenance_command.data() +
+                  tpf2mp::profile::kSetVehicleMaintenanceTargetOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  std::memcpy(maintenance_command.data() +
+                  tpf2mp::profile::kSetVehicleMaintenanceValueOffset,
+              &expected_maintenance, sizeof(expected_maintenance));
+  if (!vehicle_codec_matches(9, maintenance_command.data(), expected_vehicle, 0, 6250,
+                             "V2|9|71|0|6250")) {
+    std::cerr << "maintenance vehicle scalar codec is invalid\n";
+    return 1;
+  }
+  for (const float invalid_maintenance : {
+           std::numeric_limits<float>::quiet_NaN(), -0.01F, 1.01F,
+           std::numeric_limits<float>::infinity()}) {
+    std::memcpy(maintenance_command.data() +
+                    tpf2mp::profile::kSetVehicleMaintenanceValueOffset,
+                &invalid_maintenance, sizeof(invalid_maintenance));
+    if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+            9, maintenance_command.data(), invalid_vehicle)) {
+      std::cerr << "maintenance codec admitted a non-finite or out-of-range value\n";
+      return 1;
+    }
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kSetVehicleShouldDepartMinimumSize>
+      depart_command{};
+  std::memcpy(depart_command.data() +
+                  tpf2mp::profile::kSetVehicleShouldDepartTargetOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  if (!vehicle_codec_matches(10, depart_command.data(), expected_vehicle, 0, 0,
+                             "V2|10|71|0|0")) {
+    std::cerr << "SetVehicleShouldDepart scalar codec is invalid\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kSendToDepotMinimumSize> depot_command{};
+  std::memcpy(depot_command.data() + tpf2mp::profile::kSendToDepotTargetOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  std::memcpy(depot_command.data() +
+                  tpf2mp::profile::kSendToDepotSellOnArrivalOffset,
+              &enabled, sizeof(enabled));
+  if (!vehicle_codec_matches(11, depot_command.data(), expected_vehicle, 0, 1,
+                             "V2|11|71|0|1")) {
+    std::cerr << "SendToDepot scalar codec is invalid\n";
+    return 1;
+  }
+  std::array<std::int32_t, 1> sale_targets{expected_vehicle};
+  tpf2mp::native_command::NativeVectorLayout sale_layout{
+      reinterpret_cast<std::uint8_t*>(sale_targets.data()),
+      reinterpret_cast<std::uint8_t*>(sale_targets.data() + sale_targets.size()),
+      reinterpret_cast<std::uint8_t*>(sale_targets.data() + sale_targets.size()),
+  };
+  std::array<std::uint8_t, tpf2mp::profile::kSellVehicleMinimumSize> sale_command{};
+  std::memcpy(sale_command.data() + tpf2mp::profile::kSellVehicleTargetsOffset,
+              &sale_layout, sizeof(sale_layout));
+  if (!vehicle_codec_matches(12, sale_command.data(), expected_vehicle, 1, 0,
+                             "V2|12|71|1|0")) {
+    std::cerr << "single SellVehicle vector codec is invalid\n";
+    return 1;
+  }
+  std::array<std::int32_t, 2> sale_batch{expected_vehicle, 72};
+  sale_layout = {
+      reinterpret_cast<std::uint8_t*>(sale_batch.data()),
+      reinterpret_cast<std::uint8_t*>(sale_batch.data() + sale_batch.size()),
+      reinterpret_cast<std::uint8_t*>(sale_batch.data() + sale_batch.size()),
+  };
+  std::memcpy(sale_command.data() + tpf2mp::profile::kSellVehicleTargetsOffset,
+              &sale_layout, sizeof(sale_layout));
+  if (!vehicle_codec_matches(12, sale_command.data(), expected_vehicle, 2, 0,
+                             "V2|12|71|2|0")) {
+    std::cerr << "multi SellVehicle vector metadata codec is invalid\n";
+    return 1;
+  }
+  sale_batch[1] = -1;
+  if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          12, sale_command.data(), invalid_vehicle)) {
+    std::cerr << "SellVehicle codec admitted a negative entity in its vector\n";
+    return 1;
+  }
+  sale_layout.end = sale_layout.begin;
+  std::memcpy(sale_command.data() + tpf2mp::profile::kSellVehicleTargetsOffset,
+              &sale_layout, sizeof(sale_layout));
+  if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          12, sale_command.data(), invalid_vehicle)) {
+    std::cerr << "SellVehicle codec admitted an empty selection\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kReplaceVehicleMinimumSize>
+      replace_command{};
+  std::memcpy(replace_command.data() + tpf2mp::profile::kReplaceVehicleTargetOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  if (!vehicle_codec_matches(14, replace_command.data(), expected_vehicle, 0, 0,
+                             "V2|14|71|0|0")) {
+    std::cerr << "ReplaceVehicle scalar correlation codec is invalid\n";
+    return 1;
+  }
+  std::array<std::uint8_t, tpf2mp::profile::kSetVehicleManualDepartureMinimumSize>
+      manual_departure_command{};
+  std::memcpy(manual_departure_command.data() +
+                  tpf2mp::profile::kSetVehicleManualDepartureTargetOffset,
+              &expected_vehicle, sizeof(expected_vehicle));
+  std::memcpy(manual_departure_command.data() +
+                  tpf2mp::profile::kSetVehicleManualDepartureValueOffset,
+              &enabled, sizeof(enabled));
+  if (!vehicle_codec_matches(30, manual_departure_command.data(), expected_vehicle, 0, 1,
+                             "V2|30|71|0|1")) {
+    std::cerr << "SetVehicleManualDeparture scalar codec is invalid\n";
+    return 1;
+  }
+  const std::int32_t invalid_vehicle_id = -1;
+  std::memcpy(reverse_command.data() + tpf2mp::profile::kReverseVehicleTargetOffset,
+              &invalid_vehicle_id, sizeof(invalid_vehicle_id));
+  if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          7, reverse_command.data(), invalid_vehicle)) {
+    std::cerr << "lifecycle codec admitted a negative vehicle id\n";
     return 1;
   }
   const std::string status_stage = "test";

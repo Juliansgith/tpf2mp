@@ -139,7 +139,7 @@ GUI/native-adapter modules:
 - `gui_entry_points.lua` idempotently mounts the overlay reopen controls into
   the stock `gameInfo.layout` and the parent of the pause menu's quit button.
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer
-  installation, bounded build/line/speed capture, and GUI callback lifecycle.
+  installation, bounded build/line/speed/vehicle capture, and GUI callback lifecycle.
 - `gui_line_command_codec.lua` strictly decodes the pointer-free native line
   envelope, including primary terminals and typed `{station, terminal}`
   alternative-platform selections.
@@ -187,15 +187,16 @@ captured table reference would therefore mutate stale state after loading.
 - `native_common.cpp` owns executable validation and shared file utilities.
 - `native_command_codec.cpp` owns bounded exact-layout reads plus typed
   line/name/color decoding, eight-byte `StationTerminal` vector reads, and
-  pointer-free encoding.
+  pointer-free line encoding. `native_vehicle_command_codec.cpp` owns the
+  exact-profile pointer-free vehicle scalar decoder and V2 encoder.
 - `native_hook_status.cpp` owns the stable native status JSON schema and formats
   a lock-protected view supplied by the hook.
 - `injector.cpp` owns exact-profile verification and DLL injection.
 - `hook_dll.cpp` owns hook installation, visitor gates, capture queues, Lua
   bindings, and the synchronized native state presented to the support modules.
 
-Future typed vehicle layouts belong in `native_command_codec.cpp`, never inline
-in detour bodies. Every such change requires native build/CTest and exact-
+Future typed vehicle layouts belong in `native_vehicle_command_codec.cpp`, never
+inline in detour bodies. Every such change requires native build/CTest and exact-
 executable profile verification in the same commit.
 
 ## Dependency and authority rules

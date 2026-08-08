@@ -1233,6 +1233,66 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "vehicle.assign"):
             validate_action({"type": "operation.execute", "transaction": invalid})
 
+    def test_canonical_vehicle_lifecycle_scalar_contract(self) -> None:
+        cases = {
+            "vehicle.reverse": {"targetCid": "vehicle:pre:abc"},
+            "vehicle.stop": {"targetCid": "vehicle:pre:abc", "stopped": True},
+            "vehicle.maintenance": {
+                "targetCid": "vehicle:pre:abc", "valueBasisPoints": 8750,
+            },
+            "vehicle.depart": {"targetCid": "vehicle:pre:abc"},
+            "vehicle.send_to_depot": {
+                "targetCid": "vehicle:pre:abc", "sellOnArrival": False,
+            },
+            "vehicle.manual_departure": {
+                "targetCid": "vehicle:pre:abc", "manual": True,
+            },
+        }
+        for kind, data in cases.items():
+            content = {
+                "schemaVersion": OPERATION_SCHEMA_VERSION,
+                "kind": kind,
+                "companyCid": "company:2",
+                "data": data,
+            }
+            digest = checksum(content)
+            accepted = validate_action({
+                "type": "operation.execute",
+                "transaction": {
+                    **content, "digest": digest, "transactionId": f"operation:{digest}",
+                },
+            })
+            self.assertEqual(accepted["transaction"]["data"], data)
+
+        invalid_cases = {
+            "vehicle.stop": {"targetCid": "vehicle:pre:abc", "stopped": 1},
+            "vehicle.maintenance": {
+                "targetCid": "vehicle:pre:abc", "valueBasisPoints": 10001,
+            },
+            "vehicle.send_to_depot": {
+                "targetCid": "vehicle:pre:abc", "sellOnArrival": 0,
+            },
+            "vehicle.manual_departure": {
+                "targetCid": "vehicle:pre:abc", "manual": "yes",
+            },
+        }
+        for kind, data in invalid_cases.items():
+            content = {
+                "schemaVersion": OPERATION_SCHEMA_VERSION,
+                "kind": kind,
+                "companyCid": "company:2",
+                "data": data,
+            }
+            digest = checksum(content)
+            with self.assertRaisesRegex(ProtocolError, kind.replace(".", r"\.")):
+                validate_action({
+                    "type": "operation.execute",
+                    "transaction": {
+                        **content, "digest": digest,
+                        "transactionId": f"operation:{digest}",
+                    },
+                })
+
     def test_proposal_accepts_lua_empty_table_removal_lists_only_when_empty(self) -> None:
         transaction = proposal_transaction()
         transaction["remove"] = {"edges": {}, "nodes": {}}

@@ -78,9 +78,9 @@ function M.new()
     lastTarget = nil,
     lastStopCount = 0,
   },
-  -- BuyVehicle is rejected at the exact native visitor, so neither half of a
-  -- capture can mutate the world alone. The stock GUI supplies the consist;
-  -- the pinned visitor supplies the actual player/depot scalar identities.
+  -- BuyVehicle/ReplaceVehicle are rejected at their exact native visitors, so
+  -- neither half can mutate the world alone. The stock GUI supplies the
+  -- consist; the pinned visitor supplies authoritative scalar identities.
   pendingNativeVehicleGuiCaptures = {},
   pendingNativeVehicleCommands = {},
   nativeVehicleCapture = {
@@ -88,7 +88,16 @@ function M.new()
     invalid = 0,
     dropped = 0,
     buys = 0,
+    replacements = 0,
     assignments = 0,
+    reverses = 0,
+    stops = 0,
+    maintenance = 0,
+    departures = 0,
+    sendToDepot = 0,
+    sales = 0,
+    unsupportedSaleBatches = 0,
+    manualDepartures = 0,
     lastTag = nil,
     lastTarget = nil,
     lastSecondary = nil,

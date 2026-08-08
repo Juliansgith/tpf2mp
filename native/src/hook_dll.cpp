@@ -419,6 +419,7 @@ int SetCommandGate(bool enabled) {
     g_suppressed_game_speeds.clear();
     g_suppressed_line_command_dropped += g_suppressed_line_commands.size();
     g_suppressed_line_commands.clear();
+    g_suppressed_vehicle_command_dropped += g_suppressed_vehicle_commands.size();
     g_suppressed_vehicle_commands.clear();
   }
   RequestStatusWrite();
@@ -990,7 +991,8 @@ bool DetourAuthorityCommandVisitor(void* visitor_context, void* command_data) {
           }
         }
       }
-      if constexpr (Tag == 6 || Tag == 13) {
+      if constexpr (Tag == 6 || Tag == 7 || Tag == 8 || Tag == 9 || Tag == 10 ||
+                    Tag == 11 || Tag == 12 || Tag == 13 || Tag == 14 || Tag == 30) {
         if (suppress && !tag_mismatch) {
           tpf2mp::native_command::SuppressedVehicleCommand command;
           if (DecodeSuppressedVehicleCommand(static_cast<int>(Tag), command_data, command)) {

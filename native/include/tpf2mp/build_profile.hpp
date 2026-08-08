@@ -98,11 +98,45 @@ inline constexpr std::size_t kSetLineLineOffset = 0x04;
 inline constexpr std::size_t kSetLineStopIndexOffset = 0x08;
 inline constexpr std::size_t kSetLineMinimumSize = 0x0C;
 inline constexpr std::int32_t kAutomaticLineStopIndex = -1;
+// The six lifecycle visitors below use only an entity id and, where noted, one
+// scalar value. Their exact implementations are Reverse 0x009D5620,
+// SetUserStopped 0x009D9E10 (visitor thunk 0x009D5710), maintenance
+// 0x009D5720, SetVehicleShouldDepart 0x009D5770, SendToDepot 0x009D96B0
+// (visitor thunk 0x009D6260), and manual departure 0x009D5F00.
+inline constexpr std::size_t kReverseVehicleTargetOffset = 0x00;
+inline constexpr std::size_t kReverseVehicleMinimumSize = 0x04;
+inline constexpr std::size_t kSetUserStoppedTargetOffset = 0x00;
+inline constexpr std::size_t kSetUserStoppedValueOffset = 0x04;
+inline constexpr std::size_t kSetUserStoppedMinimumSize = 0x05;
+inline constexpr std::size_t kSetVehicleMaintenanceTargetOffset = 0x00;
+inline constexpr std::size_t kSetVehicleMaintenanceValueOffset = 0x04;
+inline constexpr std::size_t kSetVehicleMaintenanceMinimumSize = 0x08;
+inline constexpr std::size_t kSetVehicleShouldDepartTargetOffset = 0x00;
+inline constexpr std::size_t kSetVehicleShouldDepartMinimumSize = 0x04;
+inline constexpr std::size_t kSendToDepotTargetOffset = 0x00;
+inline constexpr std::size_t kSendToDepotSellOnArrivalOffset = 0x04;
+inline constexpr std::size_t kSendToDepotMinimumSize = 0x05;
+// SellVehicle's implementation at 0x009D8C90 (visitor thunk 0x009D6270)
+// iterates an x64 MSVC vector of int32 entity ids beginning at +0. The public
+// Lua factory remains scalar; the stock manager can issue a multi-selection.
+inline constexpr std::size_t kSellVehicleTargetsOffset = 0x00;
+inline constexpr std::size_t kSellVehicleMinimumSize = 0x18;
+inline constexpr std::size_t kSellVehicleTargetSize = 0x04;
+inline constexpr std::size_t kMaximumSellVehicleTargets = 256;
+inline constexpr std::size_t kMaximumSellVehicleTargetCapacity = 1024;
+inline constexpr std::size_t kSetVehicleManualDepartureTargetOffset = 0x00;
+inline constexpr std::size_t kSetVehicleManualDepartureValueOffset = 0x04;
+inline constexpr std::size_t kSetVehicleManualDepartureMinimumSize = 0x05;
 inline constexpr std::size_t kBuyVehiclePlayerOffset = 0x00;
 inline constexpr std::size_t kBuyVehicleDepotOffset = 0x04;
 inline constexpr std::size_t kBuyVehicleConfigOffset = 0x08;
 inline constexpr std::size_t kBuyVehicleResultOffset = 0x38;
 inline constexpr std::size_t kBuyVehicleMinimumSize = 0x3C;
+// ReplaceVehicle's implementation at 0x009D8110 (visitor thunk 0x009D6430)
+// reads the target entity at +0. Its config begins at +8 and is deliberately
+// supplied by the correlated stock GUI event rather than decoded natively.
+inline constexpr std::size_t kReplaceVehicleTargetOffset = 0x00;
+inline constexpr std::size_t kReplaceVehicleMinimumSize = 0x04;
 
 // These categories are consequential but do not yet have canonical payload
 // codecs. Network mode therefore rejects them at their exact pre-mutation

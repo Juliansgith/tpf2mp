@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-08 for prototype `0.29.0-alpha`, state schema `26`,
 checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema
-`5`, construction proposal schema `7`, and native hook `0.13.0`.
+`5`, construction proposal schema `7`, and native hook `0.14.0`.
 
 ## Executive status
 
@@ -31,7 +31,8 @@ TPF2MP contains two usable but differently mature modes:
   input; registered and ordinary lines now both use a short guarded physical
   release after every peer arrives. The prompt path has exact two-process proof, and human
   speed-3 play recovered after deliberately delaying one peer. The rest
-  of the vehicle lifecycle, broader complex topology, scripted callbacks,
+  of the newly captured vehicle lifecycle needs live proof; stock multi-sale,
+  broader complex topology, scripted callbacks,
   autonomous drift, and a two-computer session remain open.
 
 The network architecture has crossed the populated-world convergence gate. It
@@ -251,7 +252,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   also pass ordinary-UI two-process capture and checkpoint consensus.
 - Canonical line and portable vehicle operation codecs with strict validation,
   peer/company authorization, materialization, result validation, finance
-  routing, physical consensus, and checkpoint sequencing. Hook 0.13 decodes the
+  routing, physical consensus, and checkpoint sequencing. Hook 0.14 decodes the
   exact Build 35924 CreateLine/DeleteLine/UpdateLine native payloads after the
   ordinary command is suppressed, including the full ordered station-group,
   station, and terminal tuple. Vanilla zero-stop creation and one-stop editor
@@ -261,7 +262,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   matching physical results, and checkpoints. Follow-up stock-widget sessions
   prove New Line, rename, color, Delete Line, Add Station, and per-stop removal
   visually on two independent processes. Reorder and alternate-terminal visual
-  proof remain. Hook 0.13 also captures BuyVehicle's pinned native
+  proof remain. Hook 0.14 also captures BuyVehicle's pinned native
   player/depot scalars and correlates them with the stock GUI's ordered
   `vehicle/train/` + `vehicle/waggon/` consist; SetLine carries canonical
   vehicle/line/stop identities. The exact NOHAB + two BC4 purchase now passes
@@ -270,7 +271,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   checkpoint consensus on two processes. A later stock test assigned the
   canonical train and observed it moving in both worlds. Its small phase lead,
   amplified by a one-sided Escape pause, is the direct motivation for the new
-  station barrier. Other vehicle controls remain incomplete.
+  station barrier. Reverse, start/stop, maintenance, immediate departure,
+  send-to-depot/sell-on-arrival, direct single sale, replacement, and manual-departure stock
+  adapters now pass exact-layout and integration tests but remain live-unproven.
+  Stock multi-vehicle sale remains deliberately fail-closed.
 - Later commits remain blocked until both peers agree on physical output and
   then on core/model/canonical-structure/canonical-finance checkpoint state.
 - Canonical accounts are authoritative. Native wallets are reconciled
@@ -280,7 +284,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   rejected, mismatched, or timed-out result after build commit faults the
   session closed.
 - Pause and speeds 1-4 are host-ordered through native tag-0 authorization on
-  both peers. Hook 0.13 captures suppressed normal controls as `clock.request`.
+  both peers. Hook 0.14 captures suppressed normal controls as `clock.request`.
   A running request now becomes a future-time `clock.rendezvous`; the host
   projects staggered heartbeats to one instant, both peers pause at the target,
   and bounded overshoot receives a speed-1 catch-up round before release.
@@ -306,7 +310,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Native authority layer
 
-- Hook `0.13.0` accepts only the exact Build 35924 executable SHA-256 and PE
+- Hook `0.14.0` accepts only the exact Build 35924 executable SHA-256 and PE
   profile.
 - It validates 17 unique code signatures/RVAs and 23 selected entries in the
   complete 37-tag command visitor table before enabling hooks.
@@ -321,15 +325,20 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 - The pinned tags 3-5 and 28-29 layouts supply a bounded typed line-command queue.
   It copies pointer-free line name/color/owner/target and ordered stop tuples,
   then lets the original command complete because rejecting these visitors
-  asserts the stock widget. Lua consumes an `L1` envelope and submits the
+  asserts the stock widget. Lua consumes an `L3` envelope and submits the
   canonical operation. Native queue overflow emits a sticky `F1` residue
   sentinel; read/decode loss, GUI dispatch failure, authority/finance rejection,
   FIFO overflow, and bridge failure now retry or fault the session instead of
   continuing with a one-sided mutation.
-- The pinned tag-6/tag-13 layouts supply a separate pre-mutation `V1` vehicle
-  queue. SetLine carries vehicle/line/stop index. BuyVehicle carries only native
-  player/depot and is FIFO-correlated with the stock GUI's bounded consist;
-  native config pointers and repository IDs never cross the boundary.
+- The pinned tags 6-14 and 30 supply a separate pre-mutation `V2`
+  vehicle queue. SetLine carries vehicle/line/stop index. Reverse, start/stop,
+  maintenance, immediate departure, send-to-depot, and manual departure carry
+  only bounded scalars. SellVehicle carries its first target and bounded native
+  selection count; only a single selection is admitted. BuyVehicle carries native player/depot; ReplaceVehicle
+  carries the target. Both are FIFO-correlated with the stock GUI's bounded
+  consist. Native config pointers and repository IDs never cross the boundary.
+  V1 remains decode-only compatibility for tags 6 and 13. Queue overflow or
+  gate-reset loss raises a sticky fail-closed sentinel.
 - Unsupported categories fail closed in network mode. A gate is not a codec and
   therefore is not claimed as playable synchronization.
 

@@ -556,6 +556,34 @@ test("vehicle operations accept every portable carrier resource and reject local
   equal(invalidNegativeStop, nil)
 end)
 
+test("vehicle lifecycle scalar operations share the strict canonical contract", function()
+  local targetCid = "vehicle:pre:abc"
+  local cases = {
+    { "vehicle.reverse", { targetCid = targetCid } },
+    { "vehicle.stop", { targetCid = targetCid, stopped = true } },
+    { "vehicle.maintenance", { targetCid = targetCid, valueBasisPoints = 8750 } },
+    { "vehicle.depart", { targetCid = targetCid } },
+    { "vehicle.send_to_depot", { targetCid = targetCid, sellOnArrival = false } },
+    { "vehicle.manual_departure", { targetCid = targetCid, manual = true } },
+  }
+  for _, case in ipairs(cases) do
+    local transaction = assert(operationCodec.make(case[1], "company:2", case[2]))
+    truthy(operationCodec.validate(transaction), case[1] .. " did not validate")
+  end
+  equal(operationCodec.make("vehicle.stop", "company:2", {
+    targetCid = targetCid, stopped = 1,
+  }), nil)
+  equal(operationCodec.make("vehicle.maintenance", "company:2", {
+    targetCid = targetCid, valueBasisPoints = 10001,
+  }), nil)
+  equal(operationCodec.make("vehicle.send_to_depot", "company:2", {
+    targetCid = targetCid, sellOnArrival = 0,
+  }), nil)
+  equal(operationCodec.make("vehicle.manual_departure", "company:2", {
+    targetCid = targetCid, manual = "yes",
+  }), nil)
+end)
+
 test("railway vehicle materialisation uses the documented nested consist shape", function()
   local transaction = assert(operationCodec.make("vehicle.buy", "company:2", {
     depotCid = "depot:pre:abc",
