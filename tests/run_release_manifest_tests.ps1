@@ -37,10 +37,10 @@ foreach ($relative in $requiredFiles | Sort-Object) {
     }
 }
 $baseline = [pscustomobject][ordered]@{
-    format = 1
+    format = 2
     name = 'TPF2MP Competitive Prototype'
     version = '0.37.0-alpha'
-    modMinorVersion = 36
+    modMinorVersion = 37
     stateSchemaVersion = 29
     checkpointSchemaVersion = 5
     proposalSchemaVersion = 5
@@ -49,6 +49,10 @@ $baseline = [pscustomobject][ordered]@{
     deliverySchemaVersion = 2
     freightIndustrySchemaVersion = 2
     companionVersion = '0.11.0'
+    source = [pscustomobject][ordered]@{
+        commit = '0123456789abcdef0123456789abcdef01234567'
+        dirty = $false
+    }
     files = $records
 }
 $manifestPath = Join-Path $bundle 'release-manifest.json'
@@ -80,6 +84,35 @@ Write-FixtureManifest $baseline
 $valid = Test-Tpf2mpReleaseManifest $bundle
 if ([string]$valid.version -ne '0.37.0-alpha' -or @($valid.files).Count -ne $requiredFiles.Count) {
     throw 'Valid release manifest did not round-trip.'
+}
+if ([int]$valid.format -ne 2 -or [string]$valid.source.commit -ne $baseline.source.commit `
+        -or [bool]$valid.source.dirty) {
+    throw 'Valid release source provenance did not round-trip.'
+}
+
+$legacy = Copy-FixtureManifest
+$legacy.format = 1
+$legacy.PSObject.Properties.Remove('source')
+Write-FixtureManifest $legacy
+$legacyValid = Test-Tpf2mpReleaseManifest $bundle
+if ([int]$legacyValid.format -ne 1) { throw 'Legacy format-1 release manifest was not accepted.' }
+
+Write-FixtureManifest $baseline
+Assert-ManifestRejected 'an unsupported manifest format' {
+    param($value)
+    $value.format = 3
+}
+Assert-ManifestRejected 'missing source provenance' {
+    param($value)
+    $value.PSObject.Properties.Remove('source')
+}
+Assert-ManifestRejected 'an invalid source commit' {
+    param($value)
+    $value.source.commit = 'deadbeef'
+}
+Assert-ManifestRejected 'a non-boolean source dirty flag' {
+    param($value)
+    $value.source.dirty = 'false'
 }
 
 Assert-ManifestRejected 'a missing schema version' {
@@ -127,4 +160,4 @@ finally {
     [IO.File]::WriteAllBytes($tamperPath, $original)
 }
 
-Write-Host 'PASS release manifest metadata, paths, uniqueness, sizes, hashes, and required-file boundaries'
+Write-Host 'PASS release manifest provenance, legacy compatibility, metadata, paths, uniqueness, sizes, hashes, and required-file boundaries'

@@ -5,7 +5,8 @@ param(
     [string]$GameExecutable,
     [switch]$SkipTests,
     [switch]$SkipNativeBuild,
-    [switch]$SkipPackageInstallTest
+    [switch]$SkipPackageInstallTest,
+    [switch]$AllowDirtySource
 )
 
 $ErrorActionPreference = 'Stop'
@@ -14,6 +15,19 @@ $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $game = Find-Tpf2mpGameExecutable $GameExecutable
 if (-not $game) { throw 'Transport Fever 2 executable was not discovered; pass -GameExecutable.' }
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') { throw "Unsafe release version: $Version" }
+$git = Get-Command git.exe -ErrorAction Stop
+$sourceCommitOutput = @(& $git.Source -C $projectRoot rev-parse --verify HEAD)
+if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the release source commit.' }
+$sourceCommit = ([string]($sourceCommitOutput -join '')).Trim().ToLowerInvariant()
+if ($sourceCommit -notmatch '^[0-9a-f]{40}$') {
+    throw "Git returned an invalid release source commit: $sourceCommit"
+}
+$sourceStatus = @(& $git.Source -C $projectRoot status --porcelain --untracked-files=normal)
+if ($LASTEXITCODE -ne 0) { throw 'Could not inspect the release source worktree.' }
+$sourceDirty = $sourceStatus.Count -gt 0
+if ($sourceDirty -and -not $AllowDirtySource) {
+    throw 'Refusing to package a dirty source tree. Commit/stash the changes or pass -AllowDirtySource for an explicitly marked development build.'
+}
 $modSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\mod.lua') -Raw
 $scriptSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\config\game_script\tpf2_mp.lua') -Raw
 $proposalSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Raw
@@ -239,7 +253,7 @@ foreach ($file in Get-ChildItem -LiteralPath $releaseRoot -File -Recurse | Sort-
     }
 }
 $releaseManifest = [ordered]@{
-    format = 1
+    format = 2
     name = 'TPF2MP Competitive Prototype'
     version = $Version
     modMinorVersion = $modMinorVersion
@@ -252,6 +266,10 @@ $releaseManifest = [ordered]@{
     freightIndustrySchemaVersion = $freightIndustrySchemaVersion
     companionVersion = $companionVersion
     builtAtUtc = [DateTime]::UtcNow.ToString('o')
+    source = [ordered]@{
+        commit = $sourceCommit
+        dirty = $sourceDirty
+    }
     supportedNativeBuild = [ordered]@{
         game = 'Transport Fever 2 Build 35924 (Windows x64)'
         executableSha256 = '782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c'
@@ -283,3 +301,4 @@ if (-not $SkipPackageInstallTest) {
 Write-Host "Release directory: $releaseRoot"
 Write-Host "Release archive: $archive"
 Write-Host "Files: $($fileRecords.Count)"
+Write-Host "Source: $sourceCommit ($(if ($sourceDirty) { 'dirty development build' } else { 'clean' }))"

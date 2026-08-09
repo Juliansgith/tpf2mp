@@ -115,7 +115,24 @@ function Test-Tpf2mpReleaseManifest {
         throw "Release manifest is missing: $manifestPath"
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ([int]$manifest.format -ne 1) { throw 'Unsupported release manifest format.' }
+    $format = 0
+    if (-not [int]::TryParse([string]$manifest.format, [ref]$format) -or $format -notin @(1, 2)) {
+        throw 'Unsupported release manifest format.'
+    }
+    if ($format -eq 2) {
+        $sourceProperty = $manifest.PSObject.Properties['source']
+        if ($null -eq $sourceProperty -or $null -eq $sourceProperty.Value) {
+            throw 'Release manifest source provenance is missing.'
+        }
+        $commitProperty = $sourceProperty.Value.PSObject.Properties['commit']
+        if ($null -eq $commitProperty -or [string]$commitProperty.Value -notmatch '^[0-9a-f]{40}$') {
+            throw 'Release manifest source commit is missing or invalid.'
+        }
+        $dirtyProperty = $sourceProperty.Value.PSObject.Properties['dirty']
+        if ($null -eq $dirtyProperty -or $dirtyProperty.Value -isnot [bool]) {
+            throw 'Release manifest source dirty flag is missing or invalid.'
+        }
+    }
     if ([string]$manifest.name -ne 'TPF2MP Competitive Prototype') {
         throw 'Unexpected release manifest product name.'
     }

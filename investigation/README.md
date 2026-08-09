@@ -2,6 +2,10 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
 
+[Release source provenance](RELEASE_SOURCE_PROVENANCE_2026-08-09.md)
+records format-2 commit binding, the default clean-tree gate, explicit dirty
+development builds, verifier output, legacy compatibility, and rejection tests.
+
 [Lua falsey-ternary audit](LUA_FALSEY_TERNARY_AUDIT_2026-08-09.md)
 records twenty false-success/error projections, their consensus/recovery/UI
 impact, explicit tri-state fixes, behavioral regressions, and the enforced

@@ -392,7 +392,10 @@ tests, and cross-language checkpoint replay.
 
 Native changes additionally require `tools/build_native_hook.ps1`. Release-tree
 or installer changes require `tools/package_release.ps1`, which performs an
-install/verify/uninstall round trip.
+install/verify/uninstall round trip. New release manifests use format 2 and bind
+every file set to the exact 40-character Git commit plus an explicit clean/dirty
+source flag. Packaging refuses dirty source by default; format-1 verification is
+retained only for already-produced legacy archives.
 
 `tools/check_source_boundaries.ps1` is a ratchet. Production source budgets may
 be lowered after an extraction; raising one requires a deliberate architecture

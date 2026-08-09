@@ -55,7 +55,10 @@ if ($StrictNative -and -not ($nativeCompatible -and $nativeVerified)) {
 
 $result = [ordered]@{
     valid = $true
+    manifestFormat = [int]$manifest.format
     version = [string]$manifest.version
+    sourceCommit = $(if ([int]$manifest.format -ge 2) { [string]$manifest.source.commit } else { $null })
+    sourceDirty = $(if ([int]$manifest.format -ge 2) { [bool]$manifest.source.dirty } else { $null })
     stateSchemaVersion = [int]$manifest.stateSchemaVersion
     checkpointSchemaVersion = [int]$manifest.checkpointSchemaVersion
     passengerPresentationSchemaVersion = [int]$manifest.passengerPresentationSchemaVersion
@@ -76,6 +79,11 @@ if ($AsJson) {
 }
 else {
     Write-Host "TPF2MP install valid: version $($result.version), state $($result.stateSchemaVersion), checkpoint $($result.checkpointSchemaVersion), passenger $($result.passengerPresentationSchemaVersion), cargo $($result.cargoPresentationSchemaVersion), freight $($result.freightIndustrySchemaVersion); $($result.modFileCount) mod files verified."
+    if ($result.manifestFormat -ge 2) {
+        if ($result.sourceDirty) { Write-Warning "Source: $($result.sourceCommit) (dirty development build)." }
+        else { Write-Host "Source: $($result.sourceCommit) (clean)." }
+    }
+    else { Write-Warning 'Source provenance: legacy format-1 manifest (commit not recorded).' }
     Write-Host "Companion executable: OK ($companion)"
     if (-not $game) { Write-Warning 'Transport Fever 2 executable was not discovered; native hook was not checked.' }
     elseif ($nativeCompatible -and $nativeVerified) { Write-Host 'Native hook compatibility: Build 35924 exact profile verified.' }
