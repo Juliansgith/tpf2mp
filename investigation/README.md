@@ -2,6 +2,11 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
 
+[Transactional release installation](TRANSACTIONAL_RELEASE_INSTALL_2026-08-09.md)
+records the previously split support/mod/current commit, automatic rollback,
+collision-safe backups, provenance-bearing current pointer, and injected
+post-copy verification failure proof.
+
 [Release source provenance](RELEASE_SOURCE_PROVENANCE_2026-08-09.md)
 records format-2 commit binding, the default clean-tree gate, explicit dirty
 development builds, verifier output, legacy compatibility, and rejection tests.

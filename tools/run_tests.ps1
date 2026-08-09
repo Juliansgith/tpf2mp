@@ -138,6 +138,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Release manifest validation tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_release_install_transaction_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Transactional release install tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_fault_evidence_watcher_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Automatic first-fault evidence watcher test failed' }

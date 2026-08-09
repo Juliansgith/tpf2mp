@@ -288,7 +288,7 @@ if (-not $SkipPackageInstallTest) {
     $testSupport = Join-Path $testRoot 'support'
     New-Item -ItemType Directory -Force -Path $testMods | Out-Null
     try {
-        & (Join-Path $releaseRoot 'tools\install_release.ps1') -BundleRoot $releaseRoot -LocalModsPath $testMods -InstallRoot $testSupport -SkipVerification
+        & (Join-Path $releaseRoot 'tools\install_release.ps1') -BundleRoot $releaseRoot -LocalModsPath $testMods -InstallRoot $testSupport
         & (Join-Path $releaseRoot 'tools\verify_install.ps1') -BundleRoot $releaseRoot -LocalModsPath $testMods -GameExecutable $game -StrictNative
         & (Join-Path $releaseRoot 'tools\uninstall.ps1') -LocalModsPath $testMods -InstallRoot $testSupport
         if (Test-Path -LiteralPath (Join-Path $testMods 'tpf2_mp_1')) { throw 'Package uninstall self-test left the mod active.' }

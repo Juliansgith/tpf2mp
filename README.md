@@ -133,6 +133,8 @@ After installation, double-click `LAUNCH_TPF2MP.cmd` for Host / Join / automated
 The release installer:
 
 - verifies every bundle checksum before copying;
+- commits the support bundle, game mod, and `current.json` pointer as one
+  transaction, restoring the prior install if post-copy verification fails;
 - auto-discovers Steam userdata and library folders;
 - installs the support bundle under `%LOCALAPPDATA%\TPF2MP\versions`;
 - archives any previous mod instead of deleting it;
