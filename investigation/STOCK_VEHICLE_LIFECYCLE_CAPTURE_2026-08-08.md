@@ -31,8 +31,12 @@ which maps to the game's documented scalar
 A multi-selection click remains blocked before mutation because it needs one
 atomic canonical batch, not a sequence that could sell only half the selection.
 
-This is exact-binary and automated integration proof. The new stock buttons
-have not yet been exercised by a human in two live processes.
+This is exact-binary and automated integration proof. A 2026-08-09 disposable
+exact-engine chain now additionally proves native buy, stop/start, two reverse
+commands, per-part maintenance readback, replacement, and direct sale through
+the production physical-postcondition projection. The new stock buttons have
+not yet been exercised as a complete ordinary-widget matrix in two live
+processes.
 
 ## Exact payload evidence
 
@@ -105,11 +109,17 @@ barrier can distinguish it from its own temporary hold.
   multi-selection sale emits no intent and reports the atomic-batch limit.
 - Lua and Python independently validate every lifecycle canonical field set and
   reject wrong boolean types and maintenance overflow.
-- The source-boundary ratchet, 91 Lua tests, 75 cross-language economy vectors,
-  106 Python tests, native CTest, pinned executable/signature gate, packaging,
+- The production operation runtime now rejects a callback-success result unless
+  stop, maintenance, consist, line, depot-sale, and name readbacks match the
+  ordered transaction. Adversarial tests cover same-wrong-state consensus.
+- `runtime/supported-api-probe/20260809-024229` bought, controlled, replaced,
+  and sold a real consist on the exact executable; every production projection
+  passed and the sold entity was observably absent.
+- The source-boundary ratchet, 95 Lua core tests, 75 cross-language economy
+  vectors, 108 Python tests, native CTest, pinned executable/signature gate, packaging,
   and installed-tree verification are the release gate for this slice.
 
-## Live acceptance still required
+## Two-process widget acceptance still required
 
 Use a disposable two-process railway service and operate only an owned train.
 In order: stop, start, reverse twice, set two maintenance values, request

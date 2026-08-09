@@ -22,6 +22,7 @@ local townDevelopmentValidationModule = require "tpf2_mp/validation_town_develop
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
+local operationVehiclePostcondition = require "tpf2_mp/operation_vehicle_postcondition"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local economyModule = require "tpf2_mp/economy"
 local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
@@ -77,6 +78,90 @@ do
   runtime.load(saved(nil))
   assert(migrated == 1 and reset == 1,
     "engine load bypassed migration or transient-runtime reset")
+end
+
+do
+  local config = {
+    vehicles = {
+      { model = "vehicle/train/example.mdl", reversed = false, loadConfig = { 0 },
+        color = { r = 1000, g = 1000, b = 1000 }, logo = "" },
+      { model = "vehicle/waggon/example.mdl", reversed = true, loadConfig = { 1, 0 },
+        color = { r = 1000, g = 1000, b = 1000 }, logo = "" },
+    },
+    vehicleGroups = { 2 },
+  }
+  local observed = {
+    exists = true, vehicleParts = 2, vehicleConfigKnown = true,
+    vehicleConfig = { vehicles = {
+      { model = "vehicle/train/example.mdl", reversed = false, loadConfig = { 0 } },
+      { model = "vehicle/waggon/example.mdl", reversed = true, loadConfig = { 1, 0 } },
+    } },
+  }
+  local projected = operationVehiclePostcondition.project({
+    transportVehicleConfig = { vehicles = {
+      { part = { modelId = 10, reversed = false, loadConfig = { 0 } },
+        targetMaintenanceState = 0.75 },
+      { part = { modelId = 11, reversed = true, loadConfig = { 1, 0 } },
+        targetMaintenanceState = 0.75 },
+    } },
+  }, { res = { modelRep = { getName = function(id)
+    return id == 10 and "vehicle/train/example.mdl" or "vehicle/waggon/example.mdl"
+  end } } })
+  assert(projected.vehicleConfigKnown == true
+      and projected.targetMaintenanceKnown == true
+      and projected.vehicleParts == 2
+      and projected.vehicleConfig.vehicles[2].reversed == true
+      and projected.targetMaintenanceBasisPoints[1] == 7500
+      and projected.targetMaintenanceBasisPoints[2] == 7500,
+    "native vehicle wrappers did not project into bounded portable postconditions")
+  assert(operationVehiclePostcondition.validate({
+      kind = "vehicle.buy", data = { config = config },
+    }, observed) == true,
+    "an exact native purchased consist failed its ordered postcondition")
+  local wrongConsist = util.deepCopy(observed)
+  wrongConsist.vehicleConfig.vehicles[2].model = "vehicle/waggon/wrong.mdl"
+  local accepted, configError = operationVehiclePostcondition.validate({
+    kind = "vehicle.replace", data = { config = config },
+  }, wrongConsist)
+  assert(accepted == false
+      and configError == "native vehicle config does not match the ordered transaction",
+    "a wrong replacement consist passed physical validation")
+  assert(operationVehiclePostcondition.validate({
+      kind = "vehicle.stop", data = { stopped = true },
+    }, { userStopped = true }) == true,
+    "the ordered native stop state was rejected")
+  assert(operationVehiclePostcondition.validate({
+      kind = "vehicle.stop", data = { stopped = true },
+    }, { userStopped = false }) == false,
+    "an unchanged native stop state passed physical validation")
+  assert(operationVehiclePostcondition.validate({
+      kind = "vehicle.maintenance", data = { valueBasisPoints = 7500 },
+    }, {
+      vehicleParts = 2, targetMaintenanceKnown = true,
+      targetMaintenanceBasisPoints = { 7500, 7500 },
+    }) == true,
+    "exact per-part native maintenance targets were rejected")
+  assert(operationVehiclePostcondition.validate({
+      kind = "vehicle.maintenance", data = { valueBasisPoints = 7500 },
+    }, {
+      vehicleParts = 2, targetMaintenanceKnown = true,
+      targetMaintenanceBasisPoints = { 7500, 7499 },
+    }) == false,
+    "a partially applied native maintenance target passed physical validation")
+  assert(operationVehiclePostcondition.validate({
+      kind = "vehicle.assign", data = { lineCid = "line:test:1" },
+    }, { lineCid = "line:test:1" }) == true
+      and operationVehiclePostcondition.validate({
+        kind = "vehicle.assign", data = { lineCid = "line:test:1" },
+      }, { lineCid = "line:test:2" }) == false,
+    "native line assignment was not tied to its ordered target")
+  assert(operationVehiclePostcondition.validate({
+      kind = "vehicle.send_to_depot", data = { sellOnArrival = true },
+    }, { sellOnArrival = true }) == true
+      and operationVehiclePostcondition.validate({
+        kind = "vehicle.send_to_depot", data = { sellOnArrival = true },
+      }, { sellOnArrival = false }) == false,
+    "native sell-on-arrival state was not tied to its ordered target")
 end
 
 do

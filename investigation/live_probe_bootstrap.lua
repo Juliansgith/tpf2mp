@@ -16,6 +16,7 @@ package.preload["tpf2_mp/hash"] = function() return require "tpf2_mp_probe/hash"
 package.preload["tpf2_mp/canonical"] = function() return require "tpf2_mp_probe/canonical" end
 local proposalCodec = require "tpf2_mp_probe/proposal_codec"
 local operationCodec = require "tpf2_mp_probe/operation_codec"
+local operationVehiclePostcondition = require "tpf2_mp_probe/operation_vehicle_postcondition"
 local tick = 0
 local emitted = false
 local baselineEdges = {}
@@ -752,7 +753,68 @@ end
 
 local vehiclePurchaseProbeStage = "idle"
 
-local function vehiclePurchaseCodecTest()
+local function nativeVehicleProjection(entity, types)
+  if not entity then return nil end
+  local componentOk, component = pcall(
+    api.engine.getComponent, entity, types.TRANSPORT_VEHICLE)
+  -- Build 35924 raises "Invalid entity" once SellVehicle has actually removed
+  -- its target. Treat that exact absence shape as the desired nil projection;
+  -- callers still distinguish it from a live component with missing fields.
+  if not componentOk then return nil end
+  if not component then return nil end
+  local projection = {
+    entity = entity,
+    userStopped = safeField(component, "userStopped") == true,
+    sellOnArrival = safeField(component, "sellOnArrival") == true,
+    vehicles = {},
+  }
+  local nativeConfig = safeField(component, "transportVehicleConfig")
+  for index, wrapped in ipairs(vectorValues(safeField(nativeConfig, "vehicles"), 16)) do
+    local part = safeField(wrapped, "part")
+    local modelId = tonumber(safeField(part, "modelId"))
+    local modelName
+    pcall(function() modelName = api.res.modelRep.getName(modelId) end)
+    projection.vehicles[index] = {
+      model = modelName,
+      reversed = safeField(part, "reversed") == true,
+      loadConfig = vectorValues(safeField(part, "loadConfig"), 64),
+      autoLoadConfig = vectorValues(safeField(wrapped, "autoLoadConfig"), 64),
+      maintenanceState = tonumber(safeField(wrapped, "maintenanceState")),
+      targetMaintenanceState = tonumber(safeField(wrapped, "targetMaintenanceState")),
+    }
+  end
+  return projection
+end
+
+local function nativeVehicleMatches(projection, names)
+  if not projection or #projection.vehicles ~= #names then return false end
+  for index, name in ipairs(names) do
+    local part = projection.vehicles[index]
+    if not part or part.model ~= name
+      or #part.loadConfig ~= 1 or part.loadConfig[1] ~= 0
+      or #part.autoLoadConfig ~= 1 or part.autoLoadConfig[1] ~= 1 then
+      return false
+    end
+  end
+  return true
+end
+
+local function productionVehicleObservation(entity, types)
+  local componentOk, component = pcall(
+    api.engine.getComponent, entity, types.TRANSPORT_VEHICLE)
+  if not componentOk or not component then return nil end
+  local result = operationVehiclePostcondition.project(component, api)
+  result.exists = true
+  result.userStopped = safeField(component, "userStopped") == true
+  result.sellOnArrival = safeField(component, "sellOnArrival") == true
+  return result
+end
+
+local function vehiclePurchaseCodecTest(options)
+  options = options or {}
+  local lifecycle = options.lifecycle == true
+  local completionEvent = lifecycle
+    and "vehicle-lifecycle-codec-complete" or "vehicle-purchase-codec-complete"
   vehiclePurchaseProbeStage = "capabilities"
   local interface = game and game.interface or {}
   local types = api and api.type and api.type.ComponentType or {}
@@ -765,7 +827,7 @@ local function vehiclePurchaseCodecTest()
     or not callable(interface.getPlayer)
     or not api or not api.engine or not callable(api.engine.forEachEntityWithComponent)
     or not types.VEHICLE_DEPOT or not types.TRANSPORT_VEHICLE then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "capabilities", error = "vehicle purchase probe API is unavailable",
       buildConstructionType = type(interface.buildConstruction),
       getHeightType = type(interface.getHeight),
@@ -814,7 +876,7 @@ local function vehiclePurchaseCodecTest()
     end
   end
   if not construction then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "build-depot", error = buildError or "no depot site succeeded",
     })
     return
@@ -827,7 +889,7 @@ local function vehiclePurchaseCodecTest()
     if entity and not baselineDepots[entity] and not depotEntity then depotEntity = entity end
   end, types.VEHICLE_DEPOT)
   if not depotEntity then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "bind-depot", construction = construction,
       error = "built construction exposed no new VEHICLE_DEPOT entity",
     })
@@ -842,7 +904,7 @@ local function vehiclePurchaseCodecTest()
   vehiclePurchaseProbeStage = "player"
   local player = tonumber(interface.getPlayer())
   if not player or player < 0 then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "player", depotEntity = depotEntity,
       error = "current native player is unavailable",
     })
@@ -857,7 +919,7 @@ local function vehiclePurchaseCodecTest()
   }
   local config, configError = operationCodec.defaultVehicleConfig(names, api)
   if not config then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "default-config", error = tostring(configError),
     })
     return
@@ -867,7 +929,7 @@ local function vehiclePurchaseCodecTest()
     depotCid = "depot:probe:vehicle-purchase", config = config,
   })
   if not transaction then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "canonicalise", error = tostring(transactionError),
     })
     return
@@ -884,7 +946,7 @@ local function vehiclePurchaseCodecTest()
     end,
   })
   if not materialised then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "materialise", error = tostring(materialiseError),
     })
     return
@@ -893,7 +955,7 @@ local function vehiclePurchaseCodecTest()
   local commandOk, command = pcall(materialised.factory,
     materialised.args[1], materialised.args[2], materialised.args[3])
   if not commandOk then
-    marker("vehicle-purchase-codec-complete", {
+    marker(completionEvent, {
       success = false, stage = "command", error = tostring(command),
     })
     return
@@ -909,44 +971,239 @@ local function vehiclePurchaseCodecTest()
         if entity and not baselineVehicles[entity] and not vehicleEntity then vehicleEntity = entity end
       end, types.TRANSPORT_VEHICLE)
     end
-    local projection = {}
-    if vehicleEntity and vehicleEntity >= 0 then
-      local component = api.engine.getComponent(vehicleEntity, types.TRANSPORT_VEHICLE)
-      local nativeConfig = safeField(component, "transportVehicleConfig")
-      for index, wrapped in ipairs(vectorValues(safeField(nativeConfig, "vehicles"), 16)) do
-        local part = safeField(wrapped, "part")
-        local modelId = tonumber(safeField(part, "modelId"))
-        local modelName
-        pcall(function() modelName = api.res.modelRep.getName(modelId) end)
-        projection[index] = {
-          model = modelName,
-          loadConfig = vectorValues(safeField(part, "loadConfig"), 64),
-          autoLoadConfig = vectorValues(safeField(wrapped, "autoLoadConfig"), 64),
-        }
+    local projection = vehicleEntity and nativeVehicleProjection(vehicleEntity, types) or nil
+    local exactConsist = nativeVehicleMatches(projection, names)
+    local productionPurchase = vehicleEntity
+      and productionVehicleObservation(vehicleEntity, types) or nil
+    local productionPurchaseOk, productionPurchaseError =
+      operationVehiclePostcondition.validate(transaction, productionPurchase)
+    exactConsist = exactConsist and productionPurchaseOk == true
+    if success ~= true or not vehicleEntity or not exactConsist or not lifecycle then
+      marker(completionEvent, {
+        success = success == true and vehicleEntity ~= nil and exactConsist,
+        stage = success == true and "complete" or "apply",
+        commandSuccess = success == true,
+        transactionDigest = transaction.digest,
+        player = player,
+        depotEntity = depotEntity,
+        construction = construction,
+        vehicleEntity = vehicleEntity,
+        fundingGranted = fundingGranted,
+        canonicalConfig = config,
+        nativeConfig = projection,
+        productionPostcondition = productionPurchase,
+        productionPostconditionError = productionPurchaseError,
+      })
+      return
+    end
+
+    local finished = false
+    local lifecycleEvidence = {
+      purchaseDigest = transaction.digest,
+      purchase = projection,
+      productionPurchase = productionPurchase,
+      steps = {},
+    }
+    local targetCid = "vehicle:probe:lifecycle"
+    local unpackValues = unpack or (table and table.unpack)
+    local function finish(ok, stage, errorText)
+      if finished then return end
+      finished = true
+      vehiclePurchaseProbeStage = stage
+      local cleanupCallOk, cleanupResult = pcall(interface.bulldoze, construction)
+      marker(completionEvent, {
+        success = ok == true,
+        stage = stage,
+        error = errorText,
+        player = player,
+        depotEntity = depotEntity,
+        construction = construction,
+        vehicleEntity = vehicleEntity,
+        fundingGranted = fundingGranted,
+        canonicalConfig = config,
+        evidence = lifecycleEvidence,
+        cleanupCallOk = cleanupCallOk,
+        cleanupResult = scalar(cleanupResult),
+      })
+    end
+    local function callbackGuard(stage, appliedTransaction, callback)
+      return function(commandResult, commandSuccess)
+        local function traceback(err)
+          local text = tostring(err)
+          if debug and debug.traceback then return debug.traceback(text, 2) end
+          return text
+        end
+        local ok, err = xpcall(function()
+          if commandSuccess ~= true then
+            finish(false, stage .. "-apply", "native command callback returned success=false")
+            return
+          end
+          callback(commandResult, appliedTransaction)
+        end, traceback)
+        if not ok then finish(false, stage .. "-callback", tostring(err)) end
       end
     end
-    local exactConsist = #projection == #names
-    for index, name in ipairs(names) do
-      exactConsist = exactConsist and projection[index]
-        and projection[index].model == name
-        and #projection[index].loadConfig == 1
-        and projection[index].loadConfig[1] == 0
-        and #projection[index].autoLoadConfig == 1
-        and projection[index].autoLoadConfig[1] == 1
+    local function validateProduction(transactionToValidate)
+      local observed = productionVehicleObservation(vehicleEntity, types)
+      local passed, postconditionError = operationVehiclePostcondition.validate(
+        transactionToValidate, observed)
+      lifecycleEvidence.productionChecks = lifecycleEvidence.productionChecks or {}
+      lifecycleEvidence.productionChecks[#lifecycleEvidence.productionChecks + 1] = {
+        kind = transactionToValidate.kind,
+        passed = passed == true,
+        error = postconditionError,
+        observation = observed,
+      }
+      if passed ~= true then
+        finish(false, transactionToValidate.kind .. "-production-postcondition",
+          tostring(postconditionError))
+        return false
+      end
+      return true
     end
-    marker("vehicle-purchase-codec-complete", {
-      success = success == true and vehicleEntity ~= nil and exactConsist,
-      stage = success == true and "complete" or "apply",
-      commandSuccess = success == true,
-      transactionDigest = transaction.digest,
-      player = player,
-      depotEntity = depotEntity,
-      construction = construction,
-      vehicleEntity = vehicleEntity,
-      fundingGranted = fundingGranted,
-      canonicalConfig = config,
-      nativeConfig = projection,
-    })
+    local function issue(kind, data, callback)
+      if finished then return end
+      vehiclePurchaseProbeStage = kind .. "-canonicalise"
+      local nextTransaction, makeError = operationCodec.make(kind, "company:1", data)
+      if not nextTransaction then
+        finish(false, kind .. "-canonicalise", tostring(makeError))
+        return
+      end
+      vehiclePurchaseProbeStage = kind .. "-materialise"
+      local nextMaterialised, nextError = operationCodec.materialise(nextTransaction, {
+        api = api,
+        nativePlayerId = player,
+        resolveLocal = function(cid)
+          if cid == targetCid then return vehicleEntity end
+          if cid == "depot:probe:vehicle-purchase" then return depotEntity end
+        end,
+        factory = function(name)
+          return api and api.cmd and api.cmd.make and api.cmd.make[name]
+        end,
+      })
+      if not nextMaterialised then
+        finish(false, kind .. "-materialise", tostring(nextError))
+        return
+      end
+      vehiclePurchaseProbeStage = kind .. "-command"
+      local commandBuilt, nextCommand = pcall(
+        nextMaterialised.factory, unpackValues(nextMaterialised.args, 1, #nextMaterialised.args))
+      if not commandBuilt then
+        finish(false, kind .. "-command", tostring(nextCommand))
+        return
+      end
+      lifecycleEvidence.steps[#lifecycleEvidence.steps + 1] = {
+        kind = kind, transactionDigest = nextTransaction.digest,
+      }
+      vehiclePurchaseProbeStage = kind .. "-send"
+      local sent, sendError = pcall(
+        api.cmd.sendCommand, nextCommand, callbackGuard(kind, nextTransaction, callback))
+      if not sent then finish(false, kind .. "-send", tostring(sendError)) end
+    end
+
+    local function sellVehicle()
+      issue("vehicle.sell", { targetCid = targetCid }, function()
+        local afterSale = nativeVehicleProjection(vehicleEntity, types)
+        lifecycleEvidence.afterSale = afterSale
+        if afterSale ~= nil then
+          finish(false, "vehicle.sell-readback", "sold TRANSPORT_VEHICLE component is still present")
+          return
+        end
+        finish(true, "complete")
+      end)
+    end
+    local function replaceVehicle()
+      local replacementNames = {
+        "vehicle/train/nohab_m1_v2.mdl",
+        "vehicle/waggon/bc4_v2.mdl",
+      }
+      local replacementConfig, replacementError = operationCodec.defaultVehicleConfig(
+        replacementNames, api)
+      if not replacementConfig then
+        finish(false, "vehicle.replace-default-config", tostring(replacementError))
+        return
+      end
+      issue("vehicle.replace", {
+        targetCid = targetCid, config = replacementConfig,
+      }, function(commandResult, appliedTransaction)
+        local replacementEntity = tonumber(safeField(commandResult, "resultVehicleEntity"))
+        if replacementEntity and replacementEntity >= 0 then vehicleEntity = replacementEntity end
+        local afterReplace = nativeVehicleProjection(vehicleEntity, types)
+        lifecycleEvidence.replacementConfig = replacementConfig
+        lifecycleEvidence.afterReplace = afterReplace
+        if not validateProduction(appliedTransaction) then return end
+        if not nativeVehicleMatches(afterReplace, replacementNames) then
+          finish(false, "vehicle.replace-readback", "native consist does not match replacement config")
+          return
+        end
+        sellVehicle()
+      end)
+    end
+    local function setMaintenance()
+      issue("vehicle.maintenance", {
+        targetCid = targetCid, valueBasisPoints = 7500,
+      }, function(_, appliedTransaction)
+        local afterMaintenance = nativeVehicleProjection(vehicleEntity, types)
+        lifecycleEvidence.afterMaintenance = afterMaintenance
+        if not validateProduction(appliedTransaction) then return end
+        local targetCount = 0
+        local targetMatches = afterMaintenance ~= nil
+        for _, part in ipairs(afterMaintenance and afterMaintenance.vehicles or {}) do
+          if part.targetMaintenanceState ~= nil then
+            targetCount = targetCount + 1
+            targetMatches = targetMatches and math.abs(part.targetMaintenanceState - 0.75) < 0.0001
+          end
+        end
+        if targetCount ~= #names or not targetMatches then
+          finish(false, "vehicle.maintenance-readback",
+            "native targetMaintenanceState does not equal 0.75 on every vehicle part")
+          return
+        end
+        replaceVehicle()
+      end)
+    end
+    local function reverseSecondTime()
+      issue("vehicle.reverse", { targetCid = targetCid }, function(_, appliedTransaction)
+        local afterReverseRoundTrip = nativeVehicleProjection(vehicleEntity, types)
+        lifecycleEvidence.afterReverseRoundTrip = afterReverseRoundTrip
+        if not validateProduction(appliedTransaction) then return end
+        if not nativeVehicleMatches(afterReverseRoundTrip, names) then
+          finish(false, "vehicle.reverse-readback",
+            "two native reversals did not restore the purchased consist")
+          return
+        end
+        setMaintenance()
+      end)
+    end
+    local function reverseFirstTime()
+      issue("vehicle.reverse", { targetCid = targetCid }, function(_, appliedTransaction)
+        lifecycleEvidence.afterFirstReverse = nativeVehicleProjection(vehicleEntity, types)
+        if not validateProduction(appliedTransaction) then return end
+        reverseSecondTime()
+      end)
+    end
+    local function startVehicle()
+      issue("vehicle.stop", { targetCid = targetCid, stopped = false }, function(_, appliedTransaction)
+        local afterStart = nativeVehicleProjection(vehicleEntity, types)
+        lifecycleEvidence.afterStart = afterStart
+        if not validateProduction(appliedTransaction) then return end
+        if not afterStart or afterStart.userStopped then
+          finish(false, "vehicle.stop-start-readback", "native userStopped did not clear")
+          return
+        end
+        reverseFirstTime()
+      end)
+    end
+    issue("vehicle.stop", { targetCid = targetCid, stopped = true }, function(_, appliedTransaction)
+      local afterStop = nativeVehicleProjection(vehicleEntity, types)
+      lifecycleEvidence.afterStop = afterStop
+      if not validateProduction(appliedTransaction) then return end
+      if not afterStop or not afterStop.userStopped then
+        finish(false, "vehicle.stop-readback", "native userStopped did not become true")
+        return
+      end
+      startVehicle()
+    end)
   end)
 end
 
@@ -992,6 +1249,23 @@ local script = {
       local ok, err = xpcall(vehiclePurchaseCodecTest, traceback)
       if not ok then
         marker("vehicle-purchase-codec-complete", {
+          success = false,
+          stage = "lua-error:" .. tostring(vehiclePurchaseProbeStage),
+          error = tostring(err),
+        })
+      end
+    end
+    if id == "tpf2mp-probe" and name == "vehicle-lifecycle-codec-test" then
+      local function traceback(err)
+        local text = tostring(err)
+        if debug and debug.traceback then return debug.traceback(text, 2) end
+        return text
+      end
+      local ok, err = xpcall(function()
+        vehiclePurchaseCodecTest({ lifecycle = true })
+      end, traceback)
+      if not ok then
+        marker("vehicle-lifecycle-codec-complete", {
           success = false,
           stage = "lua-error:" .. tostring(vehiclePurchaseProbeStage),
           error = tostring(err),

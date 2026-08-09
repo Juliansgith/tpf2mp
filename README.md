@@ -220,6 +220,7 @@ Smaller experiments remain available:
 .\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -BuildGateTest
 .\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -CommandGateTest
 .\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -ProposalOwnershipTest
+.\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -VehicleLifecycleTest
 .\tools\run_unattended_live_validation.ps1 -RunFacilityCustodyProbe -NativeHook -SkipNativeBuild -SkipTests
 .\tools\start_native_hook_test.ps1 -NoBuild
 .\tools\get_native_hook_status.ps1

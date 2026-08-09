@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-08 for prototype `0.29.0-alpha`, state schema `26`,
+Last updated: 2026-08-09 for prototype `0.29.0-alpha`, state schema `26`,
 checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema
 `5`, construction proposal schema `7`, and native hook `0.14.0`.
 
@@ -121,6 +121,14 @@ facility compound output, and verified a 27-event hash chain.
 real signal. The exact boundary and negative
 asset-upgrade finding are in
 `investigation/SIGNAL_FACILITY_LIVE_PROOF_2026-08-04.md`.
+
+`runtime/supported-api-probe/20260809-024229` is the strongest destructive
+vehicle receipt. On the exact executable it bought a real three-part train,
+proved stop/start, two reversals, 7,500-basis-point maintenance on every part,
+replaced it with a different two-part consist, sold it, verified entity
+absence, and cleaned up the depot. Production operation consensus now verifies
+those native fields against the ordered transaction before comparing peers;
+the remaining gate is the ordinary-widget two-process/running-route matrix.
 
 `runtime/localhost-live/schema7-compact-20260804-032006` is the current
 release-candidate two-process regression receipt. Both exact game processes
@@ -529,8 +537,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   has automated, exact-build, and ordinary two-process UI proof. Stock
   `ASSET_DEFAULT` replacement is a measured native no-op and intentionally
   fails closed; build/removal work.
-- Populated line reorder/alternate-terminal visual proof, followed by typed
-  replace/sell/control capture.
+- Populated line reorder/alternate-terminal visual proof, followed by the
+  ordinary-widget two-process replace/sell/control matrix. The destructive
+  exact one-process command/readback chain now passes.
   Purchase, assignment, peer visibility, and movement have human proof. The
   new station barrier bounds drift without exact-coordinate correction.
 - Safe synchronized commands for every one of the 23 currently rejected command

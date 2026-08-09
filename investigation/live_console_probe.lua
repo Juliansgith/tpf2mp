@@ -2114,6 +2114,40 @@ function M.runVehiclePurchaseTest()
   return true
 end
 
+function M.runVehicleLifecycleTest()
+  M.capabilities()
+  local sendScriptEvent = commandFactory("sendScriptEvent")
+  if not (sendScriptEvent and api and api.cmd and available(api.cmd.sendCommand)) then
+    marker("vehicle-lifecycle-codec-complete", {
+      success = false,
+      stage = "dispatch-capabilities",
+      error = "supported script-event dispatch API unavailable",
+    })
+    return false
+  end
+  local commandOk, commandOrError = pcall(
+    sendScriptEvent,
+    "tpf2_mp_probe.lua",
+    "tpf2mp-probe",
+    "vehicle-lifecycle-codec-test",
+    {}
+  )
+  if not commandOk then
+    marker("vehicle-lifecycle-codec-complete", {
+      success = false, stage = "dispatch-command", error = tostring(commandOrError),
+    })
+    return false
+  end
+  api.cmd.sendCommand(commandOrError, function(_, success)
+    if success ~= true then
+      marker("vehicle-lifecycle-codec-complete", {
+        success = false, stage = "dispatch-apply", error = "script-event command failed",
+      })
+    end
+  end)
+  return true
+end
+
 local function makeCommandAt(index)
   if index > #candidates then return nil, "candidate-range" end
   local x, y = candidates[index][1], candidates[index][2]

@@ -2,6 +2,11 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
 
+[Vehicle lifecycle physical postconditions](VEHICLE_LIFECYCLE_POSTCONDITIONS_2026-08-09.md)
+records the same-wrong-result consensus gap, transaction-specific native
+readbacks, the destructive exact-engine purchase/control/replace/sale chain,
+and the remaining ordinary-widget two-process boundary.
+
 [File-bridge long-session scaling](FILE_BRIDGE_LONG_SESSION_SCALING_2026-08-09.md)
 records the real 5,469-file O(history) poll, 972x lookup benchmark, strict
 cursor-direct replacement, schema-2 cursor, and bounded 4,096-message evidence

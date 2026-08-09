@@ -13,6 +13,7 @@ param(
     [switch]$ProposalOwnershipTest,
     [switch]$StationUpgradeCodecTest,
     [switch]$VehiclePurchaseTest,
+    [switch]$VehicleLifecycleTest,
     [switch]$NativeHook,
     [switch]$SkipNativeBuild,
     [int]$NativeWaitMilliseconds = 45000
@@ -163,9 +164,9 @@ function Invoke-ProbeLogicalClick($Payload, [string]$Label) {
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 
 try {
-    $exclusiveModeCount = @($CapabilityOnly, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest, $VehiclePurchaseTest).Where({ $_ }).Count
+    $exclusiveModeCount = @($CapabilityOnly, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest, $VehiclePurchaseTest, $VehicleLifecycleTest).Where({ $_ }).Count
     if ($exclusiveModeCount -gt 1) {
-        throw '-CapabilityOnly, -BuildGateTest, -CommandGateTest, -TrackBuildTest, -SignalTest, -SignalGuiCaptureTest, -OwnershipTransferTest, -ProposalOwnershipTest, -StationUpgradeCodecTest, and -VehiclePurchaseTest are mutually exclusive.'
+        throw '-CapabilityOnly, -BuildGateTest, -CommandGateTest, -TrackBuildTest, -SignalTest, -SignalGuiCaptureTest, -OwnershipTransferTest, -ProposalOwnershipTest, -StationUpgradeCodecTest, -VehiclePurchaseTest, and -VehicleLifecycleTest are mutually exclusive.'
     }
     if (($BuildGateTest -or $CommandGateTest) -and -not $NativeHook) {
         throw '-BuildGateTest and -CommandGateTest require -NativeHook.'
@@ -204,6 +205,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\canonical.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua') -Destination $libraryTarget
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_vehicle_postcondition.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'investigation\live_console_probe.lua') -Destination $libraryTarget
     Write-Host "Minimal probe resources injected; evidence directory: $runDirectory"
@@ -261,6 +263,8 @@ try {
             "require('tpf2_mp_probe/live_console_probe').runStationUpgradeCodecTest()"
         } elseif ($VehiclePurchaseTest) {
             "require('tpf2_mp_probe/live_console_probe').runVehiclePurchaseTest()"
+        } elseif ($VehicleLifecycleTest) {
+            "require('tpf2_mp_probe/live_console_probe').runVehicleLifecycleTest()"
         } else {
             "require('tpf2_mp_probe/live_console_probe').run({followup=false})"
         }) -SkipConsoleClick
@@ -291,6 +295,8 @@ try {
         'Issued the canonical station-upgrade materialization test in the isolated disposable world.'
     } elseif ($VehiclePurchaseTest) {
         'Issued the exact NOHAB plus two BC4 canonical purchase test in the isolated disposable world.'
+    } elseif ($VehicleLifecycleTest) {
+        'Issued the destructive exact vehicle lifecycle chain in the isolated disposable world.'
     } else {
         'Issued one supported-API road proposal in the isolated disposable world.'
     })
@@ -359,6 +365,8 @@ try {
             'station-upgrade-codec-complete'
         } elseif ($VehiclePurchaseTest) {
             'vehicle-purchase-codec-complete'
+        } elseif ($VehicleLifecycleTest) {
+            'vehicle-lifecycle-codec-complete'
         } else {
             'build-complete'
         })
@@ -525,6 +533,8 @@ finally {
             'station-upgrade-codec'
         } elseif ($VehiclePurchaseTest) {
             'vehicle-purchase-codec'
+        } elseif ($VehicleLifecycleTest) {
+            'vehicle-lifecycle-codec'
         } else {
             'build-proposal'
         }

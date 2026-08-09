@@ -5,6 +5,7 @@ local bridge = require "tpf2_mp/bridge"
 local world = require "tpf2_mp/world"
 local economy = require "tpf2_mp/economy"
 local operationCodec = require "tpf2_mp/operation_codec"
+local vehiclePostcondition = require "tpf2_mp/operation_vehicle_postcondition"
 
 local M = {}
 
@@ -291,8 +292,15 @@ function M.new(env)
         result.lineCid = canonical.resolveCanonical(currentState().canonical, "line", lineId)
       end
       result.stopIndex = tonumber(vehicle.stopIndex)
-      local config = vehicle.transportVehicleConfig
-      result.vehicleParts = config and #(config.vehicles or {}) or nil
+      local projection = vehiclePostcondition.project(vehicle, api)
+      result.vehicleParts = projection.vehicleParts
+      if kind == "vehicle.buy" or kind == "vehicle.replace" or kind == "vehicle.reverse" then
+        result.vehicleConfig = projection.vehicleConfig
+        result.vehicleConfigKnown = projection.vehicleConfigKnown
+      elseif kind == "vehicle.maintenance" then
+        result.targetMaintenanceBasisPoints = projection.targetMaintenanceBasisPoints
+        result.targetMaintenanceKnown = projection.targetMaintenanceKnown
+      end
       -- This is the same resolved annual figure the stock purchase and vehicle
       -- detail windows display after all vanilla/modded model modifiers have
       -- run.  Keeping it in the physical postcondition makes every peer agree
@@ -303,9 +311,14 @@ function M.new(env)
       if annual and annual >= 0 then
         result.annualMaintenanceDollars = math.max(0, util.integer(annual, 0))
       end
+      local postconditionOk, postconditionError = vehiclePostcondition.validate(transaction, result)
+      if not postconditionOk then return nil, postconditionError end
     elseif kind == "entity.name" then
       local name = safeOperationComponent(localId, types.NAME)
       result.name = name and tostring(name.name or "") or nil
+      if result.name ~= data.name then
+        return nil, "native entity name does not match the ordered transaction"
+      end
     elseif kind == "entity.color" then
       -- Color userdata layout has varied between API states. Callback success,
       -- target existence, and the canonical transaction remain authoritative;

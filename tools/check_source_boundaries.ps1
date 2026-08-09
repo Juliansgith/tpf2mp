@@ -21,6 +21,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_clock_runtime.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_asset_cost_runtime.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_cost_runtime.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\operation_vehicle_postcondition.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_demo.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_collateral_runtime.lua' = 40
@@ -146,6 +147,11 @@ $vehicleSyncSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_runtime.lua') -Raw
 if (-not $vehicleSyncSource.Contains('require "tpf2_mp/vehicle_sync_state"')) {
     throw 'Vehicle runtime no longer composes the vehicle synchronization state boundary.'
+}
+$operationRuntimeSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\operation_runtime.lua') -Raw
+if (-not $operationRuntimeSource.Contains('require "tpf2_mp/operation_vehicle_postcondition"')) {
+    throw 'Operation runtime no longer composes the vehicle physical-postcondition boundary.'
 }
 $worldSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\world.lua') -Raw
