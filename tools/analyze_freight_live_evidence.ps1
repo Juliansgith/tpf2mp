@@ -45,7 +45,7 @@ if ($report.passed -ne $true) {
     throw "Freight evidence failed: $($report.problems -join '; ')"
 }
 Write-Host "PASS authoritative freight evidence: stage=$RequireStage, checkpoints=$($report.completedCheckpointCount)"
-Write-Host ("waiting={0} aboard={1} delivered={2} settledRevenueCents={3}" -f `
-    $report.maxima.waiting, $report.maxima.aboard, $report.maxima.deliveredTotal,
-    $report.maxima.settledRevenueCents)
+Write-Host ("waiting={0} aboard={1} witnessedAboard={2} delivered={3} settledRevenueCents={4}" -f `
+    $report.maxima.waiting, $report.maxima.aboard, $report.maxima.witnessedAboard,
+    $report.maxima.deliveredTotal, $report.maxima.settledRevenueCents)
 Write-Host "report=$output"

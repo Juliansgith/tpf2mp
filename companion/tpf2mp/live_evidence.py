@@ -86,8 +86,7 @@ def scan_live_audit(
             if action_type == "network.sync_fault":
                 faults.append(str(action.get("errorCode") or "network-sync-fault"))
             if kind == "commit":
-                if action_type in {"freight.milestone", "passenger.milestone"}:
-                    validate_action(action)
+                validate_action(action)
                 if action_type == "proposal.prepare":
                     proposal_prepares.add(seq)
                 elif action_type == "proposal.build":

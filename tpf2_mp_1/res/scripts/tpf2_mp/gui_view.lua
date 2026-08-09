@@ -36,6 +36,17 @@ local function cargoProof(snapshot)
     settled, revenue
 end
 
+local function milestoneStatus(probe)
+  if type(probe) ~= "table" then return "waiting for first load" end
+  if probe.aboardCheckpointed == true then
+    return string.format("PROVED %d on %s round %s",
+      tonumber(probe.aboard) or 0, tostring(probe.lineCid or "-"),
+      tostring(probe.observedRound or "legacy"))
+  end
+  if probe.stale == true then return "stale witness; waiting to retry" end
+  return "waiting for first load"
+end
+
 -- Log-scale crowd glyphs: one large block is five hundred people, one medium
 -- is one hundred, one small is twenty. Reading magnitude beats counting.
 function M.crowdIcons(count)
@@ -219,6 +230,11 @@ function M.render(gui, snapshot, options)
       tonumber(cosmetics.nativeAboard) or 0,
       tonumber(cosmetics.nativeWaiting) or 0,
       cosmetics.targetWritesEnabled == true and "enabled" or "fail-closed")
+    local probes = snapshot.probes or {}
+    lines[#lines + 1] = string.format(
+      "Automatic load receipts: freight %s | local passenger %s",
+      milestoneStatus(probes.freightMilestone),
+      milestoneStatus(probes.passengerMilestone))
     local clockCapture = gui.nativeClockCapture or {}
     local indicator = clockCapture.indicator or {}
     lines[#lines + 1] = string.format(

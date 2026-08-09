@@ -2711,7 +2711,7 @@ class CheckpointTests(unittest.TestCase):
             audit.append(sign({
                 "protocol": 1, "session": session, "seq": 1, "kind": "commit",
                 "origin_peer": "player1", "origin_local_seq": 1, "tick": 1,
-                "payload": {"action": {"type": "economy.settle"}},
+                "payload": {"action": {"type": "economy.settle", "results": {}}},
             }))
             for local_seq, peer, payload in (
                 (1, "player1", player1), (1, "player2", player2),
@@ -2746,6 +2746,16 @@ class CheckpointTests(unittest.TestCase):
             self.assertTrue(report["observedStages"]["settled"])
             self.assertEqual(report["maxima"]["aboard"], 15)
             self.assertEqual(report["maxima"]["settledRevenueCents"], 25_000_000)
+
+            malformed_action = AuditLog(Path(directory) / "malformed-action.ndjson")
+            for message in AuditLog(audit.path).messages():
+                candidate = json.loads(json.dumps(message))
+                if candidate.get("kind") == "commit":
+                    del candidate["payload"]["action"]["results"]
+                    candidate = sign(candidate)
+                malformed_action.append(candidate)
+            with self.assertRaisesRegex(ProtocolError, "host-computed results"):
+                analyse_freight_audit(malformed_action.path, session)
             waiting_report = analyse_freight_audit(
                 audit.path, session, require_stage="waiting"
             )
@@ -2896,7 +2906,7 @@ class CheckpointTests(unittest.TestCase):
             audit.append(sign({
                 "protocol": 1, "session": session, "seq": 1, "kind": "commit",
                 "origin_peer": "player1", "origin_local_seq": 1, "tick": 1,
-                "payload": {"action": {"type": "economy.settle"}},
+                "payload": {"action": {"type": "economy.settle", "results": {}}},
             }))
             for peer, payload in zip(("player1", "player2"), payloads):
                 audit.append(sign({
@@ -3044,7 +3054,7 @@ class CheckpointTests(unittest.TestCase):
                     "protocol": 1, "session": session, "seq": 1,
                     "kind": "commit", "origin_peer": "player1",
                     "origin_local_seq": 1, "tick": 1,
-                    "payload": {"action": {"type": "economy.settle"}},
+                    "payload": {"action": {"type": "economy.settle", "results": {}}},
                 }))
                 for peer, payload in zip(("player1", "player2"), payloads):
                     audit.append(sign({

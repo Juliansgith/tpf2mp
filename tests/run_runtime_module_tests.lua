@@ -319,6 +319,11 @@ do
   }
   financeModule.initialiseNetworkAccounts(
     current.finance, current.companyOrder, 50000000, { reason = "test" })
+  current.probes.freightMilestone = {
+    aboardCheckpointed = true, lineCid = "line:event:cargo",
+    vehicleCid = "vehicle:event:cargo", observedRound = 2, aboard = 7,
+  }
+  current.probes.passengerMilestone = { stale = true, aboardCheckpointed = false }
   local nativeReads = 0
   local snapshot = publicSnapshotModule.new({
     getState = function() return current end,
@@ -350,6 +355,9 @@ do
   assert(type(snapshot.economyPresentation) == "table"
       and snapshot.economyPresentation.activeCompanyCid == "company:1",
     "public snapshot omitted the authoritative economy presentation view")
+  assert(snapshot.probes.freightMilestone.aboard == 7
+      and snapshot.probes.passengerMilestone.stale == true,
+    "public snapshot omitted automatic aboard-receipt progress")
 end
 
 do
@@ -2361,7 +2369,13 @@ do
       ["line:cargo:retired"] = { deliveredCargo = 99, earnedRevenueCents = 999900 },
       ["line:passenger:a"] = { deliveredCargo = 88, earnedRevenueCents = 888800 },
     },
-    probes = {},
+    probes = {
+      freightMilestone = {
+        aboardCheckpointed = true, aboard = 8, lineCid = "line:cargo:a",
+        observedRound = 3,
+      },
+      passengerMilestone = { aboardCheckpointed = false, stale = true },
+    },
   }, { maxDeferredNetworkIntents = 32 })
   assert(status.value:find("Peer: player1", 1, true), "GUI status formatter lost peer identity")
   assert(details.value:find("Session: runtime-module-test", 1, true),
@@ -2370,6 +2384,10 @@ do
       "Cargo proof: 1 active lines | 17 waiting | 8/40 aboard | 29 delivered | 23 settled / $4567.00",
       1, true),
     "GUI did not expose authored cargo progress and settled evidence")
+  assert(details.value:find(
+      "Automatic load receipts: freight PROVED 8 on line:cargo:a round 3 | local passenger stale witness; waiting to retry",
+      1, true),
+    "GUI did not expose automatic passenger/cargo proof progress")
 
   -- The panel must present the model as the contest and native agents as
   -- scenery, so a player never has to infer which layer is authoritative.

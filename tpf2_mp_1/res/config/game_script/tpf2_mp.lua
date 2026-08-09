@@ -1926,8 +1926,8 @@ handlers["probe.export_research"] = function()
   report.passengerPresentation = passengerPresentation.digestView(
     state.world.passengerPresentation)
   report.passengerPresentationDigest = hash.value(report.passengerPresentation); report.passengerCosmetics = util.deepCopy(state.probes.passengerCosmetics)
-  report.economyPresentation = util.deepCopy(publicSnapshot().economyPresentation)
-  report.serviceRegistration = util.deepCopy(state.probes.serviceRegistration)
+  report.economyPresentation = util.deepCopy(publicSnapshot().economyPresentation); report.serviceRegistration = util.deepCopy(state.probes.serviceRegistration)
+  report.freightMilestone = util.deepCopy(state.probes.freightMilestone); report.passengerMilestone = util.deepCopy(state.probes.passengerMilestone)
   report.proposals = {
     queued = state.world.proposals.queued or 0,
     applied = state.world.proposals.applied or 0,

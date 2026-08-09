@@ -46,8 +46,9 @@ if ($report.passed -ne $true) {
     throw "Passenger-feeder evidence failed: $($report.problems -join '; ')"
 }
 Write-Host "PASS authoritative passenger-feeder evidence: stage=$RequireStage, carrier=$Carrier, checkpoints=$($report.completedCheckpointCount)"
-Write-Host ("localServices={0} corridors={1} links={2} aboard={3} delivered={4} settledRevenueCents={5}" -f `
+Write-Host ("localServices={0} corridors={1} links={2} aboard={3} witnessedAboard={4} delivered={5} settledRevenueCents={6}" -f `
     $report.maxima.localServices, $report.maxima.corridorServices,
     $report.maxima.feederLinks, $report.maxima.localAboard,
-    $report.maxima.localDeliveredPassengers, $report.maxima.localSettledRevenueCents)
+    $report.maxima.localWitnessedAboard, $report.maxima.localDeliveredPassengers,
+    $report.maxima.localSettledRevenueCents)
 Write-Host "report=$output"

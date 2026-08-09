@@ -85,6 +85,8 @@ function M.new(env)
       industryContent = util.deepCopy(currentState().probes.industryContent),
       freightIndustry = util.deepCopy(currentState().probes.freightIndustry),
       serviceRegistration = util.deepCopy(currentState().probes.serviceRegistration),
+      freightMilestone = util.deepCopy(currentState().probes.freightMilestone),
+      passengerMilestone = util.deepCopy(currentState().probes.passengerMilestone),
       lastError = currentState().probes.lastError,
       structuralDigest = structural and structural.digest or nil,
       worldManifestDigest = currentState().probes.worldManifest and currentState().probes.worldManifest.digest or nil,

@@ -73,9 +73,10 @@ never coalesce with each other. Emission remains tick-driven and non-reentrant.
 
 ## Audit binding
 
-The shared live-evidence scanner now carries the exact ordered boundary action
-into each completed checkpoint record. Freight and passenger-feeder reports
-verify the witness against the independently validated checkpoint ledger.
+The shared live-evidence scanner now revalidates every ordered commit against
+the current strict protocol and carries the exact ordered boundary action into
+each completed checkpoint record. Freight and passenger-feeder reports verify
+the witness against the independently validated checkpoint ledger.
 Passenger proof is additionally restricted to a currently linked, qualifying
 local ROAD/TRAM feeder with a corridor and positive feeder benefit. Freight
 proof rejects retired lines.
