@@ -2,8 +2,13 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.16.0`.
 
+[Load-bearing restore save attestation](LOAD_BEARING_RESTORE_ATTESTATION_2026-08-09.md)
+records the `.sav.lua` integrity gap, dual-file ordered receipts, strict v4
+plans, stable pair hashing, archive/startup enforcement, v2/v3 compatibility,
+and the remaining automatic populated restore gate.
+
 [Restore profile binding and launcher resume path](RESTORE_PROFILE_AND_LAUNCHER_2026-08-09.md)
-records the v2 policy gap, strict v3 match-profile binding, launch-time policy
+records the v2 policy gap, strict v3+ match-profile binding, launch-time policy
 adoption/conflict refusal, verified Host/player1 versus Join/player2 picker,
 trusted-LAN checksum limit, and the remaining populated two-process reload gate.
 
@@ -536,7 +541,7 @@ Relevant documented behavior used by the implementation:
 
 - Does every vanilla builder route pass through the captured Lua call and tag-15 visitor gate?
 - How long can two independently running Build 35924 worlds remain equivalent after schema-5/7 transactions when autonomous systems and real services are introduced?
-- Do READY-gated automatic peer saves plus the v3 launcher picker complete a populated two-computer restore without weakening receipt-bound safety? Coordinated peer-local reload and mandatory post-load convergence already pass live; automatic save and v3 policy/picker integration remain to be proved together.
+- Do READY-gated automatic peer saves plus the v4 launcher picker complete a populated two-computer restore without weakening receipt-bound safety? Coordinated peer-local reload and mandatory post-load convergence already pass live; automatic save and current dual-file policy/picker integration remain to be proved together.
 - What station-barrier latency and signaling interactions appear with two or more real trains on one populated line? Long-pause/speed-3 and deliberate slow-peer recovery now pass with one train.
 - Do two populated stops retain their order and schema-2 alternate-terminal selections through the actual widgets from both origins? Typed capture/replay is implemented and automated; the two-origin visual acceptance remains.
 - Which canonical payload, reference-translation, replay, and postcondition formats are required to turn each gated vehicle category into playable synchronized actions?

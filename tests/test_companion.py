@@ -51,6 +51,7 @@ from tpf2mp.industry_content import (
     validate_artifact as validate_industry_artifact,
 )
 from tpf2mp.network import CommitClient, CommitHost
+from tpf2mp.native_save import hash_load_bearing_save, sha256_file
 from tpf2mp.protocol import (
     CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
     FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION,
@@ -3880,8 +3881,11 @@ class RestorePointTests(unittest.TestCase):
             }},
         }
 
-    def _receipt(self, seq: int, peer: str, boundary: int, sha: str, core: str = "core-1") -> dict:
-        return {
+    def _receipt(
+        self, seq: int, peer: str, boundary: int, sha: str,
+        core: str = "core-1", metadata_sha: str | None = None,
+    ) -> dict:
+        result = {
             "protocol": 1, "session": self.SESSION, "peer": peer,
             "origin_peer": peer, "seq": seq, "kind": "commit", "tick": seq,
             "payload": {"action": {
@@ -3890,6 +3894,9 @@ class RestorePointTests(unittest.TestCase):
                 "coreDigest": core, "convergenceKey": f"key-{boundary}", "paused": True,
             }},
         }
+        if metadata_sha is not None:
+            result["payload"]["action"]["metadataSha256"] = metadata_sha
+        return result
 
     def _commit(self, seq: int, peer: str = "player2") -> dict:
         return {
@@ -3993,15 +4000,21 @@ class RestorePointTests(unittest.TestCase):
             player2 = saves / "player2.sav"
             player1.write_bytes(b"world-at-boundary-4-player1")
             player2.write_bytes(b"world-at-boundary-4-player2")
+            player1_metadata = Path(str(player1) + ".lua")
+            player2_metadata = Path(str(player2) + ".lua")
+            player1_metadata.write_text("return { peer = 1 }", encoding="utf-8")
+            player2_metadata.write_text("return { peer = 2 }", encoding="utf-8")
             sha1 = hashlib.sha256(player1.read_bytes()).hexdigest()
             sha2 = hashlib.sha256(player2.read_bytes()).hexdigest()
+            metadata_sha1 = hashlib.sha256(player1_metadata.read_bytes()).hexdigest()
+            metadata_sha2 = hashlib.sha256(player2_metadata.read_bytes()).hexdigest()
 
             audit = self._audit(root, [
                 self._checkpoint(1, 2),
                 self._commit(2),
                 self._checkpoint(3, 4),
-                self._receipt(4, "player1", 4, sha1),
-                self._receipt(5, "player2", 4, sha2),
+                self._receipt(4, "player1", 4, sha1, metadata_sha=metadata_sha1),
+                self._receipt(5, "player2", 4, sha2, metadata_sha=metadata_sha2),
             ])
             analysis = analyse_restore_points(audit, self.SESSION, ("player1", "player2"))
             self.assertEqual(analysis["latestReady"]["boundarySeq"], 4)
@@ -4029,6 +4042,7 @@ class RestorePointTests(unittest.TestCase):
             self.assertTrue(
                 any("no longer matches" in problem for problem in drifted["problems"])
             )
+            player2.write_bytes(b"world-at-boundary-4-player2")
 
             missing = confirm_restore_readiness(plan, {"player1": player1})
             self.assertFalse(missing["ready"])
@@ -4057,12 +4071,36 @@ class RestorePointTests(unittest.TestCase):
                 match_profile=profile,
             )
             bound_verified = verify_restore_plan(bound)
-            self.assertEqual(bound_verified["version"], 3)
+            self.assertEqual(bound_verified["version"], 4)
             self.assertEqual(bound_verified["matchContentProfile"], profile)
+            self.assertEqual(
+                bound_verified["peerSaves"]["player1"]["metadataSha256"], metadata_sha1,
+            )
+            bound_ready = confirm_restore_readiness(
+                bound, {"player1": player1, "player2": player2},
+            )
+            self.assertTrue(bound_ready["ready"], bound_ready["problems"])
+
+            player2_metadata.write_text("tampered metadata", encoding="utf-8")
+            metadata_drift = confirm_restore_readiness(
+                bound, {"player1": player1, "player2": player2},
+            )
+            self.assertFalse(metadata_drift["ready"])
+            self.assertNotEqual(
+                metadata_drift["peers"]["player2"]["metadataActual"], metadata_sha2,
+            )
+            player2_metadata.write_text("return { peer = 2 }", encoding="utf-8")
+
+            v3_core = json.loads(json.dumps(bound))
+            v3_core.pop("checksum")
+            v3_core["version"] = 3
+            for save_attestation in v3_core["peerSaves"].values():
+                save_attestation.pop("metadataSha256")
+            self.assertEqual(verify_restore_plan(sign(v3_core))["version"], 3)
 
             profile_path = root / "match-content-profile.json"
             profile_path.write_text(json.dumps(profile), encoding="utf-8")
-            cli_plan_path = root / "restore-plan-v3.json"
+            cli_plan_path = root / "restore-plan-v4.json"
             self.assertEqual(companion_main([
                 "restore-plan", str(audit), "--session", self.SESSION,
                 "--match-profile", str(profile_path), "--output", str(cli_plan_path),
@@ -4099,6 +4137,22 @@ class RestorePointTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "unsupported"):
                 verify_restore_plan(sign(float_version))
 
+            mixed_audit = self._audit(root, [
+                self._checkpoint(1, 6),
+                self._receipt(2, "player1", 6, sha1, metadata_sha=metadata_sha1),
+                self._receipt(3, "player2", 6, sha2),
+            ])
+            mixed_analysis = analyse_restore_points(
+                mixed_audit, self.SESSION, ("player1", "player2"),
+            )
+            self.assertIsNone(mixed_analysis["latestReady"])
+            self.assertIn("mixes legacy", "; ".join(mixed_analysis["points"][0]["reasons"]))
+            with self.assertRaisesRegex(ProtocolError, "mixes legacy"):
+                build_restore_plan(
+                    mixed_audit, self.SESSION, required_peers=("player1", "player2"),
+                    match_profile=profile,
+                )
+
     def test_game_event_copies_of_receipts_do_not_invalidate_the_ordered_receipts(self) -> None:
         first = self._receipt(2, "player1", 4, "a" * 64)
         second = self._receipt(3, "player2", 4, "b" * 64)
@@ -4126,10 +4180,12 @@ class RestorePointTests(unittest.TestCase):
             "convergenceKey": "key-4", "paused": True,
         }
         validate_action(base)
+        validate_action({**base, "metadataSha256": "b" * 64})
         for mutation in (
             {"paused": False},
             {"boundarySeq": 0},
             {"saveSha256": "nothex" * 10},
+            {"metadataSha256": "nothex" * 10},
             {"savedAtUnix": -1},
             {"coreDigest": ""},
         ):
@@ -4381,11 +4437,15 @@ class AnchorCoordinatorTests(unittest.TestCase):
             host.clock_pause_acknowledged = True
             save = root / "world.sav"
             save.write_bytes(b"world-at-boundary-4")
+            metadata = Path(str(save) + ".lua")
+            metadata.write_text("return { boundary = 4 }", encoding="utf-8")
             expected = hashlib.sha256(save.read_bytes()).hexdigest()
+            expected_metadata = hashlib.sha256(metadata.read_bytes()).hexdigest()
 
             result = host.anchor.anchor_save(save, 1717171717)
             self.assertTrue(result["filed"])
             self.assertEqual(result["saveSha256"], expected)
+            self.assertEqual(result["metadataSha256"], expected_metadata)
             self.assertEqual(result["boundarySeq"], 4)
             self.assertTrue(result["paused"])
 
@@ -4406,6 +4466,7 @@ class AnchorCoordinatorTests(unittest.TestCase):
             repeat = host.anchor.anchor_save(save, 1717171800)
             self.assertFalse(repeat["filed"])
             self.assertEqual(repeat["saveSha256"], expected)
+            self.assertEqual(repeat["metadataSha256"], expected_metadata)
 
             # The other peer files for the same boundary.
             host.commits[99] = sign({
@@ -4414,6 +4475,7 @@ class AnchorCoordinatorTests(unittest.TestCase):
                 "payload": {"action": {
                     "type": "recovery.save_receipt", "boundarySeq": 4,
                     "savedAtUnix": 1717171999, "saveSha256": "b" * 64,
+                    "metadataSha256": "c" * 64,
                     "coreDigest": "core-1", "convergenceKey": "key-4", "paused": True,
                 }},
             })
@@ -4430,6 +4492,10 @@ class AnchorCoordinatorTests(unittest.TestCase):
             host.clock_pause_acknowledged = True
             with self.assertRaisesRegex(ProtocolError, "is missing or is not a .sav"):
                 host.anchor.anchor_save(root / "absent.sav", 1000)
+            incomplete = root / "incomplete.sav"
+            incomplete.write_bytes(b"world without script state")
+            with self.assertRaisesRegex(ProtocolError, "metadata is missing"):
+                host.anchor.anchor_save(incomplete, 1000)
             self.assertEqual(host.anchor.restorable(), [])
 
     def test_receipt_claim_must_match_current_ready_boundary(self) -> None:
@@ -4513,6 +4579,8 @@ class AnchorRequestStoreTests(unittest.TestCase):
             store = AnchorRequestStore(bridge)
             save = root / "world.sav"
             save.write_bytes(b"world-at-boundary")
+            metadata = Path(str(save) + ".lua")
+            metadata.write_text("return { peer = 2 }", encoding="utf-8")
             request_id = "a" * 32
             request = {
                 "schemaVersion": 1, "session": "anchor-io", "peer": "player2",
@@ -4539,9 +4607,56 @@ class AnchorRequestStoreTests(unittest.TestCase):
                 first[0]["payload"]["action"]["saveSha256"],
                 hashlib.sha256(save.read_bytes()).hexdigest(),
             )
+            self.assertEqual(
+                first[0]["payload"]["action"]["metadataSha256"],
+                hashlib.sha256(metadata.read_bytes()).hexdigest(),
+            )
+            pending_result = json.loads(
+                (store.results / f"{request_id}.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                pending_result["metadataSha256"],
+                first[0]["payload"]["action"]["metadataSha256"],
+            )
             self.assertTrue(store.record_receipt(first[0]["local_seq"], True, None))
             self.assertEqual(list(store.client_intents(state)), [])
             self.assertEqual(store.status()["localAnchorsFiled"], [9])
+            accepted_result = json.loads(
+                (store.results / f"{request_id}.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                accepted_result["metadataSha256"],
+                first[0]["payload"]["action"]["metadataSha256"],
+            )
+
+    def test_missing_metadata_rejects_locally_without_dropping_the_client(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bridge = GameBridge(root / "client", "anchor-io", "player2")
+            store = AnchorRequestStore(bridge)
+            save = root / "incomplete.sav"
+            save.write_bytes(b"world without script state")
+            request_id = "c" * 32
+            request = {
+                "schemaVersion": 1, "session": "anchor-io", "peer": "player2",
+                "requestId": request_id, "boundarySeq": 9,
+                "coreDigest": "core-9", "convergenceKey": "key-9",
+                "savePath": str(save), "savedAtUnix": 1717171717,
+            }
+            atomic_write(
+                store.requests / f"{request_id}.json",
+                (json.dumps(request) + "\n").encode("utf-8"),
+            )
+            state = {
+                "ready": True, "boundarySeq": 9, "coreDigest": "core-9",
+                "convergenceKey": "key-9", "reasons": [],
+            }
+            self.assertEqual(list(store.client_intents(state)), [])
+            result = json.loads(
+                (store.results / f"{request_id}.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("metadata is missing", result["error"])
 
     def test_client_refuses_request_for_another_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4663,6 +4778,30 @@ class IndustryContentConsensusTests(unittest.TestCase):
             self.assertFalse(host.industry_content_consensus.result["ready"])
 
 
+class NativeSaveTests(unittest.TestCase):
+    def test_load_bearing_pair_refuses_a_mid_hash_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            save = Path(directory) / "stable.sav"
+            metadata = Path(str(save) + ".lua")
+            save.write_bytes(b"native")
+            metadata.write_text("return { value = 1 }", encoding="utf-8")
+            stable = hash_load_bearing_save(save)
+            self.assertEqual(stable["saveSha256"], sha256_file(save))
+            calls = 0
+
+            def mutating_hash(path: Path) -> str:
+                nonlocal calls
+                digest = sha256_file(path)
+                calls += 1
+                if calls == 1:
+                    metadata.write_text("return { value = 200 }", encoding="utf-8")
+                return digest
+
+            with mock.patch("tpf2mp.native_save.sha256_file", side_effect=mutating_hash):
+                with self.assertRaisesRegex(ProtocolError, "changed while"):
+                    hash_load_bearing_save(save)
+
+
 class RecoveryArchiveTests(unittest.TestCase):
     def test_native_save_archive_is_signed_hashed_and_tamper_evident(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4755,6 +4894,54 @@ class RecoveryArchiveTests(unittest.TestCase):
                     other, refused, "archive-test", "player1", plan
                 )
             self.assertFalse(refused.exists())
+
+    def test_current_restore_archive_binds_the_load_bearing_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            save = root / "player1-current.sav"
+            metadata = Path(str(save) + ".lua")
+            save.write_bytes(b"current-native-world")
+            metadata.write_text("return { state = 29 }", encoding="utf-8")
+            peer_save = {
+                "saveSha256": hashlib.sha256(save.read_bytes()).hexdigest(),
+                "metadataSha256": hashlib.sha256(metadata.read_bytes()).hexdigest(),
+                "savedAtUnix": 1000, "receiptCommitSeq": 10,
+                "boundarySeq": 9, "coreDigest": "core-9", "convergenceKey": "key-9",
+            }
+            plan = sign({
+                "format": "tpf2mp-restore-plan", "version": 4, "protocol": 1,
+                "session": "archive-current", "resumeSession": "archive-current-r9",
+                "generatedAtUtc": "2026-08-09T00:00:00+00:00", "boundarySeq": 9,
+                "convergenceKey": "key-9", "coreDigest": "core-9",
+                "requiredPeers": ["player1", "player2"],
+                "peerSaves": {
+                    "player1": peer_save,
+                    "player2": {
+                        **peer_save, "saveSha256": "b" * 64,
+                        "metadataSha256": "c" * 64, "receiptCommitSeq": 11,
+                    },
+                },
+                "matchContentProfile": {
+                    "schemaVersion": 1, "agentMode": "skeleton",
+                    "townDevelopment": False,
+                },
+                "steps": ["restore both peers"],
+            })
+            output = root / "current-archive"
+            manifest = write_recovery_archive(
+                save, output, "archive-current", "player1", plan,
+            )
+            verified = verify_recovery_archive(manifest, output)
+            self.assertEqual(
+                verified["restoreAttestation"]["metadataSha256"],
+                peer_save["metadataSha256"],
+            )
+
+            metadata.write_text("tampered", encoding="utf-8")
+            with self.assertRaisesRegex(ProtocolError, "save set does not match"):
+                write_recovery_archive(
+                    save, root / "metadata-refused", "archive-current", "player1", plan,
+                )
 
 
 class NetworkIntegrationTests(unittest.TestCase):
@@ -6763,6 +6950,9 @@ class NetworkIntegrationTests(unittest.TestCase):
 
                 save = root / "player2.sav"
                 save.write_bytes(b"client-world-at-four")
+                Path(str(save) + ".lua").write_text(
+                    "return { peer = 2, boundary = 4 }", encoding="utf-8",
+                )
                 request_id = "c" * 32
                 request = {
                     "schemaVersion": 1, "session": session, "peer": "player2",

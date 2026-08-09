@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from .bridge import AuditLog, atomic_write
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
+from .native_save import hash_load_bearing_save, sha256_file
 from .protocol import PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_envelope, verify
 from .restore import verify_restore_plan
 
@@ -177,14 +178,6 @@ def write_recovery_plan(
     return plan
 
 
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def write_recovery_archive(
     save_path: Path | str,
     output_directory: Path | str,
@@ -229,10 +222,17 @@ def write_recovery_archive(
         if peer not in verified_plan.get("requiredPeers", []):
             raise ProtocolError("recovery plan does not contain the archive peer")
         if plan_kind == "restore":
-            expected_save = verified_plan["peerSaves"][peer]["saveSha256"]
-            if _sha256_file(source_save) != expected_save:
+            expected = verified_plan["peerSaves"][peer]
+            hashes = hash_load_bearing_save(source_save)
+            if (
+                hashes["saveSha256"] != expected["saveSha256"]
+                or (
+                    expected.get("metadataSha256") is not None
+                    and hashes["metadataSha256"] != expected["metadataSha256"]
+                )
+            ):
                 raise ProtocolError(
-                    f"native recovery save does not match {peer}'s receipt-bound restore plan"
+                    f"native recovery save set does not match {peer}'s receipt-bound restore plan"
                 )
 
     restore_attestation = None
@@ -257,11 +257,11 @@ def write_recovery_archive(
     try:
         files: list[dict[str, Any]] = []
         for role, source in sources:
-            before = _sha256_file(source)
+            before = sha256_file(source)
             destination = output / source.name
             shutil.copy2(source, destination)
-            after = _sha256_file(source)
-            copied = _sha256_file(destination)
+            after = sha256_file(source)
+            copied = sha256_file(destination)
             if before != after or copied != before:
                 raise ProtocolError(f"native save changed while being archived: {source}")
             files.append(
@@ -347,7 +347,7 @@ def verify_recovery_archive(
             raise ProtocolError(f"recovery archive file is missing: {relative}")
         if path.stat().st_size != int(item.get("bytes", -1)):
             raise ProtocolError(f"recovery archive file size mismatch: {relative}")
-        if _sha256_file(path) != item.get("sha256"):
+        if sha256_file(path) != item.get("sha256"):
             raise ProtocolError(f"recovery archive file hash mismatch: {relative}")
     attestation = manifest.get("restoreAttestation")
     if association == "coordinated-receipt-bound-restore-save":
@@ -359,6 +359,17 @@ def verify_recovery_archive(
         save_entries = [item for item in save["files"] if item.get("role") == "save"]
         if len(save_entries) != 1 or save_entries[0].get("sha256") != attestation.get("saveSha256"):
             raise ProtocolError("receipt-bound recovery archive save differs from its attestation")
+        metadata_entries = [
+            item for item in save["files"] if item.get("role") == "metadata"
+        ]
+        expected_metadata = attestation.get("metadataSha256")
+        if expected_metadata is not None and (
+            len(metadata_entries) != 1
+            or metadata_entries[0].get("sha256") != expected_metadata
+        ):
+            raise ProtocolError(
+                "receipt-bound recovery archive metadata differs from its attestation"
+            )
         anchor = manifest.get("checkpointAnchor")
         if not isinstance(anchor, Mapping) or any(
             anchor.get(field) != attestation.get(field)

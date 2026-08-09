@@ -70,6 +70,9 @@ $budgets = [ordered]@{
     'companion\tpf2mp\anchor_prepare.py' = 260
     'companion\tpf2mp\anchor_io.py' = 300
     'companion\tpf2mp\restore.py' = 400
+    'companion\tpf2mp\restore_plan.py' = 180
+    'companion\tpf2mp\native_save.py' = 70
+    'companion\tpf2mp\recovery_receipt_protocol.py' = 70
     'companion\tpf2mp\consensus.py' = 300
     'companion\tpf2mp\synchronization.py' = 700
     'companion\tpf2mp\vehicle_barrier.py' = 390
@@ -227,6 +230,15 @@ if (-not $aboardRuntimeSource.Contains('tpf2_mp/aboard_milestone_witness')) {
 $protocolSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\protocol.py') -Raw
 if (-not $protocolSource.Contains('from .aboard_milestone_protocol import')) {
     throw 'Companion protocol no longer composes its aboard-milestone wire boundary.'
+}
+if (-not $protocolSource.Contains('from .recovery_receipt_protocol import')) {
+    throw 'Companion protocol no longer composes its recovery-receipt wire boundary.'
+}
+$restoreSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\restore.py') -Raw
+foreach ($module in @('from .native_save import', 'from .restore_plan import')) {
+    if (-not $restoreSource.Contains($module)) {
+        throw "Restore coordinator no longer composes $module"
+    }
 }
 foreach ($report in @('freight_live_report.py', 'passenger_feeder_live_report.py')) {
     $reportSource = Get-Content -LiteralPath (Join-Path $root "companion\tpf2mp\$report") -Raw

@@ -201,7 +201,7 @@ try {
                 }
             }) @conflict)
         }
-        catch { $refused = $_.Exception.Message -match 'conflicts with signed restore plan' }
+        catch { $refused = $_.Exception.Message -match 'conflicts with bound restore plan' }
         if (-not $refused) { throw 'Explicit restore-policy conflict did not fail closed.' }
     }
     $legacyProfile = Resolve-Tpf2mpRestoreMatchProfile `
@@ -209,7 +209,7 @@ try {
     if (-not $legacyProfile.legacyUnbound -or $legacyProfile.agentMode -ne 'empty') {
         throw 'Legacy restore-plan policy compatibility failed.'
     }
-    Write-Host 'PASS signed restore policy adoption, conflict refusal, and v2 compatibility'
+    Write-Host 'PASS bound restore policy adoption, conflict refusal, and v2 compatibility'
 
     . (Join-Path $projectRoot 'tools\native_load_common.ps1')
 

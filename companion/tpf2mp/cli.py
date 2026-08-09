@@ -126,7 +126,7 @@ def parser() -> argparse.ArgumentParser:
     )
     verify_restore.add_argument(
         "--metadata-only", action="store_true",
-        help="verify the signed plan without claiming its save files are present",
+        help="verify the checksummed plan without claiming its save files are present",
     )
     verify_restore_save = commands.add_parser(
         "verify-restore-save", help="verify this peer's save against a receipt-bound plan"

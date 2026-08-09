@@ -263,7 +263,7 @@ function Set-VerifiedRestorePlan([string]$Path) {
         'verify-restore-plan', $resolved, '--metadata-only'
     )) 2>&1)
     if ($LASTEXITCODE -ne 0) {
-        throw "Restore plan signature/structure verification failed: $($output -join ' ')"
+        throw "Restore plan checksum/structure verification failed: $($output -join ' ')"
     }
     $plan = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
     $resumeSession = Assert-Tpf2mpSessionId ([string]$plan.resumeSession)
@@ -368,7 +368,7 @@ $browseButton.Add_Click({
 $restoreButton.Add_Click({
     try {
         $dialog = New-Object Windows.Forms.OpenFileDialog
-        $dialog.Title = 'Select a signed TPF2MP restore plan'
+        $dialog.Title = 'Select a checksummed TPF2MP restore plan'
         $dialog.Filter = 'TPF2MP restore plans (*.json)|*.json|All files (*.*)|*.*'
         if ($dialog.ShowDialog() -eq 'OK') { Set-VerifiedRestorePlan $dialog.FileName }
     }

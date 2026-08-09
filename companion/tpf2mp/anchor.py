@@ -17,20 +17,12 @@ attests that stable file. A correctly prefixed manual save remains a fallback.
 
 from __future__ import annotations
 
-import hashlib
 import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from .native_save import hash_load_bearing_save
 from .protocol import ProtocolError
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 class AnchorCoordinator:
@@ -189,19 +181,24 @@ class AnchorCoordinator:
         if path.suffix.lower() != ".sav" or not path.is_file():
             raise ProtocolError(f"anchor save is missing or is not a .sav: {path}")
         boundary = int(state["boundarySeq"])
-        existing_hash = self._filed_hash(boundary, self.host.bridge.peer)
-        if existing_hash:
-            self.filed[boundary] = existing_hash
+        existing = self._filed_receipt(boundary, self.host.bridge.peer)
+        if existing:
+            self.filed[boundary] = existing["saveSha256"]
             self.last_reason = "boundary already anchored by this peer"
             return {
                 "filed": False, "boundarySeq": boundary,
-                "saveSha256": existing_hash, "reason": self.last_reason,
+                "saveSha256": existing["saveSha256"],
+                **({"metadataSha256": existing["metadataSha256"]}
+                   if existing.get("metadataSha256") else {}),
+                "reason": self.last_reason,
             }
+        save_hashes = hash_load_bearing_save(path)
         receipt = {
             "type": "recovery.save_receipt",
             "boundarySeq": boundary,
             "savedAtUnix": max(0, int(saved_at_unix)),
-            "saveSha256": _sha256_file(path),
+            "saveSha256": save_hashes["saveSha256"],
+            "metadataSha256": save_hashes["metadataSha256"],
             "coreDigest": str(state["coreDigest"] or ""),
             "convergenceKey": str(state["convergenceKey"] or ""),
             "paused": True,
@@ -212,15 +209,14 @@ class AnchorCoordinator:
         self.last_reason = None
         return {"filed": True, **receipt}
 
-    def _filed_hash(self, boundary: int, peer: str) -> str | None:
+    def _filed_receipt(self, boundary: int, peer: str) -> dict[str, Any] | None:
         for message in self.host.commits.values():
             action = (message.get("payload") or {}).get("action") or {}
             if action.get("type") == "recovery.save_receipt" \
                     and message.get("origin_peer") == peer \
                     and int(action.get("boundarySeq", 0)) == int(boundary):
-                value = action.get("saveSha256")
-                if isinstance(value, str):
-                    return value
+                if isinstance(action.get("saveSha256"), str):
+                    return dict(action)
         return None
 
     def validate_receipt(
@@ -283,9 +279,9 @@ class AnchorCoordinator:
         }
 
     def restorable(self) -> list[int]:
-        """Boundaries every required peer has attested, newest last."""
+        """Uniform receipt boundaries every required peer attested, newest last."""
 
-        by_boundary: dict[int, set[str]] = {}
+        by_boundary: dict[int, dict[str, bool]] = {}
         for message in self.host.commits.values():
             action = (message.get("payload") or {}).get("action") or {}
             if action.get("type") != "recovery.save_receipt":
@@ -293,8 +289,12 @@ class AnchorCoordinator:
             boundary = int(action.get("boundarySeq", 0))
             peer = str(message.get("origin_peer") or "")
             if boundary > 0 and peer:
-                by_boundary.setdefault(boundary, set()).add(peer)
+                by_boundary.setdefault(boundary, {})[peer] = bool(
+                    action.get("metadataSha256")
+                )
         required = set(self.host.required_peers)
         return sorted(
-            boundary for boundary, peers in by_boundary.items() if required <= peers
+            boundary for boundary, receipts in by_boundary.items()
+            if required <= set(receipts)
+            and len({receipts[peer] for peer in required}) == 1
         )

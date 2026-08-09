@@ -55,14 +55,15 @@ function M.acknowledgeSaveReceipt(state, action)
   if not state.initialized then return false, "initialise the match first" end
   local allowed = {
     type = true, boundarySeq = true, savedAtUnix = true, saveSha256 = true,
-    coreDigest = true, convergenceKey = true, paused = true,
+    metadataSha256 = true, coreDigest = true, convergenceKey = true, paused = true,
   }
   for key in pairs(action) do
     if not allowed[key] then
       return false, "save receipt has an unknown field: " .. tostring(key)
     end
   end
-  for key in pairs(allowed) do
+  for _, key in ipairs({ "type", "boundarySeq", "savedAtUnix", "saveSha256",
+      "coreDigest", "convergenceKey", "paused" }) do
     if action[key] == nil then return false, "save receipt is missing " .. key end
   end
   if type(action.boundarySeq) ~= "number"
@@ -82,6 +83,11 @@ function M.acknowledgeSaveReceipt(state, action)
     or not action.saveSha256:match("^[0-9a-f]+$") then
     return false, "save receipt hash is invalid"
   end
+  if action.metadataSha256 ~= nil and (type(action.metadataSha256) ~= "string"
+      or #action.metadataSha256 ~= 64
+      or not action.metadataSha256:match("^[0-9a-f]+$")) then
+    return false, "save receipt metadata hash is invalid"
+  end
   for _, field in ipairs({ "coreDigest", "convergenceKey" }) do
     local value = action[field]
     if type(value) ~= "string" or value == "" or #value > 128 then
@@ -91,6 +97,7 @@ function M.acknowledgeSaveReceipt(state, action)
   return true, {
     boundarySeq = action.boundarySeq,
     saveSha256 = action.saveSha256,
+    metadataSha256 = action.metadataSha256,
     acknowledged = true,
   }
 end

@@ -951,11 +951,19 @@ do
     current, receipt)
   assert(acknowledged == true and receiptResult.boundarySeq == 4,
     "valid save receipt was not acknowledged by the game")
+  local currentReceipt = util.deepCopy(receipt)
+  currentReceipt.metadataSha256 = string.rep("b", 64)
+  local currentAcknowledged, currentResult =
+    authoredFollowupRuntimeModule.acknowledgeSaveReceipt(current, currentReceipt)
+  assert(currentAcknowledged == true
+      and currentResult.metadataSha256 == string.rep("b", 64),
+    "load-bearing save receipt metadata was not acknowledged by the game")
   local receiptMutations = {
     { field = "paused", value = false },
     { field = "boundarySeq", value = 0 },
     { field = "savedAtUnix", value = -1 },
     { field = "saveSha256", value = "not-a-hash" },
+    { field = "metadataSha256", value = "not-a-hash" },
     { field = "coreDigest", value = "" },
   }
   for _, mutation in ipairs(receiptMutations) do

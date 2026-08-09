@@ -14,7 +14,7 @@ A restore point is ready only when:
 
 1. the boundary converged (every required peer acknowledged the checkpoint);
 2. every required peer filed an ordered `recovery.save_receipt` for it,
-   attesting a paused world and naming the save's sha-256;
+   attesting a paused world and naming the load-bearing save hashes;
 3. no ordered commit exists between the boundary and any peer's receipt, so
    nothing happened after the checkpoint that the save would also contain;
 4. every peer's receipt agrees on the boundary's core digest and convergence
@@ -27,41 +27,23 @@ resume from divergent geometry.
 
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from .bridge import atomic_write
+from .native_save import hash_load_bearing_save, sha256_file
 from .protocol import (
     PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_action, verify,
 )
-
-RESTORE_PLAN_VERSION = 3
-LEGACY_RESTORE_PLAN_VERSION = 2
-MATCH_PROFILE_AGENT_MODES = {"skeleton", "vanilla", "empty"}
-
-
-def _validate_match_profile(value: Mapping[str, Any]) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != {
-        "schemaVersion", "agentMode", "townDevelopment",
-    }:
-        raise ProtocolError("restore plan match-content profile is malformed")
-    profile_version = value.get("schemaVersion")
-    if not isinstance(profile_version, int) or isinstance(profile_version, bool) \
-            or profile_version != 1:
-        raise ProtocolError("restore plan match-content profile version is invalid")
-    agent_mode = value.get("agentMode")
-    if agent_mode not in MATCH_PROFILE_AGENT_MODES:
-        raise ProtocolError("restore plan match-content agent mode is invalid")
-    if not isinstance(value.get("townDevelopment"), bool):
-        raise ProtocolError("restore plan match-content town-development flag is invalid")
-    return {
-        "schemaVersion": 1,
-        "agentMode": agent_mode,
-        "townDevelopment": value["townDevelopment"],
-    }
+from .restore_plan import (
+    LEGACY_RESTORE_PLAN_VERSION,
+    PROFILE_RESTORE_PLAN_VERSION,
+    RESTORE_PLAN_VERSION,
+    validate_match_profile,
+    verify_restore_plan,
+)
 
 
 def _messages(audit_path: Path, session: str | None) -> list[dict[str, Any]]:
@@ -158,6 +140,7 @@ def analyse_restore_points(
                     "commitSeq": int(record.get("seq", 0)),
                     "savedAtUnix": int(action.get("savedAtUnix", 0)),
                     "saveSha256": action.get("saveSha256"),
+                    "metadataSha256": action.get("metadataSha256"),
                     "coreDigest": action.get("coreDigest"),
                     "convergenceKey": action.get("convergenceKey"),
                 })
@@ -184,7 +167,8 @@ def analyse_restore_points(
         for peer, values in sorted(receipt_lists.items()):
             semantic = {
                 (
-                    item["savedAtUnix"], item["saveSha256"], item["coreDigest"],
+                    item["savedAtUnix"], item["saveSha256"],
+                    item.get("metadataSha256"), item["coreDigest"],
                     item["convergenceKey"],
                 )
                 for item in values
@@ -209,6 +193,11 @@ def analyse_restore_points(
                 )
 
         roster_filed = {peer: filed[peer] for peer in expected if peer in filed}
+        metadata_kinds = {
+            bool(receipt.get("metadataSha256")) for receipt in roster_filed.values()
+        }
+        if len(metadata_kinds) > 1:
+            reasons.append("restore boundary mixes legacy and load-bearing save receipts")
         digests = {receipt.get("coreDigest") for receipt in roster_filed.values()}
         keys = {receipt.get("convergenceKey") for receipt in roster_filed.values()}
         if filed and (len(digests) > 1 or len(keys) > 1):
@@ -249,8 +238,12 @@ def build_restore_plan(
     if boundary_seq is None:
         point = analysis["latestReady"]
         if point is None:
+            detail = ""
+            if analysis["points"]:
+                detail = ": " + "; ".join(analysis["points"][-1]["reasons"])
             raise ProtocolError(
                 "no restore point is ready; the session has no boundary both peers saved while paused"
+                + detail
             )
     else:
         matches = [item for item in analysis["points"] if item["boundarySeq"] == int(boundary_seq)]
@@ -263,8 +256,28 @@ def build_restore_plan(
             )
 
     boundary = int(point["boundarySeq"])
-    plan_version = RESTORE_PLAN_VERSION if match_profile is not None \
+    metadata_receipts = [
+        bool(receipt.get("metadataSha256")) for receipt in point["receipts"].values()
+    ]
+    if any(metadata_receipts) and not all(metadata_receipts):
+        raise ProtocolError("restore boundary mixes legacy and load-bearing save receipts")
+    plan_version = (
+        RESTORE_PLAN_VERSION if match_profile is not None and all(metadata_receipts)
+        else PROFILE_RESTORE_PLAN_VERSION if match_profile is not None
         else LEGACY_RESTORE_PLAN_VERSION
+    )
+    peer_saves: dict[str, dict[str, Any]] = {}
+    for peer, receipt in point["receipts"].items():
+        peer_saves[peer] = {
+            "saveSha256": receipt["saveSha256"],
+            "savedAtUnix": receipt["savedAtUnix"],
+            "receiptCommitSeq": receipt["commitSeq"],
+            "boundarySeq": boundary,
+            "coreDigest": point["coreDigest"],
+            "convergenceKey": point["convergenceKey"],
+        }
+        if plan_version == RESTORE_PLAN_VERSION:
+            peer_saves[peer]["metadataSha256"] = receipt["metadataSha256"]
     plan = {
         "format": "tpf2mp-restore-plan",
         "version": plan_version,
@@ -276,109 +289,17 @@ def build_restore_plan(
         "convergenceKey": point["convergenceKey"],
         "coreDigest": point["coreDigest"],
         "requiredPeers": list(analysis["requiredPeers"]),
-        "peerSaves": {
-            peer: {
-                "saveSha256": receipt["saveSha256"],
-                "savedAtUnix": receipt["savedAtUnix"],
-                "receiptCommitSeq": receipt["commitSeq"],
-                "boundarySeq": boundary,
-                "coreDigest": point["coreDigest"],
-                "convergenceKey": point["convergenceKey"],
-            }
-            for peer, receipt in point["receipts"].items()
-        },
+        "peerSaves": peer_saves,
         "steps": [
             "Stop every game and companion for the faulted session.",
-            "Each peer loads its own attested save; the plan names its sha-256.",
+            "Each peer loads its own attested save; current plans hash its load-bearing pair.",
             "Start the companions with resumeSession as the session id.",
             "Refuse to continue if any save hash or the first checkpoint digest differs.",
         ],
     }
     if match_profile is not None:
-        plan["matchContentProfile"] = _validate_match_profile(match_profile)
+        plan["matchContentProfile"] = validate_match_profile(match_profile)
     return sign(plan)
-
-
-def verify_restore_plan(value: Mapping[str, Any]) -> dict[str, Any]:
-    plan = verify(value)
-    version = plan.get("version")
-    if not isinstance(version, int) or isinstance(version, bool) \
-            or plan.get("format") != "tpf2mp-restore-plan" \
-            or version not in {LEGACY_RESTORE_PLAN_VERSION, RESTORE_PLAN_VERSION}:
-        raise ProtocolError("unsupported restore plan format")
-    if int(plan.get("protocol", -1)) != PROTOCOL_VERSION:
-        raise ProtocolError("restore plan protocol mismatch")
-    allowed = {
-        "format", "version", "protocol", "session", "resumeSession",
-        "generatedAtUtc", "boundarySeq", "convergenceKey", "coreDigest",
-        "requiredPeers", "peerSaves", "steps", "checksum",
-    }
-    if version == RESTORE_PLAN_VERSION:
-        allowed.add("matchContentProfile")
-    if set(plan) != allowed:
-        raise ProtocolError("restore plan has unknown or missing fields")
-    if version == RESTORE_PLAN_VERSION:
-        plan["matchContentProfile"] = _validate_match_profile(
-            plan.get("matchContentProfile")
-        )
-    session = plan.get("session")
-    boundary = plan.get("boundarySeq")
-    if not isinstance(session, str) or not session or len(session) > 160:
-        raise ProtocolError("restore plan session is invalid")
-    if not isinstance(boundary, int) or isinstance(boundary, bool) \
-            or not 1 <= boundary <= 9_007_199_254_740_991:
-        raise ProtocolError("restore plan boundary is invalid")
-    if plan.get("resumeSession") != f"{session}-r{boundary}":
-        raise ProtocolError("restore plan resume session does not match its boundary")
-    for field in ("convergenceKey", "coreDigest"):
-        value = plan.get(field)
-        if not isinstance(value, str) or not value or len(value) > 128:
-            raise ProtocolError(f"restore plan {field} is invalid")
-    if not isinstance(plan.get("generatedAtUtc"), str) or not plan["generatedAtUtc"]:
-        raise ProtocolError("restore plan generation timestamp is invalid")
-    if not isinstance(plan.get("steps"), list) or not plan["steps"] \
-            or any(not isinstance(step, str) or not step for step in plan["steps"]):
-        raise ProtocolError("restore plan steps are invalid")
-
-    peers = plan.get("requiredPeers")
-    saves = plan.get("peerSaves")
-    if not isinstance(peers, list) or not peers \
-            or any(not isinstance(peer, str) or not peer for peer in peers):
-        raise ProtocolError("restore plan has no required peers")
-    if len(set(peers)) != len(peers):
-        raise ProtocolError("restore plan required peer roster contains duplicates")
-    if not isinstance(saves, Mapping) or set(saves) != set(peers):
-        raise ProtocolError("restore plan is missing a peer save attestation")
-    expected_save_fields = {
-        "saveSha256", "savedAtUnix", "receiptCommitSeq", "boundarySeq",
-        "coreDigest", "convergenceKey",
-    }
-    for peer in peers:
-        save = saves[peer]
-        if not isinstance(save, Mapping) or set(save) != expected_save_fields:
-            raise ProtocolError(f"restore plan {peer} save attestation is malformed")
-        sha = save.get("saveSha256")
-        if not isinstance(sha, str) or len(sha) != 64 \
-                or any(character not in "0123456789abcdef" for character in sha):
-            raise ProtocolError(f"restore plan {peer} save hash is invalid")
-        for field, minimum in (("savedAtUnix", 0), ("receiptCommitSeq", 1)):
-            item = save.get(field)
-            if not isinstance(item, int) or isinstance(item, bool) \
-                    or not minimum <= item <= 9_007_199_254_740_991:
-                raise ProtocolError(f"restore plan {peer} {field} is invalid")
-        if save.get("boundarySeq") != boundary \
-                or save.get("coreDigest") != plan["coreDigest"] \
-                or save.get("convergenceKey") != plan["convergenceKey"]:
-            raise ProtocolError(f"restore plan {peer} save names a different boundary")
-    return plan
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def confirm_restore_readiness(
@@ -407,12 +328,27 @@ def confirm_restore_readiness(
             problems.append(f"{peer} save is missing or is not a .sav: {path}")
             results[peer] = {"ok": False, "reason": "missing"}
             continue
-        actual = _sha256_file(path)
-        ok = actual == expected
+        expected_metadata = verified["peerSaves"][peer].get("metadataSha256")
+        try:
+            if expected_metadata:
+                hashes = hash_load_bearing_save(path)
+                actual = hashes["saveSha256"]
+                actual_metadata = hashes["metadataSha256"]
+            else:
+                actual = sha256_file(path)
+                actual_metadata = None
+        except (OSError, ProtocolError) as exc:
+            problems.append(f"{peer} save set could not be verified: {exc}")
+            results[peer] = {"ok": False, "reason": str(exc)}
+            continue
+        ok = actual == expected and (
+            expected_metadata is None or actual_metadata == expected_metadata
+        )
         if not ok:
             problems.append(f"{peer} save no longer matches its attested hash")
         results[peer] = {
             "ok": ok, "path": str(path), "expected": expected, "actual": actual,
+            "metadataExpected": expected_metadata, "metadataActual": actual_metadata,
         }
     return {
         "ready": not problems,

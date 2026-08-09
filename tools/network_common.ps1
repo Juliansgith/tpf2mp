@@ -138,7 +138,7 @@ function Resolve-Tpf2mpRestoreMatchProfile {
         }
     }
     if (-not $RestorePlan.PSObject.Properties['matchContentProfile']) {
-        throw 'Verified restore plan v3 omitted its match-content profile.'
+        throw 'Verified current restore plan omitted its match-content profile.'
     }
     $profile = $RestorePlan.matchContentProfile
     if ([int]$profile.schemaVersion -ne 1 -or $profile.agentMode -notin @('skeleton', 'vanilla', 'empty') `
@@ -146,10 +146,10 @@ function Resolve-Tpf2mpRestoreMatchProfile {
         throw 'Verified restore plan carries an invalid match-content profile.'
     }
     if ($AgentModeExplicit -and $AgentMode -ne [string]$profile.agentMode) {
-        throw "AgentMode conflicts with signed restore plan policy '$($profile.agentMode)'."
+        throw "AgentMode conflicts with bound restore plan policy '$($profile.agentMode)'."
     }
     if ($TownDevelopmentExplicit -and $TownDevelopment -ne [bool]$profile.townDevelopment) {
-        throw "TownDevelopment conflicts with signed restore plan policy '$($profile.townDevelopment)'."
+        throw "TownDevelopment conflicts with bound restore plan policy '$($profile.townDevelopment)'."
     }
     return [pscustomobject]@{
         agentMode = [string]$profile.agentMode

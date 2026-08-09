@@ -45,7 +45,7 @@ restore authority.
 
 `watch_recovery_saves.ps1` still requires a complete stable `.sav`/`.sav.lua`
 pair (and archives the preview when present), rechecks that the same boundary is
-READY, hashes the save, and submits an ordered receipt. A restore point exists
+READY, hashes both load-bearing files, and submits an ordered receipt. A restore point exists
 only after both distinct pinned peers file receipts for the same boundary, core,
 and convergence key.
 
@@ -58,8 +58,8 @@ the watcher observes READY. This does not broaden restore authority: stability,
 current READY state, hashing, ordered receipt validation, distinct peers, and
 restore-plan verification remain mandatory.
 
-The two peer save bytes need not be identical because native saves can contain
-machine-local identifiers. Their receipts bind both files to the identical
+The two peer save sets need not be identical because native saves can contain
+machine-local identifiers. Their receipts bind each peer's load-bearing pair to the identical
 canonical boundary and convergence proof; each peer reloads its own archive.
 
 ## Offline proof

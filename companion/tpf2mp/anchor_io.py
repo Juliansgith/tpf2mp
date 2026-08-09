@@ -8,13 +8,13 @@ receipt: letting a second process write directly into the game's positive
 
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from .bridge import GameBridge, atomic_write
+from .native_save import hash_load_bearing_save
 from .protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -22,14 +22,6 @@ from .protocol import (
     sign,
     validate_action,
 )
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def anchor_state_message(
@@ -198,6 +190,7 @@ class AnchorRequestStore:
                     "status": "accepted",
                     "boundarySeq": request["boundarySeq"],
                     "saveSha256": result["saveSha256"],
+                    "metadataSha256": result.get("metadataSha256"),
                     "localSeq": None,
                     "error": None,
                 })
@@ -206,6 +199,7 @@ class AnchorRequestStore:
                     "status": "rejected",
                     "boundarySeq": request["boundarySeq"],
                     "saveSha256": None,
+                    "metadataSha256": None,
                     "localSeq": None,
                     "error": str(exc)[:1024],
                 })
@@ -235,15 +229,28 @@ class AnchorRequestStore:
                 continue
             if not self._matches_state(request, anchor_state):
                 continue
-            receipt = validate_action({
-                "type": "recovery.save_receipt",
-                "boundarySeq": request["boundarySeq"],
-                "savedAtUnix": request["savedAtUnix"],
-                "saveSha256": _sha256_file(Path(request["savePath"])),
-                "coreDigest": request["coreDigest"],
-                "convergenceKey": request["convergenceKey"],
-                "paused": True,
-            })
+            try:
+                save_hashes = hash_load_bearing_save(request["savePath"])
+                receipt = validate_action({
+                    "type": "recovery.save_receipt",
+                    "boundarySeq": request["boundarySeq"],
+                    "savedAtUnix": request["savedAtUnix"],
+                    "saveSha256": save_hashes["saveSha256"],
+                    "metadataSha256": save_hashes["metadataSha256"],
+                    "coreDigest": request["coreDigest"],
+                    "convergenceKey": request["convergenceKey"],
+                    "paused": True,
+                })
+            except (OSError, ProtocolError, ValueError) as exc:
+                self._write_result(request["requestId"], {
+                    "status": "rejected",
+                    "boundarySeq": request["boundarySeq"],
+                    "saveSha256": None,
+                    "metadataSha256": None,
+                    "localSeq": None,
+                    "error": str(exc)[:1024],
+                })
+                continue
             local_seq = self._allocate_client_seq()
             intent = sign({
                 "protocol": PROTOCOL_VERSION,
@@ -258,6 +265,7 @@ class AnchorRequestStore:
                 "status": "pending",
                 "boundarySeq": request["boundarySeq"],
                 "saveSha256": receipt["saveSha256"],
+                "metadataSha256": receipt["metadataSha256"],
                 "localSeq": local_seq,
                 "intent": intent,
                 "error": None,
@@ -276,6 +284,7 @@ class AnchorRequestStore:
                 "status": "accepted" if accepted else "rejected",
                 "boundarySeq": result.get("boundarySeq"),
                 "saveSha256": result.get("saveSha256"),
+                "metadataSha256": result.get("metadataSha256"),
                 "localSeq": local_seq,
                 "error": None if accepted else str(reason or "host rejected receipt")[:1024],
             })

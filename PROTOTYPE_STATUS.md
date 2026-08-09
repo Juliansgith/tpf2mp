@@ -634,9 +634,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   convergence key. Formats 1/2/3/4 remain readable, and digest-chained events
   can be independently replayed in Python. Four-event and deterministic
   randomized 1,024-event cross-language traces pass.
-- Recovery plans identify and hash the latest all-peer agreed boundary. New
-  version-3 plans also bind the exact source match-content profile; version-2
-  plans remain readable but are explicitly policy-unbound.
+- Recovery plans identify and hash the latest all-peer agreed boundary. Current
+  version-4 plans bind both load-bearing native files and the exact source
+  match-content profile. Version 2 (main save only) and version 3 (profile but
+  no metadata attestation) remain readable with explicit legacy semantics.
 - **Prepare & Save Restore Point** orders shared pause, quiescence, and checkpoint
   convergence. Only while the companion and local runtime expose the same READY
   boundary and core does each game issue Build 35924's native `SaveGame` command
@@ -660,7 +661,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   race are offline-proven; the two-live-process capture is not yet proved.
   The launcher can verify/select a restore plan, locks its resume session, and
   passes each peer's selected attested save through hash verification. Startup
-  adopts a v3 plan's agent/town-development policy and rejects explicit
+  adopts a current plan's agent/town-development policy and rejects explicit
   conflicts. Automatic no-dialog rollback/relaunch and live proof remain open.
 - Normal Host/Join now installs a real `MULTIPLAYER` title-screen entry. The
   game remains idle until the player selects it; selection is receipted, then
@@ -696,7 +697,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 116 mod Lua and 8 investigation/tool Lua syntax checks;
   - 44 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 136 Python protocol/network/checkpoint/recovery/report tests;
+  - 139 Python protocol/network/checkpoint/recovery/report tests;
   - functional first-fault watcher/real-bundle fixtures, including the
     already-exited-game ordering case and the automatic-save READY-poll race.
 

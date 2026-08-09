@@ -18,7 +18,8 @@ Host needs player1's save while Join needs player2's save.
 
 ## Implemented boundary
 
-Restore plan version 3 adds one exact `matchContentProfile` object:
+Restore plan version 3 added one exact `matchContentProfile` object (version 4
+retains the same field while adding load-bearing metadata attestation):
 
 ```json
 {"schemaVersion":1,"agentMode":"skeleton","townDevelopment":false}
@@ -35,7 +36,7 @@ old, explicitly policy-unbound behavior.
 Restore startup performs the checks in this order:
 
 1. verify the plan and this peer's selected `.sav` hash through the companion;
-2. for v3, adopt the plan's agent and town-development values;
+2. for v3/v4, adopt the plan's agent and town-development values;
 3. reject an explicitly supplied conflicting launcher value;
 4. generate the resumed match profile and content fingerprint from those
    resolved values;
@@ -53,7 +54,8 @@ shared starting save.
 
 Version 2 remains accepted because the already live-proven boundary-8 evidence
 uses it. Startup prints a warning and uses the explicitly selected/default
-policy. Version 3 is required for every newly automatic plan. The command-line
+policy. Current automatic receipts now produce version 4; version 3 remains
+readable for the profile-only intermediate format. The command-line
 generator also requires either a profile or the explicit
 `--allow-legacy-unbound` escape hatch, preventing an accidental new v2 plan.
 
@@ -62,15 +64,14 @@ This change closes accidental/corrupt configuration drift and binds both peers
 to identical bytes through the match fingerprint; it does not authenticate a
 hostile plan author. TPF2MP remains a trusted-LAN/VPN prototype.
 
-The plan currently attests the main `.sav` through the ordered receipt while
-the recovery archive separately hashes the complete native save set. The fresh
-post-load checkpoint still fails closed on wrong script state. Unifying those
-two file-integrity layers is a separate hardening item and is not claimed here.
+This slice initially attested only the main `.sav`. The subsequent v4 hardening
+also binds `.sav.lua`; see
+[load-bearing restore save attestation](LOAD_BEARING_RESTORE_ATTESTATION_2026-08-09.md).
 
 ## Offline evidence
 
 - Legacy v2 construction and verification still pass.
-- V3 construction, exact profile retention, malformed field/type rejection,
+- V3/v4 construction, exact profile retention, malformed field/type rejection,
   missing-profile rejection, and re-checksummed tampering rejection pass.
 - PowerShell tests cover v3 policy adoption, explicit conflict refusal, and v2
   fallback.
@@ -83,7 +84,7 @@ two file-integrity layers is a separate hardening item and is not claimed here.
 ## Remaining live gate
 
 Create one automatic restore point in a populated two-process network match,
-close both games, distribute the host's v3 plan, and use the launcher picker on
+close both games, distribute the host's v4 plan, and use the launcher picker on
 both machines. Host must select player1's attested save and Join player2's.
 Verify that both load, the restore checkpoint converges, the saved agent/town
 policy is retained, and trains/freight resume. Repeat once with a deliberately
