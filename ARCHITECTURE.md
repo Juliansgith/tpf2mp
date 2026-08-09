@@ -145,6 +145,8 @@ Runtime-controller modules:
   World-creation choices are inputs only until `match.initialise`; the ordered
   match rules and saved economy state are authoritative after that boundary.
 - `state_schema.lua` exclusively creates and migrates persisted game state.
+- `state_success_normalization.lua` removes the narrowly identified historical
+  false-error residue from records whose explicit success proof is retained.
 - `checkpoint_runtime.lua` owns authored/core digests, event records, checkpoint
   payloads, and checkpoint export barriers.
 - `recovery_prepare_runtime.lua` owns game-side preparation/checkpoint handlers

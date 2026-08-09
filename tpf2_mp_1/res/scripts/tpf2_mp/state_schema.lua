@@ -9,6 +9,7 @@ local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
+local stateSuccessNormalization = require "tpf2_mp/state_success_normalization"
 
 local M = {}
 
@@ -816,6 +817,7 @@ function M.migrate(saved, context)
     available = false,
     status = "not-running",
   }
+  stateSuccessNormalization.apply(saved)
   saved.version = STATE_VERSION
   return saved
 end

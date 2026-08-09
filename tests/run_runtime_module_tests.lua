@@ -2085,6 +2085,67 @@ do
       and easy.economy.params.revenueMultiplierPpm == 1500000,
     "non-default world difficulty did not reach both rules and economy state")
 
+  local residue = stateSchema.new(cfg, versions)
+  residue.world.proposalConsensus.byId.success = {
+    success = true, status = "complete", errorCode = "proposal-consensus-failed",
+  }
+  residue.world.proposalConsensus.byId.failure = {
+    success = false, status = "faulted", errorCode = "real-proposal-fault",
+  }
+  residue.world.proposalConsensus.lastOutcome = util.deepCopy(
+    residue.world.proposalConsensus.byId.success)
+  residue.world.operationConsensus.byId.success = {
+    success = true, status = "complete", errorCode = "operation-consensus-failed",
+  }
+  residue.world.checkpointConsensus.byBoundary["9"] = {
+    success = true, status = "complete", errorCode = "checkpoint-consensus-failed",
+    exported = true, localSeq = 77, lastError = "table: 00ABCDEF",
+  }
+  residue.world.checkpointConsensus.lastOutcome = util.deepCopy(
+    residue.world.checkpointConsensus.byBoundary["9"])
+  residue.recovery.anchorPreparation = {
+    status = "ready", errorCode = "checkpoint-consensus-failed",
+  }
+  residue.probes.networkAuthority = { ready = true, error = "authority failed" }
+  residue.probes.mobility = { emitted = true, bridgeError = "table: 00FEDCBA" }
+  residue.finance.startingCash.grants["company:1"] = {
+    ok = true, error = "starting-cash postcondition failed",
+  }
+  residue.finance.lastPayouts["company:1"] = { ok = true, error = "nil" }
+  residue.finance.networkAccounts.reconciliation.items = { {
+    ok = true, error = "old failure",
+    accounts = { ["company:1"] = { ok = true, error = "nil" } },
+  } }
+  residue.checkpoint.exports = 1
+  residue.checkpoint.lastLocalSeq = 77
+  residue.checkpoint.lastError = "table: 00ABCDEF"
+  local cleaned = stateSchema.migrate(residue, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23,
+    checkpointVersion = 3,
+  })
+  assert(cleaned.world.proposalConsensus.byId.success.errorCode == nil
+      and cleaned.world.proposalConsensus.lastOutcome.errorCode == nil
+      and cleaned.world.operationConsensus.byId.success.errorCode == nil
+      and cleaned.world.checkpointConsensus.byBoundary["9"].errorCode == nil
+      and cleaned.world.checkpointConsensus.byBoundary["9"].lastError == nil
+      and cleaned.world.checkpointConsensus.lastOutcome.errorCode == nil,
+    "save migration retained false errors on explicitly successful consensus")
+  assert(cleaned.world.proposalConsensus.byId.failure.errorCode == "real-proposal-fault"
+      and cleaned.recovery.anchorPreparation.errorCode == nil
+      and cleaned.probes.networkAuthority.error == nil
+      and cleaned.probes.mobility.bridgeError == nil,
+    "save migration erased a real fault or retained successful runtime residue")
+  local cleanedReconciliation =
+    cleaned.finance.networkAccounts.reconciliation.items[1]
+  assert(cleaned.finance.startingCash.grants["company:1"].error == nil
+      and cleaned.finance.lastPayouts["company:1"].error == nil
+      and cleanedReconciliation.error == nil
+      and cleanedReconciliation.accounts["company:1"].error == nil
+      and cleaned.checkpoint.lastError == nil,
+    "save migration retained false successful finance/checkpoint errors")
+
   first.version = 7
   first.world.networkClock = nil
   first.probes.operational = nil

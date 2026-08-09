@@ -80,6 +80,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
     'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua' = 280
     'tpf2_mp_1\res\scripts\tpf2_mp\research_report.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\state_success_normalization.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\world_identity.lua' = 200
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
@@ -195,6 +196,9 @@ foreach ($module in $requiredModules) {
     if (-not $entryPoint.Contains($module)) {
         throw "Game-script entry point no longer composes required module $module"
     }
+}
+if (-not (Get-Content -LiteralPath (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\state_schema.lua') -Raw).Contains('tpf2_mp/state_success_normalization')) {
+    throw 'State schema no longer composes historical successful-record normalization'
 }
 if (-not (Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua') -Raw).Contains('tpf2_mp/freight_industry_revalidation')) {
     throw 'Freight-industry runtime no longer composes its saved-state/content revalidation boundary'
