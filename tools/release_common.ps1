@@ -208,6 +208,29 @@ function Test-Tpf2mpReleaseManifest {
             throw "Required release file is absent from the manifest: $required"
         }
     }
+    # Packaged PowerShell entrypoints may share same-bundle helpers through a
+    # literal PSScriptRoot dot-source. Validate those imports recursively by
+    # inspecting every recorded script, so a release cannot pass hashes while
+    # omitting a load-bearing helper from both the archive and its manifest.
+    $dotSourcePattern = '(?im)^\s*\.\s*\(\s*Join-Path\s+\$PSScriptRoot\s+[''"]([^''"]+\.ps1)[''"]\s*\)'
+    $bundlePrefix = $resolvedRoot.TrimEnd('\') + '\'
+    foreach ($file in $files) {
+        $scriptRelative = [string]$file.path
+        if (-not $scriptRelative.EndsWith('.ps1', [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $scriptPath = Resolve-Tpf2mpFullPath (Join-Path $resolvedRoot ($scriptRelative -replace '/', '\'))
+        $scriptDirectory = Split-Path -Parent $scriptPath
+        $scriptText = Get-Content -LiteralPath $scriptPath -Raw
+        foreach ($match in [regex]::Matches($scriptText, $dotSourcePattern)) {
+            $dependencyPath = Resolve-Tpf2mpFullPath (Join-Path $scriptDirectory $match.Groups[1].Value)
+            if (-not $dependencyPath.StartsWith($bundlePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Packaged PowerShell dot-source escapes bundle: $scriptRelative"
+            }
+            $dependencyRelative = $dependencyPath.Substring($bundlePrefix.Length).Replace('\', '/')
+            if (-not $recorded.Contains($dependencyRelative)) {
+                throw "Packaged PowerShell dependency is absent from the manifest: $scriptRelative -> $dependencyRelative"
+            }
+        }
+    }
     return $manifest
 }
 

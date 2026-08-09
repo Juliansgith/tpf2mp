@@ -16,6 +16,9 @@ $requiredFiles = @(
     'tools/install_release.ps1',
     'tools/verify_install.ps1',
     'tools/uninstall.ps1',
+    'tools/fixture-entrypoint.ps1',
+    'tools/fixture-dependency.ps1',
+    'tools/fixture-transitive.ps1',
     'docs/README.md',
     'QUICK_START.md'
 )
@@ -25,6 +28,14 @@ foreach ($relative in $requiredFiles) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
     [IO.File]::WriteAllText($path, "fixture:$relative", [Text.UTF8Encoding]::new($false))
 }
+[IO.File]::WriteAllText(
+    (Join-Path $bundle 'tools\fixture-entrypoint.ps1'),
+    ". (Join-Path `$PSScriptRoot 'fixture-dependency.ps1')",
+    [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText(
+    (Join-Path $bundle 'tools\fixture-dependency.ps1'),
+    ". (Join-Path `$PSScriptRoot 'fixture-transitive.ps1')",
+    [Text.UTF8Encoding]::new($false))
 
 $records = @()
 foreach ($relative in $requiredFiles | Sort-Object) {
@@ -160,6 +171,10 @@ Assert-ManifestRejected 'a missing required binary' {
     param($value)
     $value.files = @($value.files | Where-Object { $_.path -ne 'bin/tpf2mp.exe' })
 }
+Assert-ManifestRejected 'an omitted transitive PowerShell dot-source dependency' {
+    param($value)
+    $value.files = @($value.files | Where-Object { $_.path -ne 'tools/fixture-transitive.ps1' })
+}
 
 Write-FixtureManifest $baseline
 $tamperPath = Join-Path $bundle 'bin\tpf2mp.exe'
@@ -175,4 +190,4 @@ finally {
     [IO.File]::WriteAllBytes($tamperPath, $original)
 }
 
-Write-Host 'PASS release manifest provenance, legacy compatibility, metadata, paths, uniqueness, sizes, hashes, and required-file boundaries'
+Write-Host 'PASS release manifest provenance, legacy compatibility, metadata, paths, uniqueness, sizes, hashes, required files, and transitive PowerShell dependencies'

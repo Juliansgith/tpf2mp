@@ -161,7 +161,7 @@ $toolNames = @(
     'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
     'analyze_feeder_live_evidence.ps1', 'start_feeder_live_acceptance.ps1',
     'multiplayer_launcher.ps1',
-    'watch_recovery_saves.ps1',
+    'watch_recovery_saves.ps1', 'recovery_plan_common.ps1',
     'run_localhost_live_validation.ps1', 'start_operational_capture_lab.ps1',
     'analyze_operational_capture.ps1', 'localhost_bootstrap.lua', 'multiplayer_menu_bootstrap.lua',
     'send_game_console.ps1', 'archive_recovery_save.ps1', 'main_menu_coordinator.ps1'
