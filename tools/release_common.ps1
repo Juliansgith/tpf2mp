@@ -146,7 +146,8 @@ function Initialize-Tpf2mpBridge {
         if ($Reset -and (Test-Path -LiteralPath $peerPath)) {
             Remove-Item -LiteralPath $peerPath -Recurse -Force
         }
-        foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit')) {
+        foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit',
+                'content\industry')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $peerPath $folder) | Out-Null
         }
     }

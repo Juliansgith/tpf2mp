@@ -32,6 +32,7 @@ NETWORK_ACTIONS = {
     "recovery.resume",
     "recovery.save_receipt",
     "town.develop",
+    "content.industry_attest",
     "proposal.prepare",
     "proposal.build",
     "operation.execute",
@@ -1506,6 +1507,30 @@ def validate_action(action: Any) -> dict[str, Any]:
                 raise ProtocolError("town.develop batch has an invalid town id")
             if not isinstance(calls, int) or isinstance(calls, bool) or not 1 <= calls <= 8:
                 raise ProtocolError("town.develop call count is out of range")
+    if action_type == "content.industry_attest":
+        expected = {
+            "type", "peer", "digest", "resourceCount",
+            "variantCount", "ambiguousCount",
+        }
+        if set(action) != expected:
+            raise ProtocolError("content.industry_attest has unknown or missing fields")
+        peer = action.get("peer")
+        digest = action.get("digest")
+        if not isinstance(peer, str) or not re.fullmatch(r"player[1-9][0-9]*", peer) \
+                or len(peer) > 64:
+            raise ProtocolError("content.industry_attest peer is invalid")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{8}", digest):
+            raise ProtocolError("content.industry_attest digest is invalid")
+        counts = {}
+        for field in ("resourceCount", "variantCount", "ambiguousCount"):
+            value = action.get(field)
+            if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 1_000_000:
+                raise ProtocolError(f"content.industry_attest {field} is invalid")
+            counts[field] = value
+        if counts["resourceCount"] < 1 \
+                or counts["variantCount"] < counts["resourceCount"] \
+                or counts["ambiguousCount"] > counts["variantCount"]:
+            raise ProtocolError("content.industry_attest counts are inconsistent")
     if action_type == "recovery.prepare":
         if set(action) != {"type"}:
             raise ProtocolError("recovery.prepare has client-supplied fields")

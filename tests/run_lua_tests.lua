@@ -15,6 +15,10 @@ local economyRevenue = require "tpf2_mp/economy_revenue"
 local economyDifficulty = require "tpf2_mp/economy_difficulty"
 local economyServiceQuarantine = require "tpf2_mp/economy_service_quarantine"
 local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
+local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
+local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
+local validationContentGate = require "tpf2_mp/validation_content_gate"
+local worldIndustryReading = require "tpf2_mp/world_industry_reading"
 local corridorBindingModule = require "tpf2_mp/corridor_binding"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
@@ -54,6 +58,445 @@ test("canonical JSON and cross-language checksum", function()
   local decoded = json.decode(encoded)
   equal(decoded.a, "x")
   equal(decoded.b, 2)
+end)
+
+test("industry resource facts normalize and bind evaluated recipes", function()
+  local registry = industryResourceFacts.newRegistry()
+  local farm = {
+    stocks = {},
+    rule = { input = { {} }, output = { GRAIN = 1 }, capacity = 200 },
+  }
+  local captured, facts = industryResourceFacts.capture(
+    registry, "industry/farm.con", { productionLevel = 0, seed = 41, year = 1990 }, farm)
+  truthy(captured)
+  equal(facts.capacity, 200)
+  equal(facts.outputs[1].cargoType, "GRAIN")
+  equal(facts.outputs[1].amount, 1)
+  equal(#facts.stocks, 0)
+  equal(#facts.inputs, 1)
+  equal(#facts.inputs[1], 0)
+
+  local lookedUp = assert(industryResourceFacts.lookup(
+    registry, "industry/farm.con", { productionLevel = 0, seed = 999 }))
+  equal(lookedUp.digest, facts.digest,
+    "volatile seed unexpectedly became industry recipe identity")
+
+  local mill = {
+    stocks = {
+      { cargoType = "IRON_ORE", moreCapacity = 100 },
+      { cargoType = "COAL", type = "RECEIVING" },
+    },
+    rule = { input = { { 2, 2 } }, output = { STEEL = 1 }, capacity = 400 },
+  }
+  truthy(industryResourceFacts.capture(
+    registry, "industry/steel_mill.con", { productionLevel = 1 }, mill))
+  local steel = assert(industryResourceFacts.lookup(
+    registry, "industry/steel_mill.con", { productionLevel = 1 }))
+  equal(steel.capacity, 400)
+  equal(steel.inputs[1][1].stockIndex, 0)
+  equal(steel.inputs[1][1].cargoType, "IRON_ORE")
+  equal(steel.inputs[1][1].amount, 2)
+  equal(steel.inputs[1][2].cargoType, "COAL")
+  equal(steel.stocks[2].stockType, "RECEIVING")
+
+  local digest = industryResourceFacts.digest(registry)
+  registry.diagnostics.captureCount = 999999
+  registry.diagnostics.failures["local-only"] = true
+  equal(industryResourceFacts.digest(registry), digest,
+    "local capture diagnostics leaked into content authority")
+end)
+
+test("industry resource facts fail closed on hidden callback inputs", function()
+  local registry = industryResourceFacts.newRegistry()
+  local first = {
+    stocks = {}, rule = { input = { {} }, output = { GRAIN = 1 }, capacity = 200 },
+  }
+  local second = {
+    stocks = {}, rule = { input = { {} }, output = { STONE = 1 }, capacity = 200 },
+  }
+  truthy(industryResourceFacts.capture(
+    registry, "mod/seeded.con", { productionLevel = 0, seed = 1 }, first))
+  local accepted, errorText = industryResourceFacts.capture(
+    registry, "mod/seeded.con", { productionLevel = 0, seed = 2 }, second)
+  equal(accepted, false)
+  truthy(tostring(errorText):find("non%-persisted"))
+  local missing, lookupError = industryResourceFacts.lookup(
+    registry, "mod/seeded.con", { productionLevel = 0, seed = 3 })
+  equal(missing, nil)
+  equal(lookupError, "industry recipe is ambiguous")
+
+  local bad, badError = industryResourceFacts.normalize(
+    "mod/fractional.con", {}, {
+      stocks = {}, rule = { input = { {} }, output = { OIL = 0.5 }, capacity = 100 },
+    })
+  equal(bad, nil)
+  truthy(tostring(badError):find("non%-negative integer"))
+
+  local sink = assert(industryResourceFacts.normalize("mod/sink.con", {}, {
+    stocks = { { cargoType = "GOODS" } },
+    rule = { input = { { 1 } }, output = {}, capacity = 100 },
+  }))
+  equal(#sink.outputs, 0)
+  equal(sink.inputs[1][1].cargoType, "GOODS")
+  local noFlow, noFlowError = industryResourceFacts.normalize("mod/noop.con", {}, {
+    stocks = {}, rule = { input = { {} }, output = {}, capacity = 100 },
+  })
+  equal(noFlow, nil)
+  truthy(tostring(noFlowError):find("no positive input or output", 1, true))
+end)
+
+test("industry construction wrapper preserves the native result", function()
+  local registry = industryResourceFacts.newRegistry()
+  local calls = 0
+  local construction = {
+    type = 10,
+    updateFn = function(params)
+      calls = calls + 1
+      return {
+        marker = params.marker,
+        stocks = { { cargoType = "LOGS" } },
+        rule = { input = { { 2 } }, output = { PLANKS = 1 }, capacity = 200 },
+      }
+    end,
+  }
+  local wrapped, changed = industryResourceFacts.wrap(
+    registry, "industry/saw_mill.con", construction)
+  equal(wrapped, construction)
+  equal(changed, true)
+  local result = construction.updateFn({ productionLevel = 0, marker = "kept", seed = 4 })
+  equal(calls, 1)
+  equal(result.marker, "kept")
+  local facts = assert(industryResourceFacts.lookup(
+    registry, "industry/saw_mill.con", { productionLevel = 0, marker = "kept" }))
+  equal(facts.inputs[1][1].cargoType, "LOGS")
+  equal(facts.outputs[1].cargoType, "PLANKS")
+end)
+
+test("standard data-only industry variants are captured without callback execution", function()
+  local registry = industryResourceFacts.newRegistry()
+  local stockListConfig = {
+    stocks = { "ORE" },
+    rule = { input = { { 2 } }, output = { METAL = 1 }, capacity = 100 },
+  }
+  local callbackCalls = 0
+  local construction = {
+    type = "INDUSTRY",
+    params = {
+      { key = "productionLevel", values = { "1", "2" } },
+      { key = "inputEnabled", values = { "off", "on" }, defaultIndex = 1 },
+    },
+    updateFn = function(params)
+      callbackCalls = callbackCalls + 1
+      local level = (params.productionLevel or 0) + 1
+      local enabled = (params.inputEnabled or 1) == 1
+      return {
+        stocks = enabled and { { cargoType = stockListConfig.stocks[1] } } or {},
+        rule = {
+          input = enabled and stockListConfig.rule.input or { {} },
+          output = stockListConfig.rule.output,
+          capacity = stockListConfig.rule.capacity * level,
+        },
+      }
+    end,
+  }
+  local _, wrapped = industryResourceFacts.wrap(registry, "mod/processor.con", construction)
+  truthy(wrapped)
+  local captured, summary = industryResourceFacts.captureStandardVariants(
+    registry, "mod/processor.con", construction)
+  truthy(captured)
+  equal(summary.combinations, 4)
+  equal(summary.captured, 4)
+  equal(callbackCalls, 0, "static industry capture executed the construction callback")
+  local omittedDefaults = assert(industryResourceFacts.lookup(
+    registry, "mod/processor.con", { productionLevel = 0, seed = 999 }))
+  local explicitDefaults = assert(industryResourceFacts.lookup(
+    registry, "mod/processor.con", { productionLevel = 0, inputEnabled = 1 }))
+  equal(omittedDefaults.digest, explicitDefaults.digest)
+  equal(omittedDefaults.inputs[1][1].cargoType, "ORE")
+  local disabled = assert(industryResourceFacts.lookup(
+    registry, "mod/processor.con", { productionLevel = 1, inputEnabled = 0 }))
+  equal(#disabled.inputs[1], 0)
+  equal(disabled.outputs[1].amount, 1)
+  equal(disabled.capacity, 200)
+end)
+
+test("parallel industry registries merge idempotently and path-portably", function()
+  local first = industryResourceFacts.newRegistry()
+  local second = industryResourceFacts.newRegistry()
+  truthy(industryResourceFacts.capture(first,
+    "res/construction/industry/farm.con", { productionLevel = 0 }, {
+      stocks = {}, rule = { input = { {} }, output = { GRAIN = 1 }, capacity = 200 },
+    }))
+  truthy(industryResourceFacts.capture(second,
+    "industry/steel_mill.con", { productionLevel = 0 }, {
+      stocks = { { cargoType = "IRON_ORE" }, { cargoType = "COAL" } },
+      rule = { input = { { 2, 2 } }, output = { STEEL = 1 }, capacity = 200 },
+    }))
+  local merged = assert(industryResourceFacts.merge(nil, first))
+  local once = industryResourceFacts.digest(merged)
+  merged = assert(industryResourceFacts.merge(merged, first))
+  equal(industryResourceFacts.digest(merged), once,
+    "replaying a parallel resource partition changed authority")
+  merged = assert(industryResourceFacts.merge(merged, second))
+  local reconstructed = assert(industryResourceFacts.fromDigestView(
+    industryResourceFacts.digestView(merged)))
+  equal(industryResourceFacts.digest(reconstructed), industryResourceFacts.digest(merged),
+    "engine-side registry reconstruction changed the content digest")
+  truthy(industryResourceFacts.lookup(
+    merged, "industry/farm.con", { productionLevel = 0 }),
+    "resource-loader and live-entity paths did not canonicalize")
+  truthy(industryResourceFacts.lookup(
+    merged, "res/construction/industry/steel_mill.con", { productionLevel = 0 }))
+  local artifact = assert(industryResourceFacts.resourceArtifact(
+    merged, "res/construction/industry/farm.con"))
+  equal(artifact.resource.fileName, "industry/farm.con")
+  equal(artifact.digest, hash.value({
+    schemaVersion = artifact.schemaVersion, resource = artifact.resource,
+  }))
+  local artifactWritten, artifactPath = industryResourceFacts.writeResourceArtifact(
+    merged, "industry/farm.con", tempRoot)
+  truthy(artifactWritten, tostring(artifactPath))
+  local artifactFile = assert(io.open(artifactPath, "rb"))
+  local decodedArtifact = json.decode(artifactFile:read("*a"))
+  artifactFile:close()
+  equal(decodedArtifact.digest, artifact.digest)
+
+  local conflictA = industryResourceFacts.newRegistry()
+  local conflictB = industryResourceFacts.newRegistry()
+  truthy(industryResourceFacts.capture(conflictA, "mod/opaque.con", {}, {
+    stocks = {}, rule = { input = { {} }, output = { OIL = 1 }, capacity = 100 },
+  }))
+  truthy(industryResourceFacts.capture(conflictB, "mod/opaque.con", {}, {
+    stocks = {}, rule = { input = { {} }, output = { FUEL = 1 }, capacity = 100 },
+  }))
+  local left = assert(industryResourceFacts.merge(nil, conflictA))
+  left = assert(industryResourceFacts.merge(left, conflictB))
+  local right = assert(industryResourceFacts.merge(nil, conflictB))
+  right = assert(industryResourceFacts.merge(right, conflictA))
+  equal(industryResourceFacts.digest(left), industryResourceFacts.digest(right),
+    "parallel conflict digest depended on merge order")
+  local missing, conflictError = industryResourceFacts.lookup(left, "mod/opaque.con", {})
+  equal(missing, nil)
+  equal(conflictError, "industry recipe is ambiguous")
+end)
+
+test("live industry reader binds construction roots to captured recipes", function()
+  local registry = industryResourceFacts.newRegistry()
+  truthy(industryResourceFacts.capture(registry, "industry/steel_mill.con",
+    { productionLevel = 1, seed = 17 }, {
+      stocks = { { cargoType = "IRON_ORE" }, { cargoType = "COAL" } },
+      rule = { input = { { 2, 2 } }, output = { STEEL = 1 }, capacity = 400 },
+    }))
+  local registryDocument = assert(io.open(
+    tempRoot .. "/companion_state/industry_registry.json", "wb"))
+  registryDocument:write(json.encode({
+    schemaVersion = 1,
+    session = "industry-reader-test",
+    peer = "player1",
+    digest = industryResourceFacts.digest(registry),
+    resourceCount = 1,
+    variantCount = 1,
+    ambiguousCount = 0,
+    view = industryResourceFacts.digestView(registry),
+  }) .. "\n")
+  registryDocument:close()
+  local callableRoot = setmetatable({}, {
+    __call = function(_, entity) return entity == 77 and 900 or nil end,
+  })
+  local currentGame = {
+    config = { tpf2mp = { industryResourceFacts = industryResourceFacts.newRegistry() } },
+    interface = { getEntity = function(entity)
+      if entity == 900 then return {
+        fileName = "industry/steel_mill.con",
+        params = { productionLevel = 1, seed = 999 },
+      } end
+    end },
+  }
+  local currentApi = {
+    res = { getBaseConfig = setmetatable({}, {
+      __call = function() return { tpf2mp = { industryResourceFacts = registry } } end,
+    }) },
+    engine = { system = {
+      streetConnectorSystem = { getConstructionEntityForSimBuilding = callableRoot },
+    } },
+  }
+  local reader = worldIndustryReading.new({
+    getApi = function() return currentApi end,
+    getGame = function() return currentGame end,
+    entityNumber = tonumber,
+    resourceFacts = industryResourceFacts,
+    getRuntimeIdentity = function() return {
+      root = tempRoot, peerId = "player1", sessionId = "industry-reader-test",
+    } end,
+  })
+  local probe = reader.registryProbe()
+  truthy(probe.available)
+  equal(probe.resourceCount, 1)
+  equal(probe.variantCount, 1)
+  equal(probe.ambiguousCount, 0)
+  equal(probe.source, "companion-sidecar")
+  local bound = assert(reader.recipeForIndustry(77))
+  equal(bound.constructionId, 900)
+  equal(bound.rootSource, "streetConnectorSystem")
+  equal(bound.recipe.inputs[1][2].cargoType, "COAL")
+  equal(bound.recipe.outputs[1].cargoType, "STEEL")
+
+  -- If the convenience system is absent, Build 35924 exposes the same root
+  -- through SIM_BUILDING.stockList.
+  currentApi = {
+    res = { getBaseConfig = function()
+      return { tpf2mp = { industryResourceFacts = registry } }
+    end },
+    type = { ComponentType = { SIM_BUILDING = "SIM_BUILDING" } },
+    engine = {
+      system = {},
+      getComponent = function(entity, componentType)
+        if entity == 77 and componentType == "SIM_BUILDING" then return { stockList = 900 } end
+      end,
+    },
+  }
+  local fallback = assert(reader.recipeForIndustry(77))
+  equal(fallback.rootSource, "SIM_BUILDING.stockList")
+end)
+
+test("industry content attestations converge and fault mismatched peers", function()
+  local state = {
+    tick = 10,
+    bridge = { peerId = "player1" },
+    world = {
+      industryContent = industryContentRuntime.newState(),
+      operationConsensus = { sessionFault = nil, lastOutcome = nil },
+    },
+    probes = { industryContent = industryContentRuntime.newProbe() },
+  }
+  local first = {
+    type = "content.industry_attest", peer = "player1", digest = "edc7a517",
+    resourceCount = 16, variantCount = 160, ambiguousCount = 0,
+  }
+  local accepted, waiting = industryContentRuntime.apply(state, first)
+  truthy(accepted)
+  equal(waiting.ready, false)
+  equal(state.world.industryContent.ready, false)
+  local second = util.deepCopy(first)
+  second.peer = "player2"
+  local converged, result = industryContentRuntime.apply(state, second)
+  truthy(converged)
+  truthy(result.ready)
+  equal(state.world.industryContent.digest, "edc7a517")
+  equal(state.world.operationConsensus.sessionFault, nil)
+
+  local mismatched = industryContentRuntime.newState()
+  state.world.industryContent = mismatched
+  state.world.operationConsensus = { sessionFault = nil, lastOutcome = nil }
+  truthy(industryContentRuntime.apply(state, first))
+  second.digest = "11111111"
+  truthy(industryContentRuntime.apply(state, second))
+  equal(mismatched.ready, false)
+  equal(mismatched.fault.errorCode, "industry-content-mismatch")
+  equal(state.world.operationConsensus.sessionFault.errorCode,
+    "industry-content-mismatch")
+
+  local invalid = util.deepCopy(first)
+  invalid.ambiguousCount = "0"
+  local valid, validationError = industryContentRuntime.validateAction(invalid)
+  equal(valid, false)
+  truthy(tostring(validationError):find("ambiguousCount", 1, true))
+end)
+
+test("pre-match content consensus defers its financial checkpoint", function()
+  local state = {
+    tick = 12, initialized = false,
+    world = { industryContent = industryContentRuntime.newState() },
+  }
+  state.world.industryContent.ready = true
+  local exports, logs = 0, {}
+  local action = { type = "content.industry_attest" }
+  truthy(industryContentRuntime.afterCommit(state, action, true, 2,
+    function() exports = exports + 1; return true end,
+    function(event, payload) logs[#logs + 1] = { event, payload } end))
+  equal(exports, 0)
+  equal(logs[1][1], "industry-content-checkpoint-deferred")
+  equal(logs[1][2].reason, "match-not-initialised")
+
+  state.initialized = true
+  truthy(industryContentRuntime.afterCommit(state, action, true, 3,
+    function(boundary, reason)
+      exports = exports + 1
+      equal(boundary, 3)
+      equal(reason, "industry-content-ready")
+      return true
+    end,
+    function() end))
+  equal(exports, 1)
+end)
+
+test("industry content maintenance submits exact sidecar counts only on an idle lane", function()
+  local state = {
+    tick = 20, networkMode = "network", bridge = { peerId = "player1" },
+    world = {
+      industryContent = industryContentRuntime.newState(),
+      operationConsensus = { sessionFault = nil, lastOutcome = nil },
+    },
+    probes = { industryContent = industryContentRuntime.newProbe() },
+  }
+  local submitted
+  local changed = industryContentRuntime.maintain(state, {
+    readFacts = function() return {
+      available = true, source = "companion-sidecar", digest = "edc7a517",
+      resourceCount = 16, variantCount = 160, ambiguousCount = 0,
+    } end,
+    localWorkState = function() return { pending = false } end,
+    submitIntent = function(action) submitted = util.deepCopy(action); return true, {} end,
+  })
+  truthy(changed)
+  equal(submitted.resourceCount, 16)
+  equal(submitted.variantCount, 160)
+  equal(submitted.ambiguousCount, 0)
+  equal(state.probes.industryContent.status, "attestation-submitted")
+end)
+
+test("network validation waits for content consensus and an idle ordered lane", function()
+  local state = {
+    tick = 10,
+    probes = { industryContent = { localDigest = "edc7a517" } },
+    world = { industryContent = { ready = false } },
+  }
+  local validation = {
+    stage = "wait-for-network", stageStartedTick = 10, values = {},
+  }
+  truthy(validationContentGate.observe(state, validation))
+  local pending, submissions, deferred = false, 0, {}
+  local deps = {
+    awaitingOrder = function() return pending end,
+    pendingBarrierReason = function() return nil end,
+    submit = function(action, label)
+      submissions = submissions + 1
+      equal(action.type, "match.initialise")
+      equal(label, submissions == 1 and "initial" or "host-match-initialise-retry-queued")
+      return { local_seq = 70 + submissions }
+    end,
+    log = function(event, payload) deferred[#deferred + 1] = { event, payload } end,
+  }
+  equal(validationContentGate.trySubmit(state, validation, deps, "initial", false), false)
+  equal(submissions, 0)
+  equal(deferred[1][2].reason, "industry-content-not-ready")
+
+  state.world.industryContent.ready = true
+  pending = true
+  state.tick = 20
+  equal(validationContentGate.trySubmit(state, validation, deps, "initial", false), false)
+  equal(deferred[2][2].reason, "ordered-lane-busy")
+
+  pending = false
+  state.tick = 21
+  truthy(validationContentGate.trySubmit(state, validation, deps, "initial", false))
+  equal(submissions, 1)
+  state.tick = 80
+  equal(validationContentGate.retry(state, validation, deps, 60), false)
+  state.tick = 81
+  truthy(validationContentGate.retry(state, validation, deps, 60))
+  equal(submissions, 2)
+  equal(validation.values.initialiseLocalSeq, 72)
 end)
 
 test("match runtime preserves ranking and bankruptcy precedence", function()
@@ -1346,6 +1789,60 @@ test("mobility telemetry exposes canonical aggregate counts without local entity
   equal(snapshot.terminalFreePlaces, 12)
   equal(#snapshot.lines, 2)
   truthy(not json.encode(snapshot):match("localId"), "mobility payload leaked machine-local IDs")
+end)
+
+test("mobility telemetry accepts generated callable system methods", function()
+  local previousApi, previousGame = api, game
+  local function callable(fn)
+    return setmetatable({}, { __call = function(_, ...) return fn(...) end })
+  end
+  game = { interface = {
+    getEntity = function(id) return { id = id, type = "LINE", name = "Callable" } end,
+    getLines = function() return { 10 } end,
+    getVehicles = function() return {} end,
+  } }
+  api = {
+    type = { ComponentType = {
+      NAME = "NAME", LINE = "LINE", TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
+    } },
+    engine = {
+      getComponent = function(id, kind)
+        if kind == "NAME" then return { name = "Callable" } end
+      end,
+      system = {
+        lineSystem = { getLines = function() return { 10 } end },
+        transportVehicleSystem = { getLineVehicles = function() return {} end },
+        simPersonSystem = {
+          getCount = callable(function() return 12 end),
+          getSimPersonsForLine = callable(function(id)
+            return id == 10 and { 101, 102, 103 } or {}
+          end),
+        },
+        simCargoSystem = {
+          getSimCargosForLine = callable(function(id)
+            return id == 10 and { 201, 202 } or {}
+          end),
+        },
+        simPersonAtTerminalSystem = {
+          getEdgeInfoMap = callable(function() return {} end),
+          getNumFreePlaces = callable(function() return 0 end),
+        },
+      },
+    },
+  }
+  local snapshot = world.mobilitySnapshot(canonical.newState())
+  local capabilities = world.capabilityProbe()
+  api, game = previousApi, previousGame
+  equal(snapshot.totalPersons, 12)
+  equal(snapshot.totals.passengerLineUses, 3)
+  equal(snapshot.totals.cargoLineUses, 2)
+  truthy(snapshot.availability.totalPersons)
+  truthy(snapshot.availability.linePassengers)
+  truthy(snapshot.availability.lineCargo)
+  truthy(capabilities.simPersonCount)
+  truthy(capabilities.simPersonsForLine)
+  truthy(capabilities.simCargosForLine)
+  truthy(capabilities.simPersonTerminalInfo)
 end)
 
 test("mobility telemetry falls back to direct populated-world components", function()

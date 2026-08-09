@@ -2,9 +2,9 @@
 
 Date: 2026-08-09 (Europe/Amsterdam)
 
-Prototype: `0.29.0-alpha`
+Prototype: `0.30.0-alpha`
 
-State schema: `26`
+State schema: `27`
 
 ## Result
 
@@ -34,8 +34,10 @@ same committed boundary. Native IDs and local read diagnostics never enter
 that action. A later supported line edit emits fresh facts and re-enables the
 service normally.
 
-No state, checkpoint, proposal, operation, or network schema changed. This is
-a correctness fence, not freight gameplay.
+The original classifier changed no state, checkpoint, proposal, operation, or
+network schema. Prototype 0.30 subsequently completes loaded-resource binding
+and ordered content attestation in state schema 27; that addition is described
+in [LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md](LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md).
 
 ## Shipped vanilla industry data
 
@@ -72,22 +74,26 @@ not used for gameplay.
 ## Exact remaining freight slice
 
 The existing economy already evaluates a canonical `cargo` market kind and
-exact unit-kilometre revenue; direct ECS telemetry can count native cargo. A
-real industry-backed service still needs all of the following before it may be
-enabled:
+exact unit-kilometre revenue; direct ECS telemetry can count native cargo.
+Prototype 0.30 completes the first former blocker: every peer captures the
+industry resources it actually loaded, publishes a strictly validated
+session-bound sidecar, binds live construction roots to evaluated recipes, and
+orders a digest/count attestation before match start. The exact two-process
+registry contains 16 freight resources, 160 variants, zero ambiguities, and
+digest `edc7a517`.
 
-1. Resolve each live `SIM_BUILDING` to its named construction resource and
-   evaluated recipe/level on every peer, with a digest-bound match-content
-   preflight. Dynamic or opaque update callbacks must fail closed.
-2. Give source, processor, destination, station, line, and vehicle stable
+A real industry-backed service still needs the remaining stateful layers before
+it may be enabled:
+
+1. Give source, processor, destination, station, line, and vehicle stable
    canonical identities without treating independently generated native cargo
    entities as authoritative.
-3. Add ordered supply, input-stock, output-stock, demand, transfer, queue, load,
+2. Add ordered supply, input-stock, output-stock, demand, transfer, queue, load,
    and completed-delivery state with Lua/Python parity and checkpoint replay.
-4. Couple native cargo presentation to that ledger where a supported mutation
+3. Couple native cargo presentation to that ledger where a supported mutation
    path exists; otherwise label native piles/loads as cosmetic as is already
    done for unsupported totals.
-5. Prove a non-zero vanilla chain through two exact processes, then repeat with
+4. Prove a non-zero vanilla chain through two exact processes, then repeat with
    a data-only modded industry and vehicle pack.
 
 Until those gates pass, freight infrastructure and native trains may be
@@ -102,9 +108,10 @@ and unreadable mixed-group classification; passenger-versus-freight capacity
 from repository metadata; rejection before market creation; portable disabling
 of a previously registered service without local-ID leakage; initial saved-line
 revalidation; removal from the passenger ledger; diagnostic persistence; and
-recovery after a later supported edit. The complete gate passes with 95/95 core
-Lua tests, 75 cross-language economy scenarios, runtime/game/network/GUI
-integrations, 108 Python tests, and the 1,024-event independent replay.
+recovery after a later supported edit. Together with loaded-resource authority,
+the complete gate passes with 106/106 core Lua tests, 75 cross-language economy
+scenarios, runtime/game/network/GUI integrations, 112 Python tests, and the
+1,024-event independent replay.
 
 The `20260809-015411` disposable Build 35924 capability run copied and invoked
 the exact production `vehicle_resource_facts.lua` module against live
@@ -134,3 +141,11 @@ passed four custody transitions and complete removal, alongside the ordinary
 39-check validator and exact native hook. An actual two-stop cargo line and
 industry-backed delivery still remain unproven and intentionally cannot enter
 competitive revenue.
+
+The later two-stage exact-process proof independently captured 17 immutable
+industry artifacts on each peer, normalized them to the same 16-resource /
+160-variant / zero-ambiguity registry, and then ordered both content claims in
+session `industry-consensus-live-20260809-0745`. Its normal validator finished
+with matching core/model/structure digests and no fault. See
+[LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md](LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md)
+for architecture, negative findings, and the durable receipt.

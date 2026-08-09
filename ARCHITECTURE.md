@@ -80,6 +80,14 @@ Domain modules under `res/scripts/tpf2_mp`:
 - `vehicle_resource_facts.lua` classifies every load configuration in a
   consist by portable cargo resource type and aggregates all consists assigned
   to a line into conservative passenger/cargo/mixed capacity and speed facts.
+- `industry_resource_loader.lua` wraps the loaded construction repository at
+  resource-load time and emits immutable content-addressed recipe artifacts.
+  `industry_resource_facts.lua`, `industry_resource_view_reader.lua`,
+  `industry_resource_merge.lua`, and `industry_resource_artifact.lua` own
+  bounded extraction, evaluated-variant normalization, strict deterministic
+  merge, and artifact encoding. `world_industry_reading.lua` binds live
+  `SIM_BUILDING` roots back to portable construction resource names without
+  making native IDs authoritative.
 - `edge_ownership.lua` owns private/public edge custody rules.
 - `proposal_codec.lua` validates and materializes portable construction/edge
   transactions.
@@ -111,6 +119,12 @@ Runtime-controller modules:
   submitted/quarantined/recovered diagnostic and permanent-failure policy;
   `network_bridge_consumer.lua` owns ordered inbox application and
   acknowledgements.
+- `industry_registry_sidecar.lua` reads and revalidates the exact
+  session/peer-bound companion registry. `industry_content_runtime.lua` owns
+  state migration, local/live binding, ordered two-peer content attestations,
+  agreement/fault semantics, and the checkpoint projection. Match
+  initialization is gated on that agreement; it does not yet own cargo stock
+  or delivery simulation.
 - `authored_followup_runtime.lua` owns strict town-development application,
   save-receipt acknowledgement, and development checkpoint export.
 - `network_clock_runtime.lua` owns ordered native clock application, peer-health
@@ -125,6 +139,8 @@ Runtime-controller modules:
 - `validation_runtime.lua` owns both disposable standalone and two-process
   validation state machines. It has no production authority when validation is
   disabled.
+- `validation_content_gate.lua` prevents validator match initialization from
+  racing the content attestation or any other ordered-lane work.
 - `validation_town_development.lua` owns the bounded three-round physical-town
   experiment and its final ordered structural checkpoint.
 - `validation_clock.lua` owns validator-only shared-clock readiness, settled
@@ -173,6 +189,9 @@ captured table reference would therefore mutate stale state after loading.
 ## Companion modules
 
 - `protocol.py` defines canonical envelopes and strict portable action schemas.
+- `industry_content.py` strictly validates and merges peer-local loader
+  artifacts into the deterministic companion registry; `host_intents.py`
+  centralizes host-authored ordered intents, including content claims.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
 - `client.py` owns client connection/retry and bridge forwarding.
 - `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;

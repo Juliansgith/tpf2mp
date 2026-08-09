@@ -5,6 +5,7 @@ local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local validationClockModule = require "tpf2_mp/validation_clock"
+local validationContentGate = require "tpf2_mp/validation_content_gate"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 
 local M = {}
@@ -406,10 +407,14 @@ function M.new(deps)
           and state.world.networkClock.startupPause.confirmed == true,
         state.world.networkClock.startupPause)
       validationCheck("companion-link-ready", true, companion)
+      validationContentGate.observe(state, validation)
       if state.bridge.peerId == "player1" then
-        local result = networkValidationSubmit({ type = "match.initialise" }, "host-match-initialise-queued")
-        validation.values.initialiseLocalSeq = result and result.local_seq
-        validation.values.lastInitialiseAttemptTick = state.tick
+        validationContentGate.trySubmit(state, validation, {
+          awaitingOrder = awaitingOrder,
+          pendingBarrierReason = networkPendingBarrierReason,
+          submit = networkValidationSubmit,
+          log = diagnosticLog,
+        }, "host-match-initialise-queued", false)
       end
       validationTransition("wait-for-match")
   
@@ -419,25 +424,22 @@ function M.new(deps)
         -- validator's initial stage transition and the matching intent file.
         -- If there is demonstrably no local intent or consensus barrier in
         -- flight, retry the idempotent bootstrap instead of waiting forever.
-        local lastAttempt = tonumber(validation.values.lastInitialiseAttemptTick)
-          or tonumber(validation.stageStartedTick) or 0
-        if state.bridge.peerId == "player1"
-          and state.tick - lastAttempt >= 60
-          and not awaitingOrder()
-          and not networkPendingBarrierReason() then
-          local result = networkValidationSubmit({ type = "match.initialise" },
-            "host-match-initialise-retry-queued")
-          validation.values.initialiseLocalSeq = result and result.local_seq
-          validation.values.lastInitialiseAttemptTick = state.tick
-          diagnosticLog("auto-validation-retry", {
-            stage = stage,
-            localSeq = result and result.local_seq or nil,
-            tick = state.tick,
-          })
+        if state.bridge.peerId == "player1" then
+          validationContentGate.retry(state, validation, {
+            awaitingOrder = awaitingOrder,
+            pendingBarrierReason = networkPendingBarrierReason,
+            submit = networkValidationSubmit,
+            log = diagnosticLog,
+          }, 60)
         end
         return
       end
       validationCheck("ordered-match-initialised", state.match.status == "running", state.match)
+      if validationContentGate.expected(validation) then
+        validationCheck("industry-content-ready-before-match",
+          validationContentGate.ready(state, validation),
+          state.world.industryContent)
+      end
       validationCheck("two-canonical-companies", #state.companyOrder == 2, state.companyOrder)
       validationCheck("peer-company-pinned", activeCompany() == (state.bridge.peerId == "player1"
         and "company:1" or "company:2"), { active = activeCompany(), peer = state.bridge.peerId })

@@ -102,7 +102,8 @@ $companion = Get-Tpf2mpCompanionCommand $bundle
 $sessionRoot = Get-Tpf2mpSessionRoot $safeSession $peer
 New-Item -ItemType Directory -Force -Path $sessionRoot | Out-Null
 $bridge = Resolve-Tpf2mpFullPath (Join-Path ([IO.Path]::GetTempPath()) "tpf2mp_bridge\$safeSession\$peer")
-foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit')) {
+foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit',
+        'content\industry')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $bridge $folder) | Out-Null
 }
 $staleTraffic = @(Get-ChildItem -LiteralPath (Join-Path $bridge 'game_outbox') -File -Filter '*.json' -ErrorAction SilentlyContinue).Count `

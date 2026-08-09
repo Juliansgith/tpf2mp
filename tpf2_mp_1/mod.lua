@@ -3,9 +3,27 @@
 -- far worse failure than running the vanilla crowd. Absence therefore
 -- degrades to the vanilla policy rather than a partial one.
 local presentationOk, presentation = pcall(require, "tpf2_mp/presentation")
+local industryFactsOk, industryFacts = pcall(require, "tpf2_mp/industry_resource_facts")
+
+-- Resource loading is parallel and Build 35924 may invoke runFn more than once
+-- in the same loader VM. Keep one loader-owned registry for those repeated
+-- passes: replacing it on every call can erase recipes captured by an earlier
+-- partition just before game.config is serialized for the engine script.
+local activeIndustryResourceFacts = nil
+local activeIndustryResourceFactsError = nil
+
+local function isIndustryConstruction(fileName, construction)
+  if type(construction) ~= "table" then return false end
+  local constructionType = construction.type
+  if constructionType == "INDUSTRY" or tostring(constructionType) == "INDUSTRY"
+      or tonumber(constructionType) == 10 then return true end
+  local portableName = tostring(fileName or ""):gsub("\\", "/"):lower()
+  return portableName:match("^industry/") ~= nil
+    or portableName:match("/industry/") ~= nil
+end
 
 function data()
-  local minorVersion = 29
+  local minorVersion = 30
   local agentModeKeys = { "skeleton", "vanilla", "empty" }
   local economyDifficultyKeys = { "normal", "hard", "easy", "relaxed" }
   local peerValues = { "player1 (host)", "player2 (client)" }
@@ -211,24 +229,52 @@ function data()
       -- This is match content: it changes town-building data, so the policy
       -- fingerprint travels with the pinned mod set and both peers must
       -- agree before a session starts.
+      local policy
       if not presentationOk then
         cfg.agentMode = "vanilla"
         cfg.agentPolicyFingerprint = ""
         cfg.agentPolicyError = tostring(presentation)
-        return
+      else
+        local agentModeKey = env("TPF2MP_AGENT_MODE",
+          launched.agentMode
+            or agentModeKeys[(tonumber(selected.agentMode) or 0) + 1]
+            or presentation.DEFAULT_MODE)
+        policy = presentation.mode(agentModeKey)
+        cfg.agentMode = policy.label
+        cfg.agentPolicyFingerprint = presentation.fingerprint(policy)
       end
-      local agentModeKey = env("TPF2MP_AGENT_MODE",
-        launched.agentMode
-          or agentModeKeys[(tonumber(selected.agentMode) or 0) + 1]
-          or presentation.DEFAULT_MODE)
-      local policy = presentation.mode(agentModeKey)
-      cfg.agentMode = policy.label
-      cfg.agentPolicyFingerprint = presentation.fingerprint(policy)
+
+      -- The resource loader is the only supported surface that still sees a
+      -- static construction's actual updateFn. Capture the evaluated rule and
+      -- stock list there, then expose only normalized data through game.config
+      -- to the engine script. Dynamic callbacks whose recipe depends on seed,
+      -- year or opaque state become ambiguous and fail closed.
+      if industryFactsOk then
+        -- The loader may invoke runFn repeatedly in one VM. Reuse the same
+        -- partial registry so later calls cannot erase facts captured by an
+        -- earlier parallel resource pass.
+        activeIndustryResourceFacts = activeIndustryResourceFacts
+          or industryFacts.newRegistry()
+        -- Parallel loader VMs exchange only serialized game.config values.
+        -- Fold any partition published by an earlier runFn invocation into
+        -- this VM's accumulator before publishing our copy back.
+        local merged = industryFacts.merge(
+          activeIndustryResourceFacts, cfg.industryResourceFacts)
+        if merged then activeIndustryResourceFacts = merged end
+        activeIndustryResourceFactsError = nil
+        cfg.industryResourceFacts = activeIndustryResourceFacts
+        cfg.industryResourceFactsError = nil
+      else
+        activeIndustryResourceFacts = nil
+        activeIndustryResourceFactsError = tostring(industryFacts)
+        cfg.industryResourceFacts = nil
+        cfg.industryResourceFactsError = activeIndustryResourceFactsError
+      end
 
       -- Load speed is per-vehicle data, so pinning it makes dwell independent
       -- of how many agents board. The model's fixed per-stop dwell then
       -- describes the world exactly instead of approximating it.
-      if policy.pinLoadSpeed then
+      if policy and policy.pinLoadSpeed then
         addModifier("loadModel", function(_, data)
           local transport = data and data.metadata and data.metadata.transportVehicle or nil
           if transport and transport.loadSpeed ~= nil then
@@ -241,9 +287,54 @@ function data()
       -- Town buildings carry personCapacity, and sims exist because of it.
       -- Scaling it here is the same supported surface the ecosystem uses;
       -- buildings created from this point carry the scaled value.
-      if policy.capacityDenominator > 1 or policy.capacityNumerator ~= 1 then
-        addModifier("loadConstruction", function(_, data)
-          if data and data.type == "TOWN_BUILDING" and type(data.updateFn) == "function" then
+      local scaleTownBuildings = policy
+        and (policy.capacityDenominator > 1 or policy.capacityNumerator ~= 1)
+      local loaderIndustryResourceFacts = activeIndustryResourceFacts
+      local function publishIndustryResource(fileName, registry)
+        if not (industryFactsOk and registry) then return end
+        local ok, result = industryFacts.writeResourceArtifact(
+          registry, fileName, cfg.bridgeDir)
+        local diagnostics = registry.diagnostics
+        diagnostics.artifactWrites = diagnostics.artifactWrites or {}
+        diagnostics.artifactErrors = diagnostics.artifactErrors or {}
+        local canonicalName = industryFacts.canonicalResourceName(fileName)
+        local firstAttempt = diagnostics.artifactWrites[canonicalName] == nil
+          and diagnostics.artifactErrors[canonicalName] == nil
+        if ok then
+          diagnostics.artifactWrites[canonicalName] = tostring(result)
+          diagnostics.artifactErrors[canonicalName] = nil
+        else
+          diagnostics.artifactErrors[canonicalName] = tostring(result)
+          if firstAttempt then
+            print("[TPF2MP-INDUSTRY] could not write " .. canonicalName
+              .. ": " .. tostring(result) .. " bridge=" .. tostring(cfg.bridgeDir))
+          end
+        end
+      end
+      if scaleTownBuildings or industryFactsOk then
+        addModifier("loadConstruction", function(fileName, data)
+          if industryFactsOk and loaderIndustryResourceFacts then
+            local diagnostics = loaderIndustryResourceFacts.diagnostics
+            diagnostics.loadConstructionCount =
+              (tonumber(diagnostics.loadConstructionCount) or 0) + 1
+            diagnostics.typeCounts = diagnostics.typeCounts or {}
+            local typeKey = tostring(data and data.type or "<nil>")
+            diagnostics.typeCounts[typeKey] = (tonumber(diagnostics.typeCounts[typeKey]) or 0) + 1
+          end
+          if industryFactsOk and isIndustryConstruction(fileName, data) then
+            local _, wrapped = industryFacts.wrap(
+              loaderIndustryResourceFacts, fileName, data, publishIndustryResource)
+            if wrapped then
+              local diagnostics = loaderIndustryResourceFacts.diagnostics
+              diagnostics.industryConstructionCount =
+                (tonumber(diagnostics.industryConstructionCount) or 0) + 1
+              industryFacts.captureStandardVariants(
+                loaderIndustryResourceFacts, fileName, data)
+              publishIndustryResource(fileName, loaderIndustryResourceFacts)
+            end
+          end
+          if scaleTownBuildings and data and data.type == "TOWN_BUILDING"
+              and type(data.updateFn) == "function" then
             local inner = data.updateFn
             data.updateFn = function(params)
               local result = inner(params)
@@ -260,9 +351,11 @@ function data()
 
       -- Shipped decouplers: cargo weight is what makes load affect physics,
       -- and destination recomputation is the dominant per-agent cost.
-      game.config.simulateCargoWeight = policy.simulateCargoWeight
-      game.config.simPersonDestinationRecomputationProbability =
-        policy.destinationRecomputationPermille / 1000
+      if policy then
+        game.config.simulateCargoWeight = policy.simulateCargoWeight
+        game.config.simPersonDestinationRecomputationProbability =
+          policy.destinationRecomputationPermille / 1000
+      end
     end,
   }
 end

@@ -7,6 +7,8 @@ local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
 local townReadingModule = require "tpf2_mp/world_town_reading"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
 local lineReadingModule = require "tpf2_mp/world_line_reading"
+local industryReadingModule = require "tpf2_mp/world_industry_reading"
+local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
 local identityModule = require "tpf2_mp/world_identity"
 
 local M = {}
@@ -78,6 +80,15 @@ local function component(id, componentType)
   local ok, value = pcall(api.engine.getComponent, id, componentType)
   return ok and value or nil
 end
+
+local industryReading = industryReadingModule.new({
+  getApi = function() return api end,
+  getGame = function() return game end,
+  entityNumber = entityNumber,
+  resourceFacts = industryResourceFacts,
+})
+M.industryResourceProbe = industryReading.registryProbe
+M.industryRecipe = industryReading.recipeForIndustry
 
 function M.entityExists(id)
   id = tonumber(id)
@@ -1579,7 +1590,10 @@ end
 
 local function systemListCount(system, functionName, entity, errors)
   local fn = system and system[functionName]
-  if type(fn) ~= "function" then return nil, false end
+  -- Generated engine bindings are callable tables on Build 35924. Treating
+  -- only native Lua functions as available silently disabled the official
+  -- sim-person and sim-cargo readbacks in the real game.
+  if not util.isCallable(fn) then return nil, false end
   local ok, values = pcall(fn, entity)
   if not ok then
     errors[#errors + 1] = functionName .. ": " .. tostring(values)
@@ -1661,11 +1675,11 @@ function M.mobilitySnapshot(registry, worldState)
   local terminalSystem = systems.simPersonAtTerminalSystem
   local errors = {}
   local availability = {
-    totalPersons = personSystem and type(personSystem.getCount) == "function" or false,
-    linePassengers = personSystem and type(personSystem.getSimPersonsForLine) == "function" or false,
-    lineCargo = cargoSystem and type(cargoSystem.getSimCargosForLine) == "function" or false,
-    terminalInfo = terminalSystem and type(terminalSystem.getEdgeInfoMap) == "function" or false,
-    terminalFreePlaces = terminalSystem and type(terminalSystem.getNumFreePlaces) == "function" or false,
+    totalPersons = util.isCallable(personSystem and personSystem.getCount),
+    linePassengers = util.isCallable(personSystem and personSystem.getSimPersonsForLine),
+    lineCargo = util.isCallable(cargoSystem and cargoSystem.getSimCargosForLine),
+    terminalInfo = util.isCallable(terminalSystem and terminalSystem.getEdgeInfoMap),
+    terminalFreePlaces = util.isCallable(terminalSystem and terminalSystem.getNumFreePlaces),
     directPersonEntities = types.SIM_PERSON ~= nil
       and util.isCallable(api and api.engine and api.engine.forEachEntityWithComponent) or false,
     directCargoEntities = types.SIM_CARGO ~= nil
@@ -1912,6 +1926,7 @@ local operationalTelemetry = operationalTelemetryModule.new({
   listTowns = M.listTowns, listIndustries = M.listIndustries,
   bindExisting = M.bindExisting, nameOf = nameOf, fingerprint = M.fingerprint,
   structuralSnapshot = M.structuralSnapshot, mobilitySnapshot = M.mobilitySnapshot,
+  industryResourceProbe = M.industryResourceProbe,
 })
 M.autonomySnapshot, M.clockSnapshot = operationalTelemetry.autonomySnapshot,
   operationalTelemetry.clockSnapshot
@@ -1939,8 +1954,19 @@ function M.capabilityProbe()
     local ok, value = pcall(api.util.getBuildVersion)
     if ok then buildVersion = tostring(value) end
   end
+  local industryResources = industryReading.registryProbe()
   return {
     buildVersion = buildVersion,
+    industryResourceRegistry = industryResources.available == true,
+    industryResourceDigest = industryResources.digest,
+    industryResourceCount = industryResources.resourceCount or 0,
+    industryResourceVariants = industryResources.variantCount or 0,
+    industryResourceAmbiguous = industryResources.ambiguousCount or 0,
+    industryResourceFailures = industryResources.failureCount or 0,
+    industryResourceStandardMisses = industryResources.standardMissCount or 0,
+    industryResourceModifierCalls = industryResources.loadConstructionCount or 0,
+    industryResourceIndustryCalls = industryResources.industryConstructionCount or 0,
+    industryResourceError = industryResources.error,
     addPlayer = type(interface.addPlayer) == "function",
     setPlayer = type(interface.setPlayer) == "function",
     setGameSpeed = type(interface.setGameSpeed) == "function",
@@ -1978,14 +2004,15 @@ function M.capabilityProbe()
       and type(rawget(_G, "tpf2mp_native_disable_build_gate")) == "function" or false,
     nativeBuildAuthorize = type(rawget(_G, "tpf2mp_native_authorize_build")) == "function",
     interfaceSendScriptEvent = type(interface.sendScriptEvent) == "function",
-    simPersonCount = api and api.engine and api.engine.system and api.engine.system.simPersonSystem
-      and type(api.engine.system.simPersonSystem.getCount) == "function" or false,
-    simPersonsForLine = api and api.engine and api.engine.system and api.engine.system.simPersonSystem
-      and type(api.engine.system.simPersonSystem.getSimPersonsForLine) == "function" or false,
-    simCargosForLine = api and api.engine and api.engine.system and api.engine.system.simCargoSystem
-      and type(api.engine.system.simCargoSystem.getSimCargosForLine) == "function" or false,
-    simPersonTerminalInfo = api and api.engine and api.engine.system and api.engine.system.simPersonAtTerminalSystem
-      and type(api.engine.system.simPersonAtTerminalSystem.getEdgeInfoMap) == "function" or false,
+    simPersonCount = util.isCallable(api and api.engine and api.engine.system
+      and api.engine.system.simPersonSystem and api.engine.system.simPersonSystem.getCount),
+    simPersonsForLine = util.isCallable(api and api.engine and api.engine.system
+      and api.engine.system.simPersonSystem and api.engine.system.simPersonSystem.getSimPersonsForLine),
+    simCargosForLine = util.isCallable(api and api.engine and api.engine.system
+      and api.engine.system.simCargoSystem and api.engine.system.simCargoSystem.getSimCargosForLine),
+    simPersonTerminalInfo = util.isCallable(api and api.engine and api.engine.system
+      and api.engine.system.simPersonAtTerminalSystem
+      and api.engine.system.simPersonAtTerminalSystem.getEdgeInfoMap),
     directSimPersons = components.SIM_PERSON ~= nil
       and util.isCallable(api and api.engine and api.engine.forEachEntityWithComponent) or false,
     directSimCargo = components.SIM_CARGO ~= nil

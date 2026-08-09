@@ -94,6 +94,16 @@ function M.render(gui, snapshot, options)
       companion.connected == true and "connected" or "waiting",
       peers
     )
+    local content = snapshot.industryContent or {}
+    local localContent = snapshot.probes and snapshot.probes.industryContent or {}
+    lines[#lines + 1] = string.format(
+      "Freight content: %s | digest %s | %d resources / %d variants | local %s%s",
+      content.ready == true and "READY" or (content.fault and "FAULTED" or "waiting"),
+      tostring(content.digest or localContent.localDigest or "-"),
+      tonumber(content.resourceCount or localContent.resourceCount) or 0,
+      tonumber(content.variantCount or localContent.variantCount) or 0,
+      tostring(localContent.status or "waiting-for-sidecar"),
+      content.fault and (" | " .. tostring(content.fault.errorCode or "content-fault")) or "")
     local capture = gui.nativeBuildCapture or {}
     lines[#lines + 1] = string.format(
       "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",

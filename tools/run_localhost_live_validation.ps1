@@ -26,6 +26,8 @@ param(
     [switch]$NativeFreshWorld,
     [switch]$TownDevelopment,
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
+    [string]$IndustryArtifactSourceRoot,
+    [switch]$RequireIndustryContentConsensus,
     [switch]$KeepGamesOpen
 )
 
@@ -95,6 +97,26 @@ $settingsBackup = Join-Path $runRoot 'settings-original.lua'
 $manifestPath = Join-Path $runRoot 'match-manifest.json'
 $matchContentProfilePath = Join-Path $runRoot 'match-content-profile.json'
 $statusPath = Join-Path $runRoot 'run-status.json'
+$industryArtifactSource = if ($IndustryArtifactSourceRoot) {
+    Resolve-Tpf2mpFullPath $IndustryArtifactSourceRoot
+} else { $null }
+if ($industryArtifactSource) {
+    if (-not (Test-Path -LiteralPath $industryArtifactSource -PathType Container)) {
+        throw "Industry artifact source root is missing: $industryArtifactSource"
+    }
+    if ($industryArtifactSource.Equals($bridgeBase, [StringComparison]::OrdinalIgnoreCase) `
+        -or $industryArtifactSource.StartsWith($bridgeBase.TrimEnd('\') + '\',
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Industry artifact source cannot be inside the disposable bridge being reset.'
+    }
+    foreach ($peer in @('player1', 'player2')) {
+        $sourceDirectory = Join-Path $industryArtifactSource "$peer\content\industry"
+        if (-not (Test-Path -LiteralPath $sourceDirectory -PathType Container) `
+            -or @(Get-ChildItem -LiteralPath $sourceDirectory -File -Filter '*.json').Count -lt 1) {
+            throw "Industry artifact source has no $peer content-addressed artifacts: $sourceDirectory"
+        }
+    }
+}
 $usingNativeSaveLoader = -not [string]::IsNullOrWhiteSpace($StartingSave) -or $null -ne $restorePlanData
 $usingNativeMenuBootstrap = $usingNativeSaveLoader -or $NativeFreshWorld
 $bootstrapFileName = if ($usingNativeMenuBootstrap) {
@@ -129,6 +151,9 @@ $peerResults = @{}
 $finalPassed = $false
 $collectInteractiveEvidence = $false
 $interactiveEvidenceCollected = $false
+$finalHostStatus = $null
+$finalClientStatus = $null
+$industryConsensusEvidence = $null
 $interactiveEvidenceError = $null
 $operationalAnalysisPath = $null
 $operationalAnalysisError = $null
@@ -657,6 +682,55 @@ function Test-CompanionConnected($Status) {
     return $null -ne $Status -and $null -ne $Status.PSObject.Properties['connected'] -and $Status.connected -eq $true
 }
 
+function Assert-IndustryContentConsensus($HostStatus, $ClientStatus) {
+    if ($null -eq $HostStatus -or $null -eq $ClientStatus) {
+        throw 'Industry content consensus requires both final companion statuses.'
+    }
+    if ($HostStatus.sessionFault) {
+        throw "Industry content consensus faulted the host session: $($HostStatus.sessionFault)"
+    }
+    if ($HostStatus.industryContentReady -ne $true `
+        -or $ClientStatus.industryContentReady -ne $true) {
+        throw 'Both companions did not publish validated industry registries.'
+    }
+    if ($HostStatus.industryContentConsensusReady -ne $true `
+        -or $HostStatus.industryContentConsensusError) {
+        throw "Ordered industry content consensus is not ready: $($HostStatus.industryContentConsensusError)"
+    }
+    $hostDigest = [string]$HostStatus.industryContentDigest
+    $clientDigest = [string]$ClientStatus.industryContentDigest
+    $consensusDigest = [string]$HostStatus.industryContentConsensusDigest
+    if ($hostDigest -notmatch '^[0-9a-f]{8}$' -or $hostDigest -ne $clientDigest `
+        -or $hostDigest -ne $consensusDigest) {
+        throw "Industry registry digest mismatch: host=$hostDigest client=$clientDigest consensus=$consensusDigest"
+    }
+    $attestedPeers = @($HostStatus.industryContentAttestedPeers)
+    if ($attestedPeers.Count -ne 2 -or $attestedPeers[0] -ne 'player1' `
+        -or $attestedPeers[1] -ne 'player2') {
+        throw "Industry content attestation set is incomplete: $($attestedPeers -join ',')"
+    }
+    foreach ($status in @($HostStatus, $ClientStatus)) {
+        if ([int]$status.industryContentResources -lt 1 `
+            -or [int]$status.industryContentVariants -lt 1 `
+            -or [int]$status.industryContentAmbiguous -ne 0) {
+            throw 'Industry registry has no positive unambiguous freight content.'
+        }
+    }
+    if ([int64]$HostStatus.pendingCheckpointSeq -gt 0) {
+        throw "Industry content left checkpoint $($HostStatus.pendingCheckpointSeq) pending."
+    }
+    return [ordered]@{
+        ready = $true
+        digest = $hostDigest
+        resourceCount = [int]$HostStatus.industryContentResources
+        variantCount = [int]$HostStatus.industryContentVariants
+        ambiguousCount = [int]$HostStatus.industryContentAmbiguous
+        artifactCount = [int]$HostStatus.industryContentArtifacts
+        attestedPeers = $attestedPeers
+        lastAgreedCheckpointSeq = [int64]$HostStatus.lastAgreedCheckpointSeq
+    }
+}
+
 function Read-ValidationResult([string]$BridgePath, [string]$Peer) {
     $outbox = Join-Path $BridgePath 'game_outbox'
     if (-not (Test-Path -LiteralPath $outbox -PathType Container)) { return $null }
@@ -779,7 +853,8 @@ try {
 
     if (Test-Path -LiteralPath $bridgeBase) { Remove-Item -LiteralPath $bridgeBase -Recurse -Force }
     foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
-        foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit', 'launcher')) {
+        foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit',
+                'launcher', 'content\industry')) {
             New-Item -ItemType Directory -Force -Path (Join-Path $peerBridge $folder) | Out-Null
         }
         if ($ManualOnly) {
@@ -789,6 +864,21 @@ try {
             # starts and change only its contents after both worlds load.
             [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\manual-bootstrap-ready'),
                 'waiting', [Text.UTF8Encoding]::new($false))
+        }
+    }
+    if ($industryArtifactSource) {
+        foreach ($entry in @(
+            @{ Peer = 'player1'; Bridge = $peer1Bridge },
+            @{ Peer = 'player2'; Bridge = $peer2Bridge }
+        )) {
+            $sourceDirectory = Join-Path $industryArtifactSource "$($entry.Peer)\content\industry"
+            $targetDirectory = Join-Path $entry.Bridge 'content\industry'
+            $sourceFiles = @(Get-ChildItem -LiteralPath $sourceDirectory -File -Filter '*.json' |
+                Sort-Object Name)
+            foreach ($sourceFile in $sourceFiles) {
+                Copy-Item -LiteralPath $sourceFile.FullName -Destination $targetDirectory -Force
+            }
+            Write-Host "Seeded $($sourceFiles.Count) independently captured $($entry.Peer) industry artifacts."
         }
     }
 
@@ -1142,6 +1232,73 @@ try {
     }
     $badMobility = @($hostStatus.mobilityOutcomes.PSObject.Properties | Where-Object { $_.Value -ne 'converged' })
     if ($badMobility.Count -gt 0) { throw "At least one ordered mobility sample diverged: $($badMobility.Name -join ', ')" }
+    if ($RequireIndustryContentConsensus) {
+        $industryDeadline = (Get-Date).AddSeconds([Math]::Min($ConsensusTimeoutSeconds, 120))
+        do {
+            $hostStatus = Read-CompanionStatus $peer1Bridge
+            $clientStatus = Read-CompanionStatus $peer2Bridge
+            $contentReady = $hostStatus -and $clientStatus `
+                -and $hostStatus.industryContentConsensusReady -eq $true `
+                -and $hostStatus.industryContentReady -eq $true `
+                -and $clientStatus.industryContentReady -eq $true `
+                -and -not $hostStatus.pendingCheckpointSeq
+            if (-not $contentReady -and -not $hostStatus.sessionFault) {
+                Start-Sleep -Milliseconds 250
+            }
+        } while (-not $contentReady -and -not $hostStatus.sessionFault `
+            -and (Get-Date) -lt $industryDeadline)
+        $industryConsensusEvidence = Assert-IndustryContentConsensus $hostStatus $clientStatus
+
+        $auditPath = Join-Path $peer1Bridge "audit\$Session.ndjson"
+        $industryCommits = @()
+        $industryCheckpoint = $null
+        foreach ($line in Get-Content -LiteralPath $auditPath) {
+            try { $record = $line | ConvertFrom-Json } catch { continue }
+            $recordKind = if ($record.PSObject.Properties['kind']) { $record.kind } else { $null }
+            $recordType = if ($record.PSObject.Properties['record_type']) {
+                $record.record_type
+            } else { $null }
+            if ($recordKind -eq 'commit' -and $record.payload `
+                -and $record.payload.action `
+                -and $record.payload.action.type -eq 'content.industry_attest') {
+                $industryCommits += $record
+            }
+            if ($recordType -eq 'checkpoint' `
+                -and @('industry-content-ready', 'match-initialised') -contains $record.payload.reason `
+                -and $record.payload.model.industryContent.ready -eq $true `
+                -and [string]$record.payload.model.industryContent.digest -eq `
+                    [string]$industryConsensusEvidence.digest) {
+                $industryCheckpoint = $record
+            }
+        }
+        $origins = @($industryCommits | ForEach-Object { [string]$_.origin_peer } |
+            Sort-Object -Unique)
+        if ($industryCommits.Count -ne 2 -or $origins.Count -ne 2 `
+            -or $origins[0] -ne 'player1' -or $origins[1] -ne 'player2') {
+            throw 'Audit did not retain exactly one ordered industry attestation from each peer.'
+        }
+        if (-not $industryCheckpoint) {
+            throw 'Audit did not retain a checkpoint containing the agreed industry content.'
+        }
+        $industryConsensusEvidence.commitSeqs = @($industryCommits | ForEach-Object { [int64]$_.seq })
+        $industryConsensusEvidence.checkpointReason = [string]$industryCheckpoint.payload.reason
+        $industryConsensusEvidence.checkpointCommitSeq = `
+            [int64]$industryCheckpoint.payload.eventCursor.lastCommitSeq
+        $industryConsensusEvidence | ConvertTo-Json -Depth 8 | Set-Content `
+            -LiteralPath (Join-Path $runRoot 'industry-content-consensus.json') -Encoding UTF8
+        foreach ($entry in @(
+            @{ Peer = 'player1'; Bridge = $peer1Bridge },
+            @{ Peer = 'player2'; Bridge = $peer2Bridge }
+        )) {
+            Copy-Item -LiteralPath (Join-Path $entry.Bridge 'companion_state\industry_registry.json') `
+                -Destination (Join-Path $runRoot "$($entry.Peer)-industry-registry.json") -Force
+        }
+        Write-Host ("PASS ordered industry content consensus: digest={0}, resources={1}, variants={2}" -f `
+            $industryConsensusEvidence.digest, $industryConsensusEvidence.resourceCount,
+            $industryConsensusEvidence.variantCount)
+    }
+    $finalHostStatus = $hostStatus
+    $finalClientStatus = Read-CompanionStatus $peer2Bridge
     if ($RequireVehicleSyncRound) {
         if ($null -eq $hostStatus.PSObject.Properties['vehicleSync']) {
             throw 'Host companion did not publish vehicle synchronization status.'
@@ -1398,6 +1555,9 @@ $runStatus = [ordered]@{
     operationalCaptureLab = $OperationalCaptureLab.IsPresent
     townDevelopment = $TownDevelopment.IsPresent
     agentMode = $AgentMode
+    industryArtifactSourceRoot = $industryArtifactSource
+    requireIndustryContentConsensus = $RequireIndustryContentConsensus.IsPresent
+    industryContentConsensus = $industryConsensusEvidence
     matchContentProfile = $matchContentProfilePath
     operationalSampleTicks = $OperationalSampleTicks
     operationalStartingCash = $OperationalStartingCash
@@ -1422,6 +1582,8 @@ $runStatus = [ordered]@{
     peer2GamePid = $peer2GamePid
     peer1Result = $peer1Payload
     peer2Result = $peer2Payload
+    finalHostStatus = $finalHostStatus
+    finalClientStatus = $finalClientStatus
     settingsRestored = $settingsRestored
     steamMarkerRestored = $steamMarkerClean
     temporaryBootstrapRemoved = if ($injectedBootstrap) {

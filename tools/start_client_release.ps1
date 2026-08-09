@@ -17,7 +17,8 @@ $companion = Join-Path $bundle 'bin\tpf2mp.exe'
 if (-not (Test-Path -LiteralPath $companion -PathType Leaf)) { throw "Companion executable is missing: $companion" }
 if (-not $BridgePath) { $BridgePath = Join-Path ([IO.Path]::GetTempPath()) "tpf2mp_bridge\$Peer" }
 $bridge = Resolve-Tpf2mpFullPath $BridgePath
-foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit')) {
+foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit',
+        'content\industry')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $bridge $folder) | Out-Null
 }
 $arguments = @('client', $HostAddress, '--session', $Session, '--peer', $Peer, '--port', $Port, '--bridge', $bridge)

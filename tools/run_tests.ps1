@@ -24,7 +24,10 @@ $networkMapInbox = Join-Path $networkMapBridge 'game_inbox'
 $traceBridge = Join-Path $temporary 'replay-trace'
 $traceOutbox = Join-Path $traceBridge 'game_outbox'
 $traceInbox = Join-Path $traceBridge 'game_inbox'
+$industryContent = Join-Path $temporary 'content\industry'
+$industryState = Join-Path $temporary 'companion_state'
 New-Item -ItemType Directory -Force -Path $gameOutbox, $gameInbox, $mainOutbox, $mainInbox, $hotseatOutbox, $hotseatInbox, $networkMapOutbox, $networkMapInbox, $traceOutbox, $traceInbox | Out-Null
+New-Item -ItemType Directory -Force -Path $industryContent, $industryState | Out-Null
 
 try {
     & (Join-Path $projectRoot 'tools\check_source_boundaries.ps1') -ProjectRoot $projectRoot

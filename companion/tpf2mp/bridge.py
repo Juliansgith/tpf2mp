@@ -61,7 +61,12 @@ class GameBridge:
         self.inbox = self.root / "game_inbox"
         self.state_dir = self.root / "companion_state"
         self.audit_dir = self.root / "audit"
-        for directory in (self.outbox, self.inbox, self.state_dir, self.audit_dir):
+        self.content_dir = self.root / "content"
+        self.industry_content_dir = self.content_dir / "industry"
+        for directory in (
+            self.outbox, self.inbox, self.state_dir, self.audit_dir,
+            self.industry_content_dir,
+        ):
             directory.mkdir(parents=True, exist_ok=True)
         self.cursor_path = self.state_dir / f"outbox_cursor_{session}.json"
         self.status_path = self.state_dir / "companion_status.json"

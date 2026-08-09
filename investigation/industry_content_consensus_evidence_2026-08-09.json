@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "capturedAt": "2026-08-09T06:16:15.7580592+02:00",
+  "game": {
+    "profile": "Transport Fever 2 Build 35924 (Windows x64)",
+    "sha256": "782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c"
+  },
+  "resourceDiscovery": {
+    "session": "industry-artifact-write-20260809-0550",
+    "peerArtifactCounts": {
+      "player1": 17,
+      "player2": 17
+    },
+    "identicalContentAddressedNames": true,
+    "registryDigest": "edc7a517",
+    "resourceCount": 16,
+    "variantCount": 160,
+    "ambiguousCount": 0,
+    "nonFlowHelperArtifacts": 1
+  },
+  "networkConsumption": {
+    "session": "industry-consensus-live-20260809-0745",
+    "passed": true,
+    "attestationCommitSeqs": [1, 2],
+    "attestedPeers": ["player1", "player2"],
+    "contentCheckpointReason": "match-initialised",
+    "contentCheckpointCommitSeq": 3,
+    "lastAgreedCheckpointSeq": 16,
+    "coreDigest": "c3bf105f",
+    "modelDigest": "4b315eeb",
+    "structuralDigest": "ae4f8ceb",
+    "orderedCommitsConverged": 13,
+    "checkpointBarriers": {
+      "complete": 3,
+      "faulted": 0,
+      "pending": 0
+    },
+    "physicalProposals": {
+      "complete": 2,
+      "rejected": 0,
+      "faulted": 0,
+      "pending": 0
+    },
+    "sessionFault": null
+  }
+}

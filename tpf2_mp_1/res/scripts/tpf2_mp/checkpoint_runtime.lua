@@ -4,6 +4,7 @@ local canonical = require "tpf2_mp/canonical"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local vehicleSyncRuntime = require "tpf2_mp/vehicle_sync_runtime"
+local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 
 local M = {}
 
@@ -106,6 +107,8 @@ function M.new(env)
       townDevelopment = util.deepCopy(currentState().world.townDevelopment or {
         schemaVersion = 1, enabled = false, points = {}, cursor = {},
       }),
+      industryContent = industryContentRuntime.digestView(
+        currentState().world.industryContent),
     }
   end
   
@@ -136,7 +139,8 @@ function M.new(env)
       or actionType == "economy.seed_demo" or actionType == "economy.settle"
       or actionType == "match.finish" or actionType == "probe.mobility"
       or actionType == "probe.structural"
-      or actionType == "recovery.resume" or actionType == "town.develop" then
+      or actionType == "recovery.resume" or actionType == "town.develop"
+      or actionType == "content.industry_attest" then
       return action.localLineId == nil
     end
     if actionType == "line.register" then
@@ -289,6 +293,11 @@ function M.new(env)
   
   local function exportCheckpointBarrier(boundarySeq, reason, proposalId)
     boundarySeq = math.max(1, util.integer(boundarySeq, 0))
+    if currentState().networkMode == "network"
+        and finance.networkDigestView(currentState().finance).initialized ~= true then
+      currentState().checkpoint.lastError = "canonical network accounts are not initialised"
+      return false, currentState().checkpoint.lastError
+    end
     local key = tostring(boundarySeq)
     local barriers = currentState().world.checkpointConsensus
     local record = barriers.byBoundary[key]

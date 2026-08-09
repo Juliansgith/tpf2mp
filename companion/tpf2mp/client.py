@@ -6,6 +6,7 @@ import time
 
 from .bridge import GameBridge
 from .anchor_io import AnchorRequestStore, validate_anchor_state
+from .industry_content import IndustryContentCoordinator
 from .protocol import ProtocolError, hello, validate_envelope
 from .transport import read_frame as _read_frame, send as _send
 
@@ -28,6 +29,7 @@ class CommitClient:
         self.next_host_seq: int | None = None
         self.anchor_state: dict[str, object] | None = None
         self.anchor_requests = AnchorRequestStore(self.bridge)
+        self.industry_content = IndustryContentCoordinator(self.bridge)
 
     def _write_status(self, status: str | None = None) -> None:
         if status is not None:
@@ -57,6 +59,7 @@ class CommitClient:
                 "anchorPreparationCheckpointSeq": anchor.get("preparationCheckpointSeq"),
                 "anchorPreparationDetail": anchor.get("preparationDetail"),
                 **self.anchor_requests.status(),
+                **self.industry_content.status(),
             }
         )
 
@@ -135,6 +138,8 @@ class CommitClient:
                         _send(sock, message, send_lock)
                         sent_pending.add(local_seq)
                         had_work = True
+                if self.industry_content.refresh():
+                    had_work = True
                 if not had_work:
                     time.sleep(poll_seconds)
                 if time.monotonic() >= next_status:

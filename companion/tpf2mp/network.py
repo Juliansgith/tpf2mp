@@ -20,6 +20,8 @@ from .anchor import AnchorCoordinator
 from .anchor_prepare import AnchorPreparationCoordinator
 from .anchor_io import AnchorRequestStore
 from .host_status import write_host_status
+from .host_intents import HostIntentMixin
+from .industry_content import IndustryContentConsensus, IndustryContentCoordinator
 from .synchronization import SynchronizationCoordinator
 from .restore_session import RestoreSessionCoordinator
 from .protocol import (
@@ -48,7 +50,7 @@ HOST_AUTHORITY_ACTIONS = {
 COMPANY_BOUND_ACTIONS = {"proposal.prepare", "operation.execute", "line.register"}
 
 
-class CommitHost:
+class CommitHost(HostIntentMixin):
     def __init__(
         self,
         bridge: GameBridge,
@@ -108,6 +110,8 @@ class CommitHost:
         self.anchor = AnchorCoordinator(self)
         self.anchor_preparation = AnchorPreparationCoordinator(self)
         self.anchor_requests = AnchorRequestStore(self.bridge)
+        self.industry_content = IndustryContentCoordinator(self.bridge)
+        self.industry_content_consensus = IndustryContentConsensus(self)
         # Negative host sequences stay disjoint from unbounded positive game sequences.
         self._next_local_seq = -1
         self.last_agreed_checkpoint: dict[str, Any] | None = None
@@ -170,6 +174,10 @@ class CommitHost:
                         self._track_checkpoint_boundary(seq, "match-initialised")
                     elif action.get("type") == "town.develop":
                         self._track_checkpoint_boundary(seq, "town-development")
+                    elif action.get("type") == "content.industry_attest":
+                        self.industry_content_consensus.observe(
+                            action, origin_peer, restoring=True,
+                        )
                     elif action.get("type") == "probe.structural":
                         self._track_checkpoint_boundary(seq, "structural-probe")
                     elif action.get("type") == "recovery.resume":
@@ -341,33 +349,6 @@ class CommitHost:
 
     def _pending_checkpoint(self) -> dict[str, Any] | None:
         return self.consensus.pending(self.checkpoint_consensus)
-    def emit_local_intent(self, action: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Order an action the host companion itself originated.
-
-        Used for attestations the companion is uniquely able to make - it
-        knows the pause state, the ordered history, and the save on disk -
-        rather than round-tripping a question through the game.
-        """
-        local_seq = self._allocate_host_local_seq()
-        return self._commit(sign({
-            "protocol": PROTOCOL_VERSION,
-            "session": self.bridge.session,
-            "peer": self.bridge.peer,
-            "local_seq": local_seq,
-            "tick": 0,
-            "kind": "intent",
-            "payload": {"action": dict(action)},
-        }))
-
-    def _allocate_host_local_seq(self) -> int:
-        """Return a restart-stable identity disjoint from every game intent."""
-        with self.order_lock:
-            while (self.bridge.peer, self._next_local_seq) in self.seen:
-                self._next_local_seq -= 1
-            local_seq = self._next_local_seq
-            self._next_local_seq -= 1
-            return local_seq
-
     def _commit(self, intent: Mapping[str, Any]) -> dict[str, Any] | None:
         validate_envelope(intent, self.bridge.session)
         if intent.get("kind") != "intent":
@@ -430,7 +411,7 @@ class CommitHost:
             if action["type"] in {
                 "match.initialise", "proposal.prepare", "operation.execute",
                 "line.register", "town.develop", "recovery.prepare", "recovery.resume",
-                "recovery.save_receipt",
+                "recovery.save_receipt", "content.industry_attest",
             }:
                 if self.require_connected_peers:
                     with self.peers_lock:
@@ -466,6 +447,7 @@ class CommitHost:
                     )
                 if service_company != actual_company:
                     raise ProtocolError("line.register service company must match the acting company")
+            self.industry_content_consensus.before_commit(action, origin)
             if action["type"] == "operation.execute":
                 peer_number = re.fullmatch(r"player([1-9][0-9]*)", origin)
                 expected_company = f"company:{peer_number.group(1)}" if peer_number else None
@@ -513,6 +495,8 @@ class CommitHost:
                 self._track_checkpoint_boundary(seq, "match-initialised")
             elif action["type"] == "town.develop":
                 self._track_checkpoint_boundary(seq, "town-development")
+            elif action["type"] == "content.industry_attest":
+                self.industry_content_consensus.observe(action, origin)
             elif action["type"] == "probe.structural":
                 self._track_checkpoint_boundary(seq, "structural-probe")
             elif action["type"] == "recovery.resume":
@@ -1473,6 +1457,8 @@ class CommitHost:
                     had_work = True
                 self._expire_proposals()
                 if self.anchor_preparation.maintain():
+                    had_work = True
+                if self.industry_content.refresh():
                     had_work = True
                 if time.monotonic() >= next_status:
                     self._write_status()

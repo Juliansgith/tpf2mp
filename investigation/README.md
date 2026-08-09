@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.30.0-alpha`, state schema `27`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[Live industry resource binding and match attestation](LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md)
+records independent loaded-resource capture on both exact processes, strict
+content-addressed sidecars, live industry-to-recipe binding, ordered match
+attestation, startup race fixes, and the passing content-required network gate.
 
 [Physical completion and audit integrity](PHYSICAL_COMPLETION_AUDIT_INTEGRITY_2026-08-09.md)
 records completion-digest recomputation, direct physical-view comparison,
@@ -358,7 +363,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 26 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger queues/loads/completed revenue, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, and authored physical town-development progress, and retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-4 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, or an unchanged upgrade postcondition faults closed.
+State schema 27 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger queues/loads/completed revenue, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, and both peers' loaded-industry content attestations. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-4 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content faults closed.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two

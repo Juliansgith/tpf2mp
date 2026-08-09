@@ -6,6 +6,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
+local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 
 local M = {}
 
@@ -175,6 +176,7 @@ function M.new(cfg, versions)
         points = {},
         cursor = {},
       },
+      industryContent = industryContentRuntime.newState(),
       logicalOwners = {},
       logicalOwnershipAuthoritative = false,
       initialNetworkOwnership = nil,
@@ -298,6 +300,7 @@ function M.new(cfg, versions)
         lastError = nil,
       },
       passengerCosmetics = passengerCosmetics.newProbe(),
+      industryContent = industryContentRuntime.newProbe(),
       capture = {
         preCommitCount = 0,
         nativePreCommitCount = 0,
@@ -542,6 +545,8 @@ function M.migrate(saved, context)
     or legacyTownPoints or {}
   saved.world.townDevelopment.cursor = saved.world.townDevelopment.cursor or {}
   saved.world.townDevelopmentPoints = nil
+  saved.world.industryContent = industryContentRuntime.migrate(
+    saved.world.industryContent)
   saved.world.originResidueCustody = saved.world.originResidueCustody or {}
   saved.world.originResidueNextToken = math.max(1,
     util.integer(saved.world.originResidueNextToken, 1))
@@ -635,6 +640,13 @@ function M.migrate(saved, context)
   for key, value in pairs(defaults.probes.passengerCosmetics) do
     if saved.probes.passengerCosmetics[key] == nil then
       saved.probes.passengerCosmetics[key] = util.deepCopy(value)
+    end
+  end
+  saved.probes.industryContent = saved.probes.industryContent
+    or util.deepCopy(defaults.probes.industryContent)
+  for key, value in pairs(defaults.probes.industryContent) do
+    if saved.probes.industryContent[key] == nil then
+      saved.probes.industryContent[key] = util.deepCopy(value)
     end
   end
   saved.probes.networkAuthority = saved.probes.networkAuthority
@@ -762,6 +774,11 @@ function M.migrate(saved, context)
         nextInSeq = saved.bridge.nextInSeq,
       },
     }
+    -- Content authority belongs to the network session, not merely to the
+    -- native save. A restored or newly launched bridge must collect fresh
+    -- per-peer attestations before freight rules can trust the loader facts.
+    saved.world.industryContent = industryContentRuntime.newState()
+    saved.probes.industryContent = industryContentRuntime.newProbe()
   end
   saved.bridge.companion = saved.bridge.companion or {
     available = false,

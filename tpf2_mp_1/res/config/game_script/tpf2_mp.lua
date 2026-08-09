@@ -40,10 +40,12 @@ local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local authoredFollowupRuntime = require "tpf2_mp/authored_followup_runtime"
 local operationalCaptureRuntimeModule = require "tpf2_mp/operational_capture_runtime"
+local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
+local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registration_integration"
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 26
+local STATE_VERSION = 27
 local CHECKPOINT_VERSION = 4
 local EVENT_RECORD_VERSION = 1
 
@@ -95,15 +97,7 @@ local freezeNetworkCalendar
 local autoRegisterLineFor
 local submitIntent
 
-local function diagnosticLog(event, values)
-  local record = { event = tostring(event), stateVersion = STATE_VERSION }
-  for key, value in pairs(values or {}) do
-    local valueType = type(value)
-    if valueType == "string" or valueType == "number" or valueType == "boolean" then record[key] = value end
-  end
-  local ok, encoded = pcall(json.encode, record)
-  print("[TPF2MP] " .. (ok and encoded or tostring(event)))
-end
+local diagnosticLog = require("tpf2_mp/diagnostic_log").new(STATE_VERSION)
 
 local nativeHookStatus = nativeHook.status
 local validatedNetworkAuthority = nativeHook.validatedNetworkAuthority
@@ -1433,40 +1427,26 @@ handlers["network.checkpoint_outcome"] = function(action)
   return success, util.deepCopy(record)
 end
 
-autoRegisterLineFor = function(transaction, outputCid)
-  return world.autoRegisterLine(state, transaction, outputCid, {
-    activeCompany = activeCompany,
-    submit = function(action)
-      if state.networkMode == "network" and networkIntentController then
-        return networkIntentController.scheduleFollowup(action)
-      end
-      return submitIntent(action)
-    end,
-    log = diagnosticLog,
-  })
-end
-
 -- A loaded save can contain complete routes with no later line/vehicle operation.
--- initialisation in that case, so operation-driven registration alone leaves
--- a perfectly valid service invisible to the authored economy.  Wait until
+-- Register them after match initialisation; operation-driven registration alone
+-- would leave a perfectly valid service invisible to the authored economy. Wait until
 -- the initial two-peer checkpoint has converged, then let each owning peer
 -- enqueue only its own runnable pre-existing lines.  The normal ordered
 -- line.register path still derives and carries the facts; this scan never
 -- authors market data independently on both peers.
-local function autoRegisterExistingServices(reason)
-  if state.networkMode ~= "network" or not networkIntentController then return 0 end
-  return world.autoRegisterExistingServices(state, {
-    activeCompany = activeCompany,
-    submit = networkIntentController.scheduleFollowup,
-    log = diagnosticLog,
-    reason = reason,
-  })
-end
+local serviceRegistrationIntegration = serviceRegistrationIntegrationModule.new({
+  getState = function() return state end, getController = function() return networkIntentController end,
+  world = world, activeCompany = activeCompany, submitIntent = function(...) return submitIntent(...) end,
+  log = diagnosticLog,
+})
+autoRegisterLineFor = serviceRegistrationIntegration.line
+local autoRegisterExistingServices = serviceRegistrationIntegration.existing
 
 authoredFollowupRuntime.installHandlers(handlers, {
   getState = function() return state end; requireRunningMatch = requireRunningMatch;
   world = world; diagnosticLog = diagnosticLog,
 })
+industryContentRuntime.installHandler(handlers, function() return state end)
 
 handlers["line.register"] = function(action)
   local running, runningError = requireRunningMatch()
@@ -2677,6 +2657,10 @@ local function normaliseForNetwork(action)
   elseif copy.type == "recovery.resume" then
     local restoreError; copy, restoreError = restoreResumeRuntime.normalise(copy)
     if not copy then return nil, restoreError end
+  elseif copy.type == "content.industry_attest" then
+    local contentError; copy, contentError = industryContentRuntime.normaliseAction(
+      copy, state.bridge.peerId)
+    if not copy then return nil, contentError end
   elseif copy.type == "network.checkpoint_request" then
     local preparationSeq = util.integer(copy.preparationSeq, 0)
     if preparationSeq < 1 or tostring(copy.reason or "") ~= "recovery-prepare:" .. tostring(preparationSeq) then
@@ -2885,8 +2869,11 @@ applyCommitted = function(action, actor, commitSeq)
       })
     end
   else
-    authoredFollowupRuntime.afterCommit(state, action, success, authoritySeq,
-      exportCheckpointBarrier, diagnosticLog)
+    if not industryContentRuntime.afterCommit(state, action, success, authoritySeq,
+        exportCheckpointBarrier, diagnosticLog) then
+      authoredFollowupRuntime.afterCommit(state, action, success, authoritySeq,
+        exportCheckpointBarrier, diagnosticLog)
+    end
   end
   state.lastAction = util.deepCopy(action)
   state.lastResult = util.deepCopy(result)
@@ -2973,6 +2960,12 @@ local function pumpNetworkBridge(includeHealth)
     state.lastError = "deferred multiplayer physical-action processing failed: "
       .. tostring(deferredError)
   end
+  local contentOk, contentError = xpcall(industryContentRuntime.maintain,
+    debug.traceback, state, { readFacts = world.industryResourceProbe,
+      localWorkState = networkIntentController.localWorkState, submitIntent = submitIntent })
+  if not contentOk then
+    state.probes.industryContent.lastError = tostring(contentError)
+  end
   local healthOk = true
   if includeHealth ~= false then
     local healthError
@@ -2983,7 +2976,7 @@ local function pumpNetworkBridge(includeHealth)
     healthOk, healthError = xpcall(networkClock.emitPausedHealth, debug.traceback)
     if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
   end
-  return consumeOk and deferredOk and healthOk
+  return consumeOk and deferredOk and contentOk and healthOk
 end
 
 local validationRuntime = validationRuntimeModule.new({

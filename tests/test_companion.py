@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zlib
 from unittest import mock
 from pathlib import Path
 
@@ -29,6 +30,11 @@ from tpf2mp.checkpoint import (
 )
 from tpf2mp.cli import replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
+from tpf2mp.industry_content import (
+    IndustryContentCoordinator,
+    build_registry as build_industry_registry,
+    validate_artifact as validate_industry_artifact,
+)
 from tpf2mp.network import CommitClient, CommitHost
 from tpf2mp.protocol import (
     CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
@@ -597,6 +603,23 @@ class ProtocolTests(unittest.TestCase):
         for action_type in ("probe.mobility", "probe.structural"):
             with self.assertRaises(ProtocolError):
                 validate_action({"type": action_type, "sampleKey": "forged"})
+
+    def test_industry_content_attestation_is_strict_and_bounded(self) -> None:
+        action = {
+            "type": "content.industry_attest", "peer": "player1",
+            "digest": "edc7a517", "resourceCount": 16,
+            "variantCount": 160, "ambiguousCount": 0,
+        }
+        self.assertEqual(validate_action(action), action)
+        for tampered in (
+            {**action, "digest": "not-a-digest"},
+            {**action, "resourceCount": 0},
+            {**action, "variantCount": 15},
+            {**action, "ambiguousCount": True},
+            {**action, "extra": 1},
+        ):
+            with self.assertRaises(ProtocolError):
+                validate_action(tampered)
 
     def test_shared_clock_actions_are_strict_and_bounded(self) -> None:
         self.assertEqual(
@@ -1524,6 +1547,52 @@ class BridgeTests(unittest.TestCase):
                 (canonical_json(later) + "\n").encode(),
             )
             self.assertEqual(list(bridge.pending_outbound()), [])
+
+    def test_industry_artifacts_merge_into_a_pinned_runtime_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = GameBridge(directory, "industry-session", "player1")
+            recipe = {
+                "resource": "industry/farm.con",
+                "params": {},
+                "stocks": {},
+                "inputs": [{}],
+                "outputs": [{"cargoType": "GRAIN", "amount": 1}],
+                "capacity": 200,
+            }
+            recipe["digest"] = checksum(recipe)
+            resource = {
+                "fileName": "industry/farm.con",
+                "parameters": {},
+                "declarationAmbiguous": False,
+                "variants": [{
+                    "params": {}, "recipe": recipe,
+                    "recipeDigests": [recipe["digest"]], "ambiguous": False,
+                }],
+            }
+            artifact = {"schemaVersion": 1, "resource": resource}
+            artifact["digest"] = checksum(artifact)
+            key = f"{zlib.adler32(resource['fileName'].encode()) & 0xFFFFFFFF:08x}"
+            path = bridge.industry_content_dir / f"{key}-{artifact['digest']}.json"
+            path.write_text(canonical_json(artifact) + "\n", encoding="utf-8")
+
+            self.assertEqual(validate_industry_artifact(artifact, path)["digest"], artifact["digest"])
+            built = build_industry_registry(bridge.industry_content_dir)
+            self.assertEqual(built["resourceCount"], 1)
+            self.assertEqual(built["variantCount"], 1)
+            self.assertEqual(built["ambiguousCount"], 0)
+
+            coordinator = IndustryContentCoordinator(bridge, quiet_seconds=0)
+            self.assertTrue(coordinator.refresh(now=1))  # observes the new immutable set
+            self.assertTrue(coordinator.refresh(now=1))  # validates and publishes it
+            published = json.loads(coordinator.output.read_text(encoding="utf-8"))
+            self.assertEqual(published["digest"], built["digest"])
+            self.assertEqual(published["session"], "industry-session")
+            self.assertEqual(published["peer"], "player1")
+            self.assertTrue(coordinator.status()["industryContentReady"])
+
+            artifact["digest"] = "00000000"
+            with self.assertRaisesRegex(ProtocolError, "digest"):
+                validate_industry_artifact(artifact)
 
 
 class CheckpointTests(unittest.TestCase):
@@ -3044,6 +3113,57 @@ class HostLocalSequenceTests(unittest.TestCase):
                 next_synthetic["origin_local_seq"], synthetic["origin_local_seq"]
             )
             self.assertTrue(next_synthetic["payload"]["action"]["freeze"])
+
+
+class IndustryContentConsensusTests(unittest.TestCase):
+    @staticmethod
+    def _intent(session: str, peer: str, local_seq: int, digest: str) -> dict:
+        return sign({
+            "protocol": 1, "session": session, "peer": peer,
+            "local_seq": local_seq, "tick": 0, "kind": "intent",
+            "payload": {"action": {
+                "type": "content.industry_attest", "peer": peer,
+                "digest": digest, "resourceCount": 16,
+                "variantCount": 160, "ambiguousCount": 0,
+            }},
+        })
+
+    def test_matching_content_converges_and_survives_audit_reload(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, session = Path(directory), "industry-content-match"
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            host._commit(self._intent(session, "player1", 1, "edc7a517"))
+            host._commit(self._intent(session, "player2", 1, "edc7a517"))
+            self.assertTrue(host.industry_content_consensus.result["ready"])
+            self.assertEqual(host.industry_content_consensus.result["digest"], "edc7a517")
+            self.assertIsNone(host.session_fault)
+            restored = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            self.assertTrue(restored.industry_content_consensus.result["ready"])
+            self.assertEqual(
+                sorted(restored.industry_content_consensus.attestations),
+                ["player1", "player2"],
+            )
+
+    def test_mismatched_content_faults_after_ordering_both_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, session = Path(directory), "industry-content-mismatch"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            host._commit(self._intent(session, "player1", 1, "edc7a517"))
+            mismatch = host._commit(self._intent(session, "player2", 1, "11111111"))
+            self.assertEqual(mismatch["seq"], 2)
+            self.assertEqual(host.session_fault, "industry-content-mismatch")
+            self.assertFalse(host.industry_content_consensus.result["ready"])
 
 
 class RecoveryArchiveTests(unittest.TestCase):

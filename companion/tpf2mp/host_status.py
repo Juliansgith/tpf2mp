@@ -48,6 +48,8 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         **host.anchor.status(),
         **host.anchor_preparation.status(),
         **host.anchor_requests.status(),
+        **host.industry_content.status(),
+        **host.industry_content_consensus.status(),
     })
     host._broadcast(anchor_state_message(
         host.bridge.session, host.bridge.peer, host.anchor.readiness(),

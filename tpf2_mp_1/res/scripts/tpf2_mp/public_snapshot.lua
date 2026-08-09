@@ -80,6 +80,7 @@ function M.new(env)
       operational = util.deepCopy(currentState().probes.operational),
       vehicleSync = util.deepCopy(currentState().probes.vehicleSync),
       passengerCosmetics = util.deepCopy(currentState().probes.passengerCosmetics),
+      industryContent = util.deepCopy(currentState().probes.industryContent),
       serviceRegistration = util.deepCopy(currentState().probes.serviceRegistration),
       lastError = currentState().probes.lastError,
       structuralDigest = structural and structural.digest or nil,
@@ -146,6 +147,7 @@ function M.new(env)
       networkAccounts = util.deepCopy(currentState().finance.networkAccounts),
       networkClock = util.deepCopy(currentState().world.networkClock),
       vehicleSync = util.deepCopy(currentState().world.vehicleSync),
+      industryContent = util.deepCopy(currentState().world.industryContent),
       proxyMode = currentState().world.proxyMode == true,
       controlAccount = allowNativeAccounts and currentState().world.controlPlayerId
         and env.accountOf(currentState().world.controlPlayerId) or nil,

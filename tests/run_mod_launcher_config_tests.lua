@@ -61,5 +61,32 @@ assert(cfg.maxEpochs == 288 and cfg.valuationTargetCents == 50000000000,
   "five-minute match length or cohort-scaled victory target was not configured")
 assert(cfg.agentMode == "vanilla", "launcher agent policy did not override the mod dropdown")
 assert(cfg.townDevelopment == true, "launcher town-development policy was not applied")
+assert(type(modifiers.loadConstruction) == "function",
+  "industry authority did not install its content-load capture")
+local industry = modifiers.loadConstruction("mod/test_processor.con", {
+  type = "INDUSTRY",
+  updateFn = function(params)
+    return {
+      marker = params.marker,
+      stocks = { { cargoType = "ORE" } },
+      rule = { input = { { 2 } }, output = { METAL = 1 }, capacity = 120 },
+    }
+  end,
+})
+local evaluated = industry.updateFn({ productionLevel = 0, seed = 17, marker = "preserved" })
+assert(evaluated.marker == "preserved", "industry capture changed the construction result")
+local loaderRegistry = cfg.industryResourceFacts
+-- Parallel resource loading may call runFn again after a modifier partition.
+-- Model an overwritten config reference and require the next runFn pass to
+-- republish the same loader-owned registry rather than replace its facts.
+cfg.industryResourceFacts = { stale = true }
+definition.runFn({}, { ["!tpf2_mp"] = {} })
+local industryFacts = require "tpf2_mp/industry_resource_facts"
+assert(cfg.industryResourceFacts == loaderRegistry,
+  "repeated runFn replaced the loader-owned industry registry")
+local captured = assert(industryFacts.lookup(cfg.industryResourceFacts,
+  "mod/test_processor.con", { productionLevel = 0, marker = "preserved", seed = 999 }))
+assert(captured.inputs[1][1].cargoType == "ORE" and captured.outputs[1].cargoType == "METAL",
+  "industry capture did not retain the evaluated data-only recipe")
 
 print("PASS short-lived launcher profile configures peer/session/bridge/network mode")

@@ -173,7 +173,8 @@ if (-not $bridgePath.StartsWith($requiredBridgePrefix, [StringComparison]::Ordin
     throw "Refusing to reset bridge outside $bridgeBase"
 }
 if (Test-Path -LiteralPath $bridgePath) { Remove-Item -LiteralPath $bridgePath -Recurse -Force }
-foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit')) {
+foreach ($folder in @('game_outbox', 'game_inbox', 'companion_state', 'audit',
+        'content\industry')) {
     New-Item -ItemType Directory -Force -Path (Join-Path $bridgePath $folder) | Out-Null
 }
 

@@ -14,6 +14,13 @@ do
   if ok then vehicleResourceFacts = value else vehicleResourceFactsError = tostring(value) end
 end
 
+local industryResourceFacts
+local industryResourceFactsError
+do
+  local ok, value = pcall(require, "tpf2_mp_probe/industry_resource_facts")
+  if ok then industryResourceFacts = value else industryResourceFactsError = tostring(value) end
+end
+
 local worldLineReading
 local worldLineReadingError
 do
@@ -519,6 +526,469 @@ local function entitiesWith(componentType)
   end)
   if not ok then return {}, tostring(err) end
   return result, nil
+end
+
+-- Keep this projection deliberately read-only and bounded.  Industry ECS
+-- bindings are generated userdata on Build 35924; blindly serialising them can
+-- recurse through engine objects or include process-local addresses.  This
+-- probe records only primitive fields, vector sizes, and discoverable keys so
+-- a production adapter can be designed from measured facts.
+local function boundedPrimitiveTree(value, depth)
+  local valueType = type(value)
+  if value == nil or valueType == "boolean" or valueType == "string" or valueType == "number" then
+    return value
+  end
+  local result = { valueType = valueType }
+  if depth <= 0 or (valueType ~= "table" and valueType ~= "userdata") then return result end
+  local entries = {}
+  local ok, err = pcall(function()
+    for key, nested in pairs(value) do
+      if #entries >= 32 then break end
+      entries[#entries + 1] = {
+        key = tostring(key),
+        value = boundedPrimitiveTree(nested, depth - 1),
+      }
+    end
+  end)
+  result.pairsSupported = ok
+  if ok then
+    table.sort(entries, function(a, b) return a.key < b.key end)
+    result.entries = entries
+  else
+    result.error = tostring(err)
+  end
+  return result
+end
+
+local function boundedBindingView(value, candidateFields)
+  local result = { valueType = type(value), fields = {}, keys = {} }
+  if type(value) ~= "table" and type(value) ~= "userdata" then return result end
+
+  local seenKeys = {}
+  local pairsOk, pairsError = pcall(function()
+    for key in pairs(value) do
+      local name = tostring(key)
+      if not seenKeys[name] and #result.keys < 96 then
+        seenKeys[name] = true
+        result.keys[#result.keys + 1] = name
+      end
+    end
+  end)
+  result.pairsSupported = pairsOk
+  if not pairsOk then result.pairsError = tostring(pairsError) end
+  table.sort(result.keys)
+
+  for _, field in ipairs(candidateFields or {}) do
+    local readOk, nested = pcall(function() return value[field] end)
+    local entry = { readable = readOk, valueType = readOk and type(nested) or nil }
+    if not readOk then
+      entry.error = tostring(nested)
+    elseif nested == nil or type(nested) == "boolean" or type(nested) == "string"
+      or type(nested) == "number" then
+      entry.value = nested
+    elseif type(nested) == "table" or type(nested) == "userdata" then
+      local lengthOk, length = pcall(function() return #nested end)
+      if lengthOk and type(length) == "number" then entry.length = tonumber(length) end
+      local nestedPairsOk, nestedKeys = pcall(function()
+        local keys = {}
+        for key in pairs(nested) do
+          if #keys >= 48 then break end
+          keys[#keys + 1] = tostring(key)
+        end
+        table.sort(keys)
+        return keys
+      end)
+      entry.pairsSupported = nestedPairsOk
+      entry.keys = nestedPairsOk and nestedKeys or nil
+      entry.sample = boundedPrimitiveTree(nested, 2)
+    end
+    result.fields[field] = entry
+  end
+  return result
+end
+
+local industryCandidateFields = {
+  "name", "type", "fileName", "construction", "constructionId",
+  "constructionEntity", "simBuilding", "level", "productionLevel",
+  "production", "capacity", "active", "enabled", "manualDevelopment",
+  "closureTimeStamp", "input", "inputs", "output", "outputs", "rule",
+  "rules", "recipe", "recipes", "stocks", "stockList", "stockListConfig",
+  "items", "itemsConsumed", "itemsConsumedVehicleUsed", "itemsProduced",
+  "itemsShipped", "upgradeProgress", "cargoTypes", "params", "transf",
+  "position", "town", "cargoType", "amount", "value", "demand", "supply",
+}
+
+local constructionResourceCandidateFields = {
+  "type", "fileName", "name", "description", "availability", "params",
+  "stockListConfig", "rule", "rules", "input", "inputs", "output",
+  "outputs", "capacity", "levels", "updateScript", "createTemplate",
+  "models", "modules", "categories", "order", "skipCollision",
+}
+
+local scriptRefCandidateFields = {
+  "fileName", "params",
+}
+
+local scriptParamCandidateFields = {
+  "key", "name", "tooltip", "uiType", "values", "defaultIndex",
+  "yearFrom", "yearTo",
+}
+
+local stockSystemCandidateNames = {
+  "stockListSystem", "simEntityAtStockSystem", "simCargoSystem",
+  "streetConnectorSystem", "townBuildingSystem",
+}
+
+local stockSystemMethodNames = {
+  "getCargoType2stockList2sourceAndCount", "getSources",
+  "getStock2SimEntityMap", "getStockCount", "getStockEntities",
+  "getStockSimEntity", "getSimCargosForSource", "getSimCargosForTarget",
+  "getConstructionEntityForSimBuilding", "getCargoSupplyAndLimit",
+}
+
+local function callableInventory(value, candidateNames)
+  local result = {}
+  for _, name in ipairs(candidateNames or {}) do
+    local ok, nested = pcall(function() return value and value[name] end)
+    result[name] = ok and available(nested) or false
+  end
+  return result
+end
+
+local function scriptRefView(value)
+  local result = boundedBindingView(value, scriptRefCandidateFields)
+  local paramsOk, params = pcall(function() return value and value.params end)
+  if paramsOk and (type(params) == "table" or type(params) == "userdata") then
+    result.params = boundedPrimitiveTree(params, 4)
+  end
+  return result
+end
+
+local function scriptParamVectorView(value)
+  local result = { valueType = type(value), entries = {} }
+  if type(value) ~= "table" and type(value) ~= "userdata" then return result end
+  local lengthOk, length = pcall(function() return #value end)
+  result.lengthReadable = lengthOk
+  result.length = lengthOk and tonumber(length) or nil
+  if not lengthOk then result.lengthError = tostring(length) end
+  for index = 1, math.min(64, math.max(0, math.floor(tonumber(result.length) or 0))) do
+    local itemOk, item = pcall(function() return value[index] end)
+    result.entries[index] = itemOk and boundedBindingView(item, scriptParamCandidateFields)
+      or { error = tostring(item) }
+  end
+  return result
+end
+
+
+local function callReadOnly(receiver, methodName, ...)
+  local methodOk, method = pcall(function() return receiver and receiver[methodName] end)
+  if not methodOk or not available(method) then
+    return { available = false, error = methodOk and "method unavailable" or tostring(method) }
+  end
+  local callOk, value = pcall(method, ...)
+  if not callOk then return { available = true, success = false, error = tostring(value) } end
+  return {
+    available = true,
+    success = true,
+    value = boundedPrimitiveTree(value, 5),
+  }
+end
+
+local function systemInventory()
+  local systems = api and api.engine and api.engine.system
+  local result = {}
+  for _, name in ipairs(stockSystemCandidateNames) do
+    local readOk, system = pcall(function() return systems and systems[name] end)
+    local entry = {
+      readable = readOk,
+      valueType = readOk and type(system) or nil,
+      methods = readOk and callableInventory(system, stockSystemMethodNames) or {},
+    }
+    if not readOk then entry.error = tostring(system) end
+    result[name] = entry
+  end
+  return result
+end
+
+local function boundedIndustryVector(value)
+  local result = { valueType = type(value), entries = {} }
+  if type(value) ~= "table" and type(value) ~= "userdata" then return result end
+  local lengthOk, length = pcall(function() return #value end)
+  result.lengthReadable = lengthOk
+  result.length = lengthOk and tonumber(length) or nil
+  if not lengthOk then result.lengthError = tostring(length) end
+  local upper = math.min(math.max(0, math.floor(tonumber(result.length) or 0)), 64)
+  for index = 1, upper do
+    local readOk, entry = pcall(function() return value[index] end)
+    result.entries[index] = readOk and {
+      sample = boundedPrimitiveTree(entry, 3),
+      binding = boundedBindingView(entry, industryCandidateFields),
+    } or { error = tostring(entry) }
+  end
+  local zeroOk, zero = pcall(function() return value[0] end)
+  result.zeroIndexReadable = zeroOk
+  if zeroOk and zero ~= nil then
+    result.zeroIndex = {
+      sample = boundedPrimitiveTree(zero, 3),
+      binding = boundedBindingView(zero, industryCandidateFields),
+    }
+  end
+  return result
+end
+
+local probedComponentNames = {
+  "ASSET_GROUP", "BASE_EDGE", "BASE_EDGE_STREET", "BASE_EDGE_TRACK",
+  "BASE_NODE", "CARGO", "CARGO_LIST", "CONSTRUCTION", "INDUSTRY",
+  "MODEL_INSTANCE_LIST", "NAME", "POSITION", "SIM_BUILDING", "STOCK",
+  "STOCK_LIST", "TRANSF", "TRANSPORT_NETWORK", "TRANSPORT_VEHICLE",
+}
+
+local function componentInventory(entity)
+  local result = {}
+  local componentTypes = api and api.type and api.type.ComponentType
+  if type(componentTypes) ~= "table" and type(componentTypes) ~= "userdata" then return result, {} end
+  local candidates = {}
+  pcall(function()
+    for name, componentType in pairs(componentTypes) do
+      candidates[#candidates + 1] = { name = tostring(name), value = componentType }
+    end
+  end)
+  local availability = {}
+  for _, name in ipairs(probedComponentNames) do
+    local readOk, componentType = pcall(function() return componentTypes[name] end)
+    availability[name] = readOk and componentType ~= nil
+    if readOk and componentType ~= nil then
+      local already = false
+      for _, candidate in ipairs(candidates) do
+        if candidate.name == name then already = true; break end
+      end
+      if not already then candidates[#candidates + 1] = { name = name, value = componentType } end
+    end
+  end
+  table.sort(candidates, function(a, b) return a.name < b.name end)
+  for _, candidate in ipairs(candidates) do
+    local ok, value = pcall(api.engine.getComponent, entity, candidate.value)
+    if ok and value ~= nil then result[#result + 1] = candidate.name end
+  end
+  return result, availability
+end
+
+local function constructionResourceView(fileName, liveParams)
+  local result = { fileName = fileName }
+  local repository = api and api.res and api.res.constructionRep
+  if type(fileName) ~= "string" or fileName == "" or not repository
+    or not available(repository.find) or not available(repository.get) then
+    result.error = "construction resource is not resolvable"
+    return result
+  end
+  local findOk, resourceId = pcall(repository.find, fileName)
+  result.resourceId = findOk and tonumber(resourceId) or nil
+  if not result.resourceId or result.resourceId < 0 then
+    result.error = findOk and "construction resource was not found" or tostring(resourceId)
+    return result
+  end
+  local getOk, resource = pcall(repository.get, result.resourceId)
+  if not getOk or resource == nil then
+    result.error = tostring(resource)
+    return result
+  end
+  result.resource = boundedBindingView(resource, constructionResourceCandidateFields)
+  local updateOk, updateScript = pcall(function() return resource.updateScript end)
+  if updateOk and updateScript ~= nil then result.updateScript = scriptRefView(updateScript) end
+  local paramsOk, params = pcall(function() return resource.params end)
+  if paramsOk and params ~= nil then result.params = scriptParamVectorView(params) end
+  local constructionFunctions = game and game.res and game.res.construction
+  local callbackOk, callback = pcall(function()
+    return constructionFunctions and constructionFunctions[fileName]
+  end)
+  result.runtimeCallbackReadable = callbackOk
+  result.runtimeCallbackType = callbackOk and type(callback) or nil
+  result.runtimeCallbackAvailable = callbackOk and available(callback) or false
+  if result.runtimeCallbackAvailable then
+    local projectedParams = {}
+    pcall(function()
+      for key, value in pairs(liveParams or {}) do projectedParams[key] = value end
+    end)
+    if projectedParams.seed == nil then projectedParams.seed = 1 end
+    if projectedParams.year == nil then projectedParams.year = 1990 end
+    local updateOk, updateResult = pcall(callback, projectedParams)
+    result.runtimeUpdateSuccess = updateOk
+    if updateOk and type(updateResult) == "table" then
+      result.runtimeRecipe = boundedPrimitiveTree({
+        stocks = updateResult.stocks,
+        rule = updateResult.rule,
+      }, 8)
+    else
+      result.runtimeUpdateError = tostring(updateResult)
+    end
+  elseif not callbackOk then
+    result.runtimeCallbackError = tostring(callback)
+  end
+  return result
+end
+
+function M.runIndustrySchemaTest()
+  local componentType = api and api.type and api.type.ComponentType
+  if not (api and api.engine and available(api.engine.getComponent)
+    and game and game.interface and available(game.interface.getEntity)
+    and componentType and componentType.SIM_BUILDING) then
+    marker("industry-schema-complete", {
+      success = false, error = "required industry inspection API is unavailable",
+    })
+    return false
+  end
+
+  local set, enumerateError = entitiesWith(componentType.SIM_BUILDING)
+  if enumerateError then
+    marker("industry-schema-complete", { success = false, error = enumerateError })
+    return false
+  end
+  local ids = {}
+  for id in pairs(set) do ids[#ids + 1] = tonumber(id) end
+  table.sort(ids)
+
+  local entries = {}
+  local configuredRegistry = game and game.config and game.config.tpf2mp
+    and game.config.tpf2mp.industryResourceFacts or nil
+  local componentAvailability = nil
+  local systems = api and api.engine and api.engine.system or {}
+  local stockListSystem = systems.stockListSystem
+  local entityAtStockSystem = systems.simEntityAtStockSystem
+  local cargoSystem = systems.simCargoSystem
+  local connectorSystem = systems.streetConnectorSystem
+  for index, entity in ipairs(ids) do
+    if index > 32 then break end
+    local simOk, simBuilding = pcall(api.engine.getComponent, entity, componentType.SIM_BUILDING)
+    local interfaceOk, interfaceEntity = pcall(game.interface.getEntity, entity)
+    local construction = nil
+    if componentType.CONSTRUCTION then
+      local constructionOk, value = pcall(api.engine.getComponent, entity, componentType.CONSTRUCTION)
+      if constructionOk then construction = value end
+    end
+    local constructionView = boundedBindingView(construction, industryCandidateFields)
+    local fileName = constructionView.fields.fileName
+      and constructionView.fields.fileName.value or nil
+    if not fileName and interfaceOk and interfaceEntity ~= nil then
+      local entityView = boundedBindingView(interfaceEntity, industryCandidateFields)
+      fileName = entityView.fields.fileName and entityView.fields.fileName.value or nil
+    end
+    local components, availability = componentInventory(entity)
+    componentAvailability = componentAvailability or availability
+    local stockListId = nil
+    if simOk and simBuilding ~= nil then
+      local stockOk, stockValue = pcall(function() return simBuilding.stockList end)
+      if stockOk then stockListId = entityNumber(stockValue) end
+    end
+    if not stockListId and interfaceOk and interfaceEntity ~= nil then
+      local stockOk, stockValue = pcall(function() return interfaceEntity.stockList end)
+      if stockOk then stockListId = entityNumber(stockValue) end
+    end
+    local stockEntityOk, stockEntity = false, nil
+    if stockListId then stockEntityOk, stockEntity = pcall(game.interface.getEntity, stockListId) end
+    local stockComponents = {}
+    if stockListId then stockComponents = componentInventory(stockListId) end
+    local stockListComponentOk, stockListComponent = false, nil
+    if stockListId and componentType.STOCK_LIST then
+      stockListComponentOk, stockListComponent = pcall(
+        api.engine.getComponent, stockListId, componentType.STOCK_LIST)
+    end
+    local stockEntityView = stockEntityOk and boundedBindingView(stockEntity, industryCandidateFields)
+      or { error = stockListId and tostring(stockEntity) or "no stock-list entity id" }
+    local stockFileName = stockEntityView.fields and stockEntityView.fields.fileName
+      and stockEntityView.fields.fileName.value or nil
+    fileName = fileName or stockFileName
+    local stockParams = nil
+    if stockEntityOk and stockEntity ~= nil then
+      local paramsOk, paramsValue = pcall(function() return stockEntity.params end)
+      if paramsOk then stockParams = paramsValue end
+    end
+    local capturedRecipe, capturedRecipeError = nil, nil
+    if industryResourceFacts and configuredRegistry and fileName then
+      local lookupOk, recipeOrError, lookupError = pcall(
+        industryResourceFacts.lookup, configuredRegistry, fileName, stockParams or {})
+      if lookupOk then
+        capturedRecipe, capturedRecipeError = recipeOrError, lookupError
+      else
+        capturedRecipeError = tostring(recipeOrError)
+      end
+    else
+      capturedRecipeError = industryResourceFactsError
+        or (not configuredRegistry and "game.config registry is unavailable")
+        or (not fileName and "live construction resource is unavailable")
+    end
+    entries[#entries + 1] = {
+      entity = entity,
+      components = components,
+      simBuilding = simOk and boundedBindingView(simBuilding, industryCandidateFields)
+        or { error = tostring(simBuilding) },
+      interfaceEntity = interfaceOk and boundedBindingView(interfaceEntity, industryCandidateFields)
+        or { error = tostring(interfaceEntity) },
+      construction = constructionView,
+      resource = constructionResourceView(fileName, stockParams),
+      stockListId = stockListId,
+      stockListComponents = stockComponents,
+      stockListEntity = stockEntityView,
+      stockListComponent = stockListComponentOk
+        and boundedBindingView(stockListComponent, industryCandidateFields)
+        or { error = stockListId and tostring(stockListComponent) or "no stock-list entity id" },
+      stockListVector = stockListComponentOk and boundedIndustryVector(stockListComponent)
+        or { error = stockListId and tostring(stockListComponent) or "no stock-list entity id" },
+      capturedRecipe = capturedRecipe and boundedPrimitiveTree(capturedRecipe, 8)
+        or { error = tostring(capturedRecipeError) },
+      systemReadback = {
+        constructionForSimBuilding = callReadOnly(
+          connectorSystem, "getConstructionEntityForSimBuilding", entity),
+        sourcesForSimBuilding = callReadOnly(stockListSystem, "getSources", entity),
+        sourcesForStockList = stockListId
+          and callReadOnly(stockListSystem, "getSources", stockListId) or nil,
+        cargosForSource = callReadOnly(cargoSystem, "getSimCargosForSource", entity),
+        cargosForStockListSource = stockListId
+          and callReadOnly(cargoSystem, "getSimCargosForSource", stockListId) or nil,
+        cargosForTarget = callReadOnly(cargoSystem, "getSimCargosForTarget", entity),
+        cargosForStockListTarget = stockListId
+          and callReadOnly(cargoSystem, "getSimCargosForTarget", stockListId) or nil,
+        stockCounts = (function()
+          local counts = {}
+          if not stockListId then return counts end
+          for stockId = 0, 15 do
+            counts[tostring(stockId)] = callReadOnly(
+              entityAtStockSystem, "getStockCount", stockListId, stockId)
+          end
+          return counts
+        end)(),
+      },
+    }
+  end
+
+  marker("industry-schema-complete", {
+    success = #entries > 0,
+    industryCount = #ids,
+    sampled = #entries,
+    componentTypeKeys = boundedBindingView(componentType, {}).keys,
+    componentTypeAvailability = componentAvailability or {},
+    systems = systemInventory(),
+    cargoType2stockList2sourceAndCount = callReadOnly(
+      stockListSystem, "getCargoType2stockList2sourceAndCount"),
+    stock2SimEntityMap = callReadOnly(entityAtStockSystem, "getStock2SimEntityMap"),
+    resourceRegistry = (function()
+      if not industryResourceFacts then return {
+        available = false, error = industryResourceFactsError,
+      } end
+      if not configuredRegistry then return {
+        available = false, error = "game.config registry is unavailable",
+      } end
+      local ok, digestOrError = pcall(industryResourceFacts.digest, configuredRegistry)
+      return {
+        available = true,
+        digest = ok and digestOrError or nil,
+        error = ok and nil or tostring(digestOrError),
+        view = ok and boundedPrimitiveTree(
+          industryResourceFacts.digestView(configuredRegistry), 10) or nil,
+      }
+    end)(),
+    industries = entries,
+  })
+  return #entries > 0
 end
 
 local function ownerOf(entity)

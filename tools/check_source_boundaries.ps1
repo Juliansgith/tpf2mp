@@ -40,6 +40,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\recovery_prepare_runtime.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_clock.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\validation_content_gate.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_town_development.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\operational_capture_runtime.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
@@ -76,6 +77,18 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_station_reading.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\world_line_reading.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_industry_reading.lua' = 160
+    'tpf2_mp_1\res\scripts\tpf2_mp\industry_registry_sidecar.lua' = 180
+    'tpf2_mp_1\res\scripts\tpf2_mp\industry_content_runtime.lua' = 360
+    'tpf2_mp_1\res\scripts\tpf2_mp\diagnostic_log.lua' = 30
+    'tpf2_mp_1\res\scripts\tpf2_mp\service_registration_integration.lua' = 60
+    'companion\tpf2mp\host_intents.py' = 60
+    'companion\tpf2mp\industry_content.py' = 500
+    'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_facts.lua' = 480
+    'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_view_reader.lua' = 260
+    'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_merge.lua' = 120
+    'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_artifact.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_loader.lua' = 130
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua' = 150
 }
 
@@ -175,6 +188,9 @@ if (-not $worldSource.Contains('require "tpf2_mp/world_station_reading"')) {
 }
 if (-not $worldSource.Contains('require "tpf2_mp/world_line_reading"')) {
     throw 'World runtime no longer composes the line transport-mode reading boundary.'
+}
+if (-not $worldSource.Contains('require "tpf2_mp/world_industry_reading"')) {
+    throw 'World runtime no longer composes the evaluated industry-resource reading boundary.'
 }
 $economySource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\economy.lua') -Raw

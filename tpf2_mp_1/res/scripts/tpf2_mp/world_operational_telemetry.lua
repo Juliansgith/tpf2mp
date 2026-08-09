@@ -86,8 +86,8 @@ function M.new(deps)
   local function clockSnapshot()
     local interface = game and game.interface or {}
     local result = {
-      gameSpeedAvailable = type(interface.getGameSpeed) == "function",
-      gameTimeAvailable = type(interface.getGameTime) == "function",
+      gameSpeedAvailable = util.isCallable(interface.getGameSpeed),
+      gameTimeAvailable = util.isCallable(interface.getGameTime),
     }
     if result.gameSpeedAvailable then
       local ok, value = pcall(interface.getGameSpeed)
@@ -136,8 +136,8 @@ function M.new(deps)
   local function journalSnapshot(previousTimeMs)
     local interface = game and game.interface or {}
     local result = {
-      available = type(interface.getPlayerJournal) == "function"
-        and type(interface.getGameTime) == "function",
+      available = util.isCallable(interface.getPlayerJournal)
+        and util.isCallable(interface.getGameTime),
       previousTimeMs = tonumber(previousTimeMs),
     }
     if not result.available then return result end
@@ -167,7 +167,7 @@ function M.new(deps)
     journalScalars(journal, "", result.scalars, budget, 0, {})
     result.truncated = budget.remaining <= 0
     result.digest = hash.value(result.scalars)
-    if type(interface.getPlayer) == "function" then
+    if util.isCallable(interface.getPlayer) then
       local playerOk, player = pcall(interface.getPlayer)
       if playerOk then result.activePlayerId = tonumber(player) end
     end
@@ -181,6 +181,7 @@ function M.new(deps)
       structural = deps.structuralSnapshot(registry, worldState, companies),
       mobility = deps.mobilitySnapshot(registry),
       autonomy = autonomySnapshot(registry, worldState),
+      industryResources = deps.industryResourceProbe and deps.industryResourceProbe() or nil,
       journal = journalSnapshot(previousJournalTimeMs),
     }
   end

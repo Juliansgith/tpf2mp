@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.29.0-alpha`, state schema `26`,
+Last updated: 2026-08-09 for prototype `0.30.0-alpha`, state schema `27`,
 checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema
 `5`, construction proposal schema `7`, and native hook `0.14.0`.
 
@@ -61,7 +61,28 @@ is now constant-time per message and gaps fail closed. Durable evidence remains;
 only acknowledged clock-health traffic older than a 4,096-message tail is
 pruned.
 
+Prototype 0.30 closes the loaded-industry-content gate. Both exact processes
+independently capture the construction resources they actually loaded, publish
+strict content-addressed artifacts, bind live industry roots to evaluated
+recipes, and order one digest/count attestation each before match start. State
+27 checkpoints the claims and agreed registry. The exact vanilla set is 16
+freight resources / 160 variants / zero ambiguities at digest `edc7a517`;
+incompatible or ambiguous mod content faults closed. This is recipe authority,
+not yet a canonical cargo stock/queue/load/delivery ledger.
+
 ## Strongest current evidence
+
+`industry-artifact-write-20260809-0550` independently ran the resource loader
+in two fresh Build 35924 worlds. Each wrote the same 17 content-addressed
+artifacts; strict aggregation retained 16 positive-flow industry resources,
+160 evaluated variants, zero ambiguities, and digest `edc7a517`.
+`runtime/localhost-live/industry-consensus-live-20260809-0745` then required
+those peer-local artifacts as part of the normal two-process gate. Attestations
+occupied commits 1 and 2, the match checkpoint anchored the agreed content at
+commit 3, and the full run ended with matching core/model/structure
+`c3bf105f`/`4b315eeb`/`ae4f8ceb`. The audit verified 13 converged commits,
+2/0/0/0 physical proposals, 3/0/0 checkpoint barriers, and no fault. See
+`investigation/LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md`.
 
 State 24 retains two newer gates. `round3-town-construction-pos-20260807` ran
 three eight-call physical-town rounds on two exact processes and converged
@@ -388,11 +409,14 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   explicit `PASSENGERS` entries count as seats. Freight or mixed lines cannot
   create passenger markets; already registered stale services are revalidated
   and retired by an ordered portable disable, which also removes their model
-  queues and loads. Freight infrastructure still replicates physically, but
-  real industry recipes/stocks/deliveries are not yet authoritative. A
-  disposable exact-build run invoked the production classifier on live
-  repository userdata and measured the stock NOHAB/BC4/open-wagon cases as
-  empty, passenger-only, cargo-only, and mixed exactly as intended.
+  queues and loads. Freight infrastructure still replicates physically. Loaded
+  industry recipes are now authoritative match content: both peers capture and
+  strictly attest the same evaluated resource registry before play, and live
+  `SIM_BUILDING` roots resolve to those portable recipes. Industry stock,
+  production, station queue, vehicle load, and completed delivery state are not
+  yet canonical. Disposable exact-build runs measured the stock
+  NOHAB/BC4/open-wagon cases as empty, passenger-only, cargo-only, and mixed,
+  and the vanilla industry set as 16 resources / 160 unambiguous variants.
 - Hard, Normal, Easy, and Relaxed are world-creation choices that scale gross
   revenue to 60%, 100%, 150%, or 200%. The selected key and exact integer
   multiplier are ordered match rules and saved economy state; they are
@@ -449,7 +473,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v6 behavior remains available for
-  archived replay. The offline gate now includes 94 Lua tests and 75
+  archived replay. The offline gate now includes 106 Lua tests and 75
   cross-language v2-v7 scenarios, including completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
@@ -521,13 +545,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 95 core Lua tests and 75 cross-language economy scenarios;
+  - 106 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
   - 79 mod Lua and 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 108 Python protocol/network/checkpoint/recovery/report tests;
+  - 112 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 
