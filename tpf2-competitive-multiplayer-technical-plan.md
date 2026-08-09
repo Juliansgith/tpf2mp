@@ -315,7 +315,9 @@ Vanilla roads, tracks, stations, station modules, depots, signals, waypoints, as
 
 **2026-08-06 prompt-barrier checkpoint.** Session `train-prompt-barrier-state22-20260806-105918` removed the synthetic fallback timetable from ordinary lines while keeping registered-service slot allocation. The same real train completed four unscheduled releases with zero pending rounds/faults; average and maximum full-round latency were 1.86 and 2.38 seconds. Both processes converged at core/model/structure/mobility `fba1630d`/`98f01295`/`15189409`/`8e5d90e6`. A preceding human speed-3 run deliberately delayed Player 2 and observed Player 1 wait at the station until both departed together.
 
-The next gates are human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
+**2026-08-09 freight-authority checkpoint.** Prototype 0.32/state schema 29/checkpoint format 5 connects the loaded-content industry ledger to exact authored freight movement. Cargo-only lines bind a portable source-output/destination-stock/cargo contract and every assigned consist's exact named capacity. Ordered station rounds own source queues, heterogeneous per-vehicle loads, completed deliveries, discard conservation, and unit-kilometre revenue. Each five-minute boundary stages aggregate source withdrawal, destination deposit, production, economy, and passenger/cargo presentation as one transaction. The standard line/vehicle/station/manager/statistics/top-bar surfaces show those authored values; native cargo agents and history are explicitly cosmetic. Independent Lua/Python two-step replay, current-checkpoint validation, tamper cases, and the full repository/release gate pass. The implementation is complete enough for a cargo-positive two-process run, but that live receipt and save/reload with cargo aboard remain open. See `investigation/FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md`.
+
+The next gates are the cargo-positive two-process run, human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
 
 ---
 
@@ -324,7 +326,7 @@ The next gates are human two-computer latency/slow-peer/disconnect proof, automa
 - **Only categories with proven visitors can be stopped before mutation** → keep the 23 newly gated commands unavailable until they also have canonical payload/replay; keep unlisted categories out of network authority until their own pre-mutation points are proven.
 - **Canonical IDs bind to different results** → stop on the first asymmetric postcondition. IDs translate references; they do not cure divergent geometry.
 - **Town policy is controllable but physical growth still diverges** → keep development frozen while testing explicit host-driven development or add scoped RNG/result control.
-- **Runtime cargo/passenger control is unavailable** → visual loads may contradict score. Gate a native integration or position the product honestly as an overlay.
+- **Target-addressed native cargo/passenger control is unavailable** → authored passenger/cargo queues and vehicle loads now replace misleading stock-UI values while native agents/history remain cosmetic. Live-prove that projection on both peers; do not quietly promote native scenery back into competitive authority.
 - **0a fails** → the economic layer moves native and the timeline changes materially.
 - **The ruleset is not fun** → the only unrecoverable product failure. Phase 1 runs early and gates on play, not completeness.
 - **The multi-company dependency cannot be reused** → implement against documented APIs after the licence audit; do not ship copied code without permission.

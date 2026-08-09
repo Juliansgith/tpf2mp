@@ -10,6 +10,7 @@ local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local presentation = require "tpf2_mp/presentation"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
@@ -29,6 +30,8 @@ local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
 local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
 local economyActionRuntime = require "tpf2_mp/economy_action_runtime"
+local economyLineRegistration = require "tpf2_mp/economy_line_registration"
+local economySettlementTransaction = require "tpf2_mp/economy_settlement_transaction"
 local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
@@ -44,13 +47,11 @@ local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 local freightIndustryRuntime = require "tpf2_mp/freight_industry_runtime"
 local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registration_integration"
-
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 28
-local CHECKPOINT_VERSION = 4
+local STATE_VERSION = 29
+local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
-
 local function config() return runtimeConfig.read() end
 local setDifference = util.setDifference
 
@@ -1453,7 +1454,6 @@ freightIndustryRuntime.installHandler(handlers, {
   getState = function() return state end, requireRunningMatch = requireRunningMatch,
   readFacts = world.industryBootstrapFacts,
 })
-
 handlers["line.register"] = function(action)
   local running, runningError = requireRunningMatch()
   if not running then return false, runningError end
@@ -1463,30 +1463,26 @@ handlers["line.register"] = function(action)
   if not company then return false, companyErr or ("unknown company: " .. tostring(companyCid)) end
   local lineId, _, lineErr = lineIdFromAction(action)
   if not lineId then return false, lineErr end
-  local result
-  if action.market and action.service then
-    if action.service.companyCid ~= companyCid or action.service.lineCid ~= action.lineCid then
-      return false, "authoritative line service identity mismatch"
-    end
-    economy.upsertMarket(state.economy, action.market)
-    economy.upsertService(state.economy, action.service)
-    economyActionRuntime.applyVehicleCosts(state.economy, economy, action.vehicleCosts)
-    result = { lineCid = action.lineCid, marketCid = action.market.cid, owner = companyCid, authoritativeFacts = true }
-  else
-    local ok
-    ok, result = world.makeLineService(state.canonical, economy, state.economy, lineId, companyCid)
-    if not ok then return false, result end
+  if action.market and action.service
+      and (action.service.companyCid ~= companyCid
+        or action.service.lineCid ~= action.lineCid) then
+    return false, "authoritative line service identity mismatch"
   end
-  local presented, presentationError = passengerPresentation.reconcileService(
-    state.world.passengerPresentation, state.economy, result.lineCid or action.lineCid)
-  if not presented then return false, presentationError end
+  local candidate, candidateError = economyLineRegistration.prepare(
+    state, world, economy, passengerPresentation, cargoPresentation,
+    action, lineId, companyCid)
+  if not candidate then return false, candidateError end
+  state.economy = candidate.economy
+  if candidate.canonical then state.canonical = candidate.canonical end
+  state.world.passengerPresentation = candidate.passengerPresentation
+  state.world.cargoPresentation = candidate.cargoPresentation
+  local result = candidate.result
   pcall(game.interface.setPlayer, lineId, proxyTargetPlayer(companyCid) or company.playerId)
   state.world.logicalOwners[tostring(lineId)] = companyCid
   refreshOwnershipProbe()
   result.owner = companyCid
   return true, result
 end
-
 handlers["fare.adjust"] = function(action)
   local running, runningError = requireRunningMatch()
   if not running then return false, runningError end
@@ -1497,7 +1493,6 @@ handlers["fare.adjust"] = function(action)
   local ok, result = economy.setFare(state.economy, lineCid, service.fareCents + util.integer(action.deltaCents, 0))
   return ok, { lineCid = lineCid, fareCents = result }
 end
-
 handlers["economy.seed_demo"] = function()
   local running, runningError = requireRunningMatch()
   if not running then return false, runningError end
@@ -1508,23 +1503,17 @@ handlers["economy.settle"] = function(action, eventId)
   local running, runningError = requireRunningMatch()
   if not running then return false, runningError end
   local deliverySnapshot, deliveryError = economyActionRuntime.verifiedDelivery(
-    state, passengerPresentation, action.deliverySnapshot)
+    state, passengerPresentation, cargoPresentation, action.deliverySnapshot)
   if not deliverySnapshot then return false, deliveryError end
-  local results
-  if action.results then
-    local accepted, resultOrError = economy.acceptAuthoritativeResults(
-      state.economy, action.results, deliverySnapshot)
-    if not accepted then return false, resultOrError end
-    results = resultOrError
-  else
-    results = economy.evaluateAll(
-      state.economy, action.boundaryGameTimeSeconds, deliverySnapshot)
-  end
-  local commitFreight, freightProduction = freightIndustryRuntime.prepareSettlement(state, results)
-  if not commitFreight then return false, freightProduction end
-  local recorded, recordError = economy.recordSettlement(state.economy, results)
-  if not recorded then return false, recordError end
-  commitFreight()
+  local candidate, candidateError = economySettlementTransaction.prepare(
+    state, economy, passengerPresentation, cargoPresentation,
+    freightIndustryRuntime, action, deliverySnapshot)
+  if not candidate then return false, candidateError end
+  state.economy = candidate.economy
+  state.world.freightIndustry = candidate.freightIndustry
+  state.world.passengerPresentation = candidate.passengerPresentation
+  state.world.cargoPresentation = candidate.cargoPresentation
+  local results, freightProduction = candidate.results, candidate.freightSummary
   local payoutDollars = {}
   for _, companyCid in ipairs(util.sortedKeys(results.companies or {})) do
     local companyResult = results.companies[companyCid]
@@ -1533,9 +1522,6 @@ handlers["economy.settle"] = function(action, eventId)
       companyResult.netRevenueCents ~= nil
         and companyResult.netRevenueCents or companyResult.revenueCents)
   end
-  local presented, presentationError = passengerPresentation.beginEpoch(
-    state.world.passengerPresentation, state.economy)
-  if not presented then return false, presentationError end
   -- Deterministic town growth: identical ordered results on every peer
   -- produce identical native capacity commands; the structural probe
   -- verifies convergence. Fail-soft and recorded, never digest material.
@@ -2714,7 +2700,8 @@ local function normaliseForNetwork(action)
     if boundary ~= expectedBoundary then
       return nil, "economy settlement is not the next accounting boundary"
     end
-    copy = economyActionRuntime.settlement(state, economy, passengerPresentation, boundary, scheduled)
+    copy = economyActionRuntime.settlement(state, economy, passengerPresentation,
+      cargoPresentation, boundary, scheduled)
   elseif copy.type == "town.develop" then
     if state.bridge.peerId ~= "player1" then return nil, "only the host peer can order town development" end
     for key in pairs(copy) do

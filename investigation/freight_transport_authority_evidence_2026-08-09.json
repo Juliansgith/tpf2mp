@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "prototype": "0.32.0-alpha",
+  "stateSchema": 29,
+  "checkpointSchema": 5,
+  "freightIndustrySchema": 2,
+  "cargoPresentationSchema": 1,
+  "deliverySnapshotSchema": 2,
+  "automated": {
+    "passed": true,
+    "coreLuaTests": 117,
+    "pythonTests": 119,
+    "economyParityScenarios": 75,
+    "freightTransportParitySteps": 2,
+    "freightTransportFinalDigest": "3c79af8d",
+    "broaderFreightFixtureDigest": "f758bc34",
+    "longReplayEvents": 1024,
+    "sourceBoundariesPassed": true,
+    "fullSuitePassed": true
+  },
+  "authority": {
+    "catchmentMeters": 500,
+    "exactPerVehicleCargoCapacity": true,
+    "aggregateStockReservation": true,
+    "completedTripRevenueOnly": true,
+    "atomicAuthoredSettlement": true,
+    "atomicLineRegistration": true,
+    "destinationStockIndexBound": true,
+    "cargoCheckpointConservation": true,
+    "standardUiProjection": true
+  },
+  "live": {
+    "cargoPositiveTwoProcessRun": false,
+    "saveReloadWithCargoAboard": false,
+    "moddedCargoTypeRun": false,
+    "gameProcessesStartedForThisSlice": 0
+  }
+}

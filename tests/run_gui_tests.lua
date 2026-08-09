@@ -1395,12 +1395,16 @@ local stockSnapshot = {
       lines = { { companyCid = "company:1", name = "Intercity", waiting = 29, allocated = 16 } },
     } },
   },
+  cargoPresentation = {
+    totals = { aboard = 4, waiting = 7, boarded = 12, delivered = 8 },
+    localVehicles = {}, localStations = {}, lines = {}, vehicles = {}, stations = {},
+  },
 }
 assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
     and guiById["gameInfo.earningsComp.earningsText"].text == "TPF2MP net/5m"
     and guiById["gameInfo.earningsComp.earnings"].text == "$1.1k"
     and guiById["gameInfo.passengerComp.numPassenger"].text == "84"
-    and guiById["gameInfo.cargoComp.numCargo"].text == "--"
+    and guiById["gameInfo.cargoComp.numCargo"].text == "12"
     and guiById["menu.financesButton.number"].text == "50,000,000"
     and guiById["menu.financesButton.label"].text == "TPF2MP account",
   "authoritative projection did not overwrite the stock game bar")
@@ -1450,9 +1454,60 @@ nativeStationBoard.parent = stationNative
 stationNative.layout:addItem(nativeStationBoard)
 stockGui.selectedEntityKind, stockGui.selectedEntityId = "station_group", 80
 assert(stockPresentation.update(stockGui, stockSnapshot, true) == true
-    and stationWindow.tooltip:find("synchronized endpoint queues", 1, true)
+    and stationWindow.tooltip:find("synchronized passenger and cargo queues", 1, true)
     and nativeStationBoard.visible == false,
   "stock station window did not receive safe authoritative context")
+
+local authoritativeText = require "tpf2_mp/gui_authoritative_text"
+local cargoTextSnapshot = {
+  activeCompanyCid = "company:1",
+  economyPresentation = {
+    localLines = { ["90"] = "line:cargo" },
+    localVehicles = { ["91"] = "vehicle:cargo" },
+    services = { ["line:cargo"] = {
+      lineCid = "line:cargo", companyCid = "company:1", kind = "cargo",
+      name = "Grain Shuttle", fareCents = 1000, journeySeconds = 600,
+      headwaySeconds = 900, capacity = 160, hourlyMarketDemand = 120,
+      allocated = 40, delivered = 20, pendingDelivered = 5,
+      netRevenueCents = 250000, projectedHourlyNetRevenueCents = 3000000,
+    } },
+    vehicles = { ["vehicle:cargo"] = {
+      companyCid = "company:1", lineCid = "line:cargo",
+      annualVehicleUpkeepCents = 1200000,
+    } },
+  },
+  passengerPresentation = { totals = {}, vehicles = {}, stations = {} },
+  cargoPresentation = {
+    localVehicles = { ["91"] = "vehicle:cargo" },
+    localStations = { ["92"] = "station_group:cargo" },
+    totals = { aboard = 25, waiting = 15, boarded = 31, delivered = 20 },
+    vehicles = { ["vehicle:cargo"] = {
+      name = "Freight 1", lineCid = "line:cargo", lineName = "Grain Shuttle",
+      cargoType = "GRAIN", aboard = 25, capacity = 40,
+    } },
+    lines = { ["line:cargo"] = {
+      name = "Grain Shuttle", companyCid = "company:1", cargoType = "GRAIN",
+      allocated = 40, sourceIndustryName = "Farm", destinationIndustryName = "Mill",
+    } },
+    stations = { ["station_group:cargo"] = {
+      name = "Farm Cargo", waiting = 15, delivered = 20,
+      lines = { { companyCid = "company:1", name = "Grain Shuttle",
+        cargoType = "GRAIN", waiting = 15, delivered = 0, role = "source" } },
+    } },
+  },
+}
+assert(authoritativeText.vehicle(cargoTextSnapshot, 91).primary:find(
+      "25/40 authored GRAIN", 1, true)
+    and authoritativeText.line(cargoTextSnapshot, 90).secondary:find(
+      "GRAIN demand/h", 1, true)
+    and authoritativeText.station(cargoTextSnapshot, 92).primary:find(
+      "15 cargo waiting", 1, true)
+    and authoritativeText.station(cargoTextSnapshot, 92).primary:find(
+      "20 cargo delivered", 1, true)
+    and authoritativeText.toolbar(cargoTextSnapshot).transportedCargo == "31"
+    and authoritativeText.vehicleList(cargoTextSnapshot):find("GRAIN", 1, true)
+    and authoritativeText.stationList(cargoTextSnapshot):find("15 cargo", 1, true),
+  "authoritative cargo line, vehicle, station, toolbar, or manager text is incomplete")
 
 -- A generated userdata marshalling exception must return an explicit failed
 -- result. Merely catching it at guiUpdate would leave operationIssued latched

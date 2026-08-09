@@ -1,6 +1,8 @@
 local hash = require "tpf2_mp/hash"
+local util = require "tpf2_mp/util"
 local model = require "tpf2_mp/freight_industry_model"
 local revalidation = require "tpf2_mp/freight_industry_revalidation"
+local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
 
 local M = {}
 
@@ -142,15 +144,22 @@ function M.maintain(state, deps)
   return false, probe.lastError
 end
 
-function M.advanceCandidate(state, epoch, periodSeconds)
+function M.advanceCandidate(state, epoch, periodSeconds, delivery)
   local candidate = model.migrate(state.world.freightIndustry)
+  local transported, transportResult = model.applyTransportSnapshot(
+    candidate, deliverySnapshot.cargoLines(delivery))
+  if not transported then return nil, transportResult end
   local advanced, result = model.advance(candidate, epoch, periodSeconds)
   if not advanced then return nil, result end
-  return candidate, result
+  return candidate, { transport = transportResult, production = result }
 end
 
-function M.prepareSettlement(state, results)
-  if state.world.freightIndustry.ready ~= true then return function() end end
+-- Stage freight without mutating the live save: invalid stock withdrawal must
+-- not advance shares, money, or presentation epochs before it rejects.
+function M.settlementCandidate(state, results, delivery, periodSeconds)
+  if state.world.freightIndustry.ready ~= true then
+    return util.deepCopy(state.world.freightIndustry), nil
+  end
   local content = state.world.industryContent
   local probe = ensureProbe(state)
   if type(content) ~= "table" or content.ready ~= true
@@ -160,8 +169,12 @@ function M.prepareSettlement(state, results)
   if probe.validatedBootstrapDigest ~= state.world.freightIndustry.bootstrapDigest then
     return nil, "freight settlement requires revalidated live industry bindings"
   end
-  local candidate, summary = M.advanceCandidate(
-    state, results.epoch, state.economy.scheduler.epochSeconds)
+  return M.advanceCandidate(state, results.epoch,
+    periodSeconds or state.economy.scheduler.epochSeconds, delivery)
+end
+
+function M.prepareSettlement(state, results, delivery)
+  local candidate, summary = M.settlementCandidate(state, results, delivery)
   if not candidate then return nil, summary end
   return function() state.world.freightIndustry = candidate end, summary
 end

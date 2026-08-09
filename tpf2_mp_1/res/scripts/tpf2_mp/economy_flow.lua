@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 local costs = require "tpf2_mp/economy_costs"
 local revenue = require "tpf2_mp/economy_revenue"
 local difficulty = require "tpf2_mp/economy_difficulty"
+local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
 
 local M = {}
 local SHARE_SCALE = 1000000
@@ -102,24 +103,29 @@ local function glide(actual, equilibrium, alphaPm, residual)
 end
 
 local function delivery(state, snapshot, market, service, allocated)
-  if snapshot == nil or market.kind == "cargo" then
+  if snapshot == nil then
     return allocated, revenue.modelDeliveryCents(market, service, allocated)
   end
   state.deliveryCursors = state.deliveryCursors or {}
-  local prior = state.deliveryCursors[service.lineCid]
-    or { deliveredPassengers = 0, earnedRevenueCents = 0 }
-  local row = snapshot.lines and snapshot.lines[service.lineCid] or prior
-  local passengers = integer(row.deliveredPassengers,
-    prior.deliveredPassengers, 0, 1000000000)
+  local cargo = market.kind == "cargo"
+  local prior = state.deliveryCursors[service.lineCid] or (cargo
+    and { deliveredCargo = 0, earnedRevenueCents = 0 }
+    or { deliveredPassengers = 0, earnedRevenueCents = 0 })
+  local rows = cargo and deliverySnapshot.cargoLines(snapshot)
+    or deliverySnapshot.passengerLines(snapshot)
+  local row = rows[service.lineCid] or prior
+  local deliveredField = cargo and "deliveredUnits" or "deliveredPassengers"
+  local priorField = cargo and "deliveredCargo" or "deliveredPassengers"
+  local delivered = integer(row[deliveredField], prior[priorField], 0, 1000000000)
   local earned = integer(row.earnedRevenueCents,
     prior.earnedRevenueCents, 0, ACCUMULATOR_LIMIT)
-  if passengers < prior.deliveredPassengers or earned < prior.earnedRevenueCents then
-    error("passenger delivery snapshot moved backwards")
+  if delivered < prior[priorField] or earned < prior.earnedRevenueCents then
+    error((cargo and "cargo" or "passenger") .. " delivery snapshot moved backwards")
   end
-  state.deliveryCursors[service.lineCid] = {
-    deliveredPassengers = passengers, earnedRevenueCents = earned,
-  }
-  return passengers - prior.deliveredPassengers, earned - prior.earnedRevenueCents
+  local cursor = { earnedRevenueCents = earned }
+  cursor[priorField] = delivered
+  state.deliveryCursors[service.lineCid] = cursor
+  return delivered - prior[priorField], earned - prior.earnedRevenueCents
 end
 
 function M.evaluateMarket(state, marketCid, deliverySnapshot, periodSeconds)

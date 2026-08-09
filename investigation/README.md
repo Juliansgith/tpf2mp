@@ -1,11 +1,18 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.31.0-alpha`, state schema `28`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.32.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[Freight transport and presentation authority](FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md)
+records deterministic industry-to-station contract binding, exact heterogeneous
+consist capacities, canonical cargo queues/loads/completed deliveries,
+settlement-atomic stock and revenue, format-5 integrity, standard-UI projection,
+cross-language parity, and the cargo-positive live boundary that remains.
 
 [Canonical freight-industry authority](FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md)
 records the host-authored live-industry bootstrap, canonical stocks and exact
 production residuals, Lua/Python parity, reload revalidation, strict state-28
-localhost receipt, and the precise station/load/delivery boundary still open.
+localhost receipt, and the station/load/delivery boundary that remained at
+that historical slice.
 
 [Live industry resource binding and match attestation](LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md)
 records independent loaded-resource capture on both exact processes, strict
@@ -368,7 +375,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 28 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger queues/loads/completed revenue, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, both peers' loaded-industry content attestations, and the canonical freight-industry recipe/stock/production ledger. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-4 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content/live binding faults closed.
+State schema 29 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger/cargo queues, per-vehicle loads, completed revenue/deliveries, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, both peers' loaded-industry content attestations, and canonical freight recipe/stock/production/transport ledgers. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-5 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content/live binding/transport conservation faults closed.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two
@@ -407,6 +414,8 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md](FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md) - exact freight service contracts, heterogeneous vehicle capacities, queues/loads/deliveries/revenue, atomic stock settlement, standard-UI projection, format-5 validation, cross-language replay, and the remaining live gate.
+- [freight_transport_authority_evidence_2026-08-09.json](freight_transport_authority_evidence_2026-08-09.json) - distilled automated state-29 freight transport, rollback, parity, integrity, and test receipt.
 - [FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md](FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md) - canonical live-industry bootstrap, inventories, production arithmetic, cross-language parity, reload mismatch policy, and strict two-process evidence.
 - [freight_industry_authority_evidence_2026-08-09.json](freight_industry_authority_evidence_2026-08-09.json) - distilled state-28 freight bootstrap, content, digest, industry, audit, and cleanup receipt.
 - [AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md](AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md) - one-shot per-peer fault snapshots, bounded session logs, copied-audit verification, and 1,024-event deterministic randomized replay stress.

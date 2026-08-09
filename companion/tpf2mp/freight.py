@@ -4,7 +4,8 @@ import copy
 from collections.abc import Mapping
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+BOOTSTRAP_SCHEMA_VERSION = 1
 MAX_AMOUNT = 1_000_000_000
 MAX_ACCUMULATOR = 1_000_000_000_000_000
 
@@ -28,6 +29,10 @@ def new_state() -> dict[str, Any]:
         "industries": {},
         "totalProduced": {},
         "totalConsumed": {},
+        "transportCursors": {},
+        "totalTransported": {},
+        "totalDelivered": {},
+        "lastTransport": None,
         "lastAdvance": None,
     }
 
@@ -83,6 +88,10 @@ def apply_bootstrap(
         "industries": industries,
         "totalProduced": {},
         "totalConsumed": {},
+        "transportCursors": {},
+        "totalTransported": {},
+        "totalDelivered": {},
+        "lastTransport": None,
         "lastAdvance": None,
     })
     return digest_view(state)
@@ -222,6 +231,11 @@ def withdraw_output(state: dict[str, Any], cid: str, cargo_type: str, amount: in
     return available - amount
 
 
+def apply_transport(state: dict[str, Any], cargo_lines: Mapping[str, Any]) -> dict[str, Any]:
+    from .freight_transport import apply_transport as apply
+    return apply(state, cargo_lines)
+
+
 def digest_view(state: Mapping[str, Any]) -> dict[str, Any]:
     industries: dict[str, Any] = {}
     raw_industries = state.get("industries", {})
@@ -238,7 +252,7 @@ def digest_view(state: Mapping[str, Any]) -> dict[str, Any]:
                 "totalConsumed": copy.deepcopy(value.get("totalConsumed", {})),
                 "lastCycles": max(0, int(value.get("lastCycles", 0))),
             }
-    return {
+    result = {
         "schemaVersion": SCHEMA_VERSION,
         "ready": state.get("ready") is True,
         "contentDigest": state.get("contentDigest"),
@@ -248,5 +262,11 @@ def digest_view(state: Mapping[str, Any]) -> dict[str, Any]:
         "industries": industries,
         "totalProduced": copy.deepcopy(state.get("totalProduced", {})),
         "totalConsumed": copy.deepcopy(state.get("totalConsumed", {})),
+        "transportCursors": copy.deepcopy(state.get("transportCursors", {})),
+        "totalTransported": copy.deepcopy(state.get("totalTransported", {})),
+        "totalDelivered": copy.deepcopy(state.get("totalDelivered", {})),
         "lastAdvance": copy.deepcopy(state.get("lastAdvance")),
     }
+    if state.get("lastTransport") is not None:
+        result["lastTransport"] = copy.deepcopy(state.get("lastTransport"))
+    return result

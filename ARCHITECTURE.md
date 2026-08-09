@@ -53,7 +53,14 @@ Domain modules under `res/scripts/tpf2_mp`:
   durable vehicle costs, including uniquely manifest-bound starting vehicles;
   `economy_clock_runtime.lua` submits only the host's due synchronized boundary;
   `economy_action_runtime.lua` constructs portable line registration and
-  completed-trip settlement actions; `economy_service_quarantine.lua`
+  completed-trip settlement actions; `economy_line_registration.lua` stages
+  economy, canonical, vehicle-cost, passenger, and cargo changes as one
+  all-or-nothing registration transaction; `economy_pending_delivery.lua`
+  builds the unified passenger/cargo delivery snapshot; and
+  `economy_settlement_transaction.lua` stages economy evaluation, freight stock
+  transfer, settlement recording, and both presentation epochs before any live
+  state is adopted. `delivery_snapshot.lua` validates and merges the two
+  independently monotonic delivery domains. `economy_service_quarantine.lua`
   converts an already-registered but newly unsupported service into an
   ordered portable disabled copy, without leaking native IDs or local read
   diagnostics.
@@ -61,9 +68,12 @@ Domain modules under `res/scripts/tpf2_mp`:
   purchase/upkeep/service/company figures used by the standard-UI projection.
 - `economy_demo.lua` contains developer-only seeded-market fixtures and has no
   production authority.
-- `passenger_presentation.lua` owns exact endpoint queues, per-train loads,
-  ordered-release boarding/alighting, migration, and the canonical digest/public
-  projections. `passenger_cosmetics.lua` owns read-only native-person telemetry
+- `passenger_presentation.lua` owns exact passenger endpoint queues, per-train
+  loads, ordered-release boarding/alighting, migration, and canonical
+  digest/public projections. `cargo_presentation.lua` owns the corresponding
+  exact freight queues, each vehicle's named-cargo capacity and load,
+  boarding/delivery/discard conservation, settlement epochs, and public
+  projection. `passenger_cosmetics.lua` owns read-only native-person telemetry
   and the fail-closed optional-write boundary.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, and autonomy;
@@ -93,6 +103,12 @@ Domain modules under `res/scripts/tpf2_mp`:
   advancement, and digest/public views. Cargo deposits target a canonical
   industry plus an explicit recipe stock index whenever one cargo type occurs
   in more than one stock slot; cargo type alone is accepted only when unique.
+  `freight_service_binding.lua` derives a portable source/sink/cargo contract
+  from exact live stops, recipes, and every assigned consist's named capacity.
+  `freight_transport_settlement.lua` reserves boarded and delivered stock as
+  one aggregate boundary transaction; `freight_transport_validation.lua`
+  enforces saved-contract and cursor integrity; `freight_industry_public.lua`
+  builds the stock/production/transport view without exposing local IDs.
 - `edge_ownership.lua` owns private/public edge custody rules.
 - `proposal_codec.lua` validates and materializes portable construction/edge
   transactions.
@@ -134,8 +150,10 @@ Runtime-controller modules:
   it, and advances production atomically with economy settlement.
   `freight_industry_revalidation.lua` fails closed when a saved ledger no
   longer matches freshly attested content or current canonical live-industry
-  bindings. This layer owns stocks and production, but not station queues,
-  vehicle loads, deliveries, or native cargo presentation.
+  bindings. Freight transport is applied only through the staged economy
+  boundary: aggregate reservations withdraw source output, deposit the exact
+  destination stock, and advance production and both presentation ledgers
+  atomically.
 - `authored_followup_runtime.lua` owns strict town-development application,
   save-receipt acknowledgement, and development checkpoint export.
 - `network_clock_runtime.lua` owns ordered native clock application, peer-health
@@ -145,8 +163,9 @@ Runtime-controller modules:
 - `vehicle_sync_runtime.lua` owns local canonical train arrival detection,
   native station holds, ordered release application/retry, and the digested
   station-round projection. `vehicle_sync_state.lua` owns its checkpoint view;
-  `vehicle_sync_passengers.lua` atomically couples passenger state to releases
-  and vehicle operations. None writes a native vehicle position.
+  `vehicle_sync_passengers.lua` atomically couples both passenger and cargo
+  state to releases and vehicle operations. None writes a native vehicle
+  position or treats native agents as authoritative.
 - `validation_runtime.lua` owns both disposable standalone and two-process
   validation state machines. It has no production authority when validation is
   disabled.
@@ -206,8 +225,12 @@ captured table reference would therefore mutate stale state after loading.
 - `freight_protocol.py` owns the bounded exact-field validation and canonical
   digest contract for `freight.industry_bootstrap`; `freight.py` independently
   applies that bootstrap and replays the Lua integer inventory/production
-  arithmetic. `checkpoint.py` includes the resulting ledger in the model/core
-  projection and advances it on every replayed economy settlement.
+  arithmetic. `freight_transport.py` independently replays aggregate source
+  withdrawal, destination deposit, transport cursors, and idle-line behavior.
+  `freight_checkpoint.py` and `cargo_checkpoint.py` strictly validate the full
+  freight and presentation projections, including exact per-line conservation.
+  `checkpoint.py` includes those ledgers in the model/core projection and
+  advances them on every replayed economy settlement.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
 - `client.py` owns client connection/retry and bridge forwarding.
 - `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;

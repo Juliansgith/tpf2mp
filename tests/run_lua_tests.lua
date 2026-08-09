@@ -14,11 +14,14 @@ local economyCosts = require "tpf2_mp/economy_costs"
 local economyRevenue = require "tpf2_mp/economy_revenue"
 local economyDifficulty = require "tpf2_mp/economy_difficulty"
 local economyServiceQuarantine = require "tpf2_mp/economy_service_quarantine"
+local economyLineRegistration = require "tpf2_mp/economy_line_registration"
+local economySettlementTransaction = require "tpf2_mp/economy_settlement_transaction"
 local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
 local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 local freightIndustryRuntime = require "tpf2_mp/freight_industry_runtime"
+local freightServiceBinding = require "tpf2_mp/freight_service_binding"
 local validationContentGate = require "tpf2_mp/validation_content_gate"
 local worldIndustryReading = require "tpf2_mp/world_industry_reading"
 local corridorBindingModule = require "tpf2_mp/corridor_binding"
@@ -28,6 +31,8 @@ local world = require "tpf2_mp/world"
 local guiView = require "tpf2_mp/gui_view"
 local presentation = require "tpf2_mp/presentation"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local cargoPresentation = require "tpf2_mp/cargo_presentation"
+local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local nativeHook = require "tpf2_mp/native_hook"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
@@ -443,7 +448,7 @@ test("freight industries bootstrap, produce, consume, and migrate deterministica
     state, "industry:pre:a-farm", "GRAIN", 7)
   truthy(withdrawn)
   equal(remaining, 23)
-  equal(freightIndustryModel.digest(state), "c102a3fd",
+  equal(freightIndustryModel.digest(state), "f758bc34",
     "Lua freight state diverged from the Python replay vector")
 
   local beforeMigration = freightIndustryModel.digest(state)
@@ -2900,7 +2905,7 @@ test("validation construction emits stock passenger and cargo station templates"
   equal(cargo.params.modules[7400000], nil)
 end)
 
-test("freight service binding fails closed before creating passenger demand", function()
+test("freight service binding fails closed without a named cargo consist", function()
   local binding = corridorBindingModule.new({
     bindExisting = function() return "line:event:cargo:1" end,
     lineStopGroups = function() return { 901, 902 } end,
@@ -2920,9 +2925,81 @@ test("freight service binding fails closed before creating passenger demand", fu
   local state = economy.newState()
   local ok, message = binding.makeLineService({}, economy, state, 77, "company:1")
   equal(ok, false)
-  truthy(message:find("cargo service", 1, true), "freight rejection was not actionable")
+  truthy(message:find("cargo", 1, true), "freight rejection was not actionable")
   equal(next(state.markets), nil, "freight line created a passenger market before rejection")
   equal(next(state.services), nil, "freight line created a passenger service before rejection")
+end)
+
+test("freight service binding authors a nearest compatible industry contract", function()
+  local economyState = economy.newState()
+  local freightState = {
+    ready = true,
+    industries = {
+      ["industry:source"] = {
+        recipe = { capacity = 100, inputs = { {} },
+          outputs = { { cargoType = "GRAIN", amount = 2 } } },
+        inputStock = {}, outputStock = { GRAIN = 0 },
+      },
+      ["industry:sink"] = {
+        recipe = { capacity = 75,
+          inputs = { { { stockIndex = 0, cargoType = "GRAIN", amount = 2 } } },
+          outputs = {} },
+        inputStock = { { index = 0, cargoType = "GRAIN", amount = 0 } },
+        outputStock = {},
+      },
+      ["industry:far"] = {
+        recipe = { capacity = 500, inputs = { {} },
+          outputs = { { cargoType = "GRAIN", amount = 1 } } },
+        inputStock = {}, outputStock = { GRAIN = 0 },
+      },
+    },
+  }
+  local localIds = {
+    ["industry:source"] = 1001, ["industry:sink"] = 1002,
+    ["industry:far"] = 1003,
+  }
+  local positions = {
+    [901] = { 0, 0 }, [902] = { 5000, 0 },
+    [1001] = { 100, 0 }, [1002] = { 4900, 0 }, [1003] = { 2000, 0 },
+  }
+  local ok, result = freightServiceBinding.register({
+    registry = {}, economyModule = economy, economyState = economyState,
+    worldState = { freightIndustry = freightState },
+    lineId = 77, lineCid = "line:event:cargo:1", companyCid = "company:1",
+    groups = { 901, 902 },
+    stationGroupCids = { "station_group:a", "station_group:b" },
+    vehicleCids = { "vehicle:event:1", "vehicle:event:2" }, vehicles = 2,
+    consistFacts = {
+      cargoCapacityByType = { GRAIN = 96 },
+      cargoCapacityByVehicleCid = {
+        ["vehicle:event:1"] = { GRAIN = 24 },
+        ["vehicle:event:2"] = { GRAIN = 72 },
+      },
+    },
+    computed = { distanceMeters = 6000, headwaySeconds = 1200,
+      journeySeconds = 600, topSpeedKmh = 80, cruiseSpeedKmh = 56,
+      cycleSeconds = 1440, departuresPerHourPerDirection = 3 },
+    annualVehicleUpkeepCents = 200000, pricedVehicles = 2,
+    resolveLocal = function(_, cid) return localIds[cid] end,
+    positionOfEntity = function(id) return positions[id] end,
+    nameOf = function(id) return "entity-" .. tostring(id) end,
+  })
+  truthy(ok, result)
+  equal(result.cargoType, "GRAIN")
+  equal(result.sourceIndustryCid, "industry:source")
+  equal(result.destinationIndustryCid, "industry:sink")
+  local market = economyState.markets[result.marketCid]
+  equal(market.kind, "cargo")
+  equal(market.demand, 150, "freight demand must be limited by destination input rate")
+  local service = economyState.services["line:event:cargo:1"]
+  equal(service.capacity, 144,
+    "heterogeneous fleet capacity was not prorated over fleet departures")
+  equal(service.metadata.cargoCapacityPerVehicle, 48)
+  equal(service.metadata.cargoCapacityByVehicleCid["vehicle:event:1"], 24)
+  equal(service.metadata.cargoCapacityByVehicleCid["vehicle:event:2"], 72)
+  equal(service.metadata.destinationStockIndex, 0)
+  equal(service.metadata.sourceStopIndex, 0)
+  equal(service.metadata.destinationStopIndex, 1)
 end)
 
 test("an unsupported edit orders a portable disabled copy of an existing service", function()
@@ -3108,6 +3185,8 @@ test("consist transport facts read repository metadata fail-soft", function()
   equal(freight.kind, "cargo")
   equal(freight.seats, 0, "freight capacity leaked into passenger seats")
   equal(freight.cargoCapacity, 48)
+  equal(freight.cargoCapacityByType.COAL, 48)
+  equal(freight.cargoCapacityByType.STONE, 48)
   local ambiguous = world.consistTransportFacts({ "loco.mdl", "ambiguous.mdl" })
   equal(ambiguous.kind, "unknown")
   equal(ambiguous.unknownCapacity, 30)
@@ -3115,6 +3194,8 @@ test("consist transport facts read repository metadata fail-soft", function()
   local mixedFleet = vehicleResourceFacts.combine({ facts, freight })
   equal(mixedFleet.kind, "mixed", "a passenger-first freight fleet was not rejected")
   equal(mixedFleet.consistCount, 2)
+  equal(mixedFleet.cargoCapacityPerVehicleByType.COAL, 24,
+    "fleet-average named cargo capacity was not preserved")
   local passengerFleet = vehicleResourceFacts.combine({ facts, shortCoach })
   equal(passengerFleet.kind, "passenger")
   equal(passengerFleet.seats, 160, "heterogeneous fleet seats were not averaged")
@@ -3306,6 +3387,326 @@ test("passenger presentation aligns pre-ledger saves but rejects real-state drif
   ok, result = passengerPresentation.alignWithVehicleSync(state, economyState, sync)
   equal(ok, false, "a live passenger ledger mismatch was silently repaired")
   truthy(tostring(result):find("lags", 1, true) ~= nil)
+end)
+
+local function cargoPresentationFixture()
+  local economyState = economy.newState()
+  economy.upsertMarket(economyState, {
+    cid = "market:freight:test", kind = "cargo", demand = 720,
+  })
+  economy.upsertService(economyState, {
+    lineCid = "line:freight:test", marketCid = "market:freight:test",
+    companyCid = "company:1", headwaySeconds = 900, journeySeconds = 600,
+    fareCents = 1000, capacity = 480,
+    metadata = {
+      freightContractSchema = 1, freightContractDigest = "1234abcd",
+      sourceIndustryCid = "industry:source",
+      destinationIndustryCid = "industry:sink", destinationStockIndex = 0,
+      cargoType = "GRAIN", sourceStationGroupCid = "station_group:source",
+      destinationStationGroupCid = "station_group:sink",
+      sourceStopIndex = 0, destinationStopIndex = 1,
+      cargoCapacityPerVehicle = 40, distanceMeters = 10000,
+      cargoCapacityByVehicleCid = { ["vehicle:freight:test"] = 40 },
+      stationGroupCids = { "station_group:source", "station_group:sink" },
+      vehicleCids = { "vehicle:freight:test" }, vehicleCount = 1,
+    },
+  })
+  economyState.epoch = 1
+  economyState.lastResults = { markets = {
+    ["market:freight:test"] = { services = {
+      ["line:freight:test"] = { allocated = 60 },
+    } },
+  } }
+  local freight = freightIndustryModel.newState()
+  freight.ready = true
+  freight.industries = {
+    ["industry:source"] = {
+      recipe = { outputs = { { cargoType = "GRAIN", amount = 1 } } },
+      inputStock = {}, outputStock = { GRAIN = 100 },
+    },
+    ["industry:sink"] = {
+      recipe = { outputs = {}, inputs = {
+        { { stockIndex = 0, cargoType = "GRAIN", amount = 1 } },
+      } },
+      inputStock = { { index = 0, cargoType = "GRAIN", amount = 0 } },
+      outputStock = {},
+    },
+  }
+  return economyState, freight
+end
+
+test("cargo presentation conserves stock, vehicle load, delivery, and revenue", function()
+  local economyState, freight = cargoPresentationFixture()
+  local state = cargoPresentation.newState()
+  truthy(cargoPresentation.beginEpoch(state, economyState))
+  local function release(round, stopIndex)
+    local ok, result = cargoPresentation.applyRelease(state, economyState, freight, {
+      type = "vehicle.sync_release", vehicleCid = "vehicle:freight:test",
+      lineCid = "line:freight:test", round = round, stopIndex = stopIndex,
+    }, { owner = "company:1" })
+    truthy(ok, result)
+    return result
+  end
+  local loaded = release(1, 0)
+  equal(loaded.boarded, 40)
+  equal(loaded.aboard, 40)
+  local unloaded = release(2, 1)
+  equal(unloaded.delivered, 40)
+  equal(unloaded.aboard, 0)
+  local loadedAgain = release(3, 0)
+  equal(loadedAgain.boarded, 20, "epoch allocation did not cap a second departure")
+  local beforeDuplicate = hash.value(cargoPresentation.digestView(state))
+  local duplicate = release(3, 0)
+  truthy(duplicate.duplicate)
+  equal(hash.value(cargoPresentation.digestView(state)), beforeDuplicate)
+
+  local passenger = passengerPresentation.economySnapshot(passengerPresentation.newState())
+  passenger.presentationEpoch = 1
+  local snapshot = assert(deliverySnapshot.combine(
+    passenger, cargoPresentation.economySnapshot(state)))
+  local candidate = util.deepCopy(freight)
+  local transported, summary = freightIndustryModel.applyTransportSnapshot(
+    candidate, snapshot.cargoLines)
+  truthy(transported, summary)
+  equal(candidate.industries["industry:source"].outputStock.GRAIN, 40)
+  equal(candidate.industries["industry:sink"].inputStock[1].amount, 40)
+  equal(candidate.transportCursors["line:freight:test"].boardedUnits, 60)
+  equal(candidate.transportCursors["line:freight:test"].deliveredUnits, 40)
+  equal(snapshot.cargoLines["line:freight:test"].earnedRevenueCents, 40000000)
+
+  local evaluated = economy.evaluateAll(economyState, nil, snapshot)
+  local result = evaluated.markets["market:freight:test"].services["line:freight:test"]
+  equal(result.delivered, 40)
+  equal(result.grossRevenueCents, 40000000,
+    "cargo settlement did not use completed synchronized deliveries")
+  local registry = canonical.newState()
+  registry.byCanonical["station_group:source"] = {
+    localId = 901, metadata = { name = "Farm Freight" },
+  }
+  registry.byCanonical["station_group:sink"] = {
+    localId = 902, metadata = { name = "Mill Freight" },
+  }
+  local public = cargoPresentation.publicView(state, economyState, candidate, registry)
+  equal(public.localStations["901"], "station_group:source")
+  equal(public.localStations["902"], "station_group:sink")
+  equal(public.stations["station_group:source"].waiting, 0)
+  equal(public.stations["station_group:sink"].delivered, 40,
+    "destination station omitted completed cargo deliveries")
+end)
+
+test("cargo presentation uses each heterogeneous consist's exact capacity", function()
+  local economyState, freight = cargoPresentationFixture()
+  local service = economyState.services["line:freight:test"]
+  service.metadata.vehicleCids = { "vehicle:freight:small", "vehicle:freight:large" }
+  service.metadata.vehicleCount = 2
+  service.metadata.cargoCapacityPerVehicle = 36
+  service.metadata.cargoCapacityByVehicleCid = {
+    ["vehicle:freight:small"] = 12,
+    ["vehicle:freight:large"] = 60,
+  }
+  local state = cargoPresentation.newState()
+  truthy(cargoPresentation.beginEpoch(state, economyState))
+  local function board(vehicleCid)
+    local ok, result = cargoPresentation.applyRelease(
+      state, economyState, freight, {
+        type = "vehicle.sync_release", vehicleCid = vehicleCid,
+        lineCid = "line:freight:test", round = 1, stopIndex = 0,
+      }, { owner = "company:1" })
+    truthy(ok, result)
+    return result
+  end
+  equal(board("vehicle:freight:small").boarded, 12)
+  equal(board("vehicle:freight:large").boarded, 48,
+    "large consist did not consume the remainder of the shared epoch allocation")
+  equal(state.vehicles["vehicle:freight:small"].capacity, 12)
+  equal(state.vehicles["vehicle:freight:large"].capacity, 60)
+end)
+
+test("changing a cargo line to passenger retires every onboard unit explicitly", function()
+  local economyState, freight = cargoPresentationFixture()
+  local state = cargoPresentation.newState()
+  truthy(cargoPresentation.beginEpoch(state, economyState))
+  local ok, loaded = cargoPresentation.applyRelease(
+    state, economyState, freight, {
+      type = "vehicle.sync_release", vehicleCid = "vehicle:freight:test",
+      lineCid = "line:freight:test", round = 1, stopIndex = 0,
+    }, { owner = "company:1" })
+  truthy(ok, loaded)
+  equal(loaded.boarded, 40)
+  economyState.markets["market:freight:test"].kind = "passenger"
+  truthy(cargoPresentation.beginEpoch(state, economyState))
+  equal(state.vehicles["vehicle:freight:test"], nil)
+  equal(state.lines["line:freight:test"].retired, true)
+  equal(state.lines["line:freight:test"].discardedTotal, 40)
+  equal(state.lines["line:freight:test"].boardedTotal,
+    state.lines["line:freight:test"].deliveredTotal
+      + state.lines["line:freight:test"].discardedTotal)
+end)
+
+test("rejected freight re-registration leaves every authored ledger unchanged", function()
+  local economyState, freight = cargoPresentationFixture()
+  local state = {
+    economy = economyState,
+    canonical = { byCanonical = {}, byLocal = {} },
+    world = {
+      freightIndustry = freight,
+      passengerPresentation = passengerPresentation.newState(),
+      cargoPresentation = cargoPresentation.newState(),
+    },
+  }
+  truthy(cargoPresentation.beginEpoch(
+    state.world.cargoPresentation, state.economy))
+  state.world.cargoPresentation.lines["line:freight:test"].boardedTotal = 1
+  local action = {
+    type = "line.register", lineCid = "line:freight:test",
+    companyCid = "company:1", vehicleCosts = {},
+    market = util.deepCopy(state.economy.markets["market:freight:test"]),
+    service = util.deepCopy(state.economy.services["line:freight:test"]),
+  }
+  action.service.metadata.freightContractDigest = "deadbeef"
+  local before = {
+    economy = hash.value(state.economy),
+    canonical = hash.value(state.canonical),
+    passenger = hash.value(state.world.passengerPresentation),
+    cargo = hash.value(state.world.cargoPresentation),
+  }
+  local candidate, rejection = economyLineRegistration.prepare(
+    state, {}, economy, passengerPresentation, cargoPresentation,
+    action, 1, "company:1")
+  equal(candidate, nil)
+  truthy(tostring(rejection):find("active freight line", 1, true) ~= nil)
+  equal(hash.value(state.economy), before.economy)
+  equal(hash.value(state.canonical), before.canonical)
+  equal(hash.value(state.world.passengerPresentation), before.passenger)
+  equal(hash.value(state.world.cargoPresentation), before.cargo)
+end)
+
+test("reusing a line for a different market resets incompatible cursor stock", function()
+  local state = economy.newState()
+  economy.upsertMarket(state, { cid = "market:passenger", kind = "passenger", demand = 100 })
+  economy.upsertService(state, {
+    lineCid = "line:reused", marketCid = "market:passenger",
+    companyCid = "company:1", sharePpm = 700000,
+  })
+  state.deliveryCursors["line:reused"] = {
+    deliveredPassengers = 12, earnedRevenueCents = 3456,
+  }
+  economy.upsertMarket(state, { cid = "market:cargo", kind = "cargo", demand = 100 })
+  economy.upsertService(state, {
+    lineCid = "line:reused", marketCid = "market:cargo",
+    companyCid = "company:1", sharePpm = 0,
+  })
+  equal(state.deliveryCursors["line:reused"], nil)
+  equal(state.services["line:reused"].sharePpm, 0)
+  equal(state.services["line:reused"].shareResid, 0)
+  equal(state.services["line:reused"].lagLoadPpm, 0)
+end)
+
+test("freight transport settlement rejects aggregate over-withdrawal atomically", function()
+  local _, freight = cargoPresentationFixture()
+  local before = hash.value(freight)
+  local rows = {}
+  for index = 1, 2 do
+    rows["line:freight:" .. index] = {
+      contractDigest = string.format("1234abc%d", index),
+      sourceIndustryCid = "industry:source",
+      destinationIndustryCid = "industry:sink", destinationStockIndex = 0,
+      cargoType = "GRAIN", boardedUnits = 60, deliveredUnits = 0,
+      earnedRevenueCents = 0,
+    }
+  end
+  local ok, message = freightIndustryModel.applyTransportSnapshot(freight, rows)
+  equal(ok, false)
+  truthy(tostring(message):find("aggregate", 1, true))
+  equal(hash.value(freight), before, "rejected freight transfer partially changed stock")
+end)
+
+test("an idle freight snapshot does not permanently bind a transport cursor", function()
+  local _, freight = cargoPresentationFixture()
+  local row = {
+    contractDigest = "1234abcd", sourceIndustryCid = "industry:source",
+    destinationIndustryCid = "industry:sink", destinationStockIndex = 0,
+    cargoType = "GRAIN", boardedUnits = 0, deliveredUnits = 0,
+    earnedRevenueCents = 0,
+  }
+  local ok, summary = freightIndustryModel.applyTransportSnapshot(
+    freight, { ["line:freight:idle"] = row })
+  truthy(ok, summary)
+  equal(summary.lines, 0)
+  equal(freight.transportCursors["line:freight:idle"], nil,
+    "zero movement made an unused line contract permanent")
+end)
+
+test("cargo settlement rejection leaves every authored ledger at its prior epoch", function()
+  local bootstrap = assert(freightIndustryModel.bootstrapAction(
+    "edc7a517", 0, freightFixtures()))
+  local freight = freightIndustryModel.newState()
+  truthy(freightIndustryModel.applyBootstrap(
+    freight, bootstrap, { ready = true, digest = "edc7a517" }))
+  freight.industries["industry:pre:a-farm"].outputStock.GRAIN = 100
+  local economyState = economy.newState()
+  local state = {
+    economy = economyState,
+    world = {
+      industryContent = { ready = true, digest = "edc7a517" },
+      freightIndustry = freight,
+      passengerPresentation = passengerPresentation.newState(),
+      cargoPresentation = cargoPresentation.newState(),
+    },
+    probes = { freightIndustry = {
+      validatedBootstrapDigest = bootstrap.digest,
+    } },
+  }
+  local rows = {}
+  for index = 1, 2 do
+    rows["line:overdraw:" .. index] = {
+      contractDigest = string.format("8765432%d", index),
+      sourceIndustryCid = "industry:pre:a-farm",
+      destinationIndustryCid = "industry:pre:b-mill",
+      destinationStockIndex = 0, cargoType = "GRAIN",
+      boardedUnits = 60, deliveredUnits = 0, earnedRevenueCents = 0,
+    }
+  end
+  local delivery = {
+    schemaVersion = 2, presentationEpoch = 0,
+    passengerLines = {}, cargoLines = rows,
+  }
+  local before = {
+    economy = hash.value(state.economy),
+    freight = hash.value(state.world.freightIndustry),
+    passenger = hash.value(state.world.passengerPresentation),
+    cargo = hash.value(state.world.cargoPresentation),
+  }
+  local candidate, candidateError = economySettlementTransaction.prepare(
+    state, economy, passengerPresentation, cargoPresentation,
+    freightIndustryRuntime, { type = "economy.settle" }, delivery)
+  equal(candidate, nil)
+  truthy(tostring(candidateError):find("aggregate", 1, true), candidateError)
+  equal(hash.value(state.economy), before.economy)
+  equal(hash.value(state.world.freightIndustry), before.freight)
+  equal(hash.value(state.world.passengerPresentation), before.passenger)
+  equal(hash.value(state.world.cargoPresentation), before.cargo)
+
+  delivery.cargoLines["line:overdraw:2"].boardedUnits = 40
+  candidate = assert(economySettlementTransaction.prepare(
+    state, economy, passengerPresentation, cargoPresentation,
+    freightIndustryRuntime, { type = "economy.settle" }, delivery))
+  equal(candidate.economy.epoch, 1)
+  equal(candidate.passengerPresentation.epoch, 1)
+  equal(candidate.cargoPresentation.epoch, 1)
+  equal(candidate.freightIndustry.industries[
+    "industry:pre:a-farm"].outputStock.GRAIN, 10,
+    "transport must withdraw before the same-boundary production step")
+  equal(state.economy.epoch, 0, "a valid candidate was adopted before commit")
+  local migrated, migrationError = freightIndustryModel.migrate(
+    util.deepCopy(candidate.freightIndustry))
+  truthy(migrated.ready, migrationError)
+  local tampered = util.deepCopy(candidate.freightIndustry)
+  tampered.totalTransported.GRAIN = 99
+  local rejected, transportMigrationError = freightIndustryModel.migrate(tampered)
+  equal(rejected.ready, false)
+  truthy(tostring(transportMigrationError):find("totals disagree", 1, true),
+    transportMigrationError)
 end)
 
 test("native passenger cosmetics are telemetry-only and never issue a command", function()

@@ -116,9 +116,8 @@ local function projectToolbar(gui, snapshot)
   setTooltip(byId("gameInfo.passengerComp"), projection.passengerTooltip)
   local cargo = byId("gameInfo.cargoComp.numCargo")
   if cargo then
-    setText(cargo, "--")
-    setTooltip(byId("gameInfo.cargoComp"),
-      "No authoritative cargo-presentation ledger exists yet. The native cargo counter is suppressed so scenery is not mistaken for competitive state.")
+    if setText(cargo, projection.transportedCargo) then changed = changed + 1 end
+    setTooltip(byId("gameInfo.cargoComp"), projection.cargoTooltip)
   end
   if setText(byId("menu.financesButton.number"), projection.accountNumber) then changed = changed + 1 end
   setText(byId("menu.financesButton.label"), "TPF2MP account")

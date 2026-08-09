@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.31.0-alpha',
+    [string]$Version = '0.32.0-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -17,6 +17,10 @@ if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') { throw "Unsafe rele
 $modSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\mod.lua') -Raw
 $scriptSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\config\game_script\tpf2_mp.lua') -Raw
 $proposalSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Raw
+$passengerPresentationSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\passenger_presentation.lua') -Raw
+$cargoPresentationSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\cargo_presentation.lua') -Raw
+$deliverySource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\delivery_snapshot.lua') -Raw
+$freightSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua') -Raw
 $projectSource = Get-Content -LiteralPath (Join-Path $projectRoot 'companion\pyproject.toml') -Raw
 if ($modSource -notmatch 'local\s+minorVersion\s*=\s*(\d+)') { throw 'Could not derive the mod minor version.' }
 $modMinorVersion = [int]$Matches[1]
@@ -26,6 +30,14 @@ if ($scriptSource -notmatch 'local\s+CHECKPOINT_VERSION\s*=\s*(\d+)') { throw 'C
 $checkpointSchemaVersion = [int]$Matches[1]
 if ($proposalSource -notmatch 'SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the proposal schema version.' }
 $proposalSchemaVersion = [int]$Matches[1]
+if ($passengerPresentationSource -notmatch 'M\.SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the passenger-presentation schema version.' }
+$passengerPresentationSchemaVersion = [int]$Matches[1]
+if ($cargoPresentationSource -notmatch 'M\.SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the cargo-presentation schema version.' }
+$cargoPresentationSchemaVersion = [int]$Matches[1]
+if ($deliverySource -notmatch 'M\.SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the delivery schema version.' }
+$deliverySchemaVersion = [int]$Matches[1]
+if ($freightSource -notmatch 'STATE_SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the freight-industry schema version.' }
+$freightIndustrySchemaVersion = [int]$Matches[1]
 if ($projectSource -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw 'Could not derive the companion version.' }
 $companionVersion = $Matches[1]
 if ($Version -match '^0\.(\d+)' -and [int]$Matches[1] -ne $modMinorVersion) {
@@ -223,6 +235,10 @@ $releaseManifest = [ordered]@{
     stateSchemaVersion = $stateSchemaVersion
     checkpointSchemaVersion = $checkpointSchemaVersion
     proposalSchemaVersion = $proposalSchemaVersion
+    passengerPresentationSchemaVersion = $passengerPresentationSchemaVersion
+    cargoPresentationSchemaVersion = $cargoPresentationSchemaVersion
+    deliverySchemaVersion = $deliverySchemaVersion
+    freightIndustrySchemaVersion = $freightIndustrySchemaVersion
     companionVersion = $companionVersion
     builtAtUtc = [DateTime]::UtcNow.ToString('o')
     supportedNativeBuild = [ordered]@{

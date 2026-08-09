@@ -31,6 +31,7 @@ from tpf2mp.checkpoint import (
 )
 from tpf2mp.freight import (
     advance as advance_freight,
+    apply_transport as apply_freight_transport,
     apply_bootstrap as apply_freight_bootstrap,
     deposit_input as deposit_freight_input,
     deposit_input_at_stock as deposit_freight_input_at_stock,
@@ -444,6 +445,22 @@ def consensus_checkpoint(
     financial_delta: int = 0,
 ) -> dict:
     payload = CheckpointTests.checkpoint_payload()
+    # Network consensus accepts only the current format.  The standalone
+    # checkpoint fixture remains format 4 to keep archive compatibility
+    # covered; promote its empty synchronization view for live-consensus tests.
+    payload["checkpointVersion"] = 5
+    payload["stateVersion"] = 29
+    payload["model"]["freightIndustry"] = {
+        "schemaVersion": 2, "ready": False,
+        "bootstrapEpoch": 0, "productionEpoch": 0,
+        "industries": {}, "totalProduced": {}, "totalConsumed": {},
+        "transportCursors": {}, "totalTransported": {}, "totalDelivered": {},
+    }
+    payload["vehicleSynchronization"]["schemaVersion"] = 4
+    payload["vehicleSynchronization"]["cargoPresentation"] = {
+        "schemaVersion": 1, "epoch": 0, "lines": [], "vehicles": [],
+    }
+    payload["vehicleSynchronizationDigest"] = checksum(payload["vehicleSynchronization"])
     payload["sessionId"] = session
     payload["peerId"] = peer
     payload["reason"] = reason
@@ -624,6 +641,32 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             validate_action(tampered)
 
+    def test_completed_cargo_delivery_snapshot_is_strict_and_bounded(self) -> None:
+        action = {
+            "type": "economy.settle", "results": {},
+            "deliverySnapshot": {
+                "schemaVersion": 2, "presentationEpoch": 9,
+                "passengerLines": {},
+                "cargoLines": {"line:freight:test": {
+                    "contractDigest": "1234abcd",
+                    "sourceIndustryCid": "industry:pre:a-farm",
+                    "destinationIndustryCid": "industry:pre:b-mill",
+                    "destinationStockIndex": 0, "cargoType": "GRAIN",
+                    "boardedUnits": 40, "deliveredUnits": 25,
+                    "earnedRevenueCents": 25_000_000,
+                }},
+            },
+        }
+        self.assertEqual(validate_action(action), action)
+        for field, value in (("contractDigest", "NOT-A-DIGEST"),
+                             ("cargoType", "grain"),
+                             ("destinationStockIndex", 32),
+                             ("deliveredUnits", 41)):
+            tampered = json.loads(json.dumps(action))
+            tampered["deliverySnapshot"]["cargoLines"]["line:freight:test"][field] = value
+            with self.subTest(field=field), self.assertRaises(ProtocolError):
+                validate_action(tampered)
+
     def test_match_lifecycle_actions_require_canonical_rules_and_result(self) -> None:
         initial = validate_action(
             {
@@ -682,6 +725,42 @@ class ProtocolTests(unittest.TestCase):
             {**action, "extra": 1},
         ):
             with self.assertRaises(ProtocolError):
+                validate_action(tampered)
+
+    def test_freight_line_registration_binds_exact_vehicle_capacities(self) -> None:
+        action = {
+            "type": "line.register", "lineCid": "line:event:freight:1",
+            "companyCid": "company:1", "vehicleCosts": {},
+            "market": {"cid": "market:freight:test", "kind": "cargo", "demand": 100},
+            "service": {
+                "lineCid": "line:event:freight:1", "marketCid": "market:freight:test",
+                "companyCid": "company:1", "metadata": {
+                    "vehicleCids": ["vehicle:event:freight:1", "vehicle:event:freight:2"],
+                    "freightContractSchema": 1,
+                    "freightContractDigest": "1234abcd",
+                    "sourceIndustryCid": "industry:pre:source",
+                    "destinationIndustryCid": "industry:pre:sink",
+                    "cargoType": "MODDED_CARGO",
+                    "cargoCapacityByVehicleCid": {
+                        "vehicle:event:freight:1": 12,
+                        "vehicle:event:freight:2": 60,
+                    },
+                    "cargoFleetCapacity": 72,
+                    "cargoCapacityPerVehicle": 36,
+                },
+            },
+        }
+        self.assertEqual(validate_action(action), action)
+        for mutation in ("missing", "fractional", "wrong-total"):
+            tampered = json.loads(json.dumps(action))
+            capacities = tampered["service"]["metadata"]["cargoCapacityByVehicleCid"]
+            if mutation == "missing":
+                capacities.pop("vehicle:event:freight:2")
+            elif mutation == "fractional":
+                capacities["vehicle:event:freight:1"] = 12.5
+            else:
+                tampered["service"]["metadata"]["cargoFleetCapacity"] = 71
+            with self.assertRaises(ProtocolError, msg=mutation):
                 validate_action(tampered)
 
     def test_shared_clock_actions_are_strict_and_bounded(self) -> None:
@@ -1542,7 +1621,7 @@ class FreightIndustryTests(unittest.TestCase):
         self.assertEqual(
             withdraw_freight_output(state, "industry:pre:a-farm", "GRAIN", 7), 23
         )
-        self.assertEqual(checksum(freight_digest_view(state)), "c102a3fd")
+        self.assertEqual(checksum(freight_digest_view(state)), "f758bc34")
 
         duplicate = freight_industry(
             "industry:pre:duplicate", "mod/duplicate.con", 60,
@@ -1567,6 +1646,60 @@ class FreightIndustryTests(unittest.TestCase):
         self.assertEqual(deposit_freight_input_at_stock(
             duplicate_state, duplicate["cid"], 1, "GRAIN", 2,
         ), 2)
+
+    def test_transport_is_atomic_and_matches_the_lua_stock_contract(self) -> None:
+        state = new_freight_state()
+        apply_freight_bootstrap(
+            state, freight_bootstrap(0), {"ready": True, "digest": "edc7a517"},
+        )
+        state["industries"]["industry:pre:a-farm"]["outputStock"]["GRAIN"] = 100
+        row = {
+            "contractDigest": "1234abcd",
+            "sourceIndustryCid": "industry:pre:a-farm",
+            "destinationIndustryCid": "industry:pre:b-mill",
+            "destinationStockIndex": 0, "cargoType": "GRAIN",
+            "boardedUnits": 40, "deliveredUnits": 25,
+            "earnedRevenueCents": 25_000_000,
+        }
+        idle = {**row, "boardedUnits": 0, "deliveredUnits": 0,
+                "earnedRevenueCents": 0}
+        idle_state = json.loads(json.dumps(state))
+        idle_summary = apply_freight_transport(idle_state, {"line:freight:idle": idle})
+        self.assertEqual(idle_summary["lines"], 0)
+        self.assertNotIn("line:freight:idle", idle_state["transportCursors"])
+        summary = apply_freight_transport(state, {"line:freight:test": row})
+        self.assertEqual(summary, {
+            "lines": 1, "boarded": {"GRAIN": 40}, "delivered": {"GRAIN": 25},
+        })
+        self.assertEqual(
+            state["industries"]["industry:pre:a-farm"]["outputStock"]["GRAIN"], 60,
+        )
+        self.assertEqual(
+            state["industries"]["industry:pre:b-mill"]["inputStock"][0]["amount"], 25,
+        )
+        self.assertEqual(state["totalTransported"], {"GRAIN": 40})
+        self.assertEqual(state["totalDelivered"], {"GRAIN": 25})
+
+        overdraw = json.loads(json.dumps(state))
+        overdraw["industries"]["industry:pre:a-farm"]["outputStock"]["GRAIN"] = 100
+        first = {**row, "contractDigest": "abcdef01", "boardedUnits": 60,
+                 "deliveredUnits": 0, "earnedRevenueCents": 0}
+        second = {**row, "contractDigest": "87654321", "boardedUnits": 60,
+                  "deliveredUnits": 0, "earnedRevenueCents": 0}
+        before = canonical_json(overdraw)
+        with self.assertRaisesRegex(ProtocolError, "aggregate"):
+            apply_freight_transport(overdraw, {
+                "line:freight:one": first,
+                "line:freight:two": second,
+            })
+        self.assertEqual(canonical_json(overdraw), before)
+
+        malformed = json.loads(json.dumps(state))
+        before = canonical_json(malformed)
+        bad = {**row, "contractDigest": "bad"}
+        with self.assertRaisesRegex(ProtocolError, "malformed"):
+            apply_freight_transport(malformed, {"line:freight:new": bad})
+        self.assertEqual(canonical_json(malformed), before)
 
     def test_portable_replay_and_host_checkpoint_track_bootstrap(self) -> None:
         action = freight_bootstrap()
@@ -2066,6 +2199,7 @@ class CheckpointTests(unittest.TestCase):
     @classmethod
     def populated_passenger_checkpoint(cls) -> dict:
         payload = cls.checkpoint_payload()
+        payload["model"]["economy"]["epoch"] = 2
         stops = [
             "station_group:event:presentation:a",
             "station_group:event:presentation:b",
@@ -2128,6 +2262,112 @@ class CheckpointTests(unittest.TestCase):
             }],
         }
         return cls.resign_checkpoint(payload)
+
+    @classmethod
+    def populated_cargo_checkpoint(cls) -> dict:
+        payload = consensus_checkpoint(
+            "checkpoint-cargo", "player1", 1, 1, "cargo-test",
+        )["payload"]
+        stops = ["station_group:event:cargo:source", "station_group:event:cargo:sink"]
+        line_cid, vehicle_cid = "line:event:cargo:1", "vehicle:event:cargo:1"
+        row = {
+            "contractDigest": "1234abcd",
+            "sourceIndustryCid": "industry:pre:a-farm",
+            "destinationIndustryCid": "industry:pre:b-mill",
+            "destinationStockIndex": 0, "cargoType": "GRAIN",
+            "boardedUnits": 40, "deliveredUnits": 25,
+            "earnedRevenueCents": 25_000_000,
+        }
+        freight = new_freight_state()
+        apply_freight_bootstrap(
+            freight, freight_bootstrap(0), {"ready": True, "digest": "edc7a517"},
+        )
+        freight["industries"]["industry:pre:a-farm"]["outputStock"]["GRAIN"] = 100
+        apply_freight_transport(freight, {line_cid: row})
+        payload["model"]["freightIndustry"] = freight_digest_view(freight)
+        economy = payload["model"]["economy"]
+        economy["epoch"] = 1
+        economy["markets"] = {
+            "market:event:cargo:1": {"kind": "cargo", "demand": 120},
+        }
+        economy["services"] = {line_cid: {
+            "lineCid": line_cid, "marketCid": "market:event:cargo:1",
+            "companyCid": "company:1", "metadata": {
+                "stationGroupCids": stops,
+                "freightContractDigest": row["contractDigest"],
+                "sourceIndustryCid": row["sourceIndustryCid"],
+                "destinationIndustryCid": row["destinationIndustryCid"],
+                "destinationStockIndex": 0, "cargoType": "GRAIN",
+            },
+        }}
+        sync = payload["vehicleSynchronization"]
+        sync["vehicles"] = [{
+            "vehicleCid": vehicle_cid, "lineCid": line_cid,
+            "companyCid": "company:1", "lastAuthorizedRound": 2,
+            "stopIndex": 1, "releaseAtGameTime": 100,
+            "releaseWhilePaused": False,
+            "schedule": {"schemaVersion": 1, "enabled": False},
+        }]
+        sync["passengerPresentation"]["epoch"] = 1
+        sync["cargoPresentation"] = {
+            "schemaVersion": 1, "epoch": 1,
+            "lines": [{
+                "lineCid": line_cid, "companyCid": "company:1",
+                "marketCid": "market:event:cargo:1",
+                "contractDigest": row["contractDigest"],
+                "sourceIndustryCid": row["sourceIndustryCid"],
+                "destinationIndustryCid": row["destinationIndustryCid"],
+                "destinationStockIndex": 0, "cargoType": "GRAIN",
+                "sourceStationGroupCid": stops[0], "destinationStationGroupCid": stops[1],
+                "sourceStopIndex": 0, "destinationStopIndex": 1,
+                "stops": stops, "routeDigest": checksum(stops),
+                "epoch": 1, "allocated": 40, "boardedThisEpoch": 40,
+                "capacityPerVehicle": 40, "boardedTotal": 40,
+                "deliveredTotal": 25, "earnedRevenueCents": 25_000_000,
+                "discardedTotal": 0, "retired": False,
+            }],
+            "vehicles": [{
+                "vehicleCid": vehicle_cid, "lineCid": line_cid,
+                "companyCid": "company:1", "capacity": 40, "aboard": 15,
+                "lastRound": 2, "boardedEpoch": 1, "lastStopIndex": 1,
+                "lastStationGroupCid": stops[1], "boardedFareCents": 1000,
+                "boardedDistanceMeters": 10_000, "boardedTotal": 40,
+                "deliveredTotal": 25, "earnedRevenueCents": 25_000_000,
+                "discardedTotal": 0,
+            }],
+        }
+        return cls.resign_checkpoint(payload)
+
+    def test_current_checkpoint_binds_freight_stock_and_cargo_presentation(self) -> None:
+        payload = self.populated_cargo_checkpoint()
+        verified = verify_checkpoint(payload)
+        self.assertEqual(verified["checkpointVersion"], 5)
+        self.assertEqual(
+            verified["model"]["freightIndustry"]["totalDelivered"], {"GRAIN": 25},
+        )
+        cases = (
+            (lambda value: value["model"]["freightIndustry"]["totalTransported"].update(
+                {"GRAIN": 39}
+            ), "transport totals disagree"),
+            (lambda value: value["vehicleSynchronization"]["cargoPresentation"][
+                "vehicles"
+            ][0].update({"aboard": 16}), "vehicle conservation"),
+            (lambda value: value["vehicleSynchronization"]["cargoPresentation"][
+                "lines"
+            ][0].update({"boardedTotal": 41}), "line conservation"),
+            (lambda value: value["vehicleSynchronization"]["cargoPresentation"].update(
+                {"epoch": 0}
+            ), "epoch disagrees"),
+            (lambda value: value["vehicleSynchronization"]["cargoPresentation"][
+                "lines"
+            ][0].update({"contractDigest": "87654321"}), "economy service"),
+        )
+        for mutate, error in cases:
+            tampered = json.loads(json.dumps(payload))
+            mutate(tampered)
+            self.resign_checkpoint(tampered)
+            with self.subTest(error=error), self.assertRaisesRegex(ProtocolError, error):
+                verify_checkpoint(tampered)
 
     def test_checkpoint_and_event_integrity_and_replay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

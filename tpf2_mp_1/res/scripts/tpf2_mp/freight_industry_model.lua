@@ -1,9 +1,13 @@
 local hash = require "tpf2_mp/hash"
 local json = require "tpf2_mp/json"
 local util = require "tpf2_mp/util"
+local freightTransportSettlement = require "tpf2_mp/freight_transport_settlement"
+local freightTransportValidation = require "tpf2_mp/freight_transport_validation"
+local freightIndustryPublic = require "tpf2_mp/freight_industry_public"
 
 local M = {
   SCHEMA_VERSION = 1,
+  STATE_SCHEMA_VERSION = 2,
   MAX_INDUSTRIES = 2048,
   MAX_RECIPE_ITEMS = 32,
   MAX_AMOUNT = 1000000000,
@@ -273,7 +277,7 @@ end
 
 function M.newState()
   return {
-    schemaVersion = M.SCHEMA_VERSION,
+    schemaVersion = M.STATE_SCHEMA_VERSION,
     ready = false,
     contentDigest = nil,
     bootstrapDigest = nil,
@@ -282,6 +286,10 @@ function M.newState()
     industries = {},
     totalProduced = {},
     totalConsumed = {},
+    transportCursors = {},
+    totalTransported = {},
+    totalDelivered = {},
+    lastTransport = nil,
     lastAdvance = nil,
     migrationError = nil,
   }
@@ -337,7 +345,7 @@ function M.applyBootstrap(state, action, content)
   end
   local industries = {}
   for _, recipe in ipairs(rebuilt.industries) do industries[recipe.cid] = stateIndustry(recipe) end
-  state.schemaVersion = M.SCHEMA_VERSION
+  state.schemaVersion = M.STATE_SCHEMA_VERSION
   state.ready = true
   state.contentDigest = rebuilt.contentDigest
   state.bootstrapDigest = rebuilt.digest
@@ -346,6 +354,10 @@ function M.applyBootstrap(state, action, content)
   state.industries = industries
   state.totalProduced = {}
   state.totalConsumed = {}
+  state.transportCursors = {}
+  state.totalTransported = {}
+  state.totalDelivered = {}
+  state.lastTransport = nil
   state.lastAdvance = nil
   return true, M.digestView(state)
 end
@@ -473,6 +485,8 @@ function M.withdrawOutput(state, cid, cargoType, amount)
   return true, industry.outputStock[cargoType]
 end
 
+M.applyTransportSnapshot = freightTransportSettlement.apply
+
 function M.digestView(state)
   state = type(state) == "table" and state or M.newState()
   local industries = {}
@@ -490,7 +504,7 @@ function M.digestView(state)
     }
   end
   return {
-    schemaVersion = M.SCHEMA_VERSION,
+    schemaVersion = M.STATE_SCHEMA_VERSION,
     ready = state.ready == true,
     contentDigest = state.contentDigest,
     bootstrapDigest = state.bootstrapDigest,
@@ -499,6 +513,10 @@ function M.digestView(state)
     industries = industries,
     totalProduced = util.deepCopy(state.totalProduced or {}),
     totalConsumed = util.deepCopy(state.totalConsumed or {}),
+    transportCursors = util.deepCopy(state.transportCursors or {}),
+    totalTransported = util.deepCopy(state.totalTransported or {}),
+    totalDelivered = util.deepCopy(state.totalDelivered or {}),
+    lastTransport = util.deepCopy(state.lastTransport),
     lastAdvance = util.deepCopy(state.lastAdvance),
     migrationError = state.migrationError,
   }
@@ -507,30 +525,7 @@ end
 function M.digest(state) return hash.value(M.digestView(state)) end
 
 function M.publicView(state)
-  state = type(state) == "table" and state or M.newState()
-  local inputUnits, outputUnits = 0, 0
-  for _, industry in pairs(state.industries or {}) do
-    for _, stock in ipairs(industry.inputStock or {}) do
-      inputUnits = saturatingAdd(inputUnits, stock.amount)
-    end
-    for _, amount in pairs(industry.outputStock or {}) do
-      outputUnits = saturatingAdd(outputUnits, amount)
-    end
-  end
-  return {
-    schemaVersion = M.SCHEMA_VERSION,
-    ready = state.ready == true,
-    contentDigest = state.contentDigest,
-    bootstrapDigest = state.bootstrapDigest,
-    productionEpoch = math.max(0, math.floor(tonumber(state.productionEpoch) or 0)),
-    industryCount = #util.sortedKeys(state.industries or {}),
-    inputUnits = inputUnits,
-    outputUnits = outputUnits,
-    totalProduced = util.deepCopy(state.totalProduced or {}),
-    totalConsumed = util.deepCopy(state.totalConsumed or {}),
-    lastAdvance = util.deepCopy(state.lastAdvance),
-    migrationError = state.migrationError,
-  }
+  return freightIndustryPublic.view(state, M.STATE_SCHEMA_VERSION, M.newState())
 end
 
 function M.migrate(value)
@@ -576,6 +571,12 @@ function M.migrate(value)
   result.productionEpoch = math.max(0, math.floor(tonumber(value.productionEpoch) or 0))
   result.totalProduced = util.deepCopy(type(value.totalProduced) == "table" and value.totalProduced or {})
   result.totalConsumed = util.deepCopy(type(value.totalConsumed) == "table" and value.totalConsumed or {})
+  local transport, transportError = freightTransportValidation.migrate(result, value)
+  if not transport then return failed(transportError) end
+  result.transportCursors = transport.transportCursors
+  result.totalTransported = transport.totalTransported
+  result.totalDelivered = transport.totalDelivered
+  result.lastTransport = transport.lastTransport
   result.lastAdvance = util.deepCopy(value.lastAdvance)
   return result
 end

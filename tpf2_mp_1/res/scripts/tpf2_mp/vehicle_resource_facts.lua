@@ -14,20 +14,50 @@ local function cargoKind(entry)
   return "cargo"
 end
 
+local function cargoType(entry)
+  local raw = entry and (entry.type or entry.cargoType) or nil
+  if raw == nil then return nil end
+  local name = string.upper(tostring(raw))
+  if name == "PASSENGERS" or name == "PASSENGER" then return nil end
+  return name ~= "" and name or nil
+end
+
+local function mergeCargoMaximum(target, source)
+  for name, amount in pairs(source or {}) do
+    if amount > (target[name] or 0) then target[name] = amount end
+  end
+end
+
+local function mergeCargoSum(target, source)
+  for name, amount in pairs(source or {}) do
+    target[name] = (target[name] or 0) + math.max(0, tonumber(amount) or 0)
+  end
+end
+
 local function compartmentCapacity(compartment)
-  local best = { passenger = 0, cargo = 0, unknown = 0 }
+  local best = { passenger = 0, cargo = 0, unknown = 0, cargoByType = {} }
   local configs = compartment and (compartment.loadConfigs or compartment) or {}
   local iterated = pcall(function()
     for _, config in pairs(configs) do
-      local totals = { passenger = 0, cargo = 0, unknown = 0 }
+      local totals = { passenger = 0, cargo = 0, unknown = 0, cargoByType = {} }
       for _, entry in pairs((config and config.cargoEntries) or {}) do
         local capacity = math.max(0, tonumber(entry and entry.capacity) or 0)
         local kind = cargoKind(entry)
         totals[kind] = totals[kind] + capacity
+        local namedCargo = cargoType(entry)
+        if namedCargo then
+          totals.cargoByType[namedCargo] = (totals.cargoByType[namedCargo] or 0) + capacity
+        end
       end
-      for kind, total in pairs(totals) do
+      for _, kind in ipairs({ "passenger", "cargo", "unknown" }) do
+        local total = totals[kind]
         if total > best[kind] then best[kind] = total end
       end
+      -- A compartment's load configs are alternatives.  Preserve the maximum
+      -- capacity for each named cargo rather than adding mutually exclusive
+      -- configurations together.  This remains exact for modded wagons whose
+      -- resource data names additional cargo types.
+      mergeCargoMaximum(best.cargoByType, totals.cargoByType)
     end
   end)
   return iterated and best or nil
@@ -47,7 +77,7 @@ end
 function M.consist(modelNames)
   local repository = modelRepository()
   if not repository or type(modelNames) ~= "table" or #modelNames == 0 then return nil end
-  local passenger, cargo, unknown, speedLimit = 0, 0, 0, nil
+  local passenger, cargo, unknown, speedLimit, cargoByType = 0, 0, 0, nil, {}
   for _, name in ipairs(modelNames) do
     local found, index = pcall(repository.find, name)
     if not found or tonumber(index) == nil or tonumber(index) < 0 then return nil end
@@ -56,17 +86,21 @@ function M.consist(modelNames)
     local metadata = record.metadata or record
     local transport = metadata and metadata.transportVehicle or nil
     if not transport then return nil end
-    local part = { passenger = 0, cargo = 0, unknown = 0 }
+    local part = { passenger = 0, cargo = 0, unknown = 0, cargoByType = {} }
     local scanned = pcall(function()
       for _, compartment in pairs(transport.compartmentsList or transport.compartments or {}) do
         local capacity = compartmentCapacity(compartment)
         if capacity == nil then error("unreadable compartment") end
-        for kind, value in pairs(capacity) do part[kind] = part[kind] + value end
+        for _, kind in ipairs({ "passenger", "cargo", "unknown" }) do
+          part[kind] = part[kind] + capacity[kind]
+        end
+        mergeCargoSum(part.cargoByType, capacity.cargoByType)
       end
     end)
     if not scanned then return nil end
     passenger, cargo, unknown = passenger + part.passenger,
       cargo + part.cargo, unknown + part.unknown
+    mergeCargoSum(cargoByType, part.cargoByType)
     local speed = tonumber(transport.topSpeed)
     if speed and speed > 0 and (speedLimit == nil or speed < speedLimit) then
       speedLimit = speed
@@ -75,6 +109,7 @@ function M.consist(modelNames)
   return {
     seats = passenger > 0 and passenger or unknown,
     passengerCapacity = passenger, cargoCapacity = cargo,
+    cargoCapacityByType = cargoByType,
     unknownCapacity = unknown, kind = transportKind(passenger, cargo, unknown),
     limitSpeedMs = speedLimit,
   }
@@ -86,20 +121,28 @@ end
 function M.combine(consists)
   if type(consists) ~= "table" then return nil end
   local passenger, cargo, unknown, speedLimit, count = 0, 0, 0, nil, 0
+  local cargoByType = {}
   for _, facts in ipairs(consists) do
     if type(facts) ~= "table" then return nil end
     count = count + 1
     passenger = passenger + math.max(0, tonumber(facts.passengerCapacity) or 0)
     cargo = cargo + math.max(0, tonumber(facts.cargoCapacity) or 0)
+    mergeCargoSum(cargoByType, facts.cargoCapacityByType)
     unknown = unknown + math.max(0, tonumber(facts.unknownCapacity) or 0)
     local speed = tonumber(facts.limitSpeedMs)
     if speed and speed > 0 and (speedLimit == nil or speed < speedLimit) then
       speedLimit = speed
     end
   end
+  local averageCargoByType = {}
+  for name, amount in pairs(cargoByType) do
+    averageCargoByType[name] = count > 0 and math.floor(amount / count) or 0
+  end
   return {
     seats = count > 0 and math.floor(passenger / count) or 0,
     passengerCapacity = passenger, cargoCapacity = cargo,
+    cargoCapacityByType = cargoByType,
+    cargoCapacityPerVehicleByType = averageCargoByType,
     unknownCapacity = unknown, kind = transportKind(passenger, cargo, unknown),
     limitSpeedMs = speedLimit, consistCount = count,
   }

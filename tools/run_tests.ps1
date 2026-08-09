@@ -42,6 +42,12 @@ try {
     & $python (Join-Path $projectRoot 'tests\check_economy_parity.py') $projectRoot $economyParity
     if ($LASTEXITCODE -ne 0) { throw "Cross-language economy parity failed with exit code $LASTEXITCODE" }
 
+    $freightParity = Join-Path $temporary 'freight-transport-parity.json'
+    & $lua (Join-Path $projectRoot 'tests\run_freight_transport_parity.lua') $projectRoot $freightParity
+    if ($LASTEXITCODE -ne 0) { throw "Lua freight transport parity generation failed with exit code $LASTEXITCODE" }
+    & $python (Join-Path $projectRoot 'tests\check_freight_transport_parity.py') $projectRoot $freightParity
+    if ($LASTEXITCODE -ne 0) { throw "Cross-language freight transport parity failed with exit code $LASTEXITCODE" }
+
     & $python (Join-Path $projectRoot 'tools\audit_economy_era_balance.py') --check
     if ($LASTEXITCODE -ne 0) { throw "Economy era-balance audit failed with exit code $LASTEXITCODE" }
 
@@ -119,6 +125,10 @@ try {
         }
     }
     Write-Host "PowerShell syntax: $($powerShellFiles.Count) files passed"
+
+    & (Join-Path $projectRoot 'tests\run_release_manifest_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Release manifest validation tests failed' }
 
     & (Join-Path $projectRoot 'tests\run_fault_evidence_watcher_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary

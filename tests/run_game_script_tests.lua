@@ -170,8 +170,8 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 28,
-  "state schema was not migrated to the freight-industry authority version")
+assert(initialized.version == 29,
+  "state schema was not migrated to the cargo-presentation authority version")
 assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
 
 local checkpointMessage
@@ -186,7 +186,7 @@ assert(checkpointMessage, "baseline checkpoint was not emitted")
 assert(bridgeModule.verify(checkpointMessage), "baseline checkpoint envelope failed verification")
 assert(checkpointMessage.kind == "checkpoint", "baseline checkpoint used the wrong message kind")
 local checkpoint = checkpointMessage.payload
-assert(checkpoint.checkpointVersion == 4, "checkpoint format version is wrong")
+assert(checkpoint.checkpointVersion == 5, "checkpoint format version is wrong")
 assert(checkpoint.financialDigest == hash.value(checkpoint.financial), "checkpoint financial digest is invalid")
 assert(checkpoint.financial.companies["company:1"].balance == 5000000,
   "checkpoint did not capture canonical company finances")
@@ -230,8 +230,9 @@ assert(demo.economy.epoch == 0, "seeding a demo must not consume an authoritativ
 assert(demo.eventLog.items[2].seq == 2 and demo.eventLog.items[2].commitSeq == 2, "event ordering is wrong")
 assert(demo.bridge.nextOutSeq >= 4, "digest acknowledgements were not emitted")
 
-local firstDelivery = { schemaVersion = 1,
-  presentationEpoch = demo.world.passengerPresentation.epoch, lines = {} }
+local firstDelivery = { schemaVersion = 2,
+  presentationEpoch = demo.world.passengerPresentation.epoch,
+  passengerLines = {}, cargoLines = {} }
 local firstBoundary = economy.nextBoundary(demo.economy)
 local authoritativeResults = economy.evaluateAll(
   util.deepCopy(demo.economy), firstBoundary, firstDelivery)
@@ -257,14 +258,17 @@ local settled = script.save()
 assert(settled.lastError == nil, "successful committed action left a false error")
 assert(settled.economy.ledger.settlementCount == 1, "settlement ledger did not advance")
 assert(settled.economy.epoch == 1, "settlement committed the wrong epoch")
-assert(settled.finance.totalPaid > 0, "native payout commands were not booked")
+assert(settled.finance.lastPayouts["company:1"].canonical == true
+    and settled.finance.lastPayouts["company:2"].canonical == true,
+  "a zero-value completed-trip settlement was not recorded in canonical accounts")
 assert(settled.eventLog.items[3].postDigest ~= settled.eventLog.items[3].preDigest, "settlement did not change canonical model state")
 assert(settled.eventLog.items[3].postModelDigest ~= settled.eventLog.items[3].preModelDigest,
   "settlement did not change the independently replayable model digest")
 assert(settled.match.status == "running", "match ended before its configured epoch limit")
 
-local secondDelivery = { schemaVersion = 1,
-  presentationEpoch = settled.world.passengerPresentation.epoch, lines = {} }
+local secondDelivery = { schemaVersion = 2,
+  presentationEpoch = settled.world.passengerPresentation.epoch,
+  passengerLines = {}, cargoLines = {} }
 local secondBoundary = economy.nextBoundary(settled.economy)
 local secondResults = economy.evaluateAll(
   util.deepCopy(settled.economy), secondBoundary, secondDelivery)

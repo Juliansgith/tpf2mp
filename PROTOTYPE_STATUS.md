@@ -1,8 +1,9 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.31.0-alpha`, state schema `28`,
-checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema
-`5`, construction proposal schema `7`, and native hook `0.14.0`.
+Last updated: 2026-08-09 for prototype `0.32.0-alpha`, state schema `29`,
+checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation
+schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction
+proposal schema `7`, and native hook `0.14.0`.
 
 ## Executive status
 
@@ -26,10 +27,11 @@ TPF2MP contains two usable but differently mature modes:
   two-process purchase/assignment/movement proof. Shared-clock v2 and a
   canonical per-station train hold/release barrier now pass a populated
   two-process run with four releases, zero faults, and matching final state.
-  State 24 removes the native hold bit from lifecycle authority, prunes
-  completed rounds, and exposes load telemetry. Model headway remains a demand
-  input; registered and ordinary lines now both use a short guarded physical
-  release after every peer arrives. The prompt path has exact two-process proof, and human
+  Current state excludes the native hold bit from lifecycle authority, prunes
+  completed rounds, and checkpoints exact passenger and cargo presentation.
+  Model headway remains a demand input; registered and ordinary lines now both
+  use a short guarded physical release after every peer arrives. The prompt
+  path has exact two-process proof, and human
   speed-3 play recovered after deliberately delaying one peer. The rest
   of the newly captured vehicle lifecycle needs live proof; stock multi-sale,
   broader complex topology, scripted callbacks,
@@ -61,7 +63,7 @@ is now constant-time per message and gaps fail closed. Durable evidence remains;
 only acknowledged clock-health traffic older than a 4,096-message tail is
 pruned.
 
-Prototype 0.31 builds canonical freight-industry state on the loaded-content
+Prototype 0.31 built canonical freight-industry state on the loaded-content
 gate introduced in 0.30. Both exact processes
 independently capture the construction resources they actually loaded, publish
 strict content-addressed artifacts, bind live industry roots to evaluated
@@ -72,8 +74,21 @@ residual, and production/consumption total. The exact vanilla set is 16
 freight resources / 160 variants / zero ambiguities at digest `edc7a517`;
 incompatible or ambiguous mod content faults closed, and a saved bootstrap must
 revalidate against both freshly agreed content and the current canonical live
-bindings before settlement. Station queues, vehicle loads, delivery cursors,
-native cargo presentation, and cargo-positive play remain open.
+bindings before settlement.
+
+Prototype 0.32 completes the first authored freight-transport path. A cargo-only
+line binds its exact source industry, destination stock slot, cargo type, and
+every assigned vehicle's named capacity. Ordered station releases now move
+canonical source queues into exact per-vehicle loads and record destination
+deliveries. Five-minute settlement atomically validates all transport cursors,
+withdraws aggregate source stock, deposits destination stock, advances
+production, pays unit-kilometre revenue, and advances passenger and cargo
+presentation. State 29/checkpoint 5 and an independent Python replayer validate
+the full stock, cursor, load, delivery, and conservation projection. Standard
+line, vehicle, station, manager, statistics, and top-bar surfaces display the
+authored freight values; native cargo agents/history remain cosmetic. This
+slice has complete automated cross-language and checkpoint proof, but its first
+cargo-positive two-process play receipt remains open.
 
 ## Strongest current evidence
 
@@ -100,6 +115,14 @@ independent audit. The run proves discovery, authorization, binding, bootstrap,
 checkpointing, and convergence; settlement production advancement is currently
 cross-language automated proof, not yet a live cargo-production receipt. See
 `investigation/FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md`.
+
+The 0.32 automated freight gate extends that live bootstrap without pretending
+it is a live cargo run. It proves exact heterogeneous consist capacities,
+portable source/sink binding, ordered boarding/delivery, aggregate stock
+reservation, zero-movement cursor behavior, line retirement/discard
+conservation, atomic registration and settlement rollback, state-29/checkpoint-5
+validation, and independent Lua/Python two-step transport replay. See
+`investigation/FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md`.
 
 State 24 retains two newer gates. `round3-town-construction-pos-20260807` ran
 three eight-call physical-town rounds on two exact processes and converged
@@ -429,12 +452,16 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   queues and loads. Freight infrastructure still replicates physically. Loaded
   industry recipes are authoritative match content: both peers capture and
   strictly attest the same evaluated resource registry before play, and live
-  `SIM_BUILDING` roots resolve to those portable recipes. State 28 additionally
+  `SIM_BUILDING` roots resolve to those portable recipes. State 29 additionally
   owns canonical per-industry input/output stock, exact hourly-capacity
   production residuals, alternative-input consumption, and cumulative totals;
-  every authored economy settlement advances a candidate atomically. Station
-  queues, vehicle loads, completed delivery, and native cargo presentation are
-  not yet canonical. Disposable exact-build runs measured the stock
+  exact cargo-only lines bind a source output and destination stock slot within
+  500 metres of their terminal groups. Every assigned consist contributes its
+  exact named-cargo capacity. Ordered station rounds own source queues,
+  per-vehicle loads, delivered/discarded conservation, and unit-kilometre
+  revenue; every authored economy settlement advances transport, industry,
+  economy, and both presentation candidates atomically. Disposable exact-build
+  runs measured the stock
   NOHAB/BC4/open-wagon cases as empty, passenger-only, cargo-only, and mixed,
   and the vanilla industry set as 16 resources / 160 unambiguous variants.
 - Hard, Normal, Easy, and Relaxed are world-creation choices that scale gross
@@ -464,8 +491,8 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   passengers and earned cents; the next tick pays only the monotonic cursor
   delta. Repeated snapshots pay zero and backwards snapshots fail closed. The
   default fare is `$5 + $1.50/km`, while a displayed passenger is a financial
-  cohort of 1,000. Cargo model delivery uses `$1,000/unit-km` at fare index
-  1,000; automatic arbitrary-industry corridor binding remains open.
+  cohort of 1,000. Cargo delivery uses `$1,000/unit-km` at fare index 1,000 and
+  is paid only from the monotonic authored delivery cursor.
 - Each purchased canonical vehicle records the exact consensus purchase delta
   and the engine-resolved annual `MAINTENANCE_COST` after vanilla/mod resource
   modifiers. Replacement refreshes it, sale retires it, and uniquely
@@ -493,7 +520,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v6 behavior remains available for
-  archived replay. The offline gate now includes 106 Lua tests and 75
+  archived replay. The offline gate now includes 117 Lua tests and 75
   cross-language v2-v7 scenarios, including completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
@@ -504,35 +531,46 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   never changes demand, capacity, or upkeep. Exact vanilla/mod vehicle facts
   and human balance remain live-test questions.
 
-### Passenger presentation and cargo observation
+### Passenger and cargo presentation
 
 - Canonical read-only mobility samples contain aggregate line/vehicle counts
   without local IDs and participate in cross-peer comparison.
 - Direct populated-world ECS reads are now proven. The source passenger line
   reported 413 people, 10 line users, 8 passengers aboard, and 2 waiting on both
   peers.
-- Direct cargo entity/terminal/vehicle paths were available, but the source save
-  contained zero cargo. A cargo-positive live proof remains required.
-- Passenger schema 1 turns each settled model allocation into exact endpoint
+- Direct cargo entity/terminal/vehicle paths were available in the earlier
+  populated probe, but that source save contained zero cargo. The authored
+  cargo ledger no longer depends on those native counts; a cargo-positive live
+  UI proof remains required.
+- Passenger schema 2 turns each settled model allocation into exact endpoint
   queues and advances train loads only inside the already ordered
   `vehicle.sync_release` station-round action. Intermediate stops preserve the
   load; opposite terminals alight and board deterministically; duplicate
   releases are idempotent; route edits account discarded/backlogged riders.
-- State 24 persists this ledger. Checkpoint format 4 validates its full
-  canonical stop sequence, line/company identity, capacity, trip endpoints,
-  and release round against the synchronized vehicle projection. The standard
-  vehicle, line, station, manager, and statistics windows now show exact selected
-  train, line, and station counts. The old separate HUD rows remain only as a
-  fail-soft fallback when a supported stock component cannot be located.
+- Cargo schema 1 mirrors that release boundary with a portable source/sink
+  contract, exact per-vehicle capacity, source queue, aboard cargo, destination
+  delivery, and explicit discard totals. Idle lines do not invent a transport
+  cursor, and retirement accounts any onboard units before removing a vehicle
+  record.
+- State 29 persists both ledgers. Checkpoint format 5 validates their full
+  canonical stop sequence, line/company identity, capacities, trip endpoints,
+  release rounds, contract identity, transport cursors, and exact cargo
+  conservation against the synchronized vehicle projection and freight stocks.
+  Standard vehicle, line, station, manager, statistics, and top-bar surfaces
+  show the authored counts, including waiting cargo at the source and cumulative
+  delivery at the destination. The separate HUD rows remain only as a fail-soft
+  fallback when a supported stock component cannot be located.
 - Native people remain bounded scenery. Exact-build reverse engineering shows
   `Debug_SetSimPersonState` contains only a person ID and boolean, with no
   train/station target; the cosmetic adapter therefore issues zero writes.
-  Cargo presentation remains telemetry-only.
+  Native cargo agents and history are likewise cosmetic; the canonical cargo
+  queue/load/delivery values are the competitive truth.
 
 ### Recovery and UX
 
-- Format-4 checkpoints add the exact passenger ledger to the canonical
-  train-release projection, core, and convergence key. Formats 1/2/3 remain readable, and digest-chained events
+- Format-5 checkpoints add both exact presentation ledgers and freight
+  transport/stock state to the canonical train-release projection, core, and
+  convergence key. Formats 1/2/3/4 remain readable, and digest-chained events
   can be independently replayed in Python. Four-event and deterministic
   randomized 1,024-event cross-language traces pass.
 - Recovery plans identify and hash the latest all-peer agreed boundary.
@@ -565,13 +603,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 106 core Lua tests and 75 cross-language economy scenarios;
+  - 117 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 79 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 104 mod Lua and 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 115 Python protocol/network/checkpoint/recovery/report tests;
+  - 119 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 
@@ -601,16 +639,16 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   new station barrier bounds drift without exact-coordinate correction.
 - Safe synchronized commands for every one of the 23 currently rejected command
   categories or proof that no consequential route bypasses the authority layer.
-- Cargo-positive cross-peer transport and cargo presentation. Canonical
-  industry recipes, inventories, and production arithmetic now exist, but no
-  station queue, vehicle load, or delivery action connects them yet. Passenger counts
-  are exact in the standard UI; the stock native agent glyph remains scenery.
-  Until a cargo ledger exists, the standard cargo total is suppressed as `--`.
+- Cargo-positive cross-peer transport and standard-UI presentation remain a
+  live proof gate. Canonical industry recipes, inventories, production,
+  source queues, exact per-vehicle loads, completed deliveries, revenue, and
+  conservation now pass automated Lua/Python/checkpoint tests. The stock native
+  agent glyph and native cargo history remain scenery by design.
 - Host-authored physical presentation for town and industry growth. Unproven
   autonomous systems remain frozen during authority tests. Canonical model-town
   growth and canonical industry production are implemented; this open item is
-  native physical presentation plus cargo movement between the authored
-  ledgers.
+  native physical presentation plus live proof of movement between the already
+  authored freight ledgers.
 - Exact-boundary native save capture, automatic two-peer rollback/relaunch,
   host migration, authentication/encryption, or hostile-Internet deployment.
 - Live automatic-economy proof with a freshly purchased consist and newly built

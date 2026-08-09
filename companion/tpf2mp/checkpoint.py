@@ -15,10 +15,13 @@ from .protocol import (
 )
 from .freight import advance as advance_freight
 from .freight import apply_bootstrap as apply_freight_bootstrap
+from .freight import apply_transport as apply_freight_transport
 from .freight import new_state as new_freight_state
+from .cargo_checkpoint import validate_cargo_presentation
+from .freight_checkpoint import validate_freight_state
 
-CHECKPOINT_VERSION = 4
-SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, 3, CHECKPOINT_VERSION}
+CHECKPOINT_VERSION = 5
+SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, 3, 4, CHECKPOINT_VERSION}
 EVENT_RECORD_VERSION = 1
 
 
@@ -68,6 +71,8 @@ def _validate_passenger_presentation(
 
     economy_value = model.get("economy")
     economy_model = dict(economy_value) if isinstance(economy_value, Mapping) else {}
+    if _positive_int(economy_model.get("epoch", 0), "economy epoch") != epoch:
+        raise ProtocolError("checkpoint passenger presentation epoch disagrees with economy")
     services_value = economy_model.get("services")
     model_services = dict(services_value) if isinstance(services_value, Mapping) else {}
 
@@ -242,6 +247,8 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
         raise ProtocolError(f"unsupported checkpoint version: {checkpoint.get('checkpointVersion')}")
 
     model = _mapping(checkpoint.get("model"), "checkpoint model")
+    if checkpoint_version >= 5:
+        validate_freight_state(model.get("freightIndustry"))
     canonical = checkpoint.get("canonical")
     if not isinstance(canonical, (list, Mapping)) or (isinstance(canonical, Mapping) and canonical):
         raise ProtocolError("checkpoint canonical registry is not an array (or Lua's empty-table representation)")
@@ -268,11 +275,14 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
         )
         sync_schema = vehicle_sync.get("schemaVersion")
         expected_sync_fields = {"schemaVersion", "enabled", "vehicles"}
-        if sync_schema in {2, 3}:
+        if sync_schema in {2, 3, 4}:
             expected_sync_fields.add("scheduleReservations")
-        if sync_schema == 3:
+        if sync_schema in {3, 4}:
             expected_sync_fields.add("passengerPresentation")
-        supported_sync_schemas = {1, 2} if checkpoint_version == 3 else {3}
+        if sync_schema == 4:
+            expected_sync_fields.add("cargoPresentation")
+        supported_sync_schemas = ({1, 2} if checkpoint_version == 3 else
+                                  {3} if checkpoint_version == 4 else {4})
         if set(vehicle_sync) != expected_sync_fields or sync_schema not in supported_sync_schemas \
                 or not isinstance(vehicle_sync.get("enabled"), bool):
             raise ProtocolError("checkpoint vehicle synchronization header is invalid")
@@ -290,7 +300,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
             allowed = required | {
                 "companyCid", "stopIndex", "releaseAtGameTime",
             }
-            if sync_schema in {2, 3}:
+            if sync_schema in {2, 3, 4}:
                 required.add("schedule")
                 allowed.add("schedule")
             if not required <= set(item) or set(item) - allowed:
@@ -332,7 +342,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "stopIndex" not in item or "releaseAtGameTime" not in item
             ):
                 raise ProtocolError("authorized vehicle round is missing its stop/release anchor")
-            if sync_schema in {2, 3}:
+            if sync_schema in {2, 3, 4}:
                 schedule = validate_vehicle_schedule(item["schedule"], release=True)
                 if schedule["enabled"] and (
                     float(item.get("releaseAtGameTime", -1))
@@ -340,7 +350,7 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                     or item["releaseWhilePaused"]
                 ):
                     raise ProtocolError("checkpoint vehicle schedule/release anchor is inconsistent")
-        if sync_schema in {2, 3}:
+        if sync_schema in {2, 3, 4}:
             reservations = vehicle_sync.get("scheduleReservations")
             empty_reservations = isinstance(reservations, Mapping) and not reservations
             if not isinstance(reservations, list) and not empty_reservations:
@@ -371,9 +381,13 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
                         or float(scheduled) != phase + slot * period:
                     raise ProtocolError("checkpoint schedule reservation is invalid")
                 seen_reservations.add(key)
-        if sync_schema == 3:
+        if sync_schema in {3, 4}:
             _validate_passenger_presentation(
                 vehicle_sync.get("passengerPresentation"), synchronized_vehicles, model
+            )
+        if sync_schema == 4:
+            validate_cargo_presentation(
+                vehicle_sync.get("cargoPresentation"), synchronized_vehicles, model
             )
         actual_vehicle_sync = checksum(vehicle_sync)
         if checkpoint.get("vehicleSynchronizationDigest") != actual_vehicle_sync:
@@ -801,9 +815,12 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
     if market_cid not in economy.setdefault("markets", {}):
         raise ProtocolError(f"replay service references unknown market: {market_cid}")
     existing = economy.setdefault("services", {}).get(line_cid)
+    same_market = isinstance(existing, dict) and existing.get("marketCid") == market_cid
+    if isinstance(existing, dict) and not same_market:
+        economy.setdefault("deliveryCursors", {}).pop(line_cid, None)
     fare_cents = _integer(service.get("fareCents"), 1000, 0, 100_000_000)
     share_ppm: int | None
-    if isinstance(existing, dict):
+    if same_market:
         share_ppm = int(existing["sharePpm"]) if existing.get("sharePpm") is not None else None
         share_resid = int(existing.get("shareResid", 0))
         lag_load_ppm = int(existing.get("lagLoadPpm", 0))
@@ -821,7 +838,7 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
             and candidate.get("marketCid") == market_cid
         )
         share_ppm, share_resid, lag_load_ppm = (0 if rivals > 0 else None), 0, 0
-    if isinstance(existing, dict):
+    if same_market:
         last_fare_cents = existing.get("lastFareCents")
     else:
         last_fare_cents = _integer(
@@ -861,12 +878,12 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
     }
     if share_ppm is not None:
         record["sharePpm"] = share_ppm
-    source = existing if isinstance(existing, Mapping) else service
+    source = existing if same_market else service
     record["capacityResid"] = _integer(source.get("capacityResid"), 0, 0, 3599)
     if _economy_version(economy) >= 7:
         record["revenueMultiplierResid"] = _integer(
             existing.get("revenueMultiplierResid", 0)
-            if isinstance(existing, Mapping) else service.get("revenueMultiplierResid"),
+            if same_market else service.get("revenueMultiplierResid"),
             0, 0, _DIFFICULTY_SCALE - 1,
         )
     economy["services"][line_cid] = record
@@ -1011,33 +1028,41 @@ def _delivery_delta(
     economy: dict[str, Any], snapshot: Mapping[str, Any] | None,
     market: Mapping[str, Any], service: Mapping[str, Any], allocated: int,
 ) -> tuple[int, int]:
-    if snapshot is None or market.get("kind") == "cargo":
+    if snapshot is None:
         return allocated, _model_delivery_cents(market, service, allocated)
     cursors = economy.setdefault("deliveryCursors", {})
     line_cid = str(service["lineCid"])
+    cargo = market.get("kind") == "cargo"
     prior_value = cursors.get(line_cid)
-    prior = prior_value if isinstance(prior_value, Mapping) else {
-        "deliveredPassengers": 0, "earnedRevenueCents": 0,
-    }
-    lines = snapshot.get("lines") if isinstance(snapshot.get("lines"), Mapping) else {}
+    prior = prior_value if isinstance(prior_value, Mapping) else (
+        {"deliveredCargo": 0, "earnedRevenueCents": 0} if cargo
+        else {"deliveredPassengers": 0, "earnedRevenueCents": 0}
+    )
+    if int(snapshot.get("schemaVersion", 1)) == 1:
+        lines_value = {} if cargo else snapshot.get("lines")
+    else:
+        lines_value = snapshot.get("cargoLines" if cargo else "passengerLines")
+    lines = lines_value if isinstance(lines_value, Mapping) else {}
     row_value = lines.get(line_cid)
     row = row_value if isinstance(row_value, Mapping) else prior
-    passengers = _integer(
-        row.get("deliveredPassengers"), int(prior.get("deliveredPassengers", 0)),
+    row_field = "deliveredUnits" if cargo else "deliveredPassengers"
+    cursor_field = "deliveredCargo" if cargo else "deliveredPassengers"
+    delivered = _integer(
+        row.get(row_field), int(prior.get(cursor_field, 0)),
         0, 1_000_000_000,
     )
     earned = _integer(
         row.get("earnedRevenueCents"), int(prior.get("earnedRevenueCents", 0)),
         0, _ACCUMULATOR_LIMIT,
     )
-    prior_passengers = int(prior.get("deliveredPassengers", 0))
+    prior_delivered = int(prior.get(cursor_field, 0))
     prior_earned = int(prior.get("earnedRevenueCents", 0))
-    if passengers < prior_passengers or earned < prior_earned:
-        raise ProtocolError("passenger delivery snapshot moved backwards")
-    cursors[line_cid] = {
-        "deliveredPassengers": passengers, "earnedRevenueCents": earned,
-    }
-    return passengers - prior_passengers, earned - prior_earned
+    if delivered < prior_delivered or earned < prior_earned:
+        raise ProtocolError(
+            f"{'cargo' if cargo else 'passenger'} delivery snapshot moved backwards"
+        )
+    cursors[line_cid] = {cursor_field: delivered, "earnedRevenueCents": earned}
+    return delivered - prior_delivered, earned - prior_earned
 
 
 def _evaluate_market_v2(
@@ -2057,6 +2082,13 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         _record_settlement(economy, results)
         freight_value = model.get("freightIndustry")
         if isinstance(freight_value, dict) and freight_value.get("ready") is True:
+            delivery_value = action.get("deliverySnapshot")
+            cargo_lines = delivery_value.get("cargoLines", {}) \
+                if isinstance(delivery_value, Mapping) \
+                and delivery_value.get("schemaVersion") == 2 else {}
+            apply_freight_transport(
+                freight_value, cargo_lines if isinstance(cargo_lines, Mapping) else {}
+            )
             scheduler_value = economy.get("scheduler")
             scheduler = scheduler_value if isinstance(scheduler_value, Mapping) else {}
             advance_freight(

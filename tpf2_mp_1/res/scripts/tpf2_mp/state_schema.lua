@@ -5,6 +5,7 @@ local economyDifficulty = require "tpf2_mp/economy_difficulty"
 local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
@@ -250,6 +251,7 @@ function M.new(cfg, versions)
         scheduleReservations = {},
       },
       passengerPresentation = passengerPresentation.newState(),
+      cargoPresentation = cargoPresentation.newState(),
       turn = nil,
       lastTransition = nil,
     },
@@ -614,6 +616,19 @@ function M.migrate(saved, context)
       saved.world.passengerPresentation = alignmentResult
     else
       saved.lastError = "passenger presentation migration failed: "
+        .. tostring(alignmentResult)
+    end
+  end
+  local hadCargoPresentation = type(saved.world.cargoPresentation) == "table"
+  saved.world.cargoPresentation = cargoPresentation.migrate(
+    saved.world.cargoPresentation or defaults.world.cargoPresentation)
+  if not hadCargoPresentation then
+    local aligned, alignmentResult = cargoPresentation.alignWithVehicleSync(
+      saved.world.cargoPresentation, saved.economy, saved.world.vehicleSync)
+    if aligned then
+      saved.world.cargoPresentation = alignmentResult
+    else
+      saved.lastError = "cargo presentation migration failed: "
         .. tostring(alignmentResult)
     end
   end

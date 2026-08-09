@@ -115,10 +115,44 @@ function Test-Tpf2mpReleaseManifest {
         throw "Release manifest is missing: $manifestPath"
     }
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    foreach ($file in @($manifest.files)) {
+    if ([int]$manifest.format -ne 1) { throw 'Unsupported release manifest format.' }
+    if ([string]$manifest.name -ne 'TPF2MP Competitive Prototype') {
+        throw 'Unexpected release manifest product name.'
+    }
+    if ([string]$manifest.version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') {
+        throw 'Release manifest contains an unsafe version.'
+    }
+    foreach ($field in @(
+            'modMinorVersion', 'stateSchemaVersion', 'checkpointSchemaVersion',
+            'proposalSchemaVersion', 'passengerPresentationSchemaVersion',
+            'cargoPresentationSchemaVersion', 'deliverySchemaVersion',
+            'freightIndustrySchemaVersion')) {
+        $parsed = 0
+        if (-not [int]::TryParse([string]$manifest.$field, [ref]$parsed) -or $parsed -lt 1) {
+            throw "Release manifest field $field is missing or invalid."
+        }
+    }
+    if ([string]$manifest.companionVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
+        throw 'Release manifest companionVersion is missing or invalid.'
+    }
+    $files = @($manifest.files)
+    if ($files.Count -eq 0) { throw 'Release manifest contains no files.' }
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $recorded = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($file in $files) {
         $relative = [string]$file.path
-        if ([IO.Path]::IsPathRooted($relative) -or $relative.Contains('..')) {
+        $segments = @($relative -split '/')
+        if (-not $relative -or $relative.Contains('\') -or [IO.Path]::IsPathRooted($relative) `
+                -or @($segments | Where-Object { -not $_ -or $_ -eq '.' -or $_ -eq '..' }).Count -gt 0) {
             throw "Unsafe release manifest path: $relative"
+        }
+        if (-not $seen.Add($relative)) { throw "Duplicate release manifest path: $relative" }
+        if ([string]$file.sha256 -notmatch '^[0-9a-fA-F]{64}$') {
+            throw "Invalid release checksum metadata: $relative"
+        }
+        $expectedSize = 0L
+        if (-not [long]::TryParse([string]$file.size, [ref]$expectedSize) -or $expectedSize -lt 0) {
+            throw "Invalid release size metadata: $relative"
         }
         $path = Resolve-Tpf2mpFullPath (Join-Path $resolvedRoot ($relative -replace '/', '\'))
         $prefix = $resolvedRoot.TrimEnd('\') + '\'
@@ -126,9 +160,23 @@ function Test-Tpf2mpReleaseManifest {
             throw "Release manifest path escapes bundle: $relative"
         }
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Release file is missing: $relative" }
+        if ((Get-Item -LiteralPath $path).Length -ne $expectedSize) {
+            throw "Release file size mismatch: $relative"
+        }
         $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
         if ($actual -ne ([string]$file.sha256).ToLowerInvariant()) {
             throw "Release checksum mismatch: $relative"
+        }
+        [void]$recorded.Add($relative)
+    }
+    foreach ($required in @(
+            'tpf2_mp_1/mod.lua', 'bin/tpf2mp.exe',
+            'bin/native/tpf2mp_injector.exe',
+            'bin/native/tpf2mp_hook_build35924.dll',
+            'tools/install_release.ps1', 'tools/verify_install.ps1',
+            'tools/uninstall.ps1', 'docs/README.md', 'QUICK_START.md')) {
+        if (-not $recorded.Contains($required)) {
+            throw "Required release file is absent from the manifest: $required"
         }
     }
     return $manifest

@@ -225,7 +225,13 @@ function M.migrate(state)
   state.deliveryCursors = state.deliveryCursors or {}
   for lineCid, cursor in pairs(state.deliveryCursors) do
     if type(cursor) ~= "table" then cursor = {}; state.deliveryCursors[lineCid] = cursor end
-    cursor.deliveredPassengers = copyInteger(cursor.deliveredPassengers, 0, 0, 1000000000)
+    if cursor.deliveredCargo ~= nil then
+      cursor.deliveredCargo = copyInteger(cursor.deliveredCargo, 0, 0, 1000000000)
+      cursor.deliveredPassengers = nil
+    else
+      cursor.deliveredPassengers = copyInteger(
+        cursor.deliveredPassengers, 0, 0, 1000000000)
+    end
     cursor.earnedRevenueCents = copyInteger(
       cursor.earnedRevenueCents, 0, 0, M.ACCUMULATOR_LIMIT)
   end
@@ -414,15 +420,22 @@ function M.upsertService(state, service)
   assert(type(service.marketCid) == "string" and state.markets[service.marketCid], "known marketCid required")
   assert(type(service.companyCid) == "string" and service.companyCid ~= "", "companyCid required")
   local existing = state.services[service.lineCid]
+  local sameMarket = existing and existing.marketCid == service.marketCid
+  if existing and not sameMarket and state.deliveryCursors then
+    -- Passenger and cargo presentation counters are independent monotonic
+    -- spaces. Reusing a line for a different market must not compare the new
+    -- ledger with the old market cursor or retain the old competitive stock.
+    state.deliveryCursors[service.lineCid] = nil
+  end
   local fareCents = copyInteger(service.fareCents, 1000, 0, 100000000)
   local lastFareCents = nil
   if util.integer(state.version, M.VERSION) >= 3 then
-    lastFareCents = existing and existing.lastFareCents
+    lastFareCents = sameMarket and existing.lastFareCents
       or copyInteger(service.lastFareCents, fareCents, 0, 100000000)
-    if existing and existing.lastFareCents == nil then lastFareCents = nil end
+    if sameMarket and existing.lastFareCents == nil then lastFareCents = nil end
   end
   local initialShare
-  if existing then initialShare = existing.sharePpm
+  if sameMarket then initialShare = existing.sharePpm
   elseif service.sharePpm ~= nil then
     initialShare = copyInteger(service.sharePpm, 0, 0, M.SHARE_SCALE)
   elseif util.integer(state.version, M.VERSION) < 6 then initialShare = 0
@@ -452,18 +465,18 @@ function M.upsertService(state, service)
       existing and existing.annualVehicleUpkeepCents or 0, 0, M.ACCUMULATOR_LIMIT),
     upkeepResid = existing and copyInteger(existing.upkeepResid, 0, 0, residueLimit)
       or copyInteger(service.upkeepResid, 0, 0, residueLimit),
-    capacityResid = existing and copyInteger(existing.capacityResid, 0, 0, 3599)
+    capacityResid = sameMarket and copyInteger(existing.capacityResid, 0, 0, 3599)
       or copyInteger(service.capacityResid, 0, 0, 3599),
     revenueMultiplierResid = util.integer(state.version, M.VERSION) >= 7
-      and (existing and copyInteger(
+      and (sameMarket and copyInteger(
         existing.revenueMultiplierResid, 0, 0, difficulty.SCALE - 1)
         or copyInteger(service.revenueMultiplierResid, 0, 0, difficulty.SCALE - 1))
       or nil,
     -- Share is a stock: a re-upserted service keeps its earned position, a
     -- brand-new one starts from nothing and must climb at alphaUp.
     sharePpm = initialShare,
-    shareResid = existing and existing.shareResid or 0,
-    lagLoadPpm = existing and existing.lagLoadPpm or 0,
+    shareResid = sameMarket and existing.shareResid or 0,
+    lagLoadPpm = sameMarket and existing.lagLoadPpm or 0,
     -- Fare hikes cannot monetize yesterday's retained share. Other causes of
     -- a lower equilibrium (notably lagged crowding) keep the smooth down-glide.
     lastFareCents = lastFareCents,

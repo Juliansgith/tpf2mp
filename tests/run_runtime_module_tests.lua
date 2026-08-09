@@ -413,6 +413,37 @@ do
 end
 
 do
+  local view = economyPublicViewModule.build({
+    economy = {
+      params = { economyDifficulty = "normal" },
+      markets = { ["market:cargo"] = { kind = "cargo", demand = 120 } },
+      services = { ["line:cargo"] = {
+        lineCid = "line:cargo", marketCid = "market:cargo",
+        companyCid = "company:1", name = "Grain Shuttle",
+        fareCents = 1000, journeySeconds = 600, headwaySeconds = 900,
+        capacity = 80, metadata = {},
+      } },
+      deliveryCursors = { ["line:cargo"] = {
+        deliveredCargo = 5, earnedRevenueCents = 500,
+      } },
+      lastResults = { intervalSeconds = 300, companies = {}, markets = {} },
+    },
+    world = {
+      passengerPresentation = { lines = {} },
+      cargoPresentation = { lines = { ["line:cargo"] = {
+        deliveredTotal = 8, earnedRevenueCents = 800,
+      } } },
+    },
+    canonical = { byCanonical = {} },
+  }, "company:1")
+  local cargo = view.services["line:cargo"]
+  assert(cargo.kind == "cargo" and cargo.pendingDelivered == 3
+      and cargo.pendingRawGrossRevenueCents == 300
+      and view.companies["company:1"].pendingGrossRevenueCents == 300,
+    "economy presentation omitted unsettled completed cargo deliveries")
+end
+
+do
   local firstStop = {
     stationGroupCid = "station_group:test:1", station = 0, terminal = 0,
     alternativeTerminals = { { station = 0, terminal = 1 }, { station = 0, terminal = 2 } },
@@ -2045,7 +2076,7 @@ do
       and emitted[#emitted].payload.state == "released",
     "vehicle did not release/report at the ordered target")
   local digestView = vehicleSyncRuntimeModule.digestView(current.world)
-  assert(digestView.schemaVersion == 3
+  assert(digestView.schemaVersion == 4
       and digestView.vehicles[1].lastAuthorizedRound == 1
       and digestView.vehicles[1].stopIndex == 0
       and digestView.vehicles[1].schedule.enabled == false
@@ -2053,8 +2084,9 @@ do
       and digestView.passengerPresentation.schemaVersion == 2
       and digestView.passengerPresentation.vehicles[1].vehicleCid
         == "vehicle:event:test:1"
-      and digestView.passengerPresentation.vehicles[1].lastRound == 1,
-    "prompt vehicle release/passenger ledger is absent from the convergence view")
+      and digestView.passengerPresentation.vehicles[1].lastRound == 1
+      and digestView.cargoPresentation.schemaVersion == 1,
+    "prompt vehicle release/presentation ledgers are absent from the convergence view")
   transportVehicle.state, current.tick = 1, 5
   runtime.update()
   current.economy.services["line:event:test:1"] = nil

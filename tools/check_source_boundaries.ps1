@@ -16,8 +16,11 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_difficulty.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_town_demand.lua' = 210
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_action_runtime.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_line_registration.lua' = 80
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_settlement_transaction.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_service_quarantine.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_public_view.lua' = 180
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_pending_delivery.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_clock_runtime.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_asset_cost_runtime.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_cost_runtime.lua' = 150
@@ -51,6 +54,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_network_bootstrap.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_runtime.lua' = 650
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_text.lua' = 300
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_lists.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
     'companion\tpf2mp\network.py' = 1450
     'companion\tpf2mp\cli.py' = 430
@@ -83,12 +87,21 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua' = 560
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua' = 190
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_revalidation.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_public.lua' = 80
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_transport_settlement.lua' = 190
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_transport_validation.lua' = 160
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_service_binding.lua' = 300
+    'tpf2_mp_1\res\scripts\tpf2_mp\cargo_presentation.lua' = 520
+    'tpf2_mp_1\res\scripts\tpf2_mp\delivery_snapshot.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\diagnostic_log.lua' = 30
     'tpf2_mp_1\res\scripts\tpf2_mp\service_registration_integration.lua' = 60
     'companion\tpf2mp\host_intents.py' = 60
     'companion\tpf2mp\industry_content.py' = 500
     'companion\tpf2mp\freight.py' = 260
     'companion\tpf2mp\freight_protocol.py' = 180
+    'companion\tpf2mp\freight_transport.py' = 180
+    'companion\tpf2mp\cargo_checkpoint.py' = 230
+    'companion\tpf2mp\freight_checkpoint.py' = 220
     'companion\tpf2mp\protocol.py' = 1650
     'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua' = 680
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_facts.lua' = 480
@@ -127,6 +140,7 @@ $requiredModules = @(
     'tpf2_mp/recovery_prepare_runtime',
     'tpf2_mp/economy_clock_runtime',
     'tpf2_mp/economy_action_runtime',
+    'tpf2_mp/economy_settlement_transaction',
     'tpf2_mp/economy_asset_cost_runtime',
     'tpf2_mp/economy_demo',
     'tpf2_mp/network_speed_indicator',
@@ -135,6 +149,7 @@ $requiredModules = @(
     'tpf2_mp/operational_capture_runtime',
     'tpf2_mp/freight_industry_model',
     'tpf2_mp/freight_industry_runtime',
+    'tpf2_mp/cargo_presentation',
     'tpf2_mp/gui_state',
     'tpf2_mp/gui_entry_points',
     'tpf2_mp/gui_capture',
@@ -151,6 +166,14 @@ foreach ($module in $requiredModules) {
 }
 if (-not (Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua') -Raw).Contains('tpf2_mp/freight_industry_revalidation')) {
     throw 'Freight-industry runtime no longer composes its saved-state/content revalidation boundary'
+}
+$freightModelSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua') -Raw
+foreach ($module in @('tpf2_mp/freight_transport_settlement',
+    'tpf2_mp/freight_transport_validation', 'tpf2_mp/freight_industry_public')) {
+    if (-not $freightModelSource.Contains($module)) {
+        throw "Freight-industry model no longer composes $module"
+    }
 }
 foreach ($movedDefinition in @(
     'local function compactNativeHookStatus',
@@ -176,6 +199,9 @@ $vehicleSyncSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_runtime.lua') -Raw
 if (-not $vehicleSyncSource.Contains('require "tpf2_mp/vehicle_sync_state"')) {
     throw 'Vehicle runtime no longer composes the vehicle synchronization state boundary.'
+}
+if (-not $vehicleSyncSource.Contains('require "tpf2_mp/vehicle_sync_passengers"')) {
+    throw 'Vehicle runtime no longer composes the atomic passenger/cargo presentation boundary.'
 }
 $operationRuntimeSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\operation_runtime.lua') -Raw
@@ -224,6 +250,9 @@ $corridorSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\corridor_binding.lua') -Raw
 if (-not $corridorSource.Contains('require "tpf2_mp/vehicle_resource_facts"')) {
     throw 'Corridor binding no longer composes the portable vehicle-resource facts boundary.'
+}
+if (-not $corridorSource.Contains('require "tpf2_mp/freight_service_binding"')) {
+    throw 'Corridor binding no longer composes the canonical freight-service boundary.'
 }
 if ($corridorSource -match 'local\s+capacity[AB]\s*=\s*townCapacity\(') {
     throw 'Corridor binding reads presentation-scaled town capacity into gravity demand.'

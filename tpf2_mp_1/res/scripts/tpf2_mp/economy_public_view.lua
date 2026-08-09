@@ -1,6 +1,7 @@
 local util = require "tpf2_mp/util"
 local costs = require "tpf2_mp/economy_costs"
 local difficulty = require "tpf2_mp/economy_difficulty"
+local pendingDelivery = require "tpf2_mp/economy_pending_delivery"
 
 local M = {}
 
@@ -30,8 +31,6 @@ function M.build(state, activeCompanyCid)
     lastResults.intervalSeconds or (economyState.scheduler
       and economyState.scheduler.epochSeconds), 300))
   local hourlyFactor = 3600 / intervalSeconds
-  local presentationLines = state.world and state.world.passengerPresentation
-    and state.world.passengerPresentation.lines or {}
   local difficultyPreset = difficulty.preset(economyState.params
     and economyState.params.economyDifficulty)
   local result = {
@@ -59,14 +58,8 @@ function M.build(state, activeCompanyCid)
     local marketMetadata = authoredMarket.metadata or {}
     local townA = economyState.towns and economyState.towns[marketMetadata.townA] or {}
     local townB = economyState.towns and economyState.towns[marketMetadata.townB] or {}
-    local presentation = presentationLines[lineCid] or {}
-    local cursor = economyState.deliveryCursors and economyState.deliveryCursors[lineCid] or {}
-    local pendingDelivered = math.max(0, util.integer(
-      presentation.alightedTotal, 0) - util.integer(cursor.deliveredPassengers, 0))
-    local pendingRawGross = math.max(0, util.integer(
-      presentation.earnedRevenueCents, 0) - util.integer(cursor.earnedRevenueCents, 0))
-    local pendingGross = difficulty.preview(pendingRawGross,
-      difficultyPreset.revenueMultiplierPpm, service.revenueMultiplierResid)
+    local pending = pendingDelivery.service(
+      state, service, lineCid, difficultyPreset.revenueMultiplierPpm)
     local gross = latest.grossRevenueCents or latest.revenueCents or 0
     local upkeep = latest.vehicleUpkeepCents or 0
     local net = latest.netRevenueCents or latest.revenueCents or 0
@@ -74,6 +67,7 @@ function M.build(state, activeCompanyCid)
       lineCid = lineCid,
       companyCid = service.companyCid,
       marketCid = service.marketCid,
+      kind = pending.kind,
       hourlyMarketDemand = authoredMarket.demand or market.hourlyDemand or market.demand or 0,
       modelTownSizeA = townA.size or marketMetadata.townSizeA,
       modelTownSizeB = townB.size or marketMetadata.townSizeB,
@@ -90,9 +84,9 @@ function M.build(state, activeCompanyCid)
       allocated = latest.allocated or 0,
       delivered = latest.delivered or 0,
       availableCapacity = latest.availableCapacity or 0,
-      pendingDelivered = pendingDelivered,
-      pendingGrossRevenueCents = pendingGross,
-      pendingRawGrossRevenueCents = pendingRawGross,
+      pendingDelivered = pending.pendingDelivered,
+      pendingGrossRevenueCents = pending.pendingGrossRevenueCents,
+      pendingRawGrossRevenueCents = pending.pendingRawGrossRevenueCents,
       grossRevenueCents = gross,
       rawGrossRevenueCents = latest.rawGrossRevenueCents,
       revenueMultiplierPpm = difficultyPreset.revenueMultiplierPpm,
@@ -117,8 +111,9 @@ function M.build(state, activeCompanyCid)
       grossRevenueCents = 0, vehicleUpkeepCents = 0,
       infrastructureUpkeepCents = 0, netRevenueCents = 0,
     }
-    company.pendingDelivered = (company.pendingDelivered or 0) + pendingDelivered
-    company.pendingGrossRevenueCents = (company.pendingGrossRevenueCents or 0) + pendingGross
+    company.pendingDelivered = (company.pendingDelivered or 0) + pending.pendingDelivered
+    company.pendingGrossRevenueCents = (company.pendingGrossRevenueCents or 0)
+      + pending.pendingGrossRevenueCents
     result.companies[service.companyCid] = company
   end
 

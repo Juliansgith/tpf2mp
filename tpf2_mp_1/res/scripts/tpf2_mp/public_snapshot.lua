@@ -3,6 +3,7 @@ local economy = require "tpf2_mp/economy"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
+local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local economyPublicView = require "tpf2_mp/economy_public_view"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 
@@ -112,6 +113,11 @@ function M.new(env)
       currentState().world.passengerPresentation,
       currentState().economy,
       currentState().canonical)
+    local cargoView = cargoPresentation.publicView(
+      currentState().world.cargoPresentation,
+      currentState().economy,
+      currentState().world.freightIndustry,
+      currentState().canonical)
     local economyPresentation = economyPublicView.build(currentState(), cid)
     return {
       version = currentState().version,
@@ -140,6 +146,7 @@ function M.new(env)
       -- Names/local ids are display-only, but every count is projected from
       -- the digested authored passenger ledger.
       passengerPresentation = passengerView,
+      cargoPresentation = cargoView,
       economyPresentation = economyPresentation,
       stationBoards = passengerView.stations,
       autonomyFrozen = currentState().world.autonomyFrozen,

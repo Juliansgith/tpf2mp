@@ -56,6 +56,11 @@ if ($StrictNative -and -not ($nativeCompatible -and $nativeVerified)) {
 $result = [ordered]@{
     valid = $true
     version = [string]$manifest.version
+    stateSchemaVersion = [int]$manifest.stateSchemaVersion
+    checkpointSchemaVersion = [int]$manifest.checkpointSchemaVersion
+    passengerPresentationSchemaVersion = [int]$manifest.passengerPresentationSchemaVersion
+    cargoPresentationSchemaVersion = [int]$manifest.cargoPresentationSchemaVersion
+    freightIndustrySchemaVersion = [int]$manifest.freightIndustrySchemaVersion
     bundle = $bundle
     modPath = $installedMod
     modFileCount = $modFiles.Count
@@ -70,7 +75,7 @@ if ($AsJson) {
     $result | ConvertTo-Json -Depth 4
 }
 else {
-    Write-Host "TPF2MP install valid: version $($result.version), $($result.modFileCount) mod files verified."
+    Write-Host "TPF2MP install valid: version $($result.version), state $($result.stateSchemaVersion), checkpoint $($result.checkpointSchemaVersion), passenger $($result.passengerPresentationSchemaVersion), cargo $($result.cargoPresentationSchemaVersion), freight $($result.freightIndustrySchemaVersion); $($result.modFileCount) mod files verified."
     Write-Host "Companion executable: OK ($companion)"
     if (-not $game) { Write-Warning 'Transport Fever 2 executable was not discovered; native hook was not checked.' }
     elseif ($nativeCompatible -and $nativeVerified) { Write-Host 'Native hook compatibility: Build 35924 exact profile verified.' }

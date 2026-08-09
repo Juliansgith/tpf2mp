@@ -3,6 +3,7 @@ local hash = require "tpf2_mp/hash"
 local revenue = require "tpf2_mp/economy_revenue"
 local townDemand = require "tpf2_mp/economy_town_demand"
 local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
+local freightServiceBinding = require "tpf2_mp/freight_service_binding"
 
 local M = {}
 
@@ -547,18 +548,27 @@ function M.new(deps)
   -- prevents a passenger-first mixed fleet from smuggling freight capacity
   -- into the passenger economy and gives heterogeneous fleets average seats
   -- plus their conservative slowest speed.
-  local function lineConsistTransportFacts(vehicleIds)
-    local consists = {}
+  local function lineConsistTransportFacts(registry, vehicleIds)
+    local consists, cargoCapacityByVehicleCid = {}, {}
     local walked = pcall(function()
       for _, vehicleId in ipairs(vehicleIds) do
         local names = consistModelNames(vehicleId)
         local facts = names and vehicleResourceFacts.consist(names) or nil
         if not facts then error("unreadable consist") end
         consists[#consists + 1] = facts
+        local vehicleCid = resolveCanonical(registry, "vehicle", vehicleId)
+        if vehicleCid then
+          cargoCapacityByVehicleCid[vehicleCid] = util.deepCopy(
+            facts.cargoCapacityByType or {})
+        end
       end
     end)
     if not walked then return nil end
-    return vehicleResourceFacts.combine(consists)
+    local combined = vehicleResourceFacts.combine(consists)
+    if combined then
+      combined.cargoCapacityByVehicleCid = cargoCapacityByVehicleCid
+    end
+    return combined
   end
 
   local function nativeAnnualMaintenanceCents(vehicleId)
@@ -570,6 +580,39 @@ function M.new(deps)
     local dollars = ok and component and tonumber(component.maintenanceCost) or nil
     if not dollars or dollars < 0 then return nil end
     return math.max(0, util.integer(dollars, 0)) * 100
+  end
+
+  local function lineVehicleEconomyFacts(registry, economyModule, economyState,
+      vehicleIds, companyCid)
+    local annualVehicleUpkeepCents, pricedVehicles, vehicleCids = 0, 0, {}
+    for _, vehicleId in ipairs(vehicleIds) do
+      local vehicleCid = resolveCanonical(registry, "vehicle", vehicleId)
+      if vehicleCid then vehicleCids[#vehicleCids + 1] = vehicleCid end
+      local vehicleBinding = vehicleCid and registry.byCanonical[vehicleCid] or nil
+      local annual = vehicleBinding and vehicleBinding.metadata
+        and tonumber(vehicleBinding.metadata.annualVehicleUpkeepCents) or nil
+      if annual == nil and vehicleBinding then
+        annual = nativeAnnualMaintenanceCents(vehicleId)
+        if annual ~= nil then
+          vehicleBinding.metadata = vehicleBinding.metadata or {}
+          vehicleBinding.metadata.annualVehicleUpkeepCents = annual
+          vehicleBinding.metadata.nativeAnnualMaintenanceDollars = math.floor(annual / 100)
+          vehicleBinding.metadata.vehicleCostSource = "line-registration-native-maintenance"
+        end
+      end
+      if annual then
+        annualVehicleUpkeepCents = annualVehicleUpkeepCents
+          + math.max(0, util.integer(annual, 0))
+        pricedVehicles = pricedVehicles + 1
+        if vehicleCid and not (economyState.vehicleCosts
+          and economyState.vehicleCosts[vehicleCid]) then
+          economyModule.upsertVehicleCost(
+            economyState, vehicleCid, companyCid, annual)
+        end
+      end
+    end
+    table.sort(vehicleCids)
+    return annualVehicleUpkeepCents, pricedVehicles, vehicleCids
   end
 
   -- Journey, headway, and hourly seat capacity from canonical geometry
@@ -622,7 +665,8 @@ function M.new(deps)
     }
   end
 
-  function binding.makeLineService(registry, economyModule, economyState, lineId, companyCid)
+  function binding.makeLineService(
+      registry, economyModule, economyState, lineId, companyCid, worldState)
     local lineCid, err = bindExisting(registry, lineId, "line", { name = nameOf(lineId) })
     if not lineCid then return false, err end
     local groups = lineStopGroups(lineId)
@@ -630,11 +674,8 @@ function M.new(deps)
     local stationKind, stationKindDetail = lineServiceKind(lineId)
     local vehicleIds = lineVehicleIds(lineId)
     local vehicles = #vehicleIds
-    local consistFacts = lineConsistTransportFacts(vehicleIds)
+    local consistFacts = lineConsistTransportFacts(registry, vehicleIds)
     local consistKind = consistFacts and consistFacts.kind or "empty"
-    if stationKind == "cargo" or consistKind == "cargo" then
-      return false, "cargo service requires the industry authority adapter"
-    end
     if stationKind == "mixed" or consistKind == "mixed" then
       return false, "mixed passenger/cargo service is not authoritative yet"
     end
@@ -647,9 +688,42 @@ function M.new(deps)
     if vehicles > 0 and consistKind == "empty" then
       return false, "assigned consists have no readable transport capacity"
     end
-    if stationKind ~= "passenger" then
+    local cargoService = stationKind == "cargo" or consistKind == "cargo"
+    if cargoService and (stationKind ~= "cargo" or consistKind ~= "cargo") then
+      return false, "cargo station mode and assigned consist type do not match"
+    end
+    if not cargoService and stationKind ~= "passenger" then
       return false, "line stop mode is not safely readable ("
         .. tostring(stationKindDetail or stationKind) .. ")"
+    end
+
+    local annualVehicleUpkeepCents, pricedVehicles, vehicleCids =
+      lineVehicleEconomyFacts(
+        registry, economyModule, economyState, vehicleIds, companyCid)
+    local stationGroupCids = {}
+    for _, groupId in ipairs(groups) do
+      local groupCid = bindExisting(
+        registry, groupId, "station_group", { name = nameOf(groupId) })
+      if groupCid then stationGroupCids[#stationGroupCids + 1] = groupCid end
+    end
+    if #stationGroupCids ~= #groups then
+      return false, "one or more line stops have no canonical station-group binding"
+    end
+    local computed = binding.computedServiceFacts(groups, vehicles, consistFacts)
+    if cargoService then
+      if not computed then return false, "cargo route geometry is not safely readable" end
+      return freightServiceBinding.register({
+        registry = registry, economyModule = economyModule,
+        economyState = economyState, worldState = worldState,
+        lineId = lineId, lineCid = lineCid, companyCid = companyCid,
+        groups = groups, stationGroupCids = stationGroupCids,
+        vehicleIds = vehicleIds, vehicleCids = vehicleCids,
+        vehicles = vehicles, consistFacts = consistFacts, computed = computed,
+        annualVehicleUpkeepCents = annualVehicleUpkeepCents,
+        pricedVehicles = pricedVehicles,
+        resolveLocal = resolveLocal, positionOfEntity = positionOfEntity,
+        nameOf = nameOf,
+      })
     end
     local townA, townAError = stationGroupTown(groups[1])
     local townB, townBError = stationGroupTown(groups[#groups])
@@ -664,42 +738,6 @@ function M.new(deps)
     local first, second = townCidA, townCidB
     if second < first then first, second = second, first end
     local marketCid = "market:" .. hash.value({ first, second })
-    local annualVehicleUpkeepCents, pricedVehicles, vehicleCids = 0, 0, {}
-    for _, vehicleId in ipairs(vehicleIds) do
-      local vehicleCid = resolveCanonical(registry, "vehicle", vehicleId)
-      if vehicleCid then vehicleCids[#vehicleCids + 1] = vehicleCid end
-      local vehicleBinding = vehicleCid and registry.byCanonical[vehicleCid] or nil
-      local annual = vehicleBinding and vehicleBinding.metadata
-        and tonumber(vehicleBinding.metadata.annualVehicleUpkeepCents) or nil
-      if annual == nil and vehicleBinding then
-        annual = nativeAnnualMaintenanceCents(vehicleId)
-        if annual ~= nil then
-          vehicleBinding.metadata = vehicleBinding.metadata or {}
-          vehicleBinding.metadata.annualVehicleUpkeepCents = annual
-          vehicleBinding.metadata.nativeAnnualMaintenanceDollars = math.floor(annual / 100)
-          vehicleBinding.metadata.vehicleCostSource = "line-registration-native-maintenance"
-        end
-      end
-      if annual then
-        annualVehicleUpkeepCents = annualVehicleUpkeepCents
-          + math.max(0, util.integer(annual, 0))
-        pricedVehicles = pricedVehicles + 1
-        if vehicleCid and not (economyState.vehicleCosts
-          and economyState.vehicleCosts[vehicleCid]) then
-          economyModule.upsertVehicleCost(
-            economyState, vehicleCid, companyCid, annual)
-        end
-      end
-    end
-    table.sort(vehicleCids)
-
-    local stationGroupCids = {}
-    for _, groupId in ipairs(groups) do
-      local groupCid = bindExisting(registry, groupId, "station_group", { name = nameOf(groupId) })
-      if groupCid then stationGroupCids[#stationGroupCids + 1] = groupCid end
-    end
-
-    local computed = binding.computedServiceFacts(groups, vehicles, consistFacts)
 
     local capacityA = townMarketSize(townA)
     local capacityB = townMarketSize(townB)

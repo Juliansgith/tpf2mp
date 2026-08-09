@@ -160,3 +160,11 @@ is currently established by exact Lua/Python replay only.
    and industry UI surfaces.
 5. Live-prove a non-zero farm-to-food chain on two processes, including
    save/load with stock in flight, then repeat with a data-only mod resource.
+
+## Subsequent implementation
+
+Prototype 0.32 completes items 1-4 above in state 29/freight schema 2. The
+historical 0.31 evidence and digest in this document remain unchanged; the new
+transport, presentation, checkpoint, and parity boundary is recorded in
+[`FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md`](FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md).
+The cargo-positive two-process and save/load gates in item 5 remain open.

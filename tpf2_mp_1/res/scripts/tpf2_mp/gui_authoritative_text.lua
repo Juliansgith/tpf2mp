@@ -1,4 +1,4 @@
-local util = require "tpf2_mp/util"
+local lists = require "tpf2_mp/gui_authoritative_lists"
 
 local M = {}
 
@@ -92,7 +92,7 @@ function M.company(snapshot)
     title = "TPF2MP AUTHORITATIVE COMPANY",
     primary = primary,
     secondary = secondary,
-    tooltip = "Synchronized competitive account with five-minute accounting. Completed passenger trips accrue pending revenue immediately; the next tick pays it. Native trip income and journal history are cosmetic.",
+    tooltip = "Synchronized competitive account with five-minute accounting. Completed passenger and cargo trips accrue pending revenue immediately; the next tick pays it. Native trip income and journal history are cosmetic.",
     balance = balance,
     netRevenueCents = net,
   }
@@ -102,9 +102,11 @@ function M.vehicle(snapshot, localId)
   snapshot = snapshot or {}
   local economyView = snapshot.economyPresentation or {}
   local passengerView = snapshot.passengerPresentation or {}
+  local cargoView = snapshot.cargoPresentation or {}
   local economyItem, cid = localItem(economyView, "localVehicles", "vehicles", localId)
   local passengerItem = localItem(passengerView, "localVehicles", "vehicles", localId)
-  if not economyItem and not passengerItem then
+  local cargoItem = localItem(cargoView, "localVehicles", "vehicles", localId)
+  if not economyItem and not passengerItem and not cargoItem then
     return {
       title = "TPF2MP AUTHORITATIVE VEHICLE",
       primary = "This vehicle is not yet canonical or assigned to an authored service.",
@@ -112,15 +114,20 @@ function M.vehicle(snapshot, localId)
       tooltip = "Assign the vehicle to a synchronized line to populate competitive load, revenue, and operating-cost fields.",
     }
   end
-  local aboard = passengerItem and tonumber(passengerItem.aboard) or 0
-  local capacity = passengerItem and tonumber(passengerItem.capacity) or 0
+  local load = cargoItem or passengerItem
+  local aboard = load and tonumber(load.aboard) or 0
+  local capacity = load and tonumber(load.capacity) or 0
   local trip = "parked or between authored endpoints"
-  if passengerItem and passengerItem.originName and passengerItem.destinationName then
+  local cargoLine = cargoItem and cargoView.lines and cargoView.lines[cargoItem.lineCid]
+  if cargoLine then
+    trip = tostring(cargoLine.sourceIndustryName) .. " -> "
+      .. tostring(cargoLine.destinationIndustryName)
+  elseif passengerItem and passengerItem.originName and passengerItem.destinationName then
     trip = tostring(passengerItem.originName) .. " -> " .. tostring(passengerItem.destinationName)
   elseif passengerItem and passengerItem.destinationName then
     trip = "to " .. tostring(passengerItem.destinationName)
   end
-  local lineName = passengerItem and passengerItem.lineName
+  local lineName = load and load.lineName
     or economyItem and economyItem.line and economyItem.line.name
     or economyItem and economyItem.lineCid or "unassigned"
   local purchase = economyItem and economyItem.purchasePriceDollars
@@ -129,8 +136,9 @@ function M.vehicle(snapshot, localId)
     and (M.moneyCents(economyItem.annualVehicleUpkeepCents) .. "/yr") or "upkeep unbound"
   local hourly = economyItem and economyItem.projectedHourlyVehicleUpkeepCents
     and (M.moneyCents(economyItem.projectedHourlyVehicleUpkeepCents) .. "/h") or "-"
-  local primary = string.format("%d/%d authored passengers | %s | line %s",
-    aboard, capacity, trip, tostring(lineName))
+  local unit = cargoItem and tostring(cargoItem.cargoType or "cargo") or "passengers"
+  local primary = string.format("%d/%d authored %s | %s | line %s",
+    aboard, capacity, unit, trip, tostring(lineName))
   local secondary = string.format("Purchase %s | upkeep %s (%s)", purchase, annual, hourly)
   if economyItem and economyItem.line then
     secondary = secondary .. string.format(" | line %s pending, %s net/5m",
@@ -141,7 +149,7 @@ function M.vehicle(snapshot, localId)
     title = "TPF2MP AUTHORITATIVE VEHICLE " .. tostring(cid or ""),
     primary = primary,
     secondary = secondary,
-    tooltip = "Exact synchronized model load and competitive cost. The stock load glyph, transported counter, income popup, and history are hidden or relabelled because native agents are scenery.",
+    tooltip = "Exact synchronized passenger/cargo load and competitive cost. Native load, transported, income, and history remain cosmetic.",
   }
 end
 
@@ -149,9 +157,11 @@ function M.line(snapshot, localId)
   snapshot = snapshot or {}
   local economyView = snapshot.economyPresentation or {}
   local passengerView = snapshot.passengerPresentation or {}
+  local cargoView = snapshot.cargoPresentation or {}
   local service, cid = localItem(economyView, "localLines", "services", localId)
   local passengers = localItem(passengerView, "localLines", "lines", localId)
-  if not service and not passengers then
+  local freight = cid and cargoView.lines and cargoView.lines[cid] or nil
+  if not service and not passengers and not freight then
     return {
       title = "TPF2MP AUTHORITATIVE LINE",
       primary = "Select or register a synchronized line to show competitive service facts.",
@@ -160,6 +170,8 @@ function M.line(snapshot, localId)
     }
   end
   local name = service and service.name or passengers and passengers.name or cid or "line"
+  local cargo = (service and service.kind == "cargo") or freight ~= nil
+  local units = cargo and tostring(freight and freight.cargoType or "cargo") or "passengers"
   local speed = service and service.topSpeedKmh
     and (tostring(service.topSpeedKmh) .. " km/h") or "estimated speed"
   local primary = string.format("%s | fare %s | %s | %s trip | every %s | capacity %d/h",
@@ -169,9 +181,10 @@ function M.line(snapshot, localId)
   local townScale = service and service.modelTownSizeA and service.modelTownSizeB
     and string.format(" | model towns %d <-> %d",
       tonumber(service.modelTownSizeA) or 0, tonumber(service.modelTownSizeB) or 0) or ""
-  local secondary = string.format("%d demand/h | %d allocated, %d delivered + %d pending%s | share %s | %s net/5m (%s/h)",
+  local secondary = string.format("%d %s demand/h | %d allocated, %d delivered + %d pending%s | share %s | %s net/5m (%s/h)",
     tonumber(service and service.hourlyMarketDemand) or 0,
-    tonumber(passengers and passengers.allocated or service and service.allocated) or 0,
+    units, tonumber((freight or passengers) and (freight or passengers).allocated
+      or service and service.allocated) or 0,
     tonumber(service and service.delivered) or 0,
     tonumber(service and service.pendingDelivered) or 0,
     townScale,
@@ -182,34 +195,55 @@ function M.line(snapshot, localId)
     title = "TPF2MP AUTHORITATIVE LINE " .. tostring(cid or ""),
     primary = primary,
     secondary = secondary,
-    tooltip = "The demand model values fare, journey time, waiting time, crowding, capacity, rival services, and the outside option. These figures replace native profit and transported history for competitive play.",
+    tooltip = cargo
+      and "Authoritative industry contract, synchronized cargo capacity, completed deliveries, and competitive accounting. Native cargo history is cosmetic."
+      or "The demand model values fare, journey time, waiting time, crowding, capacity, rival services, and the outside option. These figures replace native profit and transported history for competitive play.",
   }
 end
 
 function M.station(snapshot, localId)
   snapshot = snapshot or {}
-  local view = snapshot.passengerPresentation or {}
-  local item, cid = localItem(view, "localStations", "stations", localId)
+  local passengerView = snapshot.passengerPresentation or {}
+  local cargoView = snapshot.cargoPresentation or {}
+  local passenger, passengerCid = localItem(
+    passengerView, "localStations", "stations", localId)
+  local freight, freightCid = localItem(cargoView, "localStations", "stations", localId)
+  local cid, item = passengerCid or freightCid, passenger or freight
   if not item then
     return {
       title = "TPF2MP AUTHORITATIVE STATION",
-      primary = "No authored passenger board is bound to this station group yet.",
+      primary = "No authored passenger or cargo board is bound to this station group yet.",
       secondary = "Native waiting agents remain scenery and are not used for revenue or score.",
-      tooltip = "Register a passenger service using this station to create its synchronized board.",
+      tooltip = "Register a passenger or cargo service using this station to create its synchronized board.",
     }
   end
   local lineParts = {}
-  for _, line in ipairs(item.lines or {}) do
+  for _, line in ipairs(passenger and passenger.lines or {}) do
     lineParts[#lineParts + 1] = string.format("%s %d waiting/%d this tick",
       tostring(line.name or line.lineCid), tonumber(line.waiting) or 0,
       tonumber(line.allocated) or 0)
   end
+  for _, line in ipairs(freight and freight.lines or {}) do
+    if line.role == "destination" then
+      lineParts[#lineParts + 1] = string.format("%s %d %s delivered",
+        tostring(line.name or line.lineCid), tonumber(line.delivered) or 0,
+        tostring(line.cargoType or "cargo"))
+    else
+      lineParts[#lineParts + 1] = string.format("%s %d %s waiting",
+        tostring(line.name or line.lineCid), tonumber(line.waiting) or 0,
+        tostring(line.cargoType or "cargo"))
+    end
+  end
   return {
     title = "TPF2MP AUTHORITATIVE STATION " .. tostring(cid or ""),
-    primary = string.format("%s | %d waiting | %d passengers this 5m tick",
-      tostring(item.name or cid), tonumber(item.waiting) or 0, tonumber(item.throughput) or 0),
-    secondary = #lineParts > 0 and table.concat(lineParts, " | ") or "No authored passenger service",
-    tooltip = "Exact synchronized endpoint queues. The native StationGroupDisplay passenger/cargo agents are cosmetic and are hidden in multiplayer presentation.",
+    primary = string.format(
+      "%s | %d passengers + %d cargo waiting | %d cargo delivered | %d passengers this 5m tick",
+      tostring(item.name or cid), tonumber(passenger and passenger.waiting) or 0,
+      tonumber(freight and freight.waiting) or 0,
+      tonumber(freight and freight.delivered) or 0,
+      tonumber(passenger and passenger.throughput) or 0),
+    secondary = #lineParts > 0 and table.concat(lineParts, " | ") or "No authored service",
+    tooltip = "Exact synchronized passenger and cargo queues. Native station agents are cosmetic and hidden in multiplayer presentation.",
   }
 end
 
@@ -217,6 +251,8 @@ function M.toolbar(snapshot)
   local company = M.company(snapshot)
   local totals = snapshot and snapshot.passengerPresentation
     and snapshot.passengerPresentation.totals or {}
+  local cargoTotals = snapshot and snapshot.cargoPresentation
+    and snapshot.cargoPresentation.totals or {}
   return {
     accountNumber = company.balance ~= nil and M.accountNumber(company.balance) or "--",
     earningsLabel = "TPF2MP net/5m",
@@ -225,75 +261,24 @@ function M.toolbar(snapshot)
     passengerTooltip = string.format(
       "Authoritative passengers transported: %s. Current exact state: %s aboard, %s waiting.",
       grouped(totals.boarded or 0), grouped(totals.aboard or 0), grouped(totals.waiting or 0)),
+    transportedCargo = grouped(cargoTotals.boarded or 0),
+    cargoTooltip = string.format(
+      "Authoritative cargo loaded: %s. Current exact state: %s aboard, %s waiting, %s delivered.",
+      grouped(cargoTotals.boarded or 0), grouped(cargoTotals.aboard or 0),
+      grouped(cargoTotals.waiting or 0), grouped(cargoTotals.delivered or 0)),
   }
 end
 
-local function belongsToActive(snapshot, companyCid)
-  local active = snapshot and snapshot.activeCompanyCid
-  return active == nil or companyCid == nil or companyCid == active
-end
-
 function M.serviceList(snapshot, limit)
-  local view = snapshot and snapshot.economyPresentation or {}
-  local lines, omitted = {}, 0
-  for _, cid in ipairs(util.sortedKeys(view.services or {})) do
-    local service = view.services[cid]
-    if belongsToActive(snapshot, service.companyCid) then
-      if #lines < (limit or 10) then
-        lines[#lines + 1] = string.format("%s | %d delivered + %d pending | %s | %s net/5m",
-          tostring(service.name or cid), tonumber(service.delivered) or 0,
-          tonumber(service.pendingDelivered) or 0,
-          service.topSpeedKmh and (tostring(service.topSpeedKmh) .. " km/h") or "speed estimated",
-          M.moneyCents(service.netRevenueCents))
-      else omitted = omitted + 1 end
-    end
-  end
-  if #lines == 0 then lines[1] = "No registered authored services." end
-  if omitted > 0 then lines[#lines + 1] = string.format("... %d more in the Multiplayer panel", omitted) end
-  return table.concat(lines, "\n")
+  return lists.services(snapshot, limit, M.moneyCents)
 end
 
 function M.vehicleList(snapshot, limit)
-  local view = snapshot and snapshot.economyPresentation or {}
-  local passengerView = snapshot and snapshot.passengerPresentation or {}
-  local lines, omitted = {}, 0
-  for _, cid in ipairs(util.sortedKeys(view.vehicles or {})) do
-    local vehicle = view.vehicles[cid]
-    if belongsToActive(snapshot, vehicle.companyCid) then
-      if #lines < (limit or 10) then
-        local passenger = passengerView.vehicles and passengerView.vehicles[cid] or {}
-        lines[#lines + 1] = string.format("%s | %d/%d pax | %s/yr | %s",
-          tostring(passenger.name or cid), tonumber(passenger.aboard) or 0,
-          tonumber(passenger.capacity) or 0, M.moneyCents(vehicle.annualVehicleUpkeepCents),
-          tostring(passenger.lineName or vehicle.lineCid or "unassigned"))
-      else omitted = omitted + 1 end
-    end
-  end
-  if #lines == 0 then lines[1] = "No canonical vehicles." end
-  if omitted > 0 then lines[#lines + 1] = string.format("... %d more in the Multiplayer panel", omitted) end
-  return table.concat(lines, "\n")
+  return lists.vehicles(snapshot, limit, M.moneyCents)
 end
 
 function M.stationList(snapshot, limit)
-  local view = snapshot and snapshot.passengerPresentation or {}
-  local lines, omitted = {}, 0
-  for _, cid in ipairs(util.sortedKeys(view.stations or {})) do
-    local station = view.stations[cid]
-    local owned = false
-    for _, line in ipairs(station.lines or {}) do
-      if belongsToActive(snapshot, line.companyCid) then owned = true end
-    end
-    if owned then
-      if #lines < (limit or 10) then
-        lines[#lines + 1] = string.format("%s | %d waiting | %d passengers/5m",
-          tostring(station.name or cid), tonumber(station.waiting) or 0,
-          tonumber(station.throughput) or 0)
-      else omitted = omitted + 1 end
-    end
-  end
-  if #lines == 0 then lines[1] = "No authored passenger station boards." end
-  if omitted > 0 then lines[#lines + 1] = string.format("... %d more in the Multiplayer panel", omitted) end
-  return table.concat(lines, "\n")
+  return lists.stations(snapshot, limit)
 end
 
 return M

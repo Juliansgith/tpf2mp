@@ -181,6 +181,15 @@ local function ensureLine(state, economyState, lineCid, carryQueues)
   return record
 end
 
+local function removeInactiveVehicles(state, economyState)
+  for _, vehicleCid in ipairs(util.sortedKeys(state.vehicles)) do
+    local vehicle = state.vehicles[vehicleCid]
+    if not passengerService(economyState, vehicle.lineCid) then
+      state.vehicles[vehicleCid] = nil
+    end
+  end
+end
+
 -- Advances presentation demand exactly once per authored economy epoch. Old
 -- queues carry over as a visible backlog; onboard passengers keep riding to
 -- their destination, so a settlement never teleports a train empty.
@@ -191,6 +200,7 @@ function M.beginEpoch(value, economyState)
     for _, lineCid in ipairs(util.sortedKeys(economyState and economyState.services or {})) do
       ensureLine(state, economyState, lineCid, false)
     end
+    removeInactiveVehicles(state, economyState)
     return true, state
   end
   if epoch < state.epoch then return false, "passenger presentation epoch moved backwards" end
@@ -204,6 +214,7 @@ function M.beginEpoch(value, economyState)
   for lineCid in pairs(state.lines) do
     if not retained[lineCid] then state.lines[lineCid] = nil end
   end
+  removeInactiveVehicles(state, economyState)
   state.epoch = epoch
   return true, state
 end
@@ -215,6 +226,7 @@ function M.reconcileService(value, economyState, lineCid)
     if not ok then return false, err end
   end
   ensureLine(state, economyState, lineCid, false)
+  removeInactiveVehicles(state, economyState)
   return true, state.lines[lineCid]
 end
 
