@@ -19,6 +19,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         tracker_status = str(tracker.get("status", "pending"))
         if tracker_status in checkpoint_counts:
             checkpoint_counts[tracker_status] += 1
+    restore_plan_message = host.restore_plan_exchange.published_message()
     host.bridge.write_status({
         "role": "host",
         "status": host.status,
@@ -57,6 +58,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         **host.anchor.status(),
         **host.anchor_preparation.status(),
         **host.anchor_requests.status(),
+        **host.restore_plan_exchange.status(),
         **host.industry_content.status(),
         **host.industry_content_consensus.status(),
     })
@@ -64,3 +66,5 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         host.bridge.session, host.bridge.peer, host.anchor.readiness(),
         host.anchor_preparation.status(),
     ))
+    if restore_plan_message:
+        host._broadcast(restore_plan_message)

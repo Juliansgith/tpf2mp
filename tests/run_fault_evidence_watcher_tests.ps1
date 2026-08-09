@@ -68,7 +68,7 @@ try {
 
     $watcherStatusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
     $watcher = Get-Content -LiteralPath $watcherStatusPath -Raw | ConvertFrom-Json
-    if ($watcher.schemaVersion -ne 5 -or $watcher.status -ne 'stopped-game-exited') {
+    if ($watcher.schemaVersion -ne 6 -or $watcher.status -ne 'stopped-game-exited') {
         throw 'Fault watcher did not preserve its terminal status after capturing evidence.'
     }
     if ($watcher.lifetimeHours -ne 720 -or -not $watcher.expiresAtUtc) {

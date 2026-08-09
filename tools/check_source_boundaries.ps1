@@ -73,6 +73,8 @@ $budgets = [ordered]@{
     'companion\tpf2mp\restore_plan.py' = 180
     'companion\tpf2mp\native_save.py' = 70
     'companion\tpf2mp\session_identity.py' = 80
+    'companion\tpf2mp\restore_plan_exchange.py' = 120
+    'companion\tpf2mp\local_restore.py' = 140
     'companion\tpf2mp\recovery_receipt_protocol.py' = 70
     'companion\tpf2mp\consensus.py' = 300
     'companion\tpf2mp\synchronization.py' = 700
@@ -365,9 +367,19 @@ if (-not $hostSource.Contains('from .anchor_io import AnchorRequestStore')) {
 if (-not $hostSource.Contains('from .anchor_prepare import AnchorPreparationCoordinator')) {
     throw 'Companion host no longer composes the one-action anchor preparation boundary.'
 }
+if (-not $hostSource.Contains('from .restore_plan_exchange import RestorePlanExchange')) {
+    throw 'Companion host no longer composes verified restore-plan exchange.'
+}
 $clientSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\client.py') -Raw
 if (-not $clientSource.Contains('from .anchor_io import AnchorRequestStore')) {
     throw 'Companion client no longer composes the native-save request boundary.'
+}
+if (-not $clientSource.Contains('from .restore_plan_exchange import RestorePlanExchange')) {
+    throw 'Companion client no longer composes verified restore-plan exchange.'
+}
+$cliSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\cli.py') -Raw
+if (-not $cliSource.Contains('from .local_restore import latest_local_restore')) {
+    throw 'Companion CLI no longer composes verified local restore discovery.'
 }
 $intentSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua') -Raw

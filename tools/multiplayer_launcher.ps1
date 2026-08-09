@@ -23,7 +23,7 @@ $danger = [Drawing.Color]::FromArgb(229, 115, 115)
 
 $form = New-Object Windows.Forms.Form
 $form.Text = 'TPF2MP Multiplayer'
-$form.ClientSize = New-Object Drawing.Size(850, 770)
+$form.ClientSize = New-Object Drawing.Size(850, 805)
 $form.BackColor = $background
 $form.ForeColor = $textColor
 $form.Font = New-Object Drawing.Font('Segoe UI', 10)
@@ -200,23 +200,30 @@ $restoreButton.Size = New-Object Drawing.Size(210, 34)
 Style-LauncherButton $restoreButton
 $form.Controls.Add($restoreButton)
 
+$latestRestoreButton = New-Object Windows.Forms.Button
+$latestRestoreButton.Text = 'LOAD LATEST RESTORE'
+$latestRestoreButton.Location = New-Object Drawing.Point(464, 464)
+$latestRestoreButton.Size = New-Object Drawing.Size(210, 34)
+Style-LauncherButton $latestRestoreButton $true
+$form.Controls.Add($latestRestoreButton)
+
 $recoveryHint = New-Object Windows.Forms.Label
 $recoveryHint.Text = 'Archive a current save, or select a verified restore plan and then this peer''s attested save.'
 $recoveryHint.ForeColor = $muted
-$recoveryHint.Location = New-Object Drawing.Point(468, 466)
-$recoveryHint.Size = New-Object Drawing.Size(358, 34)
+$recoveryHint.Location = New-Object Drawing.Point(24, 505)
+$recoveryHint.Size = New-Object Drawing.Size(802, 34)
 $form.Controls.Add($recoveryHint)
 
 $statusLabel = New-Object Windows.Forms.Label
 $statusLabel.Text = 'Ready. Build 35924 is required for network mode.'
 $statusLabel.ForeColor = $accent
-$statusLabel.Location = New-Object Drawing.Point(24, 507)
+$statusLabel.Location = New-Object Drawing.Point(24, 542)
 $statusLabel.Size = New-Object Drawing.Size(802, 24)
 $statusLabel.TextAlign = 'MiddleLeft'
 $form.Controls.Add($statusLabel)
 
 $logBox = New-Object Windows.Forms.TextBox
-$logBox.Location = New-Object Drawing.Point(24, 539)
+$logBox.Location = New-Object Drawing.Point(24, 574)
 $logBox.Size = New-Object Drawing.Size(802, 195)
 $logBox.Multiline = $true
 $logBox.ReadOnly = $true
@@ -236,6 +243,7 @@ $script:workerStderrLength = 0
 $script:lastPeer = 'player1'
 $script:restorePlanPath = $null
 $script:restorePlanData = $null
+$script:restorePeer = $null
 
 function Append-LauncherLog([string]$Text) {
     if (-not $Text) { return }
@@ -247,6 +255,9 @@ function Append-LauncherLog([string]$Text) {
 function Clear-RestorePlanSelection([bool]$ClearSave = $true) {
     $script:restorePlanPath = $null
     $script:restorePlanData = $null
+    $script:restorePeer = $null
+    $hostButton.Enabled = $true
+    $joinButton.Enabled = $true
     $sessionBox.ReadOnly = $false
     $saveLabel.Text = 'Identical starting save (required for Host / Join)'
     if ($ClearSave) { $saveBox.Text = '' }
@@ -269,6 +280,9 @@ function Set-VerifiedRestorePlan([string]$Path) {
     $resumeSession = Assert-Tpf2mpSessionId ([string]$plan.resumeSession)
     $script:restorePlanPath = $resolved
     $script:restorePlanData = $plan
+    $script:restorePeer = $null
+    $hostButton.Enabled = $true
+    $joinButton.Enabled = $true
     $sessionBox.Text = $resumeSession
     $sessionBox.ReadOnly = $true
     $saveBox.Text = ''
@@ -331,6 +345,7 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
     $evidenceButton.Enabled = $false
     $archiveButton.Enabled = $false
     $restoreButton.Enabled = $false
+    $latestRestoreButton.Enabled = $false
     $statusLabel.Text = "$Name running..."
     Append-LauncherLog "Started $Name (PID $($script:worker.Id))."
 }
@@ -375,8 +390,46 @@ $restoreButton.Add_Click({
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot select restore plan') | Out-Null }
 })
 
+$latestRestoreButton.Add_Click({
+    try {
+        $candidates = @{}
+        foreach ($peer in @('player1', 'player2')) {
+            try { $candidates[$peer] = Get-Tpf2mpLatestLocalRestore -BundleRoot $bundle -Peer $peer }
+            catch { }
+        }
+        if ($candidates.Count -eq 0) {
+            throw 'No complete receipt-bound local restore was found. Both peers must first save the same READY boundary.'
+        }
+        $peer = @($candidates.Keys)[0]
+        if ($candidates.Count -eq 2) {
+            $choice = [Windows.Forms.MessageBox]::Show(
+                'Load the Host/player1 restore? Choose No for Join/player2.',
+                'Choose restore role',
+                [Windows.Forms.MessageBoxButtons]::YesNoCancel,
+                [Windows.Forms.MessageBoxIcon]::Question
+            )
+            if ($choice -eq [Windows.Forms.DialogResult]::Cancel) { return }
+            $peer = if ($choice -eq [Windows.Forms.DialogResult]::Yes) { 'player1' } else { 'player2' }
+        }
+        $candidate = $candidates[$peer]
+        Set-VerifiedRestorePlan ([string]$candidate.planPath)
+        $saveBox.Text = [string]$candidate.savePath
+        $script:lastPeer = $peer
+        $script:restorePeer = $peer
+        $hostButton.Enabled = $peer -eq 'player1'
+        $joinButton.Enabled = $peer -eq 'player2'
+        $role = if ($peer -eq 'player1') { 'Host' } else { 'Join' }
+        $recoveryHint.Text = "$role restore ready at boundary $($candidate.boundarySeq). Click $role + Launch Game."
+        Append-LauncherLog "Loaded latest verified $peer restore from $($candidate.archivedAtUtc)."
+    }
+    catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot load latest restore') | Out-Null }
+})
+
 $hostButton.Add_Click({
     try {
+        if ($script:restorePeer -and $script:restorePeer -ne 'player1') {
+            throw 'The loaded automatic restore belongs to Join/player2.'
+        }
         $input = Get-ValidatedInputs $true
         $script:lastPeer = 'player1'
         $args = @('-Role', 'Host', '-Session', $input.Session, '-Port', $input.Port,
@@ -390,6 +443,9 @@ $hostButton.Add_Click({
 
 $joinButton.Add_Click({
     try {
+        if ($script:restorePeer -and $script:restorePeer -ne 'player2') {
+            throw 'The loaded automatic restore belongs to Host/player1.'
+        }
         $input = Get-ValidatedInputs $true
         $hostAddress = $hostBox.Text.Trim()
         if ($hostAddress -notmatch '^[A-Za-z0-9.:-]{1,253}$') { throw 'Enter a valid LAN/VPN host address.' }
@@ -537,14 +593,15 @@ $timer.Add_Tick({
                 $statusLabel.Text = "Task failed (exit $($script:worker.ExitCode)); see log."
             }
             $script:worker = $null
-            $hostButton.Enabled = $true
-            $joinButton.Enabled = $true
+            $hostButton.Enabled = -not $script:restorePeer -or $script:restorePeer -eq 'player1'
+            $joinButton.Enabled = -not $script:restorePeer -or $script:restorePeer -eq 'player2'
             $localhostButton.Enabled = $true
             $operationalButton.Enabled = $true
             $manualLabCheck.Enabled = $true
             $evidenceButton.Enabled = $true
             $archiveButton.Enabled = $true
             $restoreButton.Enabled = $true
+            $latestRestoreButton.Enabled = $true
         }
     }
     try {

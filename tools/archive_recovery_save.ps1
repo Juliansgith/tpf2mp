@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer,
     [Parameter(Mandatory = $true)][string]$SavePath,
     [string]$RecoveryPlanPath,
+    [ValidateRange(0, 2147483647)][int]$BoundarySeq = 0,
+    [switch]$PendingReceipt,
     [string]$BundleRoot
 )
 
@@ -19,6 +21,15 @@ New-Item -ItemType Directory -Force -Path $sessionRoot | Out-Null
 $state = Read-Tpf2mpSessionState $safeSession $Peer
 $companion = Get-Tpf2mpCompanionCommand $bundle
 
+function Get-RecoveryBoundary([object]$Plan) {
+    if ($Plan.PSObject.Properties['boundarySeq']) { return [int]$Plan.boundarySeq }
+    if ($Plan.PSObject.Properties['anchor'] `
+        -and $Plan.anchor.PSObject.Properties['boundarySeq']) {
+        return [int]$Plan.anchor.boundarySeq
+    }
+    return 0
+}
+
 function Invoke-RecoveryCompanion([object[]]$Arguments) {
     $previousPythonPath = $env:PYTHONPATH
     if ($companion.Mode -eq 'source') { $env:PYTHONPATH = Join-Path $bundle 'companion' }
@@ -33,11 +44,18 @@ $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
 $recoveryRoot = Join-Path $sessionRoot 'recovery'
 New-Item -ItemType Directory -Force -Path $recoveryRoot | Out-Null
 $resolvedPlan = $null
+$resolvedPlanData = $null
 if ($RecoveryPlanPath) {
     $resolvedPlan = Resolve-Tpf2mpFullPath $RecoveryPlanPath
     if (-not (Test-Path -LiteralPath $resolvedPlan -PathType Leaf)) {
         throw "Recovery plan is missing: $resolvedPlan"
     }
+    $resolvedPlanData = Get-Content -LiteralPath $resolvedPlan -Raw | ConvertFrom-Json
+    $planBoundary = Get-RecoveryBoundary $resolvedPlanData
+    if ($BoundarySeq -gt 0 -and $planBoundary -ne $BoundarySeq) {
+        throw 'Recovery archive boundary differs from its supplied restore plan.'
+    }
+    $BoundarySeq = $planBoundary
 }
 elseif ($state -and $state.bridgePath) {
     $audit = Join-Path ([string]$state.bridgePath) "audit\$safeSession.ndjson"
@@ -75,6 +93,15 @@ elseif ($state -and $state.bridgePath) {
         }
     }
 }
+if ($resolvedPlan -and -not $resolvedPlanData) {
+    $resolvedPlanData = Get-Content -LiteralPath $resolvedPlan -Raw | ConvertFrom-Json
+    if ($BoundarySeq -eq 0) {
+        $BoundarySeq = Get-RecoveryBoundary $resolvedPlanData
+    }
+}
+if ($PendingReceipt -and $BoundarySeq -le 0) {
+    throw 'A pending receipt archive requires an exact positive boundary.'
+}
 
 $safeSaveName = ([IO.Path]::GetFileNameWithoutExtension($source.save) -replace '[^A-Za-z0-9._-]', '_')
 if (-not $safeSaveName) { $safeSaveName = 'native-save' }
@@ -89,19 +116,34 @@ if ($resolvedPlan) { $arguments += @('--recovery-plan', $resolvedPlan) }
 Invoke-RecoveryCompanion -Arguments $arguments
 $manifestPath = Join-Path $archiveDirectory 'archive-manifest.json'
 Invoke-RecoveryCompanion -Arguments @('verify-recovery-archive', $manifestPath, '--archive-dir', $archiveDirectory)
+$verifiedManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+$promotedRestorePoint = [string]$verifiedManifest.association `
+    -eq 'coordinated-receipt-bound-restore-save'
 
 $pointer = [ordered]@{
-    schemaVersion = 1
+    schemaVersion = 2
     session = $safeSession
     peer = $Peer
     archiveDirectory = $archiveDirectory
     manifestPath = $manifestPath
     manifestSha256 = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
     recoveryPlanPath = $resolvedPlan
+    recoveryPlanChecksum = if ($resolvedPlanData) { [string]$resolvedPlanData.checksum } else { $null }
+    boundarySeq = if ($BoundarySeq -gt 0) { $BoundarySeq } else { $null }
+    association = [string]$verifiedManifest.association
+    promotedRestorePoint = $promotedRestorePoint
     sourceSave = $source.save
     archivedAtUtc = [DateTime]::UtcNow.ToString('o')
 }
-$pointerPath = Join-Path $sessionRoot 'latest-recovery-archive.json'
-$pointer | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $pointerPath -Encoding UTF8
+$pointerName = if ($PendingReceipt) {
+    "pending-recovery-archive-b$BoundarySeq.json"
+} elseif ($promotedRestorePoint) {
+    'latest-recovery-archive.json'
+} else { 'latest-recovery-candidate.json' }
+$pointerPath = Join-Path $sessionRoot $pointerName
+$temporaryPointer = $pointerPath + '.tmp-' + [guid]::NewGuid().ToString('N')
+[IO.File]::WriteAllText($temporaryPointer, ($pointer | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+Move-Item -LiteralPath $temporaryPointer -Destination $pointerPath -Force
 Write-Host "Recovery archive ready: $archiveDirectory"
+$pointer['pointerPath'] = $pointerPath
 $pointer | ConvertTo-Json -Depth 6

@@ -51,7 +51,7 @@ and convergence key.
 
 The game and watcher poll the same companion status independently. A fast save
 can finish just before the watcher's first READY observation. To avoid losing
-that valid file, schema-5 watcher state admits only the *exact* automatic name
+that valid file, schema-6 watcher state admits only the *exact* automatic name
 inside a small pre-observation grace window of `max(4, 2 * pollSeconds)`.
 Arbitrary correctly prefixed manual fallback saves must still be created after
 the watcher observes READY. This does not broaden restore authority: stability,
@@ -82,6 +82,10 @@ first-fault/retry fixtures continue to pass.
 No game process was launched for this slice. `SaveGame` is known from the exact
 Build 35924 command table and public/mirrored command factory, but the automatic
 end-to-end path is not described as live-proven yet.
+
+The subsequent automatic handoff slice distributes the resulting verified plan
+to player2 and gives the launcher strict local discovery; see
+[automatic restore-plan handoff](AUTOMATIC_RESTORE_PLAN_HANDOFF_2026-08-09.md).
 
 ## Next live gate
 

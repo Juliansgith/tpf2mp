@@ -283,6 +283,8 @@ captured table reference would therefore mutate stale state after loading.
   machine and fences new ordered work while it manufactures a save boundary.
 - `restore_session.py` owns receipt-bound resume admission and the mandatory
   fresh-checkpoint fence; `host_status.py` owns the public companion projection.
+- `restore_plan_exchange.py` owns fail-closed host publication, pinned-link
+  delivery, late-client replay, and durable client receipt of a verified plan.
 - `network.py` owns host ordering, prepare/physical/checkpoint consensus, and
   re-exports `CommitClient` for compatibility.
 - `consensus.py` owns tracker construction, deadlines, pending selection, and
@@ -299,13 +301,17 @@ captured table reference would therefore mutate stale state after loading.
   `native_save.py` owns stable `.sav`/`.sav.lua` hashing; v4 binds both plus the
   source match profile. `session_identity.py` and the matching Lua
   `restore_session_identity.lua` keep derived resume identities portable and
-  within the launcher's 64-character boundary. `audit_replay.py` owns whole-audit ordering, physical
+  within the launcher's 64-character boundary. `local_restore.py` admits only a
+  contained, receipt-bound, peer-specific plan/archive/save set for launcher
+  discovery. `audit_replay.py` owns whole-audit ordering, physical
   consensus, checkpoint, and digest-chain verification; `cli.py` is only the
   command dispatcher.
 - The long-running `watch_recovery_saves.ps1` process waits for the stable
   automatically named native save (or a correctly prefixed manual fallback),
   hands its hash to the ordered receipt path, passes the session's exact
-  match-content profile into host plan generation, and also owns a strictly local
+  match-content profile into host plan generation, atomically publishes the
+  host plan, and re-binds player2's retained local archive after verified
+  delivery. It also owns a strictly local
   one-shot first-fault trigger. `collect_live_evidence.ps1` owns immutable
   bridge copying, copied-audit replay, bounded session-log tails, native status,
   and source/install fingerprints; neither tool mutates authority or performs

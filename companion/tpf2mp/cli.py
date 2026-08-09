@@ -13,6 +13,7 @@ from .freight_live_report import configure_cli as configure_freight_live_cli
 from .freight_live_report import run_cli as run_freight_live_cli
 from .manifest import build_manifest, load_manifest, write_manifest
 from .network import CommitClient, CommitHost
+from .local_restore import latest_local_restore
 from .passenger_feeder_live_report import (
     configure_cli as configure_passenger_feeder_live_cli,
 )
@@ -149,6 +150,12 @@ def parser() -> argparse.ArgumentParser:
     )
     verify_archive.add_argument("manifest", type=Path)
     verify_archive.add_argument("--archive-dir", type=Path)
+
+    latest_restore = commands.add_parser(
+        "latest-local-restore", help="find the newest verified peer-specific restore archive"
+    )
+    latest_restore.add_argument("--sessions-root", type=Path, required=True)
+    latest_restore.add_argument("--peer", choices=("player1", "player2"), required=True)
     return result
 
 
@@ -283,6 +290,11 @@ def main(argv: list[str] | None = None) -> int:
             verified = verify_recovery_archive(manifest, archive_directory)
             print(f"recovery_archive_valid={Path(archive_directory).resolve()}")
             print(f"association={verified['association']}")
+        elif args.command == "latest-local-restore":
+            print(json.dumps(
+                latest_local_restore(args.sessions_root, args.peer),
+                sort_keys=True, separators=(",", ":"),
+            ))
         return 0
     except (OSError, ProtocolError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)

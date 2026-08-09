@@ -146,6 +146,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Automatic first-fault evidence watcher test failed' }
 
+    & (Join-Path $projectRoot 'tests\run_recovery_archive_pointer_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Recovery archive pointer promotion test failed' }
+
     . (Join-Path $projectRoot 'tools\network_common.ps1')
     $identityCases = @(
         @('tpf2mp.exe host --session match-1 --peer player1 --port 29742', 'match-1', 'player1', $true),

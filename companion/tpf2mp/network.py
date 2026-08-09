@@ -24,6 +24,7 @@ from .host_intents import HostIntentMixin
 from .industry_content import IndustryContentConsensus, IndustryContentCoordinator
 from .synchronization import SynchronizationCoordinator
 from .restore_session import RestoreSessionCoordinator
+from .restore_plan_exchange import RestorePlanExchange
 from .protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -112,6 +113,7 @@ class CommitHost(HostIntentMixin):
         self.anchor = AnchorCoordinator(self)
         self.anchor_preparation = AnchorPreparationCoordinator(self)
         self.anchor_requests = AnchorRequestStore(self.bridge)
+        self.restore_plan_exchange = RestorePlanExchange(self.bridge)
         self.industry_content = IndustryContentCoordinator(self.bridge)
         self.industry_content_consensus = IndustryContentConsensus(self)
         # Negative host sequences stay disjoint from unbounded positive game sequences.
@@ -1379,6 +1381,8 @@ class CommitHost(HostIntentMixin):
             for seq in sorted(self.commits):
                 if seq > last_commit:
                     _send(conn, self.commits[seq], connected.send_lock)
+            restore_plan_message = self.restore_plan_exchange.published_message(force=True)
+            if restore_plan_message: _send(conn, restore_plan_message, connected.send_lock)
             print(f"client {peer_name} connected from {address[0]}:{address[1]}")
             while not self.stop.is_set():
                 message = _read_frame(reader)

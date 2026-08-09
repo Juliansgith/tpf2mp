@@ -662,15 +662,18 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   restore authority by itself. Distinct ordered receipts remain mandatory. The
   runtime and watcher's exact-name READY-poll
   race are offline-proven; the two-live-process capture is not yet proved.
-  The launcher can verify/select a restore plan, locks its resume session, and
-  passes each peer's selected attested save through hash verification. Startup
+  The host now atomically publishes that verified plan over the pinned companion
+  link; a late client receives it on connect, and player2 verifies and durably
+  re-archives its retained local save against the exact plan. The launcher can
+  manually select a plan or discover the newest complete peer-local plan/archive,
+  locks its resume session, and passes the attested save through hash verification. Startup
   adopts a current plan's agent/town-development policy and rejects explicit
   conflicts. Automatic no-dialog rollback/relaunch and live proof remain open.
 - Normal Host/Join now installs a real `MULTIPLAYER` title-screen entry. The
   game remains idle until the player selects it; selection is receipted, then
   the byte-pinned save is loaded and the session proceeds. Disposable production
   session `menu-production3-20260803` proved that entire path.
-- The launcher provides Host, Join, verified restore selection, automated Localhost Test, local-only
+- The launcher provides Host, Join, verified/manual and one-click latest-local restore selection, automated Localhost Test, local-only
   Populated Capture Lab, fingerprints, status/logs, evidence collection, and
   exact-session stop controls.
 - `start_freight_live_acceptance.ps1` now starts a clean 50M-per-company manual
@@ -700,7 +703,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 117 mod Lua and 8 investigation/tool Lua syntax checks;
   - 44 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 140 Python protocol/network/checkpoint/recovery/report tests;
+  - 143 Python protocol/network/checkpoint/recovery/report tests;
   - functional first-fault watcher/real-bundle fixtures, including the
     already-exited-game ordering case and the automatic-save READY-poll race.
 
@@ -750,8 +753,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   growth and canonical industry production are implemented; this open item is
   native physical presentation plus live proof of movement between the already
   authored freight ledgers.
-- Two-live-process proof of READY-gated automatic native save capture; automatic
-  two-peer rollback/relaunch; host migration; authentication/encryption; or
+- Two-live-process proof of READY-gated automatic native save capture, verified
+  plan delivery, receipt-bound player2 re-archive, and one-click reload; automatic
+  process relaunch; host migration; authentication/encryption; or
   hostile-Internet deployment.
 - Live automatic-economy proof with a freshly purchased consist and newly built
   infrastructure; balance, pre-existing-save cost-basis policy, broader vehicle

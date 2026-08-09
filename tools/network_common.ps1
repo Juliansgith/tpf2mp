@@ -48,6 +48,33 @@ function Get-Tpf2mpCompanionCommand {
     return [pscustomobject]@{ FilePath = $python; Prefix = @($entrypoint); Mode = 'source' }
 }
 
+function Get-Tpf2mpLatestLocalRestore {
+    param(
+        [Parameter(Mandatory = $true)][string]$BundleRoot,
+        [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer
+    )
+    $sessionsRoot = Join-Path (Get-Tpf2mpSupportRoot) 'sessions'
+    $companion = Get-Tpf2mpCompanionCommand $BundleRoot
+    $previousPythonPath = $env:PYTHONPATH
+    if ($companion.Mode -eq 'source') {
+        $env:PYTHONPATH = Join-Path (Resolve-Tpf2mpFullPath $BundleRoot) 'companion'
+    }
+    try {
+        $output = @(& $companion.FilePath @($companion.Prefix + @(
+            'latest-local-restore', '--sessions-root', $sessionsRoot, '--peer', $Peer
+        )) 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "No verified local restore is ready for ${Peer}: $($output -join ' ')"
+        }
+    }
+    finally { $env:PYTHONPATH = $previousPythonPath }
+    $candidate = ($output -join "`n") | ConvertFrom-Json
+    if ($candidate.peer -ne $Peer -or -not $candidate.planPath -or -not $candidate.savePath) {
+        throw 'Local restore discovery returned an incomplete or wrong-peer candidate.'
+    }
+    return $candidate
+}
+
 function Get-Tpf2mpNativePaths {
     param([Parameter(Mandatory = $true)][string]$BundleRoot)
     $bundle = Resolve-Tpf2mpFullPath $BundleRoot

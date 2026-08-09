@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import socket
@@ -9,6 +10,7 @@ import threading
 import time
 import unittest
 import zlib
+from contextlib import redirect_stdout
 from unittest import mock
 from pathlib import Path
 
@@ -45,6 +47,7 @@ from tpf2mp.aboard_witness import verify_aboard_witness
 from tpf2mp.passenger_feeder_live_report import analyse_passenger_feeder_audit
 from tpf2mp.cli import main as companion_main, replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
+from tpf2mp.local_restore import latest_local_restore
 from tpf2mp.industry_content import (
     IndustryContentCoordinator,
     build_registry as build_industry_registry,
@@ -78,6 +81,7 @@ from tpf2mp.restore import (
     verify_restore_plan,
 )
 from tpf2mp.session_identity import derive_resume_session, validate_session_id
+from tpf2mp.restore_plan_exchange import RestorePlanExchange
 
 
 def wait_for(predicate, timeout: float = 5.0) -> bool:
@@ -87,6 +91,35 @@ def wait_for(predicate, timeout: float = 5.0) -> bool:
             return True
         time.sleep(0.025)
     return False
+
+
+def current_restore_plan(session: str, boundary: int = 9) -> dict:
+    save = {
+        "saveSha256": "a" * 64, "metadataSha256": "b" * 64,
+        "savedAtUnix": 1000, "receiptCommitSeq": boundary + 1,
+        "boundarySeq": boundary, "coreDigest": f"core-{boundary}",
+        "convergenceKey": f"key-{boundary}",
+    }
+    return sign({
+        "format": "tpf2mp-restore-plan", "version": 4, "protocol": 1,
+        "session": session,
+        "resumeSession": derive_resume_session(session, boundary),
+        "generatedAtUtc": "2026-08-09T00:00:00+00:00",
+        "boundarySeq": boundary, "convergenceKey": f"key-{boundary}",
+        "coreDigest": f"core-{boundary}",
+        "requiredPeers": ["player1", "player2"],
+        "peerSaves": {
+            "player1": save,
+            "player2": {
+                **save, "saveSha256": "c" * 64, "metadataSha256": "d" * 64,
+                "receiptCommitSeq": boundary + 2,
+            },
+        },
+        "matchContentProfile": {
+            "schemaVersion": 1, "agentMode": "skeleton", "townDevelopment": False,
+        },
+        "steps": ["restore both peers"],
+    })
 
 
 def available_port() -> int:
@@ -5023,6 +5056,119 @@ class RecoveryArchiveTests(unittest.TestCase):
                 )
 
 
+class RestorePlanExchangeTests(unittest.TestCase):
+    def test_verified_plan_is_delivered_once_and_durably_received(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "plan-exchange"
+            host_exchange = RestorePlanExchange(
+                GameBridge(root / "host", session, "player1")
+            )
+            client_exchange = RestorePlanExchange(
+                GameBridge(root / "client", session, "player2")
+            )
+            plan = current_restore_plan(session)
+            atomic_write(
+                host_exchange.published_path,
+                (canonical_json(plan) + "\n").encode("utf-8"),
+            )
+            message = host_exchange.published_message()
+            self.assertIsNotNone(message)
+            self.assertIsNone(host_exchange.published_message())
+            received = client_exchange.accept(message)
+            self.assertEqual(received["checksum"], plan["checksum"])
+            self.assertEqual(
+                json.loads(client_exchange.received_path.read_text(encoding="utf-8")),
+                plan,
+            )
+            self.assertEqual(
+                client_exchange.received_path.read_bytes(),
+                host_exchange.published_path.read_bytes(),
+            )
+            self.assertEqual(
+                client_exchange.status()["receivedRestorePlanChecksum"], plan["checksum"],
+            )
+
+            wrong_peer = dict(message)
+            wrong_peer.pop("checksum")
+            wrong_peer["peer"] = "player2"
+            with self.assertRaisesRegex(ProtocolError, "malformed"):
+                client_exchange.accept(sign(wrong_peer))
+
+            wrong_session = current_restore_plan("another-session")
+            atomic_write(
+                host_exchange.published_path,
+                (canonical_json(wrong_session) + "\n").encode("utf-8"),
+            )
+            self.assertIsNone(host_exchange.published_message(force=True))
+            self.assertIn("different source session", host_exchange.last_error)
+
+
+class LocalRestoreDiscoveryTests(unittest.TestCase):
+    def test_newest_valid_peer_archive_is_discovered_and_cli_encoded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sessions = root / "sessions"
+            session = "discover-valid"
+            peer_root = sessions / session / "player1"
+            recovery = peer_root / "recovery"
+            recovery.mkdir(parents=True)
+            source = root / "source.sav"
+            source.write_bytes(b"receipt-bound-world")
+            metadata = Path(str(source) + ".lua")
+            metadata.write_text("return { boundary = 9 }", encoding="utf-8")
+            hashes = hash_load_bearing_save(source)
+            plan = current_restore_plan(session)
+            plan.pop("checksum")
+            plan["peerSaves"]["player1"].update({
+                "saveSha256": hashes["saveSha256"],
+                "metadataSha256": hashes["metadataSha256"],
+            })
+            plan = sign(plan)
+            plan_path = recovery / "restore-plan.json"
+            atomic_write(plan_path, (canonical_json(plan) + "\n").encode("utf-8"))
+            archive = recovery / "archive"
+            write_recovery_archive(source, archive, session, "player1", plan)
+            manifest_path = archive / "archive-manifest.json"
+            pointer = {
+                "schemaVersion": 1, "session": session, "peer": "player1",
+                "archiveDirectory": str(archive), "manifestPath": str(manifest_path),
+                "manifestSha256": sha256_file(manifest_path),
+                "recoveryPlanPath": str(plan_path), "sourceSave": str(source),
+                "archivedAtUtc": "2026-08-09T12:00:00+00:00",
+            }
+            atomic_write(
+                peer_root / "latest-recovery-archive.json",
+                (json.dumps(pointer) + "\n").encode("utf-8"),
+            )
+
+            invalid_root = sessions / "discover-newer-invalid" / "player1"
+            invalid_root.mkdir(parents=True)
+            invalid_pointer = dict(pointer)
+            invalid_pointer.update({
+                "session": "discover-newer-invalid",
+                "recoveryPlanPath": str(root / "escaped-plan.json"),
+                "archivedAtUtc": "2026-08-09T13:00:00+00:00",
+            })
+            atomic_write(
+                invalid_root / "latest-recovery-archive.json",
+                (json.dumps(invalid_pointer) + "\n").encode("utf-8"),
+            )
+
+            latest = latest_local_restore(sessions, "player1")
+            self.assertEqual(latest["session"], session)
+            self.assertEqual(latest["planChecksum"], plan["checksum"])
+            self.assertTrue(Path(latest["savePath"]).is_file())
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = companion_main([
+                    "latest-local-restore", "--sessions-root", str(sessions),
+                    "--peer", "player1",
+                ])
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(output.getvalue())["savePath"], latest["savePath"])
+
+
 class NetworkIntegrationTests(unittest.TestCase):
     @staticmethod
     def _settlement_intent(session: str, local_seq: int) -> dict:
@@ -6973,6 +7119,51 @@ class NetworkIntegrationTests(unittest.TestCase):
             host.stop.set()
             client_thread.join(2)
             host_thread.join(2)
+
+    def test_restore_plan_replays_to_a_client_connecting_after_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "socket-restore-plan"
+            host_bridge = GameBridge(root / "host", session, "player1")
+            client_bridge = GameBridge(root / "client", session, "player2")
+            port = available_port()
+            host = CommitHost(host_bridge, "127.0.0.1", port, root / "audit.ndjson", "same")
+            client = CommitClient(client_bridge, "127.0.0.1", port, "same")
+            plan = current_restore_plan(session)
+            atomic_write(
+                host.restore_plan_exchange.published_path,
+                (canonical_json(plan) + "\n").encode("utf-8"),
+            )
+            host_thread = threading.Thread(
+                target=host.run, kwargs={"poll_seconds": 0.01}, daemon=True,
+            )
+            client_thread = threading.Thread(
+                target=client.run,
+                kwargs={"poll_seconds": 0.01, "retry_seconds": 0.05}, daemon=True,
+            )
+            host_thread.start()
+            try:
+                self.assertTrue(wait_for(
+                    lambda: host.restore_plan_exchange.last_published_checksum
+                    == plan["checksum"]
+                ))
+                client_thread.start()
+                self.assertTrue(wait_for(
+                    lambda: client.restore_plan_exchange.received_path.is_file()
+                ))
+                received = json.loads(
+                    client.restore_plan_exchange.received_path.read_text(encoding="utf-8")
+                )
+                self.assertEqual(received["checksum"], plan["checksum"])
+                self.assertEqual(
+                    client.restore_plan_exchange.last_received_checksum, plan["checksum"]
+                )
+            finally:
+                client.stop.set()
+                host.stop.set()
+                if client_thread.ident is not None:
+                    client_thread.join(2)
+                host_thread.join(2)
 
     def test_client_save_request_becomes_an_ordered_peer_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

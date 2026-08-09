@@ -8,6 +8,7 @@ from .bridge import GameBridge
 from .anchor_io import AnchorRequestStore, validate_anchor_state
 from .industry_content import IndustryContentCoordinator
 from .protocol import ProtocolError, hello, validate_envelope
+from .restore_plan_exchange import RestorePlanExchange
 from .transport import read_frame as _read_frame, send as _send
 
 class CommitClient:
@@ -29,6 +30,7 @@ class CommitClient:
         self.next_host_seq: int | None = None
         self.anchor_state: dict[str, object] | None = None
         self.anchor_requests = AnchorRequestStore(self.bridge)
+        self.restore_plan_exchange = RestorePlanExchange(self.bridge)
         self.industry_content = IndustryContentCoordinator(self.bridge)
 
     def _write_status(self, status: str | None = None) -> None:
@@ -59,6 +61,7 @@ class CommitClient:
                 "anchorPreparationCheckpointSeq": anchor.get("preparationCheckpointSeq"),
                 "anchorPreparationDetail": anchor.get("preparationDetail"),
                 **self.anchor_requests.status(),
+                **self.restore_plan_exchange.status(),
                 **self.industry_content.status(),
             }
         )
@@ -105,6 +108,8 @@ class CommitClient:
                         self.bridge.write_inbound(message)
                     elif message.get("kind") == "anchor_state":
                         self.anchor_state = validate_anchor_state(message)
+                    elif message.get("kind") == "restore_plan":
+                        self.restore_plan_exchange.accept(message)
                     elif message.get("kind") == "receipt":
                         if str(message.get("recipient")) != self.bridge.peer:
                             raise ProtocolError("receipt was addressed to another peer")

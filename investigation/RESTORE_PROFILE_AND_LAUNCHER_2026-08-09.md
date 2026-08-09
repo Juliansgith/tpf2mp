@@ -84,8 +84,9 @@ also binds `.sav.lua`; see
 ## Remaining live gate
 
 Create one automatic restore point in a populated two-process network match,
-close both games, distribute the host's v4 plan, and use the launcher picker on
-both machines. Host must select player1's attested save and Join player2's.
+close both games, prove the host's v4 plan is delivered and player2 re-archives
+against it, then use **LOAD LATEST RESTORE** on both machines. Host must discover
+player1's attested save and Join player2's.
 Verify that both load, the restore checkpoint converges, the saved agent/town
 policy is retained, and trains/freight resume. Repeat once with a deliberately
 wrong peer save and once with an explicit conflicting script parameter; both
