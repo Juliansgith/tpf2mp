@@ -17,6 +17,8 @@ local economyServiceQuarantine = require "tpf2_mp/economy_service_quarantine"
 local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
 local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
+local freightIndustryModel = require "tpf2_mp/freight_industry_model"
+local freightIndustryRuntime = require "tpf2_mp/freight_industry_runtime"
 local validationContentGate = require "tpf2_mp/validation_content_gate"
 local worldIndustryReading = require "tpf2_mp/world_industry_reading"
 local corridorBindingModule = require "tpf2_mp/corridor_binding"
@@ -320,11 +322,16 @@ test("live industry reader binds construction roots to captured recipes", functi
       streetConnectorSystem = { getConstructionEntityForSimBuilding = callableRoot },
     } },
   }
+  local canonicalBinding = "industry:pre:steel"
   local reader = worldIndustryReading.new({
     getApi = function() return currentApi end,
     getGame = function() return currentGame end,
     entityNumber = tonumber,
     resourceFacts = industryResourceFacts,
+    listIndustries = function() return { 77 } end,
+    resolveCanonical = function(_, localId)
+      if localId == 77 then return canonicalBinding end
+    end,
     getRuntimeIdentity = function() return {
       root = tempRoot, peerId = "player1", sessionId = "industry-reader-test",
     } end,
@@ -340,6 +347,16 @@ test("live industry reader binds construction roots to captured recipes", functi
   equal(bound.rootSource, "streetConnectorSystem")
   equal(bound.recipe.inputs[1][2].cargoType, "COAL")
   equal(bound.recipe.outputs[1].cargoType, "STEEL")
+  local portable = assert(reader.portableFacts({}))
+  equal(#portable, 1)
+  equal(portable[1].cid, "industry:pre:steel")
+  equal(portable[1].recipeDigest, bound.recipe.digest)
+  equal(portable[1].constructionId, nil, "local construction id escaped portable facts")
+  canonicalBinding = nil
+  local missingPortable, portableError = reader.portableFacts({})
+  equal(missingPortable, nil)
+  truthy(tostring(portableError):find("canonical binding", 1, true))
+  canonicalBinding = "industry:pre:steel"
 
   -- If the convenience system is absent, Build 35924 exposes the same root
   -- through SIM_BUILDING.stockList.
@@ -357,6 +374,226 @@ test("live industry reader binds construction roots to captured recipes", functi
   }
   local fallback = assert(reader.recipeForIndustry(77))
   equal(fallback.rootSource, "SIM_BUILDING.stockList")
+end)
+
+local function freightFixture(cid, resource, capacity, stocks, inputs, outputs, params)
+  local recipe = {
+    cid = cid, resource = resource, params = params or {}, capacity = capacity,
+    stocks = stocks or {}, inputs = inputs, outputs = outputs or {},
+  }
+  recipe.recipeDigest = hash.value({
+    resource = recipe.resource, params = recipe.params, stocks = recipe.stocks,
+    inputs = recipe.inputs, outputs = recipe.outputs, capacity = recipe.capacity,
+  })
+  return recipe
+end
+
+local function freightFixtures()
+  return {
+    freightFixture("industry:pre:a-farm", "industry/farm.con", 120,
+      {}, { {} }, { { cargoType = "GRAIN", amount = 1 } }, { productionLevel = 0 }),
+    freightFixture("industry:pre:b-mill", "industry/food_processing_plant.con", 60,
+      { { index = 0, cargoType = "GRAIN", stockType = "RECEIVING", moreCapacity = 100 } },
+      { { { stockIndex = 0, cargoType = "GRAIN", amount = 2 } } },
+      { { cargoType = "FOOD", amount = 1 } }, { productionLevel = 0 }),
+    freightFixture("industry:pre:c-consumer", "mod/consumer.con", 60,
+      { { index = 0, cargoType = "FOOD", stockType = "RECEIVING", moreCapacity = 0 } },
+      { { { stockIndex = 0, cargoType = "FOOD", amount = 1 } } }, {}, {}),
+  }
+end
+
+test("freight industries bootstrap, produce, consume, and migrate deterministically", function()
+  local action = assert(freightIndustryModel.bootstrapAction("edc7a517", 4, freightFixtures()))
+  local valid, rebuilt = freightIndustryModel.validateBootstrapAction(action)
+  truthy(valid)
+  equal(rebuilt.digest, action.digest)
+  local tampered = util.deepCopy(action)
+  tampered.industries[1].outputs[1].amount = 2
+  local accepted, tamperError = freightIndustryModel.validateBootstrapAction(tampered)
+  equal(accepted, false)
+  truthy(tostring(tamperError):find("recipe digest", 1, true))
+
+  local state = freightIndustryModel.newState()
+  truthy(freightIndustryModel.applyBootstrap(
+    state, action, { ready = true, digest = "edc7a517" }))
+  equal(state.productionEpoch, 4)
+  local advanced, first = freightIndustryModel.advance(state, 5, 300)
+  truthy(advanced)
+  equal(first.industries["industry:pre:a-farm"].cycles, 10)
+  equal(first.industries["industry:pre:b-mill"].cycles, 0)
+  equal(state.industries["industry:pre:a-farm"].outputStock.GRAIN, 10)
+
+  local deposited, grainStock = freightIndustryModel.depositInput(
+    state, "industry:pre:b-mill", "GRAIN", 20)
+  truthy(deposited)
+  equal(grainStock, 20)
+  truthy(freightIndustryModel.advance(state, 6, 300))
+  equal(state.industries["industry:pre:b-mill"].inputStock[1].amount, 10)
+  equal(state.industries["industry:pre:b-mill"].outputStock.FOOD, 5)
+  equal(state.totalConsumed.GRAIN, 10)
+  equal(state.totalProduced.FOOD, 5)
+
+  truthy(freightIndustryModel.depositInput(
+    state, "industry:pre:c-consumer", "FOOD", 3))
+  truthy(freightIndustryModel.advance(state, 7, 300))
+  equal(state.industries["industry:pre:c-consumer"].lastCycles, 3)
+  equal(state.industries["industry:pre:c-consumer"].inputStock[1].amount, 0)
+  equal(state.totalConsumed.FOOD, 3)
+  local withdrawn, remaining = freightIndustryModel.withdrawOutput(
+    state, "industry:pre:a-farm", "GRAIN", 7)
+  truthy(withdrawn)
+  equal(remaining, 23)
+  equal(freightIndustryModel.digest(state), "c102a3fd",
+    "Lua freight state diverged from the Python replay vector")
+
+  local beforeMigration = freightIndustryModel.digest(state)
+  local migrated, migrationError = freightIndustryModel.migrate(util.deepCopy(state))
+  equal(migrationError, nil)
+  equal(freightIndustryModel.digest(migrated), beforeMigration)
+  local corrupted = util.deepCopy(state)
+  corrupted.bootstrapDigest = "00000000"
+  local reset, resetError = freightIndustryModel.migrate(corrupted)
+  equal(reset.ready, false)
+  truthy(tostring(resetError):find("bootstrap digest", 1, true))
+  equal(reset.migrationError, resetError)
+
+  local duplicate = freightFixture("industry:pre:duplicate", "mod/duplicate.con", 60,
+    {
+      { index = 0, cargoType = "GRAIN", stockType = "RECEIVING", moreCapacity = 0 },
+      { index = 1, cargoType = "GRAIN", stockType = "RECEIVING", moreCapacity = 0 },
+    }, { { { stockIndex = 1, cargoType = "GRAIN", amount = 1 } } }, {}, {})
+  local duplicateAction = assert(freightIndustryModel.bootstrapAction("edc7a517", 0, { duplicate }))
+  local duplicateState = freightIndustryModel.newState()
+  truthy(freightIndustryModel.applyBootstrap(
+    duplicateState, duplicateAction, { ready = true, digest = "edc7a517" }))
+  local ambiguous, ambiguousError = freightIndustryModel.depositInput(
+    duplicateState, duplicate.cid, "GRAIN", 1)
+  equal(ambiguous, false)
+  truthy(tostring(ambiguousError):find("ambiguous", 1, true))
+  truthy(freightIndustryModel.depositInputAtStock(
+    duplicateState, duplicate.cid, 1, "GRAIN", 2))
+  equal(duplicateState.industries[duplicate.cid].inputStock[2].amount, 2)
+end)
+
+test("freight bootstrap runtime is host-authored, epoch-bound, and checkpointed", function()
+  local state = {
+    tick = 40, initialized = true, networkMode = "network",
+    bridge = { peerId = "player1" }, match = { status = "running" }, canonical = {},
+    economy = { epoch = 4, scheduler = { epochSeconds = 300 } },
+    world = {
+      industryContent = { ready = true, digest = "edc7a517" },
+      freightIndustry = freightIndustryModel.newState(),
+    },
+    probes = { freightIndustry = freightIndustryModel.newProbe() },
+  }
+  local submitted
+  local changed = freightIndustryRuntime.maintain(state, {
+    readFacts = function() return freightFixtures() end,
+    localWorkState = function() return { pending = false } end,
+    submitIntent = function(action) submitted = util.deepCopy(action); return true, {} end,
+  })
+  truthy(changed)
+  equal(submitted.type, "freight.industry_bootstrap")
+  equal(submitted.economyEpoch, 4)
+  equal(state.probes.freightIndustry.status, "bootstrap-submitted")
+
+  state.bridge.peerId = "player2"
+  state.probes.freightIndustry = freightIndustryModel.newProbe()
+  local clientChanged = freightIndustryRuntime.maintain(state, {
+    readFacts = function() error("client must not bind a host action proactively") end,
+    localWorkState = function() return { pending = false } end,
+    submitIntent = function() error("client must not submit bootstrap") end,
+  })
+  equal(clientChanged, false)
+  equal(state.probes.freightIndustry.status, "waiting-for-host-bootstrap")
+  local clientAction, clientError = freightIndustryRuntime.normaliseIntent(
+    state, "player2", function() return freightFixtures() end)
+  equal(clientAction, nil)
+  truthy(tostring(clientError):find("only the host", 1, true))
+
+  state.bridge.peerId = "player1"
+  local applied, applyError = freightIndustryRuntime.applyBootstrap(state, submitted, {
+    readFacts = function() return freightFixtures() end,
+  })
+  truthy(applied, applyError)
+  equal(state.world.freightIndustry.ready, true)
+
+  local loaded = util.deepCopy(state)
+  loaded.probes.freightIndustry = freightIndustryModel.newProbe()
+  local maintained = freightIndustryRuntime.maintain(loaded, {
+    readFacts = function() return freightFixtures() end,
+    localWorkState = function() return { pending = false } end,
+    submitIntent = function() error("a saved bootstrap must be revalidated, not resubmitted") end,
+  })
+  equal(maintained, false)
+  equal(loaded.probes.freightIndustry.status, "ready")
+  equal(loaded.probes.freightIndustry.validatedBootstrapDigest, submitted.digest)
+  local commitProduction, production = freightIndustryRuntime.prepareSettlement(
+    loaded, { epoch = 5 })
+  truthy(commitProduction, production)
+  commitProduction()
+  equal(loaded.world.freightIndustry.productionEpoch, 5)
+
+  local unvalidated = util.deepCopy(state)
+  unvalidated.probes.freightIndustry = freightIndustryModel.newProbe()
+  local blockedCommit, blockedError = freightIndustryRuntime.prepareSettlement(
+    unvalidated, { epoch = 5 })
+  equal(blockedCommit, nil)
+  truthy(tostring(blockedError):find("live industry bindings", 1, true))
+
+  local changedContent = util.deepCopy(state)
+  changedContent.world.industryContent.digest = "11111111"
+  changedContent.probes.freightIndustry = freightIndustryModel.newProbe()
+  freightIndustryRuntime.maintain(changedContent, {
+    readFacts = function() return freightFixtures() end,
+    localWorkState = function() return { pending = false } end,
+    submitIntent = function() error("content mismatch must not submit") end,
+  })
+  equal(changedContent.world.operationConsensus.sessionFault.errorCode,
+    "freight-industry-content-mismatch")
+
+  local changedBinding = util.deepCopy(state)
+  changedBinding.probes.freightIndustry = freightIndustryModel.newProbe()
+  local changedFixtures = freightFixtures()
+  changedFixtures[1] = freightFixture(
+    "industry:pre:a-farm", "industry/farm.con", 120, {}, { {} },
+    { { cargoType = "STONE", amount = 1 } }, { productionLevel = 0 })
+  freightIndustryRuntime.maintain(changedBinding, {
+    readFacts = function() return changedFixtures end,
+    localWorkState = function() return { pending = false } end,
+    submitIntent = function() error("binding mismatch must not submit") end,
+  })
+  equal(changedBinding.world.operationConsensus.sessionFault.errorCode,
+    "freight-industry-binding-mismatch")
+
+  local corruptedSave = util.deepCopy(state)
+  corruptedSave.world.freightIndustry = freightIndustryModel.migrate({
+    ready = true, bootstrapDigest = "00000000", industries = {},
+  })
+  freightIndustryRuntime.maintain(corruptedSave, {
+    readFacts = function() error("corrupt save must fault before live binding") end,
+  })
+  equal(corruptedSave.world.operationConsensus.sessionFault.errorCode,
+    "freight-industry-save-invalid")
+
+  local staleState = util.deepCopy(state)
+  staleState.world.freightIndustry = freightIndustryModel.newState()
+  staleState.economy.epoch = 5
+  local staleAccepted, staleError = freightIndustryRuntime.applyBootstrap(staleState, submitted, {
+    readFacts = function() return freightFixtures() end,
+  })
+  equal(staleAccepted, false)
+  truthy(tostring(staleError):find("local epoch", 1, true))
+
+  local exports = 0
+  truthy(freightIndustryRuntime.afterCommit(state, submitted, true, 9,
+    function(boundary, reason)
+      exports = exports + 1
+      equal(boundary, 9)
+      equal(reason, "freight-industry-bootstrap")
+      return true
+    end, function() end))
+  equal(exports, 1)
 end)
 
 test("industry content attestations converge and fault mismatched peers", function()

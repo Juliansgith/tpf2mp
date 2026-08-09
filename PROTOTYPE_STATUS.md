@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.30.0-alpha`, state schema `27`,
+Last updated: 2026-08-09 for prototype `0.31.0-alpha`, state schema `28`,
 checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema
 `5`, construction proposal schema `7`, and native hook `0.14.0`.
 
@@ -61,14 +61,19 @@ is now constant-time per message and gaps fail closed. Durable evidence remains;
 only acknowledged clock-health traffic older than a 4,096-message tail is
 pruned.
 
-Prototype 0.30 closes the loaded-industry-content gate. Both exact processes
+Prototype 0.31 builds canonical freight-industry state on the loaded-content
+gate introduced in 0.30. Both exact processes
 independently capture the construction resources they actually loaded, publish
 strict content-addressed artifacts, bind live industry roots to evaluated
 recipes, and order one digest/count attestation each before match start. State
-27 checkpoints the claims and agreed registry. The exact vanilla set is 16
+28 then lets only the host author the sorted live-industry bootstrap and
+checkpoints each canonical recipe, input/output stock, exact production
+residual, and production/consumption total. The exact vanilla set is 16
 freight resources / 160 variants / zero ambiguities at digest `edc7a517`;
-incompatible or ambiguous mod content faults closed. This is recipe authority,
-not yet a canonical cargo stock/queue/load/delivery ledger.
+incompatible or ambiguous mod content faults closed, and a saved bootstrap must
+revalidate against both freshly agreed content and the current canonical live
+bindings before settlement. Station queues, vehicle loads, delivery cursors,
+native cargo presentation, and cargo-positive play remain open.
 
 ## Strongest current evidence
 
@@ -83,6 +88,18 @@ commit 3, and the full run ended with matching core/model/structure
 `c3bf105f`/`4b315eeb`/`ae4f8ceb`. The audit verified 13 converged commits,
 2/0/0/0 physical proposals, 3/0/0 checkpoint barriers, and no fault. See
 `investigation/LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md`.
+
+`runtime/localhost-live/freight-bootstrap-live-20260809-1200` extends that gate
+through a real state-28 bootstrap. It bound five live industries (farm, quarry,
+food processing, tools, and construction materials) to the same `edc7a517`
+registry, ordered bootstrap digest `c5352cf8`, and produced matching bootstrap
+checkpoints with core `b34fbdae`. The complete run converged 14 commits and
+ended at core/structure `2417b3fd`/`23c28901`, with 2 successful physical
+proposals, 3 successful checkpoint barriers, no unresolved lane, and a valid
+independent audit. The run proves discovery, authorization, binding, bootstrap,
+checkpointing, and convergence; settlement production advancement is currently
+cross-language automated proof, not yet a live cargo-production receipt. See
+`investigation/FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md`.
 
 State 24 retains two newer gates. `round3-town-construction-pos-20260807` ran
 three eight-call physical-town rounds on two exact processes and converged
@@ -410,11 +427,14 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   create passenger markets; already registered stale services are revalidated
   and retired by an ordered portable disable, which also removes their model
   queues and loads. Freight infrastructure still replicates physically. Loaded
-  industry recipes are now authoritative match content: both peers capture and
+  industry recipes are authoritative match content: both peers capture and
   strictly attest the same evaluated resource registry before play, and live
-  `SIM_BUILDING` roots resolve to those portable recipes. Industry stock,
-  production, station queue, vehicle load, and completed delivery state are not
-  yet canonical. Disposable exact-build runs measured the stock
+  `SIM_BUILDING` roots resolve to those portable recipes. State 28 additionally
+  owns canonical per-industry input/output stock, exact hourly-capacity
+  production residuals, alternative-input consumption, and cumulative totals;
+  every authored economy settlement advances a candidate atomically. Station
+  queues, vehicle loads, completed delivery, and native cargo presentation are
+  not yet canonical. Disposable exact-build runs measured the stock
   NOHAB/BC4/open-wagon cases as empty, passenger-only, cargo-only, and mixed,
   and the vanilla industry set as 16 resources / 160 unambiguous variants.
 - Hard, Normal, Easy, and Relaxed are world-creation choices that scale gross
@@ -551,7 +571,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 79 mod Lua and 8 investigation/tool Lua syntax checks;
   - 40 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 112 Python protocol/network/checkpoint/recovery/report tests;
+  - 115 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 
@@ -581,13 +601,16 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   new station barrier bounds drift without exact-coordinate correction.
 - Safe synchronized commands for every one of the 23 currently rejected command
   categories or proof that no consequential route bypasses the authority layer.
-- Cargo-positive cross-peer telemetry and cargo presentation. Passenger counts
+- Cargo-positive cross-peer transport and cargo presentation. Canonical
+  industry recipes, inventories, and production arithmetic now exist, but no
+  station queue, vehicle load, or delivery action connects them yet. Passenger counts
   are exact in the standard UI; the stock native agent glyph remains scenery.
   Until a cargo ledger exists, the standard cargo total is suppressed as `--`.
-- Host-authored town and industry growth. Unproven autonomous systems remain
-  frozen during authority tests. Canonical model-town growth is implemented;
-  this open item is specifically native physical presentation and industry
-  production/cargo authority.
+- Host-authored physical presentation for town and industry growth. Unproven
+  autonomous systems remain frozen during authority tests. Canonical model-town
+  growth and canonical industry production are implemented; this open item is
+  native physical presentation plus cargo movement between the authored
+  ledgers.
 - Exact-boundary native save capture, automatic two-peer rollback/relaunch,
   host migration, authentication/encryption, or hostile-Internet deployment.
 - Live automatic-economy proof with a freshly purchased consist and newly built

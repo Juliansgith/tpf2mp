@@ -4,6 +4,7 @@ local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
 local economyPublicView = require "tpf2_mp/economy_public_view"
+local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 
 local M = {}
 
@@ -81,6 +82,7 @@ function M.new(env)
       vehicleSync = util.deepCopy(currentState().probes.vehicleSync),
       passengerCosmetics = util.deepCopy(currentState().probes.passengerCosmetics),
       industryContent = util.deepCopy(currentState().probes.industryContent),
+      freightIndustry = util.deepCopy(currentState().probes.freightIndustry),
       serviceRegistration = util.deepCopy(currentState().probes.serviceRegistration),
       lastError = currentState().probes.lastError,
       structuralDigest = structural and structural.digest or nil,
@@ -148,6 +150,8 @@ function M.new(env)
       networkClock = util.deepCopy(currentState().world.networkClock),
       vehicleSync = util.deepCopy(currentState().world.vehicleSync),
       industryContent = util.deepCopy(currentState().world.industryContent),
+      freightIndustry = freightIndustryModel.publicView(
+        currentState().world.freightIndustry),
       proxyMode = currentState().world.proxyMode == true,
       controlAccount = allowNativeAccounts and currentState().world.controlPlayerId
         and env.accountOf(currentState().world.controlPlayerId) or nil,

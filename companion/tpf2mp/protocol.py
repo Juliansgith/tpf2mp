@@ -33,6 +33,7 @@ NETWORK_ACTIONS = {
     "recovery.save_receipt",
     "town.develop",
     "content.industry_attest",
+    "freight.industry_bootstrap",
     "proposal.prepare",
     "proposal.build",
     "operation.execute",
@@ -1531,6 +1532,9 @@ def validate_action(action: Any) -> dict[str, Any]:
                 or counts["variantCount"] < counts["resourceCount"] \
                 or counts["ambiguousCount"] > counts["variantCount"]:
             raise ProtocolError("content.industry_attest counts are inconsistent")
+    if action_type == "freight.industry_bootstrap":
+        from .freight_protocol import validate_industry_bootstrap
+        validate_industry_bootstrap(action)
     if action_type == "recovery.prepare":
         if set(action) != {"type"}:
             raise ProtocolError("recovery.prepare has client-supplied fields")

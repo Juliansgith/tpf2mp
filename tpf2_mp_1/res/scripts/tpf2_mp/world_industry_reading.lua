@@ -9,6 +9,8 @@ function M.new(deps)
   local getGame = assert(deps.getGame, "getGame dependency required")
   local entityNumber = assert(deps.entityNumber, "entityNumber dependency required")
   local resourceFacts = assert(deps.resourceFacts, "resourceFacts dependency required")
+  local listIndustries = deps.listIndustries
+  local resolveCanonical = deps.resolveCanonical
   local registryReader = registrySidecar.new({
     getApi = getApi, getGame = getGame,
     getRuntimeIdentity = deps.getRuntimeIdentity,
@@ -64,11 +66,42 @@ function M.new(deps)
     }
   end
 
+  local function portableFacts(registry)
+    if type(listIndustries) ~= "function" or type(resolveCanonical) ~= "function" then
+      return nil, "portable industry enumeration is unavailable"
+    end
+    local result, seen = {}, {}
+    for _, localId in ipairs(listIndustries() or {}) do
+      local cid = resolveCanonical(registry, localId)
+      if type(cid) ~= "string" or not cid:match("^industry:") then
+        return nil, "live industry lacks an agreed canonical binding"
+      end
+      if seen[cid] then return nil, "live industry canonical binding is duplicated" end
+      seen[cid] = true
+      local facts, factsError = recipeForIndustry(localId)
+      if not facts then return nil, tostring(factsError) end
+      local recipe = facts.recipe
+      result[#result + 1] = {
+        cid = cid,
+        resource = facts.resource,
+        params = util.deepCopy(recipe.params),
+        recipeDigest = recipe.digest,
+        capacity = recipe.capacity,
+        stocks = util.deepCopy(recipe.stocks),
+        inputs = util.deepCopy(recipe.inputs),
+        outputs = util.deepCopy(recipe.outputs),
+      }
+    end
+    table.sort(result, function(a, b) return a.cid < b.cid end)
+    return result
+  end
+
   return {
     registry = registryReader.registry,
     registryProbe = registryReader.probe,
     constructionRoot = constructionRoot,
     recipeForIndustry = recipeForIndustry,
+    portableFacts = portableFacts,
   }
 end
 

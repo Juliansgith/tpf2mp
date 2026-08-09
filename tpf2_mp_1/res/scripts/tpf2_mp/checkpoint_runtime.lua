@@ -5,6 +5,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local vehicleSyncRuntime = require "tpf2_mp/vehicle_sync_runtime"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
+local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 
 local M = {}
 
@@ -109,6 +110,8 @@ function M.new(env)
       }),
       industryContent = industryContentRuntime.digestView(
         currentState().world.industryContent),
+      freightIndustry = freightIndustryModel.digestView(
+        currentState().world.freightIndustry),
     }
   end
   
@@ -140,7 +143,8 @@ function M.new(env)
       or actionType == "match.finish" or actionType == "probe.mobility"
       or actionType == "probe.structural"
       or actionType == "recovery.resume" or actionType == "town.develop"
-      or actionType == "content.industry_attest" then
+      or actionType == "content.industry_attest"
+      or actionType == "freight.industry_bootstrap" then
       return action.localLineId == nil
     end
     if actionType == "line.register" then

@@ -11,6 +11,25 @@ local M = {
   MAX_VEHICLE_PARTS = 128,
 }
 
+function M.railwayModelNames(value, output, seen)
+  output, seen = output or {}, seen or {}
+  if type(value) == "string" then
+    local normalized = value:gsub("\\", "/")
+    local railwayModel = normalized:sub(1, 14) == "vehicle/train/"
+      or normalized:sub(1, 15) == "vehicle/waggon/"
+    if railwayModel and normalized:sub(-4) == ".mdl" then
+      output[#output + 1] = normalized
+    end
+  elseif type(value) == "table" and not seen[value] then
+    seen[value] = true
+    for _, key in ipairs(util.sortedKeys(value)) do
+      M.railwayModelNames(value[key], output, seen)
+    end
+    seen[value] = nil
+  end
+  return output
+end
+
 local SPECS = {
   ["line.create"] = { tag = 3, factory = "createLine", outputKind = "line" },
   ["line.delete"] = { tag = 4, factory = "deleteLine", targetKind = "line" },

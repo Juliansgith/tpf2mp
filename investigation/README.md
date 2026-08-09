@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.30.0-alpha`, state schema `27`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.31.0-alpha`, state schema `28`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[Canonical freight-industry authority](FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md)
+records the host-authored live-industry bootstrap, canonical stocks and exact
+production residuals, Lua/Python parity, reload revalidation, strict state-28
+localhost receipt, and the precise station/load/delivery boundary still open.
 
 [Live industry resource binding and match attestation](LIVE_INDUSTRY_RESOURCE_BINDING_2026-08-09.md)
 records independent loaded-resource capture on both exact processes, strict
@@ -363,7 +368,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 27 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger queues/loads/completed revenue, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, and both peers' loaded-industry content attestations. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-4 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content faults closed.
+State schema 28 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger queues/loads/completed revenue, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, both peers' loaded-industry content attestations, and the canonical freight-industry recipe/stock/production ledger. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-4 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content/live binding faults closed.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two
@@ -402,6 +407,8 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md](FREIGHT_INDUSTRY_AUTHORITY_2026-08-09.md) - canonical live-industry bootstrap, inventories, production arithmetic, cross-language parity, reload mismatch policy, and strict two-process evidence.
+- [freight_industry_authority_evidence_2026-08-09.json](freight_industry_authority_evidence_2026-08-09.json) - distilled state-28 freight bootstrap, content, digest, industry, audit, and cleanup receipt.
 - [AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md](AUTOMATIC_FIRST_FAULT_EVIDENCE_2026-08-08.md) - one-shot per-peer fault snapshots, bounded session logs, copied-audit verification, and 1,024-event deterministic randomized replay stress.
 - [SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md](SAVE_OWNED_DIFFICULTY_AND_MODEL_TOWN_GROWTH_2026-08-07.md) - immutable new-world revenue modes, exact residuals, canonical model towns/demand growth, legacy migration, and era audit.
 - [VEHICLE_COST_COMPATIBILITY_AND_ECONOMY_HUD_2026-08-07.md](VEHICLE_COST_COMPATIBILITY_AND_ECONOMY_HUD_2026-08-07.md) - resolved native annual vehicle costs across vanilla/mod resources, generic `vehicle/*.mdl` protocol scope, corrected speed/frequency/capacity incentive, `$50m` default capital, authoritative HUD fields, and the live acceptance boundary.

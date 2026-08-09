@@ -80,10 +80,17 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\world_industry_reading.lua' = 160
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_registry_sidecar.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_content_runtime.lua' = 360
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua' = 560
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua' = 190
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_revalidation.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\diagnostic_log.lua' = 30
     'tpf2_mp_1\res\scripts\tpf2_mp\service_registration_integration.lua' = 60
     'companion\tpf2mp\host_intents.py' = 60
     'companion\tpf2mp\industry_content.py' = 500
+    'companion\tpf2mp\freight.py' = 260
+    'companion\tpf2mp\freight_protocol.py' = 180
+    'companion\tpf2mp\protocol.py' = 1650
+    'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua' = 680
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_facts.lua' = 480
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_view_reader.lua' = 260
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_merge.lua' = 120
@@ -126,6 +133,8 @@ $requiredModules = @(
     'tpf2_mp/vehicle_sync_runtime',
     'tpf2_mp/validation_runtime',
     'tpf2_mp/operational_capture_runtime',
+    'tpf2_mp/freight_industry_model',
+    'tpf2_mp/freight_industry_runtime',
     'tpf2_mp/gui_state',
     'tpf2_mp/gui_entry_points',
     'tpf2_mp/gui_capture',
@@ -140,6 +149,9 @@ foreach ($module in $requiredModules) {
         throw "Game-script entry point no longer composes required module $module"
     }
 }
+if (-not (Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua') -Raw).Contains('tpf2_mp/freight_industry_revalidation')) {
+    throw 'Freight-industry runtime no longer composes its saved-state/content revalidation boundary'
+}
 foreach ($movedDefinition in @(
     'local function compactNativeHookStatus',
     'local function economyDigestView',
@@ -153,6 +165,7 @@ foreach ($movedDefinition in @(
     'local function processGuiOperationQueue',
     'local function sampleOperationalCapture',
     'local function operationalAccountSnapshot',
+    'local function operationModelNames',
     'local gui = {'
 )) {
     if ($entryPoint.Contains($movedDefinition)) {

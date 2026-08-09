@@ -19,6 +19,7 @@ from tpf2mp.completion_validation import (
     proposal_completion_result_digest,
 )
 from tpf2mp.checkpoint import (
+    _apply_portable_action,
     _advance_town_development_cursor,
     _advance_town_development_points,
     _evaluate_all_v2,
@@ -27,6 +28,15 @@ from tpf2mp.checkpoint import (
     analyse_bridge,
     verify_checkpoint,
     verify_event_record,
+)
+from tpf2mp.freight import (
+    advance as advance_freight,
+    apply_bootstrap as apply_freight_bootstrap,
+    deposit_input as deposit_freight_input,
+    deposit_input_at_stock as deposit_freight_input_at_stock,
+    digest_view as freight_digest_view,
+    new_state as new_freight_state,
+    withdraw_output as withdraw_freight_output,
 )
 from tpf2mp.cli import replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
@@ -502,6 +512,59 @@ def vehicle_sync_record(
         "peer": peer,
         "local_seq": local_seq,
         "payload": payload,
+    }
+
+
+def freight_industry(
+    cid: str,
+    resource: str,
+    capacity: int,
+    stocks: list[dict] | dict,
+    inputs: list[dict | list],
+    outputs: list[dict] | dict,
+    params: dict | None = None,
+) -> dict:
+    recipe = {
+        "cid": cid, "resource": resource, "params": params or {},
+        "capacity": capacity, "stocks": stocks, "inputs": inputs, "outputs": outputs,
+    }
+    recipe["recipeDigest"] = checksum({
+        "resource": recipe["resource"], "params": recipe["params"],
+        "stocks": recipe["stocks"], "inputs": recipe["inputs"],
+        "outputs": recipe["outputs"], "capacity": recipe["capacity"],
+    })
+    return recipe
+
+
+def freight_fixtures() -> list[dict]:
+    return [
+        freight_industry(
+            "industry:pre:a-farm", "industry/farm.con", 120, {}, [{}],
+            [{"cargoType": "GRAIN", "amount": 1}], {"productionLevel": 0},
+        ),
+        freight_industry(
+            "industry:pre:b-mill", "industry/food_processing_plant.con", 60,
+            [{"index": 0, "cargoType": "GRAIN", "stockType": "RECEIVING",
+              "moreCapacity": 100}],
+            [[{"stockIndex": 0, "cargoType": "GRAIN", "amount": 2}]],
+            [{"cargoType": "FOOD", "amount": 1}], {"productionLevel": 0},
+        ),
+        freight_industry(
+            "industry:pre:c-consumer", "mod/consumer.con", 60,
+            [{"index": 0, "cargoType": "FOOD", "stockType": "RECEIVING",
+              "moreCapacity": 0}],
+            [[{"stockIndex": 0, "cargoType": "FOOD", "amount": 1}]], {}, {},
+        ),
+    ]
+
+
+def freight_bootstrap(epoch: int = 4) -> dict:
+    content = {
+        "schemaVersion": 1, "contentDigest": "edc7a517",
+        "economyEpoch": epoch, "industries": freight_fixtures(),
+    }
+    return {
+        "type": "freight.industry_bootstrap", **content, "digest": checksum(content),
     }
 
 
@@ -1403,6 +1466,143 @@ class ProtocolTests(unittest.TestCase):
         malformed["transactionId"] = f"proposal:{malformed['digest']}"
         with self.assertRaisesRegex(ProtocolError, "canonical node id"):
             validate_action({"type": "proposal.build", "transaction": malformed})
+
+
+class FreightIndustryTests(unittest.TestCase):
+    def test_bootstrap_protocol_is_canonical_and_tamper_evident(self) -> None:
+        action = freight_bootstrap()
+        self.assertEqual(validate_action(action), action)
+
+        tampered = json.loads(json.dumps(action))
+        tampered["industries"][0]["outputs"][0]["amount"] = 2
+        tampered["digest"] = checksum({
+            key: tampered[key]
+            for key in ("schemaVersion", "contentDigest", "economyEpoch", "industries")
+        })
+        with self.assertRaisesRegex(ProtocolError, "recipe digest"):
+            validate_action(tampered)
+
+        unordered = json.loads(json.dumps(action))
+        unordered["industries"][0], unordered["industries"][1] = (
+            unordered["industries"][1], unordered["industries"][0]
+        )
+        unordered["digest"] = checksum({
+            key: unordered[key]
+            for key in ("schemaVersion", "contentDigest", "economyEpoch", "industries")
+        })
+        with self.assertRaisesRegex(ProtocolError, "unordered"):
+            validate_action(unordered)
+
+        extra = json.loads(json.dumps(action))
+        extra["industries"][0]["localConstructionId"] = 42
+        with self.assertRaisesRegex(ProtocolError, "malformed"):
+            validate_action(extra)
+
+        no_flow = freight_industry(
+            "industry:pre:z-empty", "mod/empty.con", 60, {}, [{}], {}, {},
+        )
+        content = {
+            "schemaVersion": 1, "contentDigest": "edc7a517",
+            "economyEpoch": 4, "industries": [no_flow],
+        }
+        with self.assertRaisesRegex(ProtocolError, "positive flow"):
+            validate_action({
+                "type": "freight.industry_bootstrap", **content,
+                "digest": checksum(content),
+            })
+
+    def test_production_and_inventory_match_the_lua_contract(self) -> None:
+        action = freight_bootstrap()
+        state = new_freight_state()
+        apply_freight_bootstrap(
+            state, action, {"ready": True, "digest": "edc7a517"}
+        )
+        first = advance_freight(state, 5, 300)
+        self.assertEqual(first["industries"]["industry:pre:a-farm"]["cycles"], 10)
+        self.assertEqual(first["industries"]["industry:pre:b-mill"]["cycles"], 0)
+        self.assertEqual(
+            state["industries"]["industry:pre:a-farm"]["outputStock"]["GRAIN"], 10
+        )
+
+        self.assertEqual(
+            deposit_freight_input(state, "industry:pre:b-mill", "GRAIN", 20), 20
+        )
+        advance_freight(state, 6, 300)
+        mill = state["industries"]["industry:pre:b-mill"]
+        self.assertEqual(mill["inputStock"][0]["amount"], 10)
+        self.assertEqual(mill["outputStock"]["FOOD"], 5)
+        self.assertEqual(state["totalConsumed"]["GRAIN"], 10)
+
+        deposit_freight_input(state, "industry:pre:c-consumer", "FOOD", 3)
+        advance_freight(state, 7, 300)
+        consumer = state["industries"]["industry:pre:c-consumer"]
+        self.assertEqual(consumer["lastCycles"], 3)
+        self.assertEqual(consumer["inputStock"][0]["amount"], 0)
+        self.assertEqual(state["totalConsumed"]["FOOD"], 3)
+        self.assertEqual(
+            withdraw_freight_output(state, "industry:pre:a-farm", "GRAIN", 7), 23
+        )
+        self.assertEqual(checksum(freight_digest_view(state)), "c102a3fd")
+
+        duplicate = freight_industry(
+            "industry:pre:duplicate", "mod/duplicate.con", 60,
+            [
+                {"index": 0, "cargoType": "GRAIN", "stockType": "RECEIVING", "moreCapacity": 0},
+                {"index": 1, "cargoType": "GRAIN", "stockType": "RECEIVING", "moreCapacity": 0},
+            ], [[{"stockIndex": 1, "cargoType": "GRAIN", "amount": 1}]], {}, {},
+        )
+        content = {
+            "schemaVersion": 1, "contentDigest": "edc7a517",
+            "economyEpoch": 0, "industries": [duplicate],
+        }
+        duplicate_action = validate_action({
+            "type": "freight.industry_bootstrap", **content, "digest": checksum(content),
+        })
+        duplicate_state = new_freight_state()
+        apply_freight_bootstrap(
+            duplicate_state, duplicate_action, {"ready": True, "digest": "edc7a517"},
+        )
+        with self.assertRaisesRegex(ProtocolError, "ambiguous"):
+            deposit_freight_input(duplicate_state, duplicate["cid"], "GRAIN", 1)
+        self.assertEqual(deposit_freight_input_at_stock(
+            duplicate_state, duplicate["cid"], 1, "GRAIN", 2,
+        ), 2)
+
+    def test_portable_replay_and_host_checkpoint_track_bootstrap(self) -> None:
+        action = freight_bootstrap()
+        model = {
+            "economy": {},
+            "industryContent": {"ready": True, "digest": "edc7a517"},
+        }
+        _apply_portable_action(model, action)
+        self.assertTrue(model["freightIndustry"]["ready"])
+        self.assertEqual(model["freightIndustry"]["productionEpoch"], 4)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "freight-checkpoint"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            committed = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": action},
+            }))
+            self.assertIsNotNone(committed)
+            tracker = host.checkpoint_consensus[int(committed["seq"])]
+            self.assertEqual(tracker["reason"], "freight-industry-bootstrap")
+            self.assertEqual(tracker["status"], "pending")
+
+            restored = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            restored_tracker = restored.checkpoint_consensus[int(committed["seq"])]
+            self.assertEqual(restored_tracker["reason"], "freight-industry-bootstrap")
 
 
 class BridgeTests(unittest.TestCase):

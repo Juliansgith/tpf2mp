@@ -28,6 +28,7 @@ param(
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [string]$IndustryArtifactSourceRoot,
     [switch]$RequireIndustryContentConsensus,
+    [switch]$RequireFreightIndustryBootstrap,
     [switch]$KeepGamesOpen
 )
 
@@ -40,6 +41,9 @@ if ($NativeFreshWorld -and -not $OperationalCaptureLab) {
 }
 if ($NativeFreshWorld -and ($StartingSave -or $Player1StartingSave -or $Player2StartingSave -or $RestorePlan)) {
     throw 'NativeFreshWorld cannot be combined with a starting save or restore plan.'
+}
+if ($RequireFreightIndustryBootstrap -and -not $RequireIndustryContentConsensus) {
+    throw 'RequireFreightIndustryBootstrap also requires RequireIndustryContentConsensus.'
 }
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
@@ -154,6 +158,7 @@ $interactiveEvidenceCollected = $false
 $finalHostStatus = $null
 $finalClientStatus = $null
 $industryConsensusEvidence = $null
+$freightIndustryEvidence = $null
 $interactiveEvidenceError = $null
 $operationalAnalysisPath = $null
 $operationalAnalysisError = $null
@@ -731,6 +736,103 @@ function Assert-IndustryContentConsensus($HostStatus, $ClientStatus) {
     }
 }
 
+function Assert-FreightIndustryBootstrap(
+    [string]$AuditPath,
+    [string]$ExpectedContentDigest,
+    $HostStatus,
+    $ClientStatus
+) {
+    if (-not (Test-Path -LiteralPath $AuditPath -PathType Leaf)) {
+        throw 'Freight bootstrap audit is not available yet.'
+    }
+    $commits = @()
+    $checkpoints = @()
+    foreach ($line in Get-Content -LiteralPath $AuditPath) {
+        try { $record = $line | ConvertFrom-Json } catch { continue }
+        $recordKind = if ($record.PSObject.Properties['kind']) { $record.kind } else { $null }
+        $recordType = if ($record.PSObject.Properties['record_type']) {
+            $record.record_type
+        } else { $null }
+        $payload = if ($record.PSObject.Properties['payload']) { $record.payload } else { $null }
+        $action = if ($payload -and $payload.PSObject.Properties['action']) {
+            $payload.action
+        } else { $null }
+        if ($recordKind -eq 'commit' -and $action `
+            -and $action.type -eq 'freight.industry_bootstrap') {
+            $commits += $record
+        }
+        if ($recordType -eq 'checkpoint' -and $payload `
+            -and $payload.reason -eq 'freight-industry-bootstrap') {
+            $checkpoints += $record
+        }
+    }
+    if ($commits.Count -ne 1) {
+        throw "Expected one ordered freight bootstrap commit; observed $($commits.Count)."
+    }
+    $commit = $commits[0]
+    $action = $commit.payload.action
+    if ($commit.origin_peer -ne 'player1' -or $action.contentDigest -ne $ExpectedContentDigest `
+        -or [string]$action.digest -notmatch '^[0-9a-f]{8}$') {
+        throw 'Freight bootstrap was not authored by the host against the agreed content digest.'
+    }
+    $industries = @($action.industries)
+    if ($industries.Count -lt 1) { throw 'Freight bootstrap did not bind any live industries.' }
+    $bootstrapSeq = [int64]$commit.seq
+    $matching = @($checkpoints | Where-Object {
+        [int64]$_.payload.eventCursor.lastCommitSeq -eq $bootstrapSeq `
+        -and $_.payload.stateVersion -ge 28 `
+        -and $_.payload.model.freightIndustry.ready -eq $true `
+        -and [string]$_.payload.model.freightIndustry.contentDigest -eq $ExpectedContentDigest `
+        -and [string]$_.payload.model.freightIndustry.bootstrapDigest -eq [string]$action.digest
+    })
+    $checkpointPeers = @($matching | ForEach-Object { [string]$_.peer } | Sort-Object -Unique)
+    $coreDigests = @($matching | ForEach-Object { [string]$_.payload.coreDigest } | Sort-Object -Unique)
+    if ($matching.Count -ne 2 -or $checkpointPeers.Count -ne 2 `
+        -or $checkpointPeers[0] -ne 'player1' -or $checkpointPeers[1] -ne 'player2' `
+        -or $coreDigests.Count -ne 1 -or $coreDigests[0] -notmatch '^[0-9a-f]{8}$') {
+        throw 'Freight bootstrap has not produced one converged authored checkpoint per peer.'
+    }
+    foreach ($checkpoint in $matching) {
+        $freight = $checkpoint.payload.model.freightIndustry
+        if ([int64]$freight.bootstrapEpoch -ne [int64]$action.economyEpoch `
+            -or [int64]$freight.productionEpoch -ne [int64]$action.economyEpoch) {
+            throw 'Freight checkpoint epoch does not match its bootstrap action.'
+        }
+        $boundCount = @($freight.industries.PSObject.Properties).Count
+        if ($boundCount -ne $industries.Count) {
+            throw 'Freight checkpoint industry count differs from the ordered bootstrap.'
+        }
+    }
+    $hostFault = if ($HostStatus.PSObject.Properties['sessionFault']) {
+        $HostStatus.sessionFault
+    } else { $null }
+    $clientFault = if ($ClientStatus.PSObject.Properties['sessionFault']) {
+        $ClientStatus.sessionFault
+    } else { $null }
+    $pendingCheckpoint = if ($HostStatus.PSObject.Properties['pendingCheckpointSeq']) {
+        [int64]$HostStatus.pendingCheckpointSeq
+    } else { 0 }
+    $lastAgreed = if ($HostStatus.PSObject.Properties['lastAgreedCheckpointSeq']) {
+        [int64]$HostStatus.lastAgreedCheckpointSeq
+    } else { 0 }
+    if ($hostFault -or $clientFault -or $pendingCheckpoint -gt 0 `
+        -or $lastAgreed -lt $bootstrapSeq) {
+        throw 'Freight bootstrap checkpoint has not cleared the ordered consensus lane.'
+    }
+    return [ordered]@{
+        ready = $true
+        commitSeq = $bootstrapSeq
+        digest = [string]$action.digest
+        contentDigest = [string]$action.contentDigest
+        economyEpoch = [int64]$action.economyEpoch
+        productionEpoch = [int64]$matching[0].payload.model.freightIndustry.productionEpoch
+        industryCount = $industries.Count
+        checkpointPeers = $checkpointPeers
+        coreDigest = $coreDigests[0]
+        lastAgreedCheckpointSeq = $lastAgreed
+    }
+}
+
 function Read-ValidationResult([string]$BridgePath, [string]$Peer) {
     $outbox = Join-Path $BridgePath 'game_outbox'
     if (-not (Test-Path -LiteralPath $outbox -PathType Container)) { return $null }
@@ -1297,6 +1399,34 @@ try {
             $industryConsensusEvidence.digest, $industryConsensusEvidence.resourceCount,
             $industryConsensusEvidence.variantCount)
     }
+    if ($RequireFreightIndustryBootstrap) {
+        $auditPath = Join-Path $peer1Bridge "audit\$Session.ndjson"
+        $freightDeadline = (Get-Date).AddSeconds([Math]::Min($ConsensusTimeoutSeconds, 120))
+        $freightWaitError = 'freight bootstrap has not started'
+        do {
+            $hostStatus = Read-CompanionStatus $peer1Bridge
+            $clientStatus = Read-CompanionStatus $peer2Bridge
+            try {
+                $freightIndustryEvidence = Assert-FreightIndustryBootstrap `
+                    $auditPath ([string]$industryConsensusEvidence.digest) `
+                    $hostStatus $clientStatus
+                $freightWaitError = $null
+            }
+            catch { $freightWaitError = $_.Exception.Message }
+            if (-not $freightIndustryEvidence -and -not $hostStatus.sessionFault) {
+                Start-Sleep -Milliseconds 250
+            }
+        } while (-not $freightIndustryEvidence -and -not $hostStatus.sessionFault `
+            -and (Get-Date) -lt $freightDeadline)
+        if (-not $freightIndustryEvidence) {
+            throw "Freight industry bootstrap did not converge: $freightWaitError"
+        }
+        $freightIndustryEvidence | ConvertTo-Json -Depth 8 | Set-Content `
+            -LiteralPath (Join-Path $runRoot 'freight-industry-bootstrap.json') -Encoding UTF8
+        Write-Host ("PASS deterministic freight bootstrap: digest={0}, industries={1}, epoch={2}" -f `
+            $freightIndustryEvidence.digest, $freightIndustryEvidence.industryCount,
+            $freightIndustryEvidence.productionEpoch)
+    }
     $finalHostStatus = $hostStatus
     $finalClientStatus = Read-CompanionStatus $peer2Bridge
     if ($RequireVehicleSyncRound) {
@@ -1558,6 +1688,8 @@ $runStatus = [ordered]@{
     industryArtifactSourceRoot = $industryArtifactSource
     requireIndustryContentConsensus = $RequireIndustryContentConsensus.IsPresent
     industryContentConsensus = $industryConsensusEvidence
+    requireFreightIndustryBootstrap = $RequireFreightIndustryBootstrap.IsPresent
+    freightIndustryBootstrap = $freightIndustryEvidence
     matchContentProfile = $matchContentProfilePath
     operationalSampleTicks = $OperationalSampleTicks
     operationalStartingCash = $OperationalStartingCash

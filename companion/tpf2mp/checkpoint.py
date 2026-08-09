@@ -13,6 +13,9 @@ from .protocol import (
     validate_envelope,
     validate_vehicle_schedule,
 )
+from .freight import advance as advance_freight
+from .freight import apply_bootstrap as apply_freight_bootstrap
+from .freight import new_state as new_freight_state
 
 CHECKPOINT_VERSION = 4
 SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, 3, CHECKPOINT_VERSION}
@@ -1918,6 +1921,12 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
             0,
             100_000_000,
         )
+    elif action_type == "freight.industry_bootstrap":
+        freight_value = model.get("freightIndustry")
+        freight = freight_value if isinstance(freight_value, dict) else new_freight_state()
+        content = _mapping(model.get("industryContent"), "replay industry content")
+        apply_freight_bootstrap(freight, action, content)
+        model["freightIndustry"] = freight
     elif action_type == "economy.seed_demo":
         order = model.get("companyOrder", [])
         if not isinstance(order, list) or len(order) < 2:
@@ -2046,6 +2055,14 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         else:
             results = _evaluate_all(economy)
         _record_settlement(economy, results)
+        freight_value = model.get("freightIndustry")
+        if isinstance(freight_value, dict) and freight_value.get("ready") is True:
+            scheduler_value = economy.get("scheduler")
+            scheduler = scheduler_value if isinstance(scheduler_value, Mapping) else {}
+            advance_freight(
+                freight_value, int(results["epoch"]),
+                _integer(scheduler.get("epochSeconds"), 300, 60, 86_400),
+            )
         _advance_town_development_points(model, economy, results)
         result_companies = _mapping(results.get("companies"), "settlement result companies")
         payout_dollars: dict[str, int] = {}

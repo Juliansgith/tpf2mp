@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "prototype": "0.31.0-alpha",
+  "stateSchema": 28,
+  "freightIndustrySchema": 1,
+  "crossLanguageFixtureDigest": "c102a3fd",
+  "live": {
+    "session": "freight-bootstrap-live-20260809-1200",
+    "passed": true,
+    "gameBuild": 35924,
+    "gameSha256": "782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c",
+    "contentDigest": "edc7a517",
+    "contentResources": 16,
+    "contentVariants": 160,
+    "contentAmbiguities": 0,
+    "bootstrapCommitSeq": 5,
+    "bootstrapDigest": "c5352cf8",
+    "bootstrapCoreDigest": "b34fbdae",
+    "industryCount": 5,
+    "finalCoreDigest": "2417b3fd",
+    "finalModelDigest": "75330682",
+    "finalStructuralDigest": "23c28901",
+    "convergedCommits": 14,
+    "physicalProposals": {
+      "complete": 2,
+      "rejected": 0,
+      "faulted": 0,
+      "pending": 0
+    },
+    "checkpointBarriers": {
+      "complete": 3,
+      "faulted": 0,
+      "pending": 0
+    },
+    "auditValid": true,
+    "settlementProductionExercised": false,
+    "cleanup": {
+      "settingsRestored": true,
+      "steamMarkerRestored": true,
+      "gameProcessesLeftRunning": 0
+    }
+  },
+  "industries": [
+    {
+      "cid": "industry:pre:24d119d0",
+      "resource": "industry/tools_factory.con",
+      "capacityPerHour": 100,
+      "input": "1 PLANKS",
+      "output": "1 TOOLS"
+    },
+    {
+      "cid": "industry:pre:2f161cfe",
+      "resource": "industry/food_processing_plant.con",
+      "capacityPerHour": 100,
+      "input": "2 GRAIN",
+      "output": "1 FOOD"
+    },
+    {
+      "cid": "industry:pre:2f992040",
+      "resource": "industry/construction_material.con",
+      "capacityPerHour": 100,
+      "input": "1 STONE",
+      "output": "1 CONSTRUCTION_MATERIALS"
+    },
+    {
+      "cid": "industry:pre:4815169e",
+      "resource": "industry/farm.con",
+      "capacityPerHour": 200,
+      "input": "source",
+      "output": "1 GRAIN"
+    },
+    {
+      "cid": "industry:pre:556d174a",
+      "resource": "industry/quarry.con",
+      "capacityPerHour": 400,
+      "input": "source",
+      "output": "1 STONE"
+    }
+  ],
+  "harnessNegative": {
+    "session": "freight-bootstrap-live-20260809-1130",
+    "gameAndModelReachedExpectedState": true,
+    "passed": false,
+    "reason": "strict PowerShell evidence parser accessed an absent record_type property",
+    "resolution": "property-presence check added and proven by the 1200 run"
+  }
+}

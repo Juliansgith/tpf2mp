@@ -43,6 +43,7 @@ HOST_AUTHORITY_ACTIONS = {
     "probe.structural",
     "finance.toggle_neutralizer",
     "town.develop",
+    "freight.industry_bootstrap",
     "recovery.resume",
 }
 
@@ -174,6 +175,8 @@ class CommitHost(HostIntentMixin):
                         self._track_checkpoint_boundary(seq, "match-initialised")
                     elif action.get("type") == "town.develop":
                         self._track_checkpoint_boundary(seq, "town-development")
+                    elif action.get("type") == "freight.industry_bootstrap":
+                        self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
                     elif action.get("type") == "content.industry_attest":
                         self.industry_content_consensus.observe(
                             action, origin_peer, restoring=True,
@@ -412,6 +415,7 @@ class CommitHost(HostIntentMixin):
                 "match.initialise", "proposal.prepare", "operation.execute",
                 "line.register", "town.develop", "recovery.prepare", "recovery.resume",
                 "recovery.save_receipt", "content.industry_attest",
+                "freight.industry_bootstrap",
             }:
                 if self.require_connected_peers:
                     with self.peers_lock:
@@ -495,6 +499,8 @@ class CommitHost(HostIntentMixin):
                 self._track_checkpoint_boundary(seq, "match-initialised")
             elif action["type"] == "town.develop":
                 self._track_checkpoint_boundary(seq, "town-development")
+            elif action["type"] == "freight.industry_bootstrap":
+                self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
             elif action["type"] == "content.industry_attest":
                 self.industry_content_consensus.observe(action, origin)
             elif action["type"] == "probe.structural":

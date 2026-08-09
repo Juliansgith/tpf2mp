@@ -41,11 +41,13 @@ local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local authoredFollowupRuntime = require "tpf2_mp/authored_followup_runtime"
 local operationalCaptureRuntimeModule = require "tpf2_mp/operational_capture_runtime"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
+local freightIndustryModel = require "tpf2_mp/freight_industry_model"
+local freightIndustryRuntime = require "tpf2_mp/freight_industry_runtime"
 local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registration_integration"
 
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 27
+local STATE_VERSION = 28
 local CHECKPOINT_VERSION = 4
 local EVENT_RECORD_VERSION = 1
 
@@ -1447,6 +1449,10 @@ authoredFollowupRuntime.installHandlers(handlers, {
   world = world; diagnosticLog = diagnosticLog,
 })
 industryContentRuntime.installHandler(handlers, function() return state end)
+freightIndustryRuntime.installHandler(handlers, {
+  getState = function() return state end, requireRunningMatch = requireRunningMatch,
+  readFacts = world.industryBootstrapFacts,
+})
 
 handlers["line.register"] = function(action)
   local running, runningError = requireRunningMatch()
@@ -1514,8 +1520,11 @@ handlers["economy.settle"] = function(action, eventId)
     results = economy.evaluateAll(
       state.economy, action.boundaryGameTimeSeconds, deliverySnapshot)
   end
+  local commitFreight, freightProduction = freightIndustryRuntime.prepareSettlement(state, results)
+  if not commitFreight then return false, freightProduction end
   local recorded, recordError = economy.recordSettlement(state.economy, results)
   if not recorded then return false, recordError end
+  commitFreight()
   local payoutDollars = {}
   for _, companyCid in ipairs(util.sortedKeys(results.companies or {})) do
     local companyResult = results.companies[companyCid]
@@ -1609,6 +1618,7 @@ handlers["economy.settle"] = function(action, eventId)
     scoreboard = economy.scoreboard(state.economy, state.companies),
     match = util.deepCopy(state.match),
     matchEnded = matchResult,
+    freightProduction = util.deepCopy(freightProduction),
   }
 end
 
@@ -2346,23 +2356,6 @@ handlers["native.observed"] = function(action, eventId)
   return true, { observed = action.observation, claimed = false, networkGate = state.networkMode == "network" }
 end
 
-local function operationModelNames(value, output, seen)
-  output, seen = output or {}, seen or {}
-  if type(value) == "string" then
-    local normalized = value:gsub("\\", "/")
-    local railwayModel = normalized:sub(1, 14) == "vehicle/train/"
-      or normalized:sub(1, 15) == "vehicle/waggon/"
-    if railwayModel and normalized:sub(-4) == ".mdl" then
-      output[#output + 1] = normalized
-    end
-  elseif type(value) == "table" and not seen[value] then
-    seen[value] = true
-    for _, key in ipairs(util.sortedKeys(value)) do operationModelNames(value[key], output, seen) end
-    seen[value] = nil
-  end
-  return output
-end
-
 local function normaliseOperationCapture(action)
   local companyCid, company, companyError = requireCompany()
   if not company then return nil, companyError end
@@ -2465,14 +2458,14 @@ local function normaliseOperationCapture(action)
     end
     local depotCid, depotError = bindLocal(capture.depotLocalId, "depot")
     if not depotCid then return nil, depotError end
-    local names = operationModelNames(capture.modelNames or capture.vehicleConfig)
+    local names = operationCodec.railwayModelNames(capture.modelNames or capture.vehicleConfig)
     local config, configError = operationCodec.defaultVehicleConfig(names, api)
     if not config then return nil, configError end
     data = { depotCid = depotCid, config = config }
   elseif kind == "vehicle.replace" then
     local targetCid, targetError = bindLocal(capture.targetLocalId, "vehicle")
     if not targetCid then return nil, targetError end
-    local names = operationModelNames(capture.modelNames or capture.vehicleConfig)
+    local names = operationCodec.railwayModelNames(capture.modelNames or capture.vehicleConfig)
     local config, configError = operationCodec.defaultVehicleConfig(names, api)
     if not config then return nil, configError end
     data = { targetCid = targetCid, config = config }
@@ -2661,6 +2654,10 @@ local function normaliseForNetwork(action)
     local contentError; copy, contentError = industryContentRuntime.normaliseAction(
       copy, state.bridge.peerId)
     if not copy then return nil, contentError end
+  elseif copy.type == "freight.industry_bootstrap" then
+    local bootstrapError; copy, bootstrapError = freightIndustryRuntime.normaliseIntent(
+      state, state.bridge.peerId, world.industryBootstrapFacts)
+    if not copy then return nil, bootstrapError end
   elseif copy.type == "network.checkpoint_request" then
     local preparationSeq = util.integer(copy.preparationSeq, 0)
     if preparationSeq < 1 or tostring(copy.reason or "") ~= "recovery-prepare:" .. tostring(preparationSeq) then
@@ -2871,8 +2868,11 @@ applyCommitted = function(action, actor, commitSeq)
   else
     if not industryContentRuntime.afterCommit(state, action, success, authoritySeq,
         exportCheckpointBarrier, diagnosticLog) then
-      authoredFollowupRuntime.afterCommit(state, action, success, authoritySeq,
-        exportCheckpointBarrier, diagnosticLog)
+      if not freightIndustryRuntime.afterCommit(state, action, success, authoritySeq,
+          exportCheckpointBarrier, diagnosticLog) then
+        authoredFollowupRuntime.afterCommit(state, action, success, authoritySeq,
+          exportCheckpointBarrier, diagnosticLog)
+      end
     end
   end
   state.lastAction = util.deepCopy(action)
@@ -2966,6 +2966,9 @@ local function pumpNetworkBridge(includeHealth)
   if not contentOk then
     state.probes.industryContent.lastError = tostring(contentError)
   end
+  local freightOk = freightIndustryRuntime.pump(state, {
+    readFacts = world.industryBootstrapFacts,
+    localWorkState = networkIntentController.localWorkState, submitIntent = submitIntent })
   local healthOk = true
   if includeHealth ~= false then
     local healthError
@@ -2976,7 +2979,7 @@ local function pumpNetworkBridge(includeHealth)
     healthOk, healthError = xpcall(networkClock.emitPausedHealth, debug.traceback)
     if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
   end
-  return consumeOk and deferredOk and contentOk and healthOk
+  return consumeOk and deferredOk and contentOk and freightOk and healthOk
 end
 
 local validationRuntime = validationRuntimeModule.new({

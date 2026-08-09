@@ -104,6 +104,16 @@ function M.render(gui, snapshot, options)
       tonumber(content.variantCount or localContent.variantCount) or 0,
       tostring(localContent.status or "waiting-for-sidecar"),
       content.fault and (" | " .. tostring(content.fault.errorCode or "content-fault")) or "")
+    local freight = snapshot.freightIndustry or {}
+    local localFreight = snapshot.probes and snapshot.probes.freightIndustry or {}
+    lines[#lines + 1] = string.format(
+      "Freight model: %s | %d industries | epoch %d | %d input / %d output units | local %s",
+      freight.ready == true and "READY" or "waiting",
+      tonumber(freight.industryCount or localFreight.industryCount) or 0,
+      tonumber(freight.productionEpoch) or 0,
+      tonumber(freight.inputUnits) or 0,
+      tonumber(freight.outputUnits) or 0,
+      tostring(localFreight.status or "waiting-for-content"))
     local capture = gui.nativeBuildCapture or {}
     lines[#lines + 1] = string.format(
       "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",

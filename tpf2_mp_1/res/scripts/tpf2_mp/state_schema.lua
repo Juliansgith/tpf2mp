@@ -7,6 +7,7 @@ local finance = require "tpf2_mp/finance"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
+local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 
 local M = {}
 
@@ -177,6 +178,7 @@ function M.new(cfg, versions)
         cursor = {},
       },
       industryContent = industryContentRuntime.newState(),
+      freightIndustry = freightIndustryModel.newState(),
       logicalOwners = {},
       logicalOwnershipAuthoritative = false,
       initialNetworkOwnership = nil,
@@ -301,6 +303,7 @@ function M.new(cfg, versions)
       },
       passengerCosmetics = passengerCosmetics.newProbe(),
       industryContent = industryContentRuntime.newProbe(),
+      freightIndustry = freightIndustryModel.newProbe(),
       capture = {
         preCommitCount = 0,
         nativePreCommitCount = 0,
@@ -547,6 +550,8 @@ function M.migrate(saved, context)
   saved.world.townDevelopmentPoints = nil
   saved.world.industryContent = industryContentRuntime.migrate(
     saved.world.industryContent)
+  saved.world.freightIndustry = freightIndustryModel.migrate(
+    saved.world.freightIndustry)
   saved.world.originResidueCustody = saved.world.originResidueCustody or {}
   saved.world.originResidueNextToken = math.max(1,
     util.integer(saved.world.originResidueNextToken, 1))
@@ -647,6 +652,13 @@ function M.migrate(saved, context)
   for key, value in pairs(defaults.probes.industryContent) do
     if saved.probes.industryContent[key] == nil then
       saved.probes.industryContent[key] = util.deepCopy(value)
+    end
+  end
+  saved.probes.freightIndustry = saved.probes.freightIndustry
+    or util.deepCopy(defaults.probes.freightIndustry)
+  for key, value in pairs(defaults.probes.freightIndustry) do
+    if saved.probes.freightIndustry[key] == nil then
+      saved.probes.freightIndustry[key] = util.deepCopy(value)
     end
   end
   saved.probes.networkAuthority = saved.probes.networkAuthority
@@ -779,6 +791,7 @@ function M.migrate(saved, context)
     -- per-peer attestations before freight rules can trust the loader facts.
     saved.world.industryContent = industryContentRuntime.newState()
     saved.probes.industryContent = industryContentRuntime.newProbe()
+    saved.probes.freightIndustry = freightIndustryModel.newProbe()
   end
   saved.bridge.companion = saved.bridge.companion or {
     available = false,

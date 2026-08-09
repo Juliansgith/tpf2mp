@@ -86,9 +86,14 @@ local industryReading = industryReadingModule.new({
   getGame = function() return game end,
   entityNumber = entityNumber,
   resourceFacts = industryResourceFacts,
+  listIndustries = function() return M.listIndustries and M.listIndustries() or {} end,
+  resolveCanonical = function(registry, localId)
+    return canonical.resolveCanonical(registry, "industry", localId)
+  end,
 })
 M.industryResourceProbe = industryReading.registryProbe
 M.industryRecipe = industryReading.recipeForIndustry
+M.industryBootstrapFacts = industryReading.portableFacts
 
 function M.entityExists(id)
   id = tonumber(id)

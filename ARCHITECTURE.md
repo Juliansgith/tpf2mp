@@ -87,7 +87,12 @@ Domain modules under `res/scripts/tpf2_mp`:
   bounded extraction, evaluated-variant normalization, strict deterministic
   merge, and artifact encoding. `world_industry_reading.lua` binds live
   `SIM_BUILDING` roots back to portable construction resource names without
-  making native IDs authoritative.
+  making native IDs authoritative. `freight_industry_model.lua` owns the
+  canonical recipe/bootstrap schema, per-industry input/output inventories,
+  exact production residuals, production/consumption totals, pure settlement
+  advancement, and digest/public views. Cargo deposits target a canonical
+  industry plus an explicit recipe stock index whenever one cargo type occurs
+  in more than one stock slot; cargo type alone is accepted only when unique.
 - `edge_ownership.lua` owns private/public edge custody rules.
 - `proposal_codec.lua` validates and materializes portable construction/edge
   transactions.
@@ -123,8 +128,14 @@ Runtime-controller modules:
   session/peer-bound companion registry. `industry_content_runtime.lua` owns
   state migration, local/live binding, ordered two-peer content attestations,
   agreement/fault semantics, and the checkpoint projection. Match
-  initialization is gated on that agreement; it does not yet own cargo stock
-  or delivery simulation.
+  initialization is gated on that agreement. `freight_industry_runtime.lua`
+  lets only the host author a sorted bootstrap after content agreement, applies
+  it only when every local live binding and economy epoch match, checkpoints
+  it, and advances production atomically with economy settlement.
+  `freight_industry_revalidation.lua` fails closed when a saved ledger no
+  longer matches freshly attested content or current canonical live-industry
+  bindings. This layer owns stocks and production, but not station queues,
+  vehicle loads, deliveries, or native cargo presentation.
 - `authored_followup_runtime.lua` owns strict town-development application,
   save-receipt acknowledgement, and development checkpoint export.
 - `network_clock_runtime.lua` owns ordered native clock application, peer-health
@@ -192,6 +203,11 @@ captured table reference would therefore mutate stale state after loading.
 - `industry_content.py` strictly validates and merges peer-local loader
   artifacts into the deterministic companion registry; `host_intents.py`
   centralizes host-authored ordered intents, including content claims.
+- `freight_protocol.py` owns the bounded exact-field validation and canonical
+  digest contract for `freight.industry_bootstrap`; `freight.py` independently
+  applies that bootstrap and replays the Lua integer inventory/production
+  arithmetic. `checkpoint.py` includes the resulting ledger in the model/core
+  projection and advances it on every replayed economy settlement.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
 - `client.py` owns client connection/retry and bridge forwarding.
 - `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;
