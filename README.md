@@ -118,7 +118,7 @@ Run PowerShell from this directory:
 .\tools\package_release.ps1
 ```
 
-This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.35.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
+This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.36.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
 
 An extracted package installs with:
 
@@ -294,13 +294,17 @@ intercity passenger corridor and a same-company local bus/tram line. After the
 automatic five-minute settlement, closing either game checks the complete audit
 and requires exact peer convergence, a two-stop operational local service, an
 operational corridor sharing an exact endpoint station group, a positive
-modeled feeder link, completed local travel,
-and settled authoritative revenue. Use `-Carrier TRAM` for a tram-specific
-receipt. Existing evidence can be checked with:
+modeled feeder link, completed local travel, and settled authoritative revenue.
+The first non-zero authored load on a valid local ROAD/TRAM feeder automatically
+opens a one-time `passenger-milestone:aboard` checkpoint; the wrapper requires
+that receipt, so there is no timed **Export Checkpoint** click. Rail corridors,
+rival services, duplicate-stop routes, and malformed local bindings cannot
+consume the milestone. Use `-Carrier TRAM` for a tram-specific receipt. Existing
+evidence can be checked with:
 
 ```powershell
 .\tools\analyze_feeder_live_evidence.ps1 -Session match-1 `
-  -RequireStage settled -Carrier ROAD
+  -RequireStage settled -Carrier ROAD -RequireObservedAboard
 ```
 
 The transport is designed for trusted private peers. Its checksums detect corruption and inconsistency; they are not hostile-client authentication or encryption. Do not expose TCP port `29742` directly to the Internet.

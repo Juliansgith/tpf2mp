@@ -87,8 +87,11 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_content_runtime.lua' = 360
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua' = 560
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua' = 190
-    'tpf2_mp_1\res\scripts\tpf2_mp\freight_milestone_runtime.lua' = 100
-    'tpf2_mp_1\res\scripts\tpf2_mp\freight_milestone_followup.lua' = 50
+    'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_runtime.lua' = 140
+    'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_integration.lua' = 50
+    'tpf2_mp_1\res\scripts\tpf2_mp\freight_milestone_runtime.lua' = 20
+    'tpf2_mp_1\res\scripts\tpf2_mp\passenger_milestone_runtime.lua' = 50
+    'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_followup.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_revalidation.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_public.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_transport_settlement.lua' = 190
@@ -156,7 +159,7 @@ $requiredModules = @(
     'tpf2_mp/operational_capture_runtime',
     'tpf2_mp/freight_industry_model',
     'tpf2_mp/freight_industry_runtime',
-    'tpf2_mp/freight_milestone_runtime',
+    'tpf2_mp/aboard_milestone_integration',
     'tpf2_mp/cargo_presentation',
     'tpf2_mp/gui_state',
     'tpf2_mp/gui_entry_points',
@@ -177,8 +180,16 @@ if (-not (Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\script
 }
 $followupSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\network_followup_queue.lua') -Raw
-if (-not $followupSource.Contains('tpf2_mp/freight_milestone_followup')) {
-    throw 'Network follow-up queue no longer composes cargo-milestone retry/coalescing.'
+if (-not $followupSource.Contains('tpf2_mp/aboard_milestone_followup')) {
+    throw 'Network follow-up queue no longer composes aboard-milestone retry/coalescing.'
+}
+$milestoneSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_integration.lua') -Raw
+foreach ($module in @('tpf2_mp/freight_milestone_runtime',
+    'tpf2_mp/passenger_milestone_runtime')) {
+    if (-not $milestoneSource.Contains($module)) {
+        throw "Aboard milestone integration no longer composes $module"
+    }
 }
 $freightModelSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua') -Raw

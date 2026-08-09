@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.35.0-alpha',
+    [string]$Version = '0.36.0-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -209,7 +209,7 @@ Useful commands:
     .\tools\start_operational_capture_lab.ps1 -Minutes 120
     .\tools\start_freight_live_acceptance.ps1 -RequireObservedAboard
     .\tools\analyze_freight_live_evidence.ps1 -Session match-1 -RequireStage settled
-    .\tools\start_feeder_live_acceptance.ps1 -Carrier ROAD -RequireObservedAboard
+    .\tools\start_feeder_live_acceptance.ps1 -Carrier ROAD
     .\tools\analyze_feeder_live_evidence.ps1 -Session match-1 -RequireStage settled
     .\tools\new_recovery_plan.ps1 -AuditPath "$env:TEMP\tpf2mp_bridge\player1\audit\match-1.ndjson" -Session match-1
     .\tools\archive_recovery_save.ps1 -Session match-1 -Peer player1 -SavePath C:\saves\match.sav

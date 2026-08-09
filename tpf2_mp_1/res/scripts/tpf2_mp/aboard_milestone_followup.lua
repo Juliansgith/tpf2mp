@@ -3,7 +3,7 @@ local M = {}
 function M.coalesce(items, action, state, log, count)
   if action.stage ~= "aboard" or type(action.lineCid) ~= "string"
     or type(action.vehicleCid) ~= "string" then
-    return false, "freight milestone follow-up is malformed"
+    return false, "aboard milestone follow-up is malformed"
   end
   for index, pending in ipairs(items) do
     if pending.action and pending.action.type == action.type then

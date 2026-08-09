@@ -9,7 +9,6 @@ param(
     [string]$LocalModsPath,
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [ValidateSet('ANY', 'ROAD', 'TRAM')][string]$Carrier = 'ANY',
-    [switch]$RequireObservedAboard,
     [switch]$SkipTests,
     [switch]$SkipInstall,
     [switch]$SkipNativeBuild
@@ -32,11 +31,9 @@ Write-Host '  3. Buy and assign at least one passenger vehicle to each line; wai
 Write-Host '  4. Unpause and let the local vehicle board and complete a trip. Let the corridor run too.'
 Write-Host '  5. Keep running through an automatic five-minute economy settlement; the corridor must show feeder access.'
 if ($Carrier -ne 'ANY') {
-    Write-Host "  6. This run specifically requires a $Carrier local feeder."
+    Write-Host "     This run specifically requires a $Carrier local feeder."
 }
-if ($RequireObservedAboard) {
-    Write-Host '  7. Export a checkpoint while the local feeder visibly has passengers aboard.'
-}
+Write-Host '  6. The first non-zero local feeder load automatically opens a passenger-aboard checkpoint.'
 Write-Host 'Close either game when finished. Evidence collection and strict audit analysis then run automatically.'
 
 $runArguments = @{
@@ -72,8 +69,8 @@ $analysisArguments = @{
     BundleRoot = $projectRoot
     RequireStage = 'settled'
     Carrier = $Carrier
+    RequireObservedAboard = $true
 }
-if ($RequireObservedAboard) { $analysisArguments.RequireObservedAboard = $true }
 & (Join-Path $PSScriptRoot 'analyze_feeder_live_evidence.ps1') @analysisArguments
 if ($LASTEXITCODE -ne 0) { throw "Passenger-feeder evidence wrapper exited $LASTEXITCODE" }
 Write-Host "PASS complete localhost passenger-feeder acceptance: session=$safeSession"

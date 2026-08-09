@@ -12,6 +12,7 @@ CONSENSUS_BOUND_ACTIONS = {
     "match.initialise", "proposal.prepare", "operation.execute", "line.register",
     "town.develop", "recovery.prepare", "recovery.resume", "recovery.save_receipt",
     "content.industry_attest", "freight.industry_bootstrap", "freight.milestone",
+    "passenger.milestone",
     "economy.settle", "probe.structural",
 }
 

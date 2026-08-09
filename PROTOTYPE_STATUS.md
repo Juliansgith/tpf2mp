@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.35.0-alpha`, state schema `29`,
+Last updated: 2026-08-09 for prototype `0.36.0-alpha`, state schema `29`,
 checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation
 schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction
 proposal schema `7`, and native hook `0.14.0`.
@@ -598,6 +598,14 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   `freight-milestone:aboard` checkpoint can complete. This removes the
   timing-dependent manual checkpoint from strict live evidence without adding
   a network round at every station.
+- The same one-shot protocol now covers the first non-zero authored passenger
+  load on a valid local ROAD/TRAM feeder. A shared runtime verifies both peers'
+  canonical line/vehicle ledger, while a passenger policy requires local scope,
+  two equal endpoint towns, and two distinct station groups. Rail corridors,
+  duplicate-stop routes, disabled services, and malformed bindings cannot
+  consume the proof. The ordered `passenger.milestone` opens
+  `passenger-milestone:aboard`; the focused feeder wrapper requires it
+  automatically, removing its last timed checkpoint click.
 - Native people remain bounded scenery. Exact-build reverse engineering shows
   `Debug_SetSimPersonState` contains only a person ID and boolean, with no
   train/station target; the cosmetic adapter therefore issues zero writes.
@@ -658,10 +666,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 122 core Lua tests and 108 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 108 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 111 mod Lua and 8 investigation/tool Lua syntax checks;
   - 44 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 131 Python protocol/network/checkpoint/recovery/report tests;
+  - 134 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 

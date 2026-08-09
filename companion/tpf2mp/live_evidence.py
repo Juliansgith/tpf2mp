@@ -14,6 +14,7 @@ CHECKPOINTED_COMMIT_TYPES = frozenset({
     "town.develop",
     "freight.industry_bootstrap",
     "freight.milestone",
+    "passenger.milestone",
     "probe.structural",
     "economy.settle",
     "recovery.resume",

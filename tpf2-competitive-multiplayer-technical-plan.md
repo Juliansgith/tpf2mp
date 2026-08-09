@@ -346,6 +346,18 @@ verdict. No game was launched for this tooling slice, so the ordinary-UI
 non-rail receipt remains open. See
 `investigation/PASSENGER_FEEDER_LIVE_ACCEPTANCE_2026-08-09.md`.
 
+**2026-08-09 passenger aboard checkpoint.** Prototype 0.36 extends the
+host-ordered, one-shot cargo evidence mechanism to a valid local passenger
+feeder. The shared runtime accepts only an enabled same-town ROAD/TRAM service
+with two distinct canonical station groups and a positive authored vehicle
+load; rail corridors and malformed/duplicate-stop routes cannot consume the
+proof. Both peers verify the exact line/vehicle/load before
+`passenger-milestone:aboard` opens. Retry coalescing uses the existing bounded
+follow-up FIFO, Python restart/replay restores the boundary, and the feeder
+acceptance wrapper now requires the receipt automatically. This removes test
+timing but does not replace the still-open real two-process ROAD/TRAM run. See
+`investigation/AUTOMATIC_PASSENGER_ABOARD_MILESTONE_2026-08-09.md`.
+
 The next gates are the now-scripted focused local bus/tram feeder run, cargo-positive two-process run, human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
 
 ---

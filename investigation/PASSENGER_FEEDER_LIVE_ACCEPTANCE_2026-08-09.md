@@ -91,11 +91,13 @@ An existing audit can be checked independently:
   -RequireStage settled -Carrier ROAD
 ```
 
-`-RequireObservedAboard` additionally requires a converged checkpoint while a
-local vehicle carries passengers. Unlike freight's one-time automatic aboard
-milestone, this optional passenger snapshot currently requires an explicit
-checkpoint during the loaded leg; completed and settled evidence is automatic
-at the five-minute economy boundary.
+When analyzing an existing audit, `-RequireObservedAboard` additionally requires
+a converged checkpoint while a local vehicle carries passengers. Prototype
+0.36 removes the manual timing requirement described by the original 0.35
+implementation: the first qualifying non-zero ROAD/TRAM feeder load now opens
+one host-ordered `passenger-milestone:aboard` checkpoint automatically. The
+focused start wrapper always requires that receipt. Completed and settled
+evidence remains automatic at the five-minute economy boundary.
 
 ## Evidence boundary
 
@@ -121,3 +123,13 @@ and local support-version path. Verification accepted all 108 manifest-bound
 mod files, companion `0.9.0`, prototype `0.35.0-alpha`, state schema `29`,
 checkpoint format `5`, passenger schema `2`, cargo schema `1`, freight schema
 `2`, and the exact Transport Fever 2 Build 35924 native-hook profile.
+
+## Prototype 0.36 follow-up
+
+The shared one-shot aboard protocol now serves cargo and passenger evidence.
+The passenger policy rejects rail corridors, disabled or non-local services,
+different endpoint towns, and routes without two distinct station groups before
+they can consume the match's feeder checkpoint. The host alone may author the
+portable action; both peers independently verify the exact canonical line,
+vehicle, and positive load before the checkpoint opens. Retries coalesce in the
+same bounded follow-up FIFO, and the action changes no presentation state.

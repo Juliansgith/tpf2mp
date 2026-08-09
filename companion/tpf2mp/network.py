@@ -45,6 +45,7 @@ HOST_AUTHORITY_ACTIONS = {
     "town.develop",
     "freight.industry_bootstrap",
     "freight.milestone",
+    "passenger.milestone",
     "recovery.resume",
 }
 
@@ -177,10 +178,9 @@ class CommitHost(HostIntentMixin):
                         self._track_checkpoint_boundary(seq, "town-development")
                     elif action.get("type") == "freight.industry_bootstrap":
                         self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
-                    elif action.get("type") == "freight.milestone":
-                        self._track_checkpoint_boundary(
-                            seq, f"freight-milestone:{action.get('stage')}"
-                        )
+                    elif action.get("type") in {"freight.milestone", "passenger.milestone"}:
+                        label = action.get("type").split(".", 1)[0]
+                        self._track_checkpoint_boundary(seq, f"{label}-milestone:{action.get('stage')}")
                     elif action.get("type") == "economy.settle":
                         self._track_checkpoint_boundary(seq, "economy-settlement")
                     elif action.get("type") == "content.industry_attest":
@@ -502,8 +502,9 @@ class CommitHost(HostIntentMixin):
                 self._track_checkpoint_boundary(seq, "town-development")
             elif action["type"] == "freight.industry_bootstrap":
                 self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
-            elif action["type"] == "freight.milestone":
-                self._track_checkpoint_boundary(seq, f"freight-milestone:{action['stage']}")
+            elif action["type"] in {"freight.milestone", "passenger.milestone"}:
+                label = action["type"].split(".", 1)[0]
+                self._track_checkpoint_boundary(seq, f"{label}-milestone:{action['stage']}")
             elif action["type"] == "economy.settle":
                 self._track_checkpoint_boundary(seq, "economy-settlement")
             elif action["type"] == "content.industry_attest":

@@ -2056,10 +2056,10 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         content = _mapping(model.get("industryContent"), "replay industry content")
         apply_freight_bootstrap(freight, action, content)
         model["freightIndustry"] = freight
-    elif action_type == "freight.milestone":
+    elif action_type in {"freight.milestone", "passenger.milestone"}:
         # Evidence boundary only: the preceding ordered station release owns
-        # the cargo mutation. This action verifies it in both games and opens
-        # a checkpoint without changing the authored model a second time.
+        # the presentation mutation. This action verifies it in both games and
+        # opens a checkpoint without changing the authored model a second time.
         pass
     elif action_type == "economy.seed_demo":
         order = model.get("companyOrder", [])

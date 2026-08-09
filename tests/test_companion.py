@@ -670,23 +670,54 @@ class ProtocolTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ProtocolError):
                 validate_action(tampered)
 
-    def test_freight_aboard_milestone_is_strict_and_portable(self) -> None:
-        action = {
-            "type": "freight.milestone", "stage": "aboard",
-            "lineCid": "line:event:freight-proof",
-            "vehicleCid": "vehicle:event:freight-proof",
-        }
-        self.assertEqual(validate_action(action), action)
-        invalid = (
-            {**action, "stage": "delivered"},
-            {**action, "lineCid": "station_group:event:not-a-line"},
-            {**action, "vehicleCid": "line:event:not-a-vehicle"},
-            {**action, "lineCid": "line:" + "x" * 236},
-            {**action, "unexpected": True},
-        )
-        for candidate in invalid:
-            with self.subTest(candidate=candidate), self.assertRaises(ProtocolError):
-                validate_action(candidate)
+    def test_aboard_milestones_are_strict_and_portable(self) -> None:
+        for action_type in ("freight.milestone", "passenger.milestone"):
+            action = {
+                "type": action_type, "stage": "aboard",
+                "lineCid": "line:event:aboard-proof",
+                "vehicleCid": "vehicle:event:aboard-proof",
+            }
+            self.assertEqual(validate_action(action), action)
+            invalid = (
+                {**action, "stage": "delivered"},
+                {**action, "lineCid": "station_group:event:not-a-line"},
+                {**action, "vehicleCid": "line:event:not-a-vehicle"},
+                {**action, "lineCid": "line:" + "x" * 236},
+                {**action, "unexpected": True},
+            )
+            for candidate in invalid:
+                with self.subTest(
+                    action_type=action_type, candidate=candidate,
+                ), self.assertRaises(ProtocolError):
+                    validate_action(candidate)
+
+    def test_aboard_milestones_are_host_authored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "milestone-host-authority"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            for index, action_type in enumerate(
+                ("freight.milestone", "passenger.milestone"), start=1,
+            ):
+                intent = sign({
+                    "protocol": 1, "session": session, "peer": "player2",
+                    "local_seq": index, "tick": 0, "kind": "intent",
+                    "payload": {"action": {
+                        "type": action_type, "stage": "aboard",
+                        "lineCid": "line:event:proof",
+                        "vehicleCid": "vehicle:event:proof",
+                    }},
+                })
+                with self.subTest(action_type=action_type), self.assertRaisesRegex(
+                    ProtocolError, "may only originate from host peer player1",
+                ):
+                    host._commit(intent)
+            self.assertEqual(host.next_seq, 1)
+            self.assertEqual(list(host.audit.messages()), [])
 
     def test_match_lifecycle_actions_require_canonical_rules_and_result(self) -> None:
         initial = validate_action(
@@ -2863,6 +2894,60 @@ class CheckpointTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "lacks passenger-feeder evidence"):
                 analyse_passenger_feeder_audit(missing.path, session)
 
+    def test_passenger_feeder_report_accepts_automatic_aboard_milestone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = "passenger-feeder-auto-aboard"
+            reason = "passenger-milestone:aboard"
+            audit = AuditLog(Path(directory) / "audit.ndjson")
+            payloads = []
+            for peer in ("player1", "player2"):
+                payload = self.populated_feeder_checkpoint()
+                payload["sessionId"] = session
+                payload["peerId"] = peer
+                payload["reason"] = reason
+                payload["eventCursor"]["lastCommitSeq"] = 1
+                self.resign_checkpoint(payload)
+                payloads.append(payload)
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 1, "kind": "commit",
+                "origin_peer": "player1", "origin_local_seq": 1, "tick": 1,
+                "payload": {"action": {
+                    "type": "passenger.milestone", "stage": "aboard",
+                    "lineCid": "line:event:bus:1",
+                    "vehicleCid": "vehicle:event:bus:1",
+                }},
+            }))
+            for peer, payload in zip(("player1", "player2"), payloads):
+                audit.append(sign({
+                    "protocol": 1, "session": session, "kind": "record",
+                    "peer": peer, "local_seq": 1,
+                    "record_type": "checkpoint", "payload": payload,
+                }))
+            first = payloads[0]
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 2, "kind": "control",
+                "origin_peer": "player1", "tick": 0,
+                "payload": {"action": {
+                    "type": "network.checkpoint_outcome", "boundarySeq": 1,
+                    "reason": reason, "success": True,
+                    "convergenceKey": first["convergenceKey"],
+                    "coreDigest": first["coreDigest"],
+                    "modelDigest": first["modelDigest"],
+                    "canonicalDigest": first["canonicalDigest"],
+                    "financialDigest": first["financialDigest"],
+                    "peers": ["player1", "player2"],
+                }},
+            }))
+            self.assertEqual(replay(audit.path, session), 0)
+            report = analyse_passenger_feeder_audit(
+                audit.path, session, require_stage="aboard",
+                carrier="ROAD", require_observed_aboard=True,
+            )
+            self.assertTrue(report["passed"], report["problems"])
+            self.assertTrue(report["observedStages"]["aboard"])
+            self.assertEqual(report["completedCheckpoints"][0]["reason"], reason)
+            self.assertEqual(report["maxima"]["localAboard"], 10)
+
     def test_passenger_feeder_live_report_rejects_false_positive_shapes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3959,6 +4044,44 @@ class RestorePointTests(unittest.TestCase):
             self.assertEqual(restored.checkpoint_consensus[boundary]["status"], "complete")
             self.assertEqual(replay(audit, session), 0)
 
+    def test_passenger_milestone_opens_and_restores_its_checkpoint_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "passenger-milestone-checkpoint"
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            action = {
+                "type": "passenger.milestone", "stage": "aboard",
+                "lineCid": "line:event:feeder-proof",
+                "vehicleCid": "vehicle:event:feeder-proof",
+            }
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 10, "kind": "intent",
+                "payload": {"action": action},
+            }))
+            boundary = int(commit["seq"])
+            reason = "passenger-milestone:aboard"
+            self.assertEqual(host.checkpoint_consensus[boundary]["reason"], reason)
+            host._record_non_intent(consensus_checkpoint(
+                session, "player1", 1, boundary, reason
+            ))
+            host._record_non_intent(consensus_checkpoint(
+                session, "player2", 1, boundary, reason
+            ))
+            self.assertEqual(host.checkpoint_consensus[boundary]["status"], "complete")
+
+            restored = CommitHost(
+                GameBridge(root / "restored", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            self.assertEqual(restored.checkpoint_consensus[boundary]["reason"], reason)
+            self.assertEqual(restored.checkpoint_consensus[boundary]["status"], "complete")
+            self.assertEqual(replay(audit, session), 0)
+
     def test_restore_analysis_refuses_to_mix_sessions_implicitly(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4650,6 +4773,15 @@ class NetworkIntegrationTests(unittest.TestCase):
                         "type": "freight.milestone", "stage": "aboard",
                         "lineCid": "line:event:proof",
                         "vehicleCid": "vehicle:event:proof",
+                    }},
+                }),
+                sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 4, "tick": 0, "kind": "intent",
+                    "payload": {"action": {
+                        "type": "passenger.milestone", "stage": "aboard",
+                        "lineCid": "line:event:feeder-proof",
+                        "vehicleCid": "vehicle:event:feeder-proof",
                     }},
                 }),
             )

@@ -46,7 +46,7 @@ local operationalCaptureRuntimeModule = require "tpf2_mp/operational_capture_run
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 local freightIndustryRuntime = require "tpf2_mp/freight_industry_runtime"
-local freightMilestoneRuntime = require "tpf2_mp/freight_milestone_runtime"
+local aboardMilestoneIntegration = require "tpf2_mp/aboard_milestone_integration"
 local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registration_integration"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
@@ -1455,7 +1455,7 @@ freightIndustryRuntime.installHandler(handlers, {
   getState = function() return state end, requireRunningMatch = requireRunningMatch,
   readFacts = world.industryBootstrapFacts,
 })
-freightMilestoneRuntime.installHandler(handlers, { getState = function() return state end,
+aboardMilestoneIntegration.installHandlers(handlers, { getState = function() return state end,
   requireRunningMatch = requireRunningMatch })
 handlers["line.register"] = function(action)
   local running, runningError = requireRunningMatch()
@@ -2007,7 +2007,7 @@ end
 
 handlers["vehicle.sync_release"] = function(action)
   local ok, result = vehicleSync.applyRelease(action)
-  if ok then freightMilestoneRuntime.observeRelease(state, action, networkIntentController, diagnosticLog) end
+  if ok then aboardMilestoneIntegration.observeRelease(state, action, networkIntentController, diagnosticLog) end
   return ok, result
 end
 
@@ -2649,8 +2649,8 @@ local function normaliseForNetwork(action)
     local bootstrapError; copy, bootstrapError = freightIndustryRuntime.normaliseIntent(
       state, state.bridge.peerId, world.industryBootstrapFacts)
     if not copy then return nil, bootstrapError end
-  elseif copy.type == "freight.milestone" then
-    local milestoneError; copy, milestoneError = freightMilestoneRuntime.normaliseIntent(state, copy)
+  elseif copy.type == "freight.milestone" or copy.type == "passenger.milestone" then
+    local milestoneError; copy, milestoneError = aboardMilestoneIntegration.normaliseIntent(state, copy)
     if not copy then return nil, milestoneError end
   elseif copy.type == "network.checkpoint_request" then
     local preparationSeq = util.integer(copy.preparationSeq, 0)
@@ -2861,7 +2861,7 @@ applyCommitted = function(action, actor, commitSeq)
       })
     end
   else
-    if not freightMilestoneRuntime.afterCommit(state, action, success, authoritySeq,
+    if not aboardMilestoneIntegration.afterCommit(state, action, success, authoritySeq,
         exportCheckpointBarrier, diagnosticLog)
       and not industryContentRuntime.afterCommit(state, action, success, authoritySeq,
         exportCheckpointBarrier, diagnosticLog) then
@@ -3244,7 +3244,7 @@ local function resetTransientRuntime()
   networkClock.reset()
   economyClock.reset()
   vehicleSync.reset()
-  freightMilestoneRuntime.reset()
+  aboardMilestoneIntegration.reset()
   -- Custody of an origin-applied (already natively mutated) operation lives
   -- in module-locals: the deferred queue, the awaiting-order latch, and the
   -- token registry all die with a script reload while the native mutation

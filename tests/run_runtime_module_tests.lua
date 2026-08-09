@@ -34,6 +34,7 @@ local bridgeModule = require "tpf2_mp/bridge"
 local cargoPresentationModule = require "tpf2_mp/cargo_presentation"
 local freightIndustryModelModule = require "tpf2_mp/freight_industry_model"
 local freightMilestoneRuntimeModule = require "tpf2_mp/freight_milestone_runtime"
+local passengerMilestoneRuntimeModule = require "tpf2_mp/passenger_milestone_runtime"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 
@@ -973,9 +974,141 @@ do
         and emitted[1].payload.action.type == "freight.milestone"
         and #controller.deferredFollowups() == 0,
       "cargo milestone did not drain through one ordered network round")
+
+    controller.reset()
+    emitted = {}
+    local passengerQueued, passengerResult = controller.scheduleFollowup({
+      type = "passenger.milestone", stage = "aboard",
+      lineCid = "line:event:feeder:1", vehicleCid = "vehicle:event:bus:1",
+    })
+    local duplicatePassenger = controller.scheduleFollowup({
+      type = "passenger.milestone", stage = "aboard",
+      lineCid = "line:event:feeder:2", vehicleCid = "vehicle:event:tram:2",
+    })
+    assert(passengerQueued == true and passengerResult.deferred == true
+        and duplicatePassenger == true and #emitted == 0
+        and #controller.deferredFollowups() == 1
+        and controller.deferredFollowups()[1].coalesced == 1,
+      "passenger milestone bypassed or duplicated the ordered follow-up lane")
+    assert(controller.processDeferred() == true and #emitted == 1
+        and emitted[1].payload.action.type == "passenger.milestone"
+        and #controller.deferredFollowups() == 0,
+      "passenger milestone did not drain through one ordered network round")
+
+    controller.reset()
+    emitted = {}
+    controller.scheduleFollowup({
+      type = "freight.milestone", stage = "aboard",
+      lineCid = "line:event:cargo:both", vehicleCid = "vehicle:event:cargo:both",
+    })
+    controller.scheduleFollowup({
+      type = "passenger.milestone", stage = "aboard",
+      lineCid = "line:event:feeder:both", vehicleCid = "vehicle:event:bus:both",
+    })
+    assert(#controller.deferredFollowups() == 2,
+      "cargo and passenger milestones coalesced across evidence domains")
   end, debug.traceback)
   bridgeModule.emit = originalEmit
   if not ok then error(failure, 0) end
+end
+
+do
+  -- Only a real same-town ROAD/TRAM feeder may open the one-time passenger
+  -- aboard checkpoint. Rail corridors and malformed local bindings must not
+  -- consume that proof opportunity before the feeder runs.
+  passengerMilestoneRuntimeModule.reset()
+  local lineCid = "line:event:feeder-proof"
+  local vehicleCid = "vehicle:event:feeder-proof"
+  local current = {
+    initialized = true, networkMode = "network", tick = 51,
+    match = { status = "running" },
+    bridge = {
+      peerId = "player2", sessionId = "passenger-proof",
+      companion = { connected = true },
+    },
+    probes = {},
+    economy = { services = { [lineCid] = {
+      lineCid = lineCid, enabled = true,
+      metadata = {
+        carrier = "ROAD", marketScope = "local",
+        stationGroupCids = { "station_group:event:a", "station_group:event:b" },
+        endpointTownCids = { "town:pre:a", "town:pre:a" },
+      },
+    } } },
+    world = { passengerPresentation = {
+      lines = { [lineCid] = { lineCid = lineCid } },
+      vehicles = { [vehicleCid] = { lineCid = lineCid, aboard = 7 } },
+    } },
+  }
+  local handlers = {}
+  passengerMilestoneRuntimeModule.installHandler(handlers, {
+    getState = function() return current end,
+    requireRunningMatch = function() return true end,
+  })
+  local action = {
+    type = "passenger.milestone", stage = "aboard",
+    lineCid = lineCid, vehicleCid = vehicleCid,
+  }
+  assert(passengerMilestoneRuntimeModule.normaliseIntent(current, action) == nil,
+    "client peer was allowed to author a passenger milestone")
+  local applied, result = handlers["passenger.milestone"](action)
+  assert(applied == true and result.aboard == 7
+      and current.probes.passengerMilestone.aboardCheckpointed == true,
+    "client peer rejected a valid host-authored passenger milestone")
+  assert(handlers["passenger.milestone"]({
+      type = "passenger.milestone", stage = "aboard", lineCid = lineCid,
+      vehicleCid = vehicleCid, unexpected = true,
+    }) == false,
+    "passenger milestone accepted an unknown wire field")
+
+  current.bridge.peerId = "player1"
+  current.probes.passengerMilestone = nil
+  current.bridge.companion.connected = false
+  local scheduled, diagnostics = {}, {}
+  local controller = { scheduleFollowup = function(pending)
+    if #scheduled == 0 then scheduled[1] = util.deepCopy(pending) end
+    return true, { deferred = true, coalesced = #scheduled > 0 }
+  end }
+  local function log(kind, fields)
+    diagnostics[#diagnostics + 1] = { kind = kind, fields = fields }
+  end
+  assert(passengerMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == false
+      and #scheduled == 0,
+    "disconnected host scheduled a passenger milestone")
+  current.bridge.companion.connected = true
+  assert(passengerMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == true
+      and #scheduled == 1 and scheduled[1].type == "passenger.milestone",
+    "first authoritative feeder load did not schedule its proof milestone")
+  assert(handlers["passenger.milestone"](scheduled[1]) == true,
+    "host could not apply its ordered passenger proof milestone")
+
+  local exported = {}
+  assert(passengerMilestoneRuntimeModule.afterCommit(
+      current, scheduled[1], true, 23, function(boundary, reason)
+        exported[#exported + 1] = { boundary = boundary, reason = reason }
+        return true
+      end, log) == true
+      and exported[1].boundary == 23
+      and exported[1].reason == "passenger-milestone:aboard",
+    "passenger milestone did not open its convergence checkpoint")
+
+  current.probes.passengerMilestone = nil
+  current.economy.services[lineCid].metadata.carrier = "RAIL"
+  scheduled = {}
+  assert(passengerMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == false
+      and #scheduled == 0,
+    "rail corridor consumed the local-feeder passenger proof milestone")
+  current.economy.services[lineCid].metadata.carrier = "TRAM"
+  current.economy.services[lineCid].metadata.stationGroupCids = {
+    "station_group:event:a", "station_group:event:a",
+  }
+  assert(passengerMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == false,
+    "duplicate-stop feeder consumed the passenger proof milestone")
+  passengerMilestoneRuntimeModule.reset()
 end
 
 do

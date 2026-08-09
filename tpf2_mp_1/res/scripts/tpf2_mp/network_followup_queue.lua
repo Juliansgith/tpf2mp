@@ -1,6 +1,6 @@
 local util = require "tpf2_mp/util"
 local serviceRegistrationRuntime = require "tpf2_mp/service_registration_runtime"
-local freightMilestoneFollowup = require "tpf2_mp/freight_milestone_followup"
+local aboardMilestoneFollowup = require "tpf2_mp/aboard_milestone_followup"
 local M = {}
 
 function M.new(deps)
@@ -38,7 +38,8 @@ function M.new(deps)
     end
     local actionType = tostring(action.type or "")
     if actionType ~= "line.register" and actionType ~= "town.develop"
-      and actionType ~= "freight.milestone" then
+      and actionType ~= "freight.milestone"
+      and actionType ~= "passenger.milestone" then
       return false, "unsupported ordered follow-up: " .. actionType
     end
     local proposalFault = state.world.proposalConsensus
@@ -95,8 +96,9 @@ function M.new(deps)
           }
         end
       end
-    elseif actionType == "freight.milestone" then
-      local handled, result = freightMilestoneFollowup.coalesce(items, action, state, diagnosticLog, count)
+    elseif actionType == "freight.milestone" or actionType == "passenger.milestone" then
+      local handled, result = aboardMilestoneFollowup.coalesce(
+        items, action, state, diagnosticLog, count)
       if handled ~= nil then return handled, result end
     end
 
