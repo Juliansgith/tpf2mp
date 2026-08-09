@@ -77,10 +77,18 @@ Python independently accepts the anchored node in endpoint and removal fields,
 recomputes its proposal digest, and still rejects an edge ID substituted for a
 node ID.
 
-The complete repository gate passes with 90/90 core Lua tests, 75 economy
+The complete repository gate passes with 95/95 core Lua tests, 75 economy
 parity scenarios, all Lua/game-script/hot-seat/network/GUI integrations, the
-104-event replay, 105 Python tests, syntax and architecture checks, and the
+1,024-event replay, 108 Python tests, syntax and architecture checks, and the
 launcher boundaries.
+
+The `20260809-015718` exact Build 35924 disposable probe also placed one normal
+and one catenary track through the supported native API. Both returned one
+owned `BASE_EDGE_TRACK` postcondition with the requested catenary state, while
+the native hook recorded 4 wrapped calls and 4,581/4,581 queued/applied
+commands with no unknown layout or tag. This refreshes the underlying engine
+track-build baseline; it does not exercise the two-peer co-located-node
+identity path below.
 
 ## Live acceptance
 

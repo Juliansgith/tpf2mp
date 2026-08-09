@@ -109,13 +109,16 @@ populated static convergence and wallet stability, not running-simulation RNG
 lockstep. The exact experiment and its limits are recorded in
 `investigation/POPULATED_NETWORK_RECOVERY_AND_MENU_2026-08-03.md`.
 
-`runtime/live-validation/20260804-032456` is the strongest current
+`runtime/live-validation/20260809-021602` is the strongest current
 single-process engine-shape receipt. It passed the 39-check validator and exact
-native profile, built a depot and modular station, completed four custody
-transitions across 18 owned components, replaced twelve station tracks with
-catenary tracks, built/removed an `ASSET_GROUP`-only asset, and removed the depot
-and station compound outputs. `runtime/supported-api-probe/20260804-021739`
-separately added and removed a real signal. The exact boundary and negative
+native profile, built a depot plus separate modular passenger and cargo
+stations, classified their live indexed station components as `passenger` and
+`cargo` through the production reader, completed four custody transitions
+across 33 owned components, replaced twelve passenger-station tracks with
+catenary tracks, built/removed an `ASSET_GROUP`-only asset, removed every
+facility compound output, and verified a 27-event hash chain.
+`runtime/supported-api-probe/20260804-021739` separately added and removed a
+real signal. The exact boundary and negative
 asset-upgrade finding are in
 `investigation/SIGNAL_FACILITY_LIVE_PROOF_2026-08-04.md`.
 
@@ -498,7 +501,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 94 core Lua tests and 75 cross-language economy scenarios;
+  - 95 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
   - 79 mod Lua and 8 investigation/tool Lua syntax checks;

@@ -27,6 +27,7 @@ local nativeHook = require "tpf2_mp/native_hook"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
+local validationConstruction = require "tpf2_mp/validation_construction"
 
 local tests, passed = {}, 0
 
@@ -2135,6 +2136,13 @@ test("line transport-mode reading distinguishes passenger, cargo, and indexed mi
   })
   local passenger, passengerDetail = lineReading.lineServiceKind(100)
   truthy(passenger == "passenger", "passenger line classification failed: " .. tostring(passengerDetail))
+  local groupPassenger, groupPassengerDetail = lineReading.stationGroupKind(901, 0)
+  truthy(groupPassenger == "passenger",
+    "direct passenger station-group classification failed: " .. tostring(groupPassengerDetail))
+  equal(lineReading.stationGroupKind(903, 1), "cargo",
+    "direct zero-based station-group classification selected the wrong platform")
+  equal(lineReading.stationGroupKind(905, 0), "cargo",
+    "direct native-zero-based station-group classification selected the wrong platform")
   equal(lineReading.lineServiceKind(101), "cargo",
     "zero-based stop.station did not select the cargo platform in a mixed group")
   equal(lineReading.lineServiceKind(103), "cargo",
@@ -2142,6 +2150,20 @@ test("line transport-mode reading distinguishes passenger, cargo, and indexed mi
   local unreadable, detail = lineReading.lineServiceKind(102)
   equal(unreadable, nil)
   truthy(detail:find("mixed", 1, true), "ambiguous mixed group did not fail closed")
+end)
+
+test("validation construction emits stock passenger and cargo station templates", function()
+  local passenger = assert(validationConstruction.spec("station", 2000, false))
+  local cargo = assert(validationConstruction.spec("cargo_station", 2000, false))
+  equal(passenger.fileName, "station/rail/modular_station/modular_station.con")
+  equal(cargo.fileName, passenger.fileName)
+  equal(passenger.params.modules[7400000].metadata.passenger_platform, true)
+  equal(passenger.params.modules[8401000].metadata.track, true)
+  equal(cargo.params.modules[3400020].metadata.era, 5)
+  equal(cargo.params.modules[3400020].metadata.moreCapacity.cargo, 20)
+  equal(cargo.params.modules[6400000].metadata.cargo_platform, true)
+  equal(cargo.params.modules[8402000].metadata.track, true)
+  equal(cargo.params.modules[7400000], nil)
 end)
 
 test("freight service binding fails closed before creating passenger demand", function()

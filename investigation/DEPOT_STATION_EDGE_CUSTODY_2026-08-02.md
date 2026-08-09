@@ -1,6 +1,7 @@
 # Depot and station edge-custody fix (Build 35924)
 
-Date: 2026-08-02 (Europe/Amsterdam)  
+Date: 2026-08-02 (Europe/Amsterdam)
+
 Applies to: prototype `0.14.1-alpha`, state schema `11`, Transport Fever 2 Build 35924
 
 ## Result
@@ -55,7 +56,9 @@ The Lua suite covers all relevant branches:
 - serialized save/load followed by reconcile;
 - rival `constructionBuilder` removal and generic entity mutations vetoed.
 
-`tools\run_tests.ps1` passes 16/16 core Lua tests, the edge-ownership integration, game-script/network/hot-seat/GUI suites, all Lua and PowerShell syntax checks, and 22/22 Python tests.
+The current `tools\run_tests.ps1` gate passes 95/95 core Lua tests, the
+edge-ownership integration, game-script/network/hot-seat/GUI suites, all Lua
+and PowerShell syntax checks, and 108/108 Python tests.
 
 ## Live engine proof
 
@@ -84,8 +87,30 @@ Evidence:
 - `runtime/live-validation/20260802-125058/checkpoint-replay.md`
 - `runtime/live-validation/20260802-125058/stdout-20260802-125307.txt`
 
+The current prototype refreshed and expanded this proof in disposable run
+`runtime/live-validation/20260809-021602` with native hook `0.14.0`. A depot and
+separate stock modular passenger and cargo stations completed all four custody
+transitions across 33 owned components. The exact production station reader
+resolved the passenger station through its indexed component as `passenger`
+and the cargo station as `cargo`. The run then completed a stock asset
+build/remove, full depot removal, passenger-station catenary upgrade (all
+twelve old track edges replaced by twelve catenary edges), and full removal of
+both station compounds. Every mutation reported `shapeVerified=true`;
+ownership and root-removal postconditions passed. The ordinary 39-check
+validator, exact native command accounting, 27-event hash-chain verification,
+source/install match, and byte-for-byte settings restoration also passed. The
+model-only replayer correctly stopped at non-portable `proposal.finalise`;
+native geometry continues to be covered by physical postconditions rather
+than fabricated by the economic replayer.
+
 ## Remaining station/depot boundary
 
-This closes local hot-seat custody cycling for the tested rail depot and stock modular passenger-station shape. It does not yet provide network serialization/replay for construction or station proposals, nor does it prove every station/depot type, modular upgrade, deletion, save/reload lifecycle, maintenance path, or vehicle interaction. Those remain separate coverage and codec tasks.
+This closes local hot-seat custody cycling and disposable exact-engine
+build/removal for the tested rail depot plus stock modular passenger and cargo
+stations, including passenger-station editing. Network serialization/replay
+and ordinary two-process UI proof exist for the stock shapes, but broader or
+modded families, cargo-station editing, active-line removal, save/reload at
+each facility phase, maintenance, and vehicle-failure interaction remain
+separate coverage gates.
 
 An existing save stopped by the old postcondition should not require a new match: load it with the fixed mod and cycle or reconcile again. Because the failed turn did not settle money, the corrected custody check can complete the original transaction without a compensating balance repair.

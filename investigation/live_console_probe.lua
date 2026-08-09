@@ -14,6 +14,13 @@ do
   if ok then vehicleResourceFacts = value else vehicleResourceFactsError = tostring(value) end
 end
 
+local worldLineReading
+local worldLineReadingError
+do
+  local ok, value = pcall(require, "tpf2_mp/world_line_reading")
+  if ok then worldLineReading = value else worldLineReadingError = tostring(value) end
+end
+
 local M = {}
 local sendAction
 
@@ -26,6 +33,44 @@ end
 
 local function available(value)
   return type(value) == "function" or type(value) == "table" or type(value) == "userdata"
+end
+
+local function entityNumber(value)
+  local number = tonumber(value)
+  if number then return number end
+  if type(value) == "table" or type(value) == "userdata" then
+    for _, key in ipairs({ "id", "entity", "entityId", 1, 0 }) do
+      local ok, nested = pcall(function() return value[key] end)
+      number = ok and tonumber(nested) or nil
+      if number then return number end
+    end
+  end
+  return nil
+end
+
+local function probeProductionStationGroup(groupId, stationIndex)
+  if not (worldLineReading and type(worldLineReading.new) == "function") then
+    return { success = false, error = worldLineReadingError or "station classifier unavailable" }
+  end
+  local readerOk, reader = pcall(worldLineReading.new, {
+    getApi = function() return api end,
+    entityNumber = entityNumber,
+  })
+  if not readerOk or type(reader) ~= "table" or type(reader.stationGroupKind) ~= "function" then
+    return { success = false, error = readerOk and "station classifier has no diagnostic entry point"
+      or tostring(reader) }
+  end
+  local kindOk, kind, source = pcall(reader.stationGroupKind, groupId, stationIndex or 0)
+  if not kindOk then return { success = false, error = tostring(kind) } end
+  local result = {
+    success = kind ~= nil,
+    groupId = entityNumber(groupId),
+    stationIndex = entityNumber(stationIndex) or 0,
+    kind = kind,
+    source = source,
+  }
+  if not kind then result.error = source end
+  return result
 end
 
 local function commandFactory(name)
@@ -1380,6 +1425,10 @@ local function ownerDetails(ids)
   return result
 end
 
+local function isStationFacility(kind)
+  return kind == "station" or kind == "cargo_station"
+end
+
 local function tryFacilityCandidate(spec, index, completed)
   if index > #candidates then
     completed(false, { kind = spec.kind, error = "no construction candidate succeeded" })
@@ -1419,7 +1468,8 @@ local function tryFacilityCandidate(spec, index, completed)
     local shapeOk = constructionId ~= nil
       and (spec.kind == "asset" or #(delta.track or {}) > 0)
       and (spec.kind ~= "depot" or #(delta.depot or {}) > 0)
-      and (spec.kind ~= "station" or (#(delta.station or {}) > 0 and #(delta.stationGroup or {}) > 0))
+      and (not isStationFacility(spec.kind)
+        or (#(delta.station or {}) > 0 and #(delta.stationGroup or {}) > 0))
     local verified = not afterError and shapeOk and ownerOk
     marker("facility-candidate-result", {
       kind = spec.kind, index = index, x = x, y = y,
@@ -1583,7 +1633,7 @@ local function upgradeFacility(facility, completed)
     local expectedOwner = game.interface.getPlayer()
     local ownerOk = current and verifyMutatedFacilityOwners(current, expectedOwner) or false
     local shapeOk, mutationOk, details = false, false, {}
-    if current and facility.kind == "station" then
+    if current and isStationFacility(facility.kind) then
       details.tracks = trackDetails(current.delta.track)
       local allCatenary = #details.tracks > 0
       for _, track in ipairs(details.tracks) do
@@ -1664,7 +1714,7 @@ local function removeFacility(facility, completed)
         if facilityContains(after, entity) then remaining[#remaining + 1] = entity end
       end
     end
-    if after and facility.kind == "station" then
+    if after and isStationFacility(facility.kind) then
       local stationGroupType = api and api.type and api.type.ComponentType.STATION_GROUP
       local transientSet = {}
       for _, groupId in ipairs(facility.delta and facility.delta.stationGroup or {}) do
@@ -1711,7 +1761,7 @@ local function removeFacility(facility, completed)
     local shapeOk = rootGone and #remaining == 0 and #(removed[rootKind] or {}) >= 1
     if facility.kind == "depot" then
       shapeOk = shapeOk and #(removed.depot or {}) >= 1 and #(removed.track or {}) >= 1
-    elseif facility.kind == "station" then
+    elseif isStationFacility(facility.kind) then
       shapeOk = shapeOk and #(removed.station or {}) >= 1
         and (#(removed.stationGroup or {}) >= 1 or #transientStationGroups >= 1)
         and #(removed.track or {}) >= 1
@@ -1745,7 +1795,7 @@ local function removeFacility(facility, completed)
   end)
 end
 
-local function runFacilityMutations(depot, station, completed)
+local function runFacilityMutations(depot, station, cargoStation, completed)
   local evidence = {}
   upgradeFacility(station, function(stationEditOk, editedStation, stationEdit)
     evidence.stationEdit = stationEdit
@@ -1761,7 +1811,11 @@ local function runFacilityMutations(depot, station, completed)
           if not depotRemoveOk then completed(false, "remove-depot", evidence); return end
           removeFacility(editedStation, function(stationRemoveOk, stationRemove)
             evidence.stationRemove = stationRemove
-            completed(stationRemoveOk, stationRemoveOk and "complete" or "remove-station", evidence)
+            if not stationRemoveOk then completed(false, "remove-station", evidence); return end
+            removeFacility(cargoStation, function(cargoRemoveOk, cargoRemove)
+              evidence.cargoStationRemove = cargoRemove
+              completed(cargoRemoveOk, cargoRemoveOk and "complete" or "remove-cargo-station", evidence)
+            end)
           end)
         end)
       end)
@@ -1789,6 +1843,9 @@ function M.runFacilityCustodyTest()
   local station = {
     kind = "station",
   }
+  local cargoStation = {
+    kind = "cargo_station",
+  }
   tryFacilityCandidate(depot, 1, function(depotOk, depotResult)
     if not depotOk then
       marker("facility-custody-complete", { success = false, stage = "build-depot", depot = depotResult })
@@ -1801,20 +1858,48 @@ function M.runFacilityCustodyTest()
         })
         return
       end
-      runFacilityCycles({ depotResult, stationResult }, function(cyclesOk, cycles)
-        if not cyclesOk then
-          marker("facility-custody-complete", cycles)
+      local stationMode = probeProductionStationGroup(stationResult.delta.stationGroup[1], 0)
+      stationResult.transportMode = stationMode
+      if not stationMode.success or stationMode.kind ~= "passenger" then
+        marker("facility-custody-complete", {
+          success = false, stage = "classify-station", depot = depotResult, station = stationResult,
+        })
+        return
+      end
+      tryFacilityCandidate(cargoStation, (stationResult.index or 1) + 1,
+        function(cargoOk, cargoResult)
+        if not cargoOk then
+          marker("facility-custody-complete", {
+            success = false, stage = "build-cargo-station", depot = depotResult,
+            station = stationResult, cargoStation = cargoResult,
+          })
           return
         end
-        runFacilityMutations(depotResult, stationResult, function(mutationsOk, stage, mutations)
+        local cargoMode = probeProductionStationGroup(cargoResult.delta.stationGroup[1], 0)
+        cargoResult.transportMode = cargoMode
+        if not cargoMode.success or cargoMode.kind ~= "cargo" then
           marker("facility-custody-complete", {
-            success = mutationsOk,
-            stage = stage,
-            facilities = { depotResult, stationResult },
-            custody = cycles,
-            mutations = mutations,
-            cycles = 4,
+            success = false, stage = "classify-cargo-station", depot = depotResult,
+            station = stationResult, cargoStation = cargoResult,
           })
+          return
+        end
+        runFacilityCycles({ depotResult, stationResult, cargoResult }, function(cyclesOk, cycles)
+          if not cyclesOk then
+            marker("facility-custody-complete", cycles)
+            return
+          end
+          runFacilityMutations(depotResult, stationResult, cargoResult,
+            function(mutationsOk, stage, mutations)
+            marker("facility-custody-complete", {
+              success = mutationsOk,
+              stage = stage,
+              facilities = { depotResult, stationResult, cargoResult },
+              custody = cycles,
+              mutations = mutations,
+              cycles = 4,
+            })
+          end)
         end)
       end)
     end)

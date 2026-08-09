@@ -109,7 +109,18 @@ function M.new(deps)
     return observed, lastSource
   end
 
-  return { lineServiceKind = lineServiceKind }
+  local function stationGroupKind(groupId, stationIndex)
+    local gameApi = getApi() or {}
+    return stopKind(gameApi, {
+      stationGroup = entityNumber(groupId),
+      station = entityNumber(stationIndex) or 0,
+    })
+  end
+
+  return {
+    lineServiceKind = lineServiceKind,
+    stationGroupKind = stationGroupKind,
+  }
 end
 
 return M

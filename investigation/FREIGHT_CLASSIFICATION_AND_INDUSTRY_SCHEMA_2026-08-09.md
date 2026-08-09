@@ -102,7 +102,7 @@ and unreadable mixed-group classification; passenger-versus-freight capacity
 from repository metadata; rejection before market creation; portable disabling
 of a previously registered service without local-ID leakage; initial saved-line
 revalidation; removal from the passenger ledger; diagnostic persistence; and
-recovery after a later supported edit. The complete gate passes with 94/94 core
+recovery after a later supported edit. The complete gate passes with 95/95 core
 Lua tests, 75 cross-language economy scenarios, runtime/game/network/GUI
 integrations, 108 Python tests, and the 1,024-event independent replay.
 
@@ -122,4 +122,15 @@ a failed capability gate. Native hook call-through also passed in the same
 run: 37 Lua states, one wrapped command, 4,766 queued commands, and 4,766
 applies with no unknown layouts/tags. Fresh passenger- and cargo-line UI
 acceptance remains a human two-process gate; this result proves repository
-classification, not the complete line/station lookup path.
+vehicle classification, not a complete service.
+
+Disposable exact-engine run `runtime/live-validation/20260809-021602` closes
+the corresponding station half of that boundary. It built one stock modular
+passenger station and one stock modular cargo station, then invoked the exact
+production `world_line_reading.lua` implementation against each live
+`STATION_GROUP` and zero-based station index. The indexed components resolved
+to `passenger` and `cargo` respectively. Both fifteen-entity compounds also
+passed four custody transitions and complete removal, alongside the ordinary
+39-check validator and exact native hook. An actual two-stop cargo line and
+industry-backed delivery still remain unproven and intentionally cannot enter
+competitive revenue.

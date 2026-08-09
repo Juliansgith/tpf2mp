@@ -53,13 +53,44 @@ function M.stationModules(currentYear, catenary)
   }
 end
 
+function M.cargoStationModules(currentYear, catenary)
+  local era = currentYear < 1920 and "a" or (currentYear < 1980 and "b" or "c")
+  local prefix = "station/rail/modular_station/"
+  local function stationModule(name, metadata)
+    return { name = prefix .. name, metadata = metadata }
+  end
+  local trackModule = catenary and "platform_track_catenary.module" or "platform_track.module"
+  return {
+    [3400020] = stationModule("main_building_1_cargo.module", {
+      era = 5,
+      level = 1,
+      span = { 1, 2 },
+      moreCapacity = { cargo = 20, passenger = 0 },
+      snapPoint = {
+        0, -1, 0, 0,
+        1, 0, 0, 0,
+        0, 0, 1, 0,
+        -14, 0, 0, 1,
+      },
+    }),
+    [6400000] = stationModule("platform_cargo_era_" .. era .. ".module", {
+      platform = true, cargo_platform = true,
+    }),
+    [6400010] = stationModule("platform_cargo_era_" .. era .. ".module", {
+      platform = true, cargo_platform = true,
+    }),
+    [8402000] = stationModule(trackModule, { track = true }),
+    [8402010] = stationModule(trackModule, { track = true }),
+  }
+end
+
 function M.spec(kind, currentYear, edited)
   if kind == "depot" then
     return {
       fileName = "depot/train_depot_era_a.con",
       params = { trackType = 0, catenary = 0, year = currentYear },
     }
-  elseif kind == "station" then
+  elseif kind == "station" or kind == "cargo_station" then
     return {
       fileName = "station/rail/modular_station/modular_station.con",
       params = {
@@ -69,7 +100,9 @@ function M.spec(kind, currentYear, edited)
         trackType = 0,
         catenary = edited and 1 or 0,
         year = currentYear,
-        modules = M.stationModules(currentYear, edited == true),
+        modules = kind == "cargo_station"
+          and M.cargoStationModules(currentYear, edited == true)
+          or M.stationModules(currentYear, edited == true),
       },
     }
   elseif kind == "asset" then
