@@ -13,6 +13,10 @@ from pathlib import Path
 
 from tpf2mp.bridge import AuditLog, GameBridge, atomic_write
 from tpf2mp.anchor_io import AnchorRequestStore, anchor_state_message, validate_anchor_state
+from tpf2mp.completion_validation import (
+    operation_completion_result_digest,
+    proposal_completion_result_digest,
+)
 from tpf2mp.checkpoint import (
     _advance_town_development_cursor,
     _advance_town_development_points,
@@ -288,7 +292,7 @@ def proposal_completion(
     transaction: dict,
     *,
     commit_seq: int = 1,
-    result_digest: str = "11111111",
+    result_digest: str | None = None,
     core_digest: str = "22222222",
     finance_delta: int = -1234,
     success: bool = True,
@@ -305,11 +309,12 @@ def proposal_completion(
         ] if success else [],
         "financeDelta": finance_delta,
         "coreDigest": core_digest,
-        "resultDigest": result_digest,
+        "resultDigest": "",
     }
     if not success:
         payload.pop("financeDelta")
         payload["errorCode"] = "native-proposal-failed"
+    payload["resultDigest"] = result_digest or proposal_completion_result_digest(payload)
     return {
         "kind": "completion",
         "peer": peer,
@@ -377,7 +382,7 @@ def operation_completion(
     transaction: dict,
     *,
     commit_seq: int = 1,
-    result_digest: str = "44444444",
+    result_digest: str | None = None,
     core_digest: str = "55555555",
     finance_delta: int = 0,
     success: bool = True,
@@ -398,11 +403,12 @@ def operation_completion(
         } if success else {},
         "financeDelta": finance_delta,
         "coreDigest": core_digest,
-        "resultDigest": result_digest,
+        "resultDigest": "",
     }
     if not success:
         payload.pop("financeDelta")
         payload["errorCode"] = "native-operation-failed"
+    payload["resultDigest"] = result_digest or operation_completion_result_digest(payload)
     return {
         "kind": "operation_completion",
         "peer": peer,
@@ -952,6 +958,7 @@ class ProtocolTests(unittest.TestCase):
             {"kind": "station", "cid": "station:event:test:1", "slot": "station:1"},
             {"kind": "station_group", "cid": "station_group:event:test:1", "slot": "station_group:1"},
         ]
+        completion["resultDigest"] = proposal_completion_result_digest(completion)
         self.assertEqual(len(CommitHost._completion_payload(completion)["outputs"]), 3)
 
         # Live maximum-size stock station: 8 tracks at 320 m produced 392
@@ -982,6 +989,7 @@ class ProtocolTests(unittest.TestCase):
             ]
         )
         completion["outputs"] = maximum_outputs
+        completion["resultDigest"] = proposal_completion_result_digest(completion)
         self.assertEqual(len(CommitHost._completion_payload(completion)["outputs"]), MAX_PROPOSAL_OUTPUTS)
 
         completion["outputs"] = maximum_outputs + [
@@ -4219,8 +4227,9 @@ class NetworkIntegrationTests(unittest.TestCase):
             root = Path(directory)
             session = "operation-consensus"
             bridge = GameBridge(root / "host", session, "player1")
+            audit = root / "audit.ndjson"
             host = CommitHost(
-                bridge, "127.0.0.1", 0, root / "audit.ndjson", require_connected_peers=False
+                bridge, "127.0.0.1", 0, audit, require_connected_peers=False
             )
             transaction = operation_transaction("company:2")
             intent = sign(
@@ -4283,6 +4292,7 @@ class NetworkIntegrationTests(unittest.TestCase):
             host._record_non_intent(consensus_checkpoint(session, "player2", 13, 2, reason))
             self.assertEqual(host.checkpoint_consensus[2]["status"], "complete")
             self.assertEqual(host._commit(blocked)["seq"], 4)
+            self.assertEqual(replay(audit, session), 0)
 
     def test_operation_company_is_bound_to_numbered_peer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4395,6 +4405,9 @@ class NetworkIntegrationTests(unittest.TestCase):
                     session, peer, local_seq, transaction, commit_seq=build_seq, success=False
                 )
                 completion["payload"]["outputs"] = {}
+                completion["payload"]["resultDigest"] = proposal_completion_result_digest(
+                    completion["payload"]
+                )
                 host._record_non_intent(completion)
 
             self.assertEqual(host.proposal_consensus[build_seq]["status"], "rejected")
@@ -4443,6 +4456,9 @@ class NetworkIntegrationTests(unittest.TestCase):
                 session, "player1", 13, operation_transaction("company:1"), success=False
             )["payload"]
             failed_operation["outputs"] = {}
+            failed_operation["resultDigest"] = operation_completion_result_digest(
+                failed_operation
+            )
             self.assertEqual(CommitHost._operation_completion_payload(failed_operation)["outputs"], {})
 
     def test_failed_proposal_is_fatal_if_rejection_has_residue_or_changed_core(self) -> None:
@@ -4506,6 +4522,12 @@ class NetworkIntegrationTests(unittest.TestCase):
                     }
                     first["payload"]["outputs"] = [output]
                     second["payload"]["outputs"] = [dict(output)]
+                first["payload"]["resultDigest"] = proposal_completion_result_digest(
+                    first["payload"]
+                )
+                second["payload"]["resultDigest"] = proposal_completion_result_digest(
+                    second["payload"]
+                )
                 host._record_non_intent(first)
                 host._record_non_intent(second)
 
@@ -4611,12 +4633,16 @@ class NetworkIntegrationTests(unittest.TestCase):
             host._record_non_intent(
                 proposal_completion(session, "player1", 10, transaction, commit_seq=build_seq)
             )
-            host._record_non_intent(
-                proposal_completion(
-                    session, "player2", 11, transaction,
-                    commit_seq=build_seq, result_digest="33333333"
-                )
+            divergent = proposal_completion(
+                session, "player2", 11, transaction, commit_seq=build_seq
             )
+            divergent["payload"]["outputs"][0]["cid"] = (
+                f"node:created:{build_seq}:different"
+            )
+            divergent["payload"]["resultDigest"] = proposal_completion_result_digest(
+                divergent["payload"]
+            )
+            host._record_non_intent(divergent)
             self.assertEqual(host.proposal_consensus[build_seq]["status"], "faulted")
             self.assertEqual(host.session_fault, "physical-result-digest-mismatch")
             outcome = decode_line((bridge.inbox / "000000000003.json").read_bytes())

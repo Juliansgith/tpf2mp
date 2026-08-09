@@ -130,8 +130,18 @@ absence, and cleaned up the depot. Production operation consensus now verifies
 those native fields against the ordered transaction before comparing peers;
 the remaining gate is the ordinary-widget two-process/running-route matrix.
 
-`runtime/localhost-live/schema7-compact-20260804-032006` is the current
-release-candidate two-process regression receipt. Both exact game processes
+`runtime/localhost-live/localhost-20260809-030632` is the current clean
+companion-integrity regression. Two exact Build 35924 processes converged all
+11 ordered commits, both physical proposals, all three checkpoint barriers,
+and matching core `d9366b44` / structure `1ab06cc6` after 600 soak ticks.
+Completions are now checksum-recomputed from their signed physical fields,
+complete views are compared directly, restart rejects conflicting receipts,
+and offline replay covers operations as well as proposals. A historical
+75-commit economy audit with six operations also replays under the stricter
+rules. See `investigation/PHYSICAL_COMPLETION_AUDIT_INTEGRITY_2026-08-09.md`.
+
+`runtime/localhost-live/schema7-compact-20260804-032006` remains the historical
+schema-7 release-candidate regression receipt. Both exact game processes
 completed host- and client-origin proposals plus three checkpoint barriers and
 finished with matching core `73af1552` and structure `53bb77bb`. Two immediately
 preceding runs had reproducibly crashed the host at the first BuildProposal

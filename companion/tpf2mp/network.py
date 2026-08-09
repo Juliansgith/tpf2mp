@@ -9,11 +9,13 @@ from typing import Any, Mapping
 
 from .bridge import AuditLog, GameBridge
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
-from .consensus import (
-    ConsensusTrackers,
+from .completion_validation import (
     operation_completion_payload,
+    operation_completion_result_view,
     proposal_completion_payload,
+    proposal_completion_result_view,
 )
+from .consensus import ConsensusTrackers
 from .anchor import AnchorCoordinator
 from .anchor_prepare import AnchorPreparationCoordinator
 from .anchor_io import AnchorRequestStore
@@ -186,6 +188,8 @@ class CommitHost:
                         recoverable = action.get("recoverable") is True \
                             and action.get("success") is not True
                         if tracker:
+                            if tracker.get("outcome") and tracker["outcome"] != action:
+                                raise ProtocolError("audit contains conflicting proposal outcomes")
                             tracker["status"] = (
                                 "complete" if action.get("success")
                                 else "rejected" if recoverable
@@ -210,6 +214,8 @@ class CommitHost:
                         commit_seq = int(action.get("commitSeq", 0))
                         tracker = self.operation_consensus.get(commit_seq)
                         if tracker:
+                            if tracker.get("outcome") and tracker["outcome"] != action:
+                                raise ProtocolError("audit contains conflicting operation outcomes")
                             tracker["status"] = "complete" if action.get("success") else "faulted"
                             tracker["outcome"] = dict(action)
                         if not action.get("success"):
@@ -235,17 +241,25 @@ class CommitHost:
                         self.restore_session.observe_checkpoint_outcome(action)
                 self.anchor_preparation.observe_ordered(message, restoring=True)
             elif message.get("kind") == "record" and message.get("record_type") == "completion":
-                payload = message.get("payload", {})
+                payload = proposal_completion_payload(message.get("payload", {}))
                 commit_seq = int(payload.get("commitSeq", 0))
                 tracker = self.proposal_consensus.get(commit_seq)
                 if tracker:
-                    tracker["completions"][str(message.get("peer", "unknown"))] = dict(payload)
+                    peer = str(message.get("peer", "unknown"))
+                    previous = tracker["completions"].get(peer)
+                    if previous is not None and previous != payload:
+                        raise ProtocolError("audit contains conflicting proposal completions")
+                    tracker["completions"][peer] = dict(payload)
             elif message.get("kind") == "record" and message.get("record_type") == "operation_completion":
-                payload = message.get("payload", {})
+                payload = operation_completion_payload(message.get("payload", {}))
                 commit_seq = int(payload.get("commitSeq", 0))
                 tracker = self.operation_consensus.get(commit_seq)
                 if tracker:
-                    tracker["completions"][str(message.get("peer", "unknown"))] = dict(payload)
+                    peer = str(message.get("peer", "unknown"))
+                    previous = tracker["completions"].get(peer)
+                    if previous is not None and previous != payload:
+                        raise ProtocolError("audit contains conflicting operation completions")
+                    tracker["completions"][peer] = dict(payload)
             elif message.get("kind") == "record" and message.get("record_type") == "checkpoint":
                 payload = verify_checkpoint(message.get("payload", {}))
                 boundary_seq = int(payload["eventCursor"]["lastCommitSeq"])
@@ -824,7 +838,8 @@ class CommitHost:
                     tracker, False, "native-rejection-error-mismatch"
                 )
                 return
-            if len({item["resultDigest"] for item in selected}) != 1:
+            first_result = proposal_completion_result_view(selected[0])
+            if any(proposal_completion_result_view(item) != first_result for item in selected[1:]):
                 self._emit_proposal_outcome_locked(
                     tracker, False, "physical-result-digest-mismatch"
                 )
@@ -853,7 +868,8 @@ class CommitHost:
                 tracker, False, "mixed-native-proposal-results"
             )
             return
-        if len({item["resultDigest"] for item in selected}) != 1:
+        first_result = proposal_completion_result_view(selected[0])
+        if any(proposal_completion_result_view(item) != first_result for item in selected[1:]):
             self._emit_proposal_outcome_locked(tracker, False, "physical-result-digest-mismatch")
             return
         if len({item["coreDigest"] for item in selected}) != 1:
@@ -944,7 +960,8 @@ class CommitHost:
         if any(item.get("operationDigest") != tracker["operationDigest"] for item in selected):
             self._emit_operation_outcome_locked(tracker, False, "operation-digest-mismatch")
             return
-        if len({item["resultDigest"] for item in selected}) != 1:
+        first_result = operation_completion_result_view(selected[0])
+        if any(operation_completion_result_view(item) != first_result for item in selected[1:]):
             self._emit_operation_outcome_locked(
                 tracker, False, "operation-physical-result-digest-mismatch"
             )

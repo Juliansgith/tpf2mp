@@ -2,6 +2,11 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.29.0-alpha`, state schema `26`, checkpoint format `4`, passenger-presentation schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
 
+[Physical completion and audit integrity](PHYSICAL_COMPLETION_AUDIT_INTEGRITY_2026-08-09.md)
+records completion-digest recomputation, direct physical-view comparison,
+restart duplicate protection, full operation audit replay, historical
+compatibility, and the post-change exact two-process receipt.
+
 [Vehicle lifecycle physical postconditions](VEHICLE_LIFECYCLE_POSTCONDITIONS_2026-08-09.md)
 records the same-wrong-result consensus gap, transaction-specific native
 readbacks, the destructive exact-engine purchase/control/replace/sale chain,

@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import unittest
 
+from tpf2mp.completion_validation import (
+    operation_completion_result_digest,
+    operation_completion_payload,
+    proposal_completion_result_digest,
+    proposal_completion_payload,
+)
 from tpf2mp.consensus import (
     ConsensusTrackers,
     clock_health_payload,
     clock_rendezvous_payload,
-    operation_completion_payload,
-    proposal_completion_payload,
     vehicle_sync_payload,
 )
 from tpf2mp.protocol import ProtocolError
@@ -78,8 +82,9 @@ class ConsensusTrackerTests(unittest.TestCase):
             "outputs": [],
             "financeDelta": -100,
             "coreDigest": "22222222",
-            "resultDigest": "33333333",
+            "resultDigest": "",
         }
+        proposal["resultDigest"] = proposal_completion_result_digest(proposal)
         self.assertEqual(proposal_completion_payload(proposal), proposal)
         operation = {
             "operationId": "session:player1:3",
@@ -89,10 +94,19 @@ class ConsensusTrackerTests(unittest.TestCase):
             "outputs": {},
             "postcondition": {},
             "coreDigest": "55555555",
-            "resultDigest": "66666666",
+            "resultDigest": "",
             "errorCode": "native-operation-failed",
         }
+        operation["resultDigest"] = operation_completion_result_digest(operation)
         self.assertEqual(operation_completion_payload(operation), operation)
+        tampered = dict(proposal)
+        tampered["coreDigest"] = "99999999"
+        with self.assertRaisesRegex(ProtocolError, "resultDigest does not match"):
+            proposal_completion_payload(tampered)
+        tampered_operation = dict(operation)
+        tampered_operation["postcondition"] = {"exists": True}
+        with self.assertRaisesRegex(ProtocolError, "resultDigest does not match"):
+            operation_completion_payload(tampered_operation)
         health = {
             "schemaVersion": 1,
             "requestedSpeed": 4,

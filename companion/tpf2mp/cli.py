@@ -7,8 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .audit_consensus import verify_physical_consensus
 from .bridge import AuditLog, GameBridge
 from .checkpoint import verify_checkpoint, verify_event_record, write_report as write_checkpoint_report
+from .completion_validation import operation_completion_payload
 from .manifest import build_manifest, load_manifest, write_manifest
 from .network import CommitClient, CommitHost
 from .protocol import ProtocolError, validate_envelope
@@ -141,6 +143,9 @@ def replay(path: Path, session: str | None) -> int:
     proposal_commits: dict[int, dict[str, Any]] = {}
     proposal_completions: dict[int, dict[str, dict[str, Any]]] = {}
     proposal_outcomes: dict[int, dict[str, Any]] = {}
+    operation_commits: dict[int, dict[str, Any]] = {}
+    operation_completions: dict[int, dict[str, dict[str, Any]]] = {}
+    operation_outcomes: dict[int, dict[str, Any]] = {}
     checkpoint_records: dict[int, dict[str, dict[str, Any]]] = {}
     checkpoint_outcomes: dict[int, dict[str, Any]] = {}
     checkpoint_expected_boundaries: set[int] = set()
@@ -166,6 +171,15 @@ def replay(path: Path, session: str | None) -> int:
                         "proposalId": f"{message.get('session')}:{message.get('origin_peer')}:{seq}",
                         "proposalDigest": action.get("transaction", {}).get("digest"),
                         "preparedFromSeq": int(message.get("prepared_from_seq", 0)),
+                        "originPeer": str(message.get("origin_peer", "")),
+                    }
+                elif action.get("type") == "operation.execute":
+                    operation_commits[seq] = {
+                        "operationId": (
+                            f"{message.get('session')}:{message.get('origin_peer')}:{seq}"
+                        ),
+                        "operationDigest": action.get("transaction", {}).get("digest"),
+                        "originPeer": str(message.get("origin_peer", "")),
                     }
                 elif action.get("type") == "match.initialise":
                     checkpoint_expected_boundaries.add(seq)
@@ -175,8 +189,19 @@ def replay(path: Path, session: str | None) -> int:
                     commit_seq = int(action.get("commitSeq", 0))
                     if commit_seq not in proposal_commits:
                         raise ProtocolError("proposal outcome references an unknown proposal commit")
+                    if commit_seq in proposal_outcomes:
+                        raise ProtocolError("audit contains duplicate proposal outcomes")
                     proposal_outcomes[commit_seq] = dict(action)
                     if action.get("success") is True or action.get("recoverable") is True:
+                        checkpoint_expected_boundaries.add(seq)
+                elif action.get("type") == "network.operation_outcome":
+                    commit_seq = int(action.get("commitSeq", 0))
+                    if commit_seq not in operation_commits:
+                        raise ProtocolError("operation outcome references an unknown operation commit")
+                    if commit_seq in operation_outcomes:
+                        raise ProtocolError("audit contains duplicate operation outcomes")
+                    operation_outcomes[commit_seq] = dict(action)
+                    if action.get("success") is True:
                         checkpoint_expected_boundaries.add(seq)
                 elif action.get("type") == "network.checkpoint_outcome":
                     boundary_seq = int(action.get("boundarySeq", 0))
@@ -196,7 +221,23 @@ def replay(path: Path, session: str | None) -> int:
                 payload = CommitHost._completion_payload(message.get("payload", {}))
                 commit_seq = int(payload["commitSeq"])
                 peer = str(message.get("peer", "unknown"))
-                proposal_completions.setdefault(commit_seq, {})[peer] = payload
+                peer_completions = proposal_completions.setdefault(commit_seq, {})
+                previous = peer_completions.get(peer)
+                if previous is not None and previous != payload:
+                    raise ProtocolError("audit contains conflicting proposal completions")
+                peer_completions[peer] = payload
+            elif (
+                message.get("kind") == "record"
+                and message.get("record_type") == "operation_completion"
+            ):
+                payload = operation_completion_payload(message.get("payload", {}))
+                commit_seq = int(payload["commitSeq"])
+                peer = str(message.get("peer", "unknown"))
+                peer_completions = operation_completions.setdefault(commit_seq, {})
+                previous = peer_completions.get(peer)
+                if previous is not None and previous != payload:
+                    raise ProtocolError("audit contains conflicting operation completions")
+                peer_completions[peer] = payload
             elif message.get("kind") == "record" and message.get("record_type") == "checkpoint":
                 payload = verify_checkpoint(message.get("payload", {}))
                 peer = str(message.get("peer", "unknown"))
@@ -233,69 +274,19 @@ def replay(path: Path, session: str | None) -> int:
             converged += 1
         else:
             incomplete += 1
-    physical_complete = physical_rejected = physical_faulted = physical_pending = 0
-    for commit_seq, proposal in proposal_commits.items():
-        outcome = proposal_outcomes.get(commit_seq)
-        if not outcome:
-            physical_pending += 1
-            continue
-        completions = proposal_completions.get(commit_seq, {})
-        required = set(outcome.get("peers", []))
-        if outcome.get("proposalId") != proposal["proposalId"]:
-            raise ProtocolError(f"proposal outcome identity mismatch at commit {commit_seq}")
-        if outcome.get("proposalDigest") != proposal["proposalDigest"]:
-            raise ProtocolError(f"proposal outcome digest mismatch at commit {commit_seq}")
-        if outcome.get("success") and outcome.get("recoverable") is True:
-            raise ProtocolError(f"successful proposal is marked recoverable at commit {commit_seq}")
-        if outcome.get("success"):
-            if not required or not required <= set(completions):
-                raise ProtocolError(f"successful proposal outcome lacks peer completions at commit {commit_seq}")
-            selected = [completions[peer] for peer in sorted(required)]
-            if any(item.get("success") is not True for item in selected):
-                raise ProtocolError(f"successful proposal outcome contains a failed peer at commit {commit_seq}")
-            if len({item["resultDigest"] for item in selected}) != 1:
-                raise ProtocolError(f"physical result divergence at commit {commit_seq}")
-            if len({item["coreDigest"] for item in selected}) != 1:
-                raise ProtocolError(f"physical core divergence at commit {commit_seq}")
-            if outcome.get("resultDigest") != selected[0]["resultDigest"] \
-                    or outcome.get("coreDigest") != selected[0]["coreDigest"]:
-                raise ProtocolError(f"proposal outcome digests differ from completions at commit {commit_seq}")
-            physical_complete += 1
-        elif outcome.get("recoverable") is True:
-            if not required or not required <= set(completions):
-                raise ProtocolError(
-                    f"recoverable proposal rejection lacks peer completions at commit {commit_seq}"
-                )
-            selected = [completions[peer] for peer in sorted(required)]
-            if any(item.get("success") is not False for item in selected):
-                raise ProtocolError(
-                    f"recoverable proposal rejection contains a successful peer at commit {commit_seq}"
-                )
-            if any(item.get("outputs") or "financeDelta" in item for item in selected):
-                raise ProtocolError(
-                    f"recoverable proposal rejection contains mutation residue at commit {commit_seq}"
-                )
-            if len({item["resultDigest"] for item in selected}) != 1 \
-                    or len({item["coreDigest"] for item in selected}) != 1:
-                raise ProtocolError(
-                    f"recoverable proposal rejection diverged at commit {commit_seq}"
-                )
-            if outcome.get("resultDigest") != selected[0]["resultDigest"] \
-                    or outcome.get("coreDigest") != selected[0]["coreDigest"]:
-                raise ProtocolError(
-                    f"recoverable proposal outcome digests differ from completions at commit {commit_seq}"
-                )
-            prepared_from = int(proposal.get("preparedFromSeq", 0))
-            prepared = acknowledgements.get(prepared_from, {})
-            if not required <= set(prepared) \
-                    or len({prepared[peer] for peer in required}) != 1 \
-                    or selected[0]["coreDigest"] != next(iter({prepared[peer] for peer in required})):
-                raise ProtocolError(
-                    f"recoverable proposal rejection does not preserve its prepare core at commit {commit_seq}"
-                )
-            physical_rejected += 1
-        else:
-            physical_faulted += 1
+    physical = verify_physical_consensus(
+        proposal_commits,
+        proposal_completions,
+        proposal_outcomes,
+        operation_commits,
+        operation_completions,
+        operation_outcomes,
+        acknowledgements,
+    )
+    physical_complete, physical_rejected, physical_faulted, physical_pending = (
+        physical["proposals"]
+    )
+    operation_complete, operation_faulted, operation_pending = physical["operations"]
     checkpoint_complete = checkpoint_faulted = checkpoint_pending = 0
     for boundary_seq in sorted(checkpoint_expected_boundaries):
         outcome = checkpoint_outcomes.get(boundary_seq)
@@ -323,6 +314,8 @@ def replay(path: Path, session: str | None) -> int:
         f"{converged} converged, {incomplete} awaiting peer digests, "
         f"physical proposals complete/rejected/faulted/pending="
         f"{physical_complete}/{physical_rejected}/{physical_faulted}/{physical_pending}, "
+        f"physical operations complete/faulted/pending="
+        f"{operation_complete}/{operation_faulted}/{operation_pending}, "
         f"checkpoint barriers complete/faulted/pending={checkpoint_complete}/{checkpoint_faulted}/{checkpoint_pending}, "
         f"{checkpoints} checkpoints, {event_records} event records ({replayed_events} chained), peers={sorted(peers)}"
     )
