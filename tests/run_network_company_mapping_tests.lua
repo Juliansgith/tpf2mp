@@ -54,13 +54,13 @@ tpf2mp_native_status = function()
     hooks = {
       enabled = true,
       buildProposalVisitor = true,
-      authorityCommandVisitors = 23,
+      authorityCommandVisitors = 31,
     },
     gates = {
       buildProposal = { enabled = buildGateEnabled },
       commandVisitors = {
         enabled = commandGateEnabled,
-        hooked = 23,
+        hooked = 31,
         tagMismatches = 0,
       },
     },

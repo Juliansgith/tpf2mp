@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 
 -- Agent presentation policy.
 --
@@ -120,7 +121,10 @@ function M.applyToWorld(worldState, policy, deps)
     else
       local made, commandOrError = pcall(factory, townId, target)
       local ok, err = false, commandOrError
-      if made then ok, err = util.sendCommand(commandOrError, nil, "mod.world.agent-policy") end
+      if made then
+        ok, err = nativeCommandAuthority.send(
+          20, commandOrError, nil, "mod.world.agent-policy")
+      end
       if ok then
         outcome.applied = outcome.applied + 1
         -- Readback is what turns this from a hope into evidence.

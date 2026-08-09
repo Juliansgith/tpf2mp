@@ -31,13 +31,13 @@ tpf2mp_native_status = function()
     hooks = {
       enabled = true,
       buildProposalVisitor = true,
-      authorityCommandVisitors = 23,
+      authorityCommandVisitors = 31,
     },
     gates = {
       buildProposal = { enabled = buildGateEnabled },
       commandVisitors = {
         enabled = commandGateEnabled,
-        hooked = 23,
+        hooked = 31,
         tagMismatches = 0,
       },
     },
@@ -375,10 +375,10 @@ tpf2mp_native_status = function()
   return {
     active = false,
     validation = { valid = true },
-    hooks = { enabled = true, buildProposalVisitor = true, authorityCommandVisitors = 23 },
+    hooks = { enabled = true, buildProposalVisitor = true, authorityCommandVisitors = 31 },
     gates = {
       buildProposal = { enabled = true },
-      commandVisitors = { enabled = true, hooked = 23, tagMismatches = 0 },
+      commandVisitors = { enabled = true, hooked = 31, tagMismatches = 0 },
     },
   }
 end

@@ -3,7 +3,7 @@
 Last updated: 2026-08-09 for prototype `0.37.0-alpha`, state schema `29`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`,
 cargo-presentation schema `1`, freight-industry schema `2`, edge proposal
-schema `5`, construction proposal schema `7`, and native hook `0.15.0`.
+schema `5`, construction proposal schema `7`, and native hook `0.16.0`.
 
 ## Executive status
 
@@ -346,7 +346,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   also pass ordinary-UI two-process capture and checkpoint consensus.
 - Canonical line and portable vehicle operation codecs with strict validation,
   peer/company authorization, materialization, result validation, finance
-  routing, physical consensus, and checkpoint sequencing. Hook 0.15 decodes the
+  routing, physical consensus, and checkpoint sequencing. Hook 0.16 decodes the
   exact Build 35924 CreateLine/DeleteLine/UpdateLine native payloads after the
   ordinary command is suppressed, including the full ordered station-group,
   station, and terminal tuple. Vanilla zero-stop creation and one-stop editor
@@ -356,7 +356,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   matching physical results, and checkpoints. Follow-up stock-widget sessions
   prove New Line, rename, color, Delete Line, Add Station, and per-stop removal
   visually on two independent processes. Reorder and alternate-terminal visual
-  proof remain. Hook 0.15 also captures BuyVehicle's pinned native
+  proof remain. Hook 0.16 also captures BuyVehicle's pinned native
   player/depot scalars and correlates them with the stock GUI's ordered,
   carrier-neutral `vehicle/*.mdl` list; bounded capture fails closed instead
   of truncating oversized or deeply nested payloads. SetLine carries canonical
@@ -387,7 +387,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   rejected, mismatched, or timed-out result after build commit faults the
   session closed.
 - Pause and speeds 1-4 are host-ordered through native tag-0 authorization on
-  both peers. Hook 0.15 captures suppressed normal controls as `clock.request`.
+  both peers. Hook 0.16 captures suppressed normal controls as `clock.request`.
   A running request now becomes a future-time `clock.rendezvous`; the host
   projects staggered heartbeats to one instant, both peers pause at the target,
   and bounded overshoot receives a speed-1 catch-up round before release.
@@ -418,15 +418,18 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Native authority layer
 
-- Hook `0.15.0` accepts only the exact Build 35924 executable SHA-256 and PE
+- Hook `0.16.0` accepts only the exact Build 35924 executable SHA-256 and PE
   profile.
-- It validates 17 unique code signatures/RVAs and 23 selected entries in the
+- It validates 17 unique code signatures/RVAs and 31 selected entries in the
   complete 37-tag command visitor table before enabling hooks.
 - It observes `api.cmd.sendCommand`, `CommandList::Swap`, and direct
   `ApplyCommand`, pairs queued commands with outcomes, and reports conservation
   errors.
 - It supplies a one-shot payload-aware BuildProposal gate and pre-mutation gates
-  for 23 consequential line/vehicle/name/speed/terrain/date/cheat visitors.
+  for 31 consequential line/vehicle/name/speed/terrain/date/cheat/autonomy
+  visitors. The eight added tags 17-24 deny unilateral native town/industry
+  commands; ordered town development, town information, and industry freeze
+  consume one-shot tags 19, 20, and 23.
 - The pinned tag-0 visitor layout supplies a bounded suppressed-speed queue and
   same-state Lua consumer; invalid values and overflow remain suppressed and
   visible in native status.
@@ -551,7 +554,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v7 behavior remains available for
-  archived replay. The offline gate now includes 123 Lua tests and 108
+  archived replay. The offline gate now includes 124 Lua tests and 108
   cross-language v2-v8 scenarios, including feeder access, completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,

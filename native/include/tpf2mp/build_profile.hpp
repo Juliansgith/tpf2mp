@@ -138,11 +138,10 @@ inline constexpr std::size_t kBuyVehicleMinimumSize = 0x3C;
 inline constexpr std::size_t kReplaceVehicleTargetOffset = 0x00;
 inline constexpr std::size_t kReplaceVehicleMinimumSize = 0x04;
 
-// These categories are consequential but do not yet have canonical payload
-// codecs. Network mode therefore rejects them at their exact pre-mutation
-// visitors unless a future authoritative replay consumes a one-shot token.
-// BuildProposal (tag 15) retains its dedicated payload-aware visitor hook.
-inline constexpr std::array<CommandVisitor, 23> kAuthorityCommandVisitors{{
+// Consequential and autonomous categories are rejected at their exact
+// pre-mutation visitors unless an authoritative path consumes a one-shot
+// token. BuildProposal (tag 15) retains its dedicated payload-aware hook.
+inline constexpr std::array<CommandVisitor, 31> kAuthorityCommandVisitors{{
     {0, 0x009D57C0},   // SetGameSpeed
     {1, 0x009D5470},   // SetCalendarSpeed
     {2, 0x009D54A0},   // UpdateLogo
@@ -159,6 +158,14 @@ inline constexpr std::array<CommandVisitor, 23> kAuthorityCommandVisitors{{
     {13, 0x009D6280},  // BuyVehicle
     {14, 0x009D6430},  // ReplaceVehicle
     {16, 0x009D57F0},  // RemoveField
+    {17, 0x009D5850},  // CreateTowns
+    {18, 0x009D5860},  // RemoveTown
+    {19, 0x009D5920},  // DevelopTown
+    {20, 0x009D5930},  // SetTownInfo
+    {21, 0x009D5A30},  // InstantlyUpdateTownCargoNeeds
+    {22, 0x009D5BA0},  // ConnectTownsAndIndustries
+    {23, 0x009D5BB0},  // SetSimBuildingManualDevelopment
+    {24, 0x009D5CC0},  // SetSimBuildingClosureTimeStamp
     {25, 0x009D5DD0},  // ReplaceTerrain
     {26, 0x009D5E60},  // SetDate
     {28, 0x009D5EE0},  // SetColor

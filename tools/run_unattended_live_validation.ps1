@@ -309,13 +309,13 @@ try {
             Copy-Item -LiteralPath $nativeStatusSource -Destination (Join-Path $runDirectory 'native-hook-status.json') -Force
         }
         $nativeHookPassed = $nativeHookStatus -and
-            $nativeHookStatus.hookVersion -eq '0.15.0' -and
+            $nativeHookStatus.hookVersion -eq '0.16.0' -and
             $nativeHookStatus.active -eq $true -and
             $nativeHookStatus.hooks.enabled -eq $true -and
             $nativeHookStatus.hooks.commandListSwap -eq $true -and
             $nativeHookStatus.hooks.applyCommand -eq $true -and
             $nativeHookStatus.hooks.buildProposalVisitor -eq $true -and
-            $nativeHookStatus.hooks.authorityCommandVisitors -eq 23 -and
+            $nativeHookStatus.hooks.authorityCommandVisitors -eq 31 -and
             @($nativeHookStatus.luaStates | Where-Object { $_.sendCommandWrapped -eq $true }).Count -gt 0 -and
             @($nativeHookStatus.luaStates | Where-Object { $_.commandObserverRegistered -eq $true }).Count -gt 0 -and
             $nativeCommandCalls -gt 0 -and
@@ -329,7 +329,7 @@ try {
             ($nativeHookStatus.applyCommand.calls + $nativeHookStatus.commandList.pendingCommands) -eq
                 ($nativeHookStatus.commandList.commands + $nativeHookStatus.applyCommand.direct) -and
             $nativeHookStatus.applyCommand.tagMismatches -eq 0 -and
-            $nativeHookStatus.gates.commandVisitors.hooked -eq 23 -and
+            $nativeHookStatus.gates.commandVisitors.hooked -eq 31 -and
             $nativeHookStatus.gates.commandVisitors.enabled -eq $false -and
             $nativeHookStatus.gates.commandVisitors.tagMismatches -eq 0 -and
             @($nativeHookStatus.commandEvents).Count -gt 0

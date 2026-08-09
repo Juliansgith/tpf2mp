@@ -1,6 +1,12 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.15.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.16.0`.
+
+[Autonomy command gates](AUTONOMY_COMMAND_GATES_2026-08-09.md)
+records the exact Build 35924 tag-17-through-24 visitor recovery, expansion to
+31 fail-closed visitors, one-shot authorization for authored town development,
+town information, and industry freeze, token revocation, and the remaining
+direct-script boundary.
 
 [Atomic multi-vehicle sale](ATOMIC_VEHICLE_SALE_BATCH_2026-08-09.md)
 records the complete bounded native selection envelope, one canonical schema-4
@@ -419,7 +425,7 @@ The mod does not rely on an undocumented UI-player switch. It retains the origin
 
 ### Strict local edit boundary
 
-At `builder.proposalCreate`, positive existing source IDs are checked against the logical/pinned ownership map. A rival source returns `errorMessages` before `builder.apply`. Own sources, new negative IDs, and public/untracked infrastructure remain usable. Known line/vehicle/station/depot/construction GUI mutations are checked similarly. BuildProposal has its payload-aware native gate; 23 selected speed, line, vehicle, terrain, date, naming, and cheat/debug command tags also fail closed at their native visitors in network mode. Hook 0.12 promotes line tags 3-5 and line-targeted tags 28-29 beyond denial: it copies typed CreateLine/DeleteLine/UpdateLine/SetColor/SetName payloads after suppression and feeds the canonical operation protocol. Stock create/rename/color/delete and populated add/remove-stop widgets pass two-process visual proof. The other gated categories remain unavailable until they receive equivalent codecs and replay/postconditions.
+At `builder.proposalCreate`, positive existing source IDs are checked against the logical/pinned ownership map. A rival source returns `errorMessages` before `builder.apply`. Own sources, new negative IDs, and public/untracked infrastructure remain usable. Known line/vehicle/station/depot/construction GUI mutations are checked similarly. BuildProposal has its payload-aware native gate; 31 selected speed, line, vehicle, terrain, date, naming, cheat/debug, and autonomous town/industry command tags also fail closed at their native visitors in network mode. Hook 0.16 adds tags 17-24; only authored town development, town information, and industry freeze receive exact one-shot authorization for tags 19, 20, and 23. Hook 0.12 promoted line tags 3-5 and line-targeted tags 28-29 beyond denial: it copies typed CreateLine/DeleteLine/UpdateLine/SetColor/SetName payloads after suppression and feeds the canonical operation protocol. Stock create/rename/color/delete and populated add/remove-stop widgets pass two-process visual proof. Other gated categories remain unavailable until they receive equivalent codecs and replay/postconditions.
 
 ### Canonical proposal transaction
 
@@ -524,6 +530,6 @@ Relevant documented behavior used by the implementation:
 - What station-barrier latency and signaling interactions appear with two or more real trains on one populated line? Long-pause/speed-3 and deliberate slow-peer recovery now pass with one train.
 - Do two populated stops retain their order and schema-2 alternate-terminal selections through the actual widgets from both origins? Typed capture/replay is implemented and automated; the two-origin visual acceptance remains.
 - Which canonical payload, reference-translation, replay, and postcondition formats are required to turn each gated vehicle category into playable synchronized actions?
-- Which consequential or autonomous mutation paths remain outside the selected 23 visitors?
+- Which consequential or autonomous mutation paths remain outside the selected 31 visitors or bypass the native command visitor table through direct script interfaces?
 - Can towns and industries be held stable for long dual-instance runs, then driven by host events?
 - Where can native passengers/cargo be read and steered so presentation agrees with score?

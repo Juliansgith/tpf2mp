@@ -25,6 +25,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_clock_runtime.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_asset_cost_runtime.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_cost_runtime.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\native_command_authority.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\operation_vehicle_postcondition.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_demo.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450

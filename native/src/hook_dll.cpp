@@ -58,6 +58,9 @@ constexpr std::size_t kNativeCommandSuccessOffset = 0x30;
 constexpr std::size_t kNativeCommandTypeCount = tpf2mp::native_command::kCommandTypeCount;
 constexpr std::size_t kNativeCommandEventLimit = 256;
 constexpr std::size_t kNativeRecentCommandEventLimit = 64;
+// One ordered town-development action admits up to 512 towns x 8 calls. Keep
+// that full protocol burst representable while retaining a hard finite cap.
+constexpr std::uint64_t kCommandAuthorizationLimit = 8192;
 constexpr int kNativeBindingRegistryBase = -0x54504800;
 constexpr std::array<std::string_view, 42> kInterestingBindings{
     "sendCommand", "setGameSpeed", "setCalendarSpeed", "updateLogo", "createLine",
@@ -452,7 +455,7 @@ int NativeAuthorizeCommand(lua_State* state) {
   {
     StateLock lock;
     auto& tokens = g_command_gate_authorizations[tag];
-    if (g_command_gate_enabled && tokens < 1024) ++tokens;
+    if (g_command_gate_enabled && tokens < kCommandAuthorizationLimit) ++tokens;
   }
   RequestStatusWrite();
   return 0;
@@ -1051,6 +1054,14 @@ AuthorityCommandVisitor AuthorityDetourForTag(const int tag) {
     case 13: return DetourAuthorityCommandVisitor<13>;
     case 14: return DetourAuthorityCommandVisitor<14>;
     case 16: return DetourAuthorityCommandVisitor<16>;
+    case 17: return DetourAuthorityCommandVisitor<17>;
+    case 18: return DetourAuthorityCommandVisitor<18>;
+    case 19: return DetourAuthorityCommandVisitor<19>;
+    case 20: return DetourAuthorityCommandVisitor<20>;
+    case 21: return DetourAuthorityCommandVisitor<21>;
+    case 22: return DetourAuthorityCommandVisitor<22>;
+    case 23: return DetourAuthorityCommandVisitor<23>;
+    case 24: return DetourAuthorityCommandVisitor<24>;
     case 25: return DetourAuthorityCommandVisitor<25>;
     case 26: return DetourAuthorityCommandVisitor<26>;
     case 28: return DetourAuthorityCommandVisitor<28>;
@@ -1272,7 +1283,7 @@ DWORD WINAPI Worker(void*) {
 } // namespace
 
 extern "C" __declspec(dllexport) const char* TPF2MP_HookProfile() {
-  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.15.0";
+  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.16.0";
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

@@ -2575,11 +2575,11 @@ do
     hooks = {
       enabled = true,
       buildProposalVisitor = true,
-      authorityCommandVisitors = 23,
+      authorityCommandVisitors = 31,
     },
     gates = {
       buildProposal = { enabled = true, tagMismatches = 0 },
-      commandVisitors = { enabled = true, hooked = 23, tagMismatches = 0 },
+      commandVisitors = { enabled = true, hooked = 31, tagMismatches = 0 },
     },
     commandEvents = {
       { localSequence = 1, tag = 15, name = "BuildProposal", success = false },
@@ -2590,7 +2590,7 @@ do
       and status.commandEvents[2].success == true,
     "native command status erased an explicit false result")
   local ready, boundary = nativeHook.validatedNetworkAuthority(status)
-  assert(ready == true and boundary.commandVisitors == 23,
+  assert(ready == true and boundary.commandVisitors == 31,
     "validated native authority status was not accepted")
   status.gates.commandVisitors.tagMismatches = 1
   assert(nativeHook.validatedNetworkAuthority(status) == false,

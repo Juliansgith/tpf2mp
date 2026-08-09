@@ -15,7 +15,7 @@ std::string SerializeHookStatus(const HookStatusView& status) {
   std::ostringstream output;
   output << "{\"schemaVersion\":1"
          << ",\"component\":\"tpf2mp-native-hook\""
-         << ",\"hookVersion\":\"0.15.0\""
+         << ",\"hookVersion\":\"0.16.0\""
          << ",\"profile\":\"" << tpf2mp::JsonEscape(std::string(tpf2mp::profile::kProfileName)) << "\""
          << ",\"processId\":" << status.process_id
          << ",\"stage\":\"" << tpf2mp::JsonEscape(status.stage) << "\""
@@ -228,7 +228,7 @@ std::string SerializeHookStatus(const HookStatusView& status) {
     output << "]}";
   }
   output << "]"
-         << ",\"scope\":\"Lua command-binding mirrors, sendCommand call-through with an opt-in pre-issue Lua observer, native command observers, a BuildProposal visitor gate, 23 fail-closed consequential-command visitors, suppressed game-speed capture, exact-build typed line capture, and pre-mutation SetLine/BuyVehicle scalar capture\""
+         << ",\"scope\":\"Lua command-binding mirrors, sendCommand call-through with an opt-in pre-issue Lua observer, native command observers, a BuildProposal visitor gate, 31 fail-closed consequential/autonomy command visitors, suppressed game-speed capture, exact-build typed line capture, and pre-mutation SetLine/BuyVehicle scalar capture\""
          << ",\"lastError\":\"" << tpf2mp::JsonEscape(status.last_error) << "\"}";
   return output.str();
 }

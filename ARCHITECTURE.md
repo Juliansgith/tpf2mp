@@ -96,6 +96,9 @@ Domain modules under `res/scripts/tpf2_mp`:
   and the fail-closed optional-write boundary.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, and autonomy;
+  `native_command_authority.lua` is the single Lua seam that grants exact
+  one-shot native visitor tokens to mod-authored commands and revokes an unused
+  token when command submission fails before the visitor;
   `world_station_reading.lua` owns station-group to town association reads;
   `world_line_reading.lua` resolves each exact line stop through its station
   group and classifies passenger/cargo/mixed transport mode fail-closed;
@@ -311,6 +314,9 @@ captured table reference would therefore mutate stale state after loading.
 - `injector.cpp` owns exact-profile verification and DLL injection.
 - `hook_dll.cpp` owns hook installation, visitor gates, capture queues, Lua
   bindings, and the synchronized native state presented to the support modules.
+  Its exact Build 35924 authority surface is 31 visitors: the earlier 23
+  consequential tags plus tags 17-24 for town/industry autonomy. Only tags 19,
+  20, and 23 have authored gameplay token consumers.
 
 Future typed vehicle layouts belong in `native_vehicle_command_codec.cpp`, never
 inline in detour bodies. Every such change requires native build/CTest and exact-

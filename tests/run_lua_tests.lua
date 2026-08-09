@@ -36,6 +36,7 @@ local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local nativeHook = require "tpf2_mp/native_hook"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
@@ -66,6 +67,51 @@ test("canonical JSON and cross-language checksum", function()
   local decoded = json.decode(encoded)
   equal(decoded.a, "x")
   equal(decoded.b, 2)
+end)
+
+test("mod-authored native commands consume and revoke exact visitor tokens", function()
+  local previousApi = api
+  local previousAuthorize = rawget(_G, "tpf2mp_native_authorize_command")
+  local previousRevoke = rawget(_G, "tpf2mp_native_revoke_command")
+  local authorized, revoked, sent = {}, {}, {}
+  local ok, failure = xpcall(function()
+    rawset(_G, "tpf2mp_native_authorize_command", function(tag)
+      authorized[#authorized + 1] = tag
+    end)
+    rawset(_G, "tpf2mp_native_revoke_command", function(tag)
+      revoked[#revoked + 1] = tag
+    end)
+    api = { cmd = { sendCommand = function(command, callback)
+      sent[#sent + 1] = command
+      if callback then callback(command, true) end
+    end } }
+    local commandOk, result = nativeCommandAuthority.send(
+      19, { kind = "developTown" }, function() end, "test.town-development")
+    truthy(commandOk, result)
+    equal(authorized[1], "19")
+    equal(#revoked, 0)
+    equal(sent[1].kind, "developTown")
+
+    api.cmd.sendCommand = function() error("transport failed before visitor") end
+    commandOk, result = nativeCommandAuthority.send(
+      23, { kind = "freezeIndustry" }, nil, "test.industry-freeze")
+    equal(commandOk, false)
+    truthy(tostring(result):find("transport failed", 1, true))
+    equal(authorized[2], "23")
+    equal(revoked[1], "23", "unused native authorization was left armed")
+
+    rawset(_G, "tpf2mp_native_authorize_command", nil)
+    rawset(_G, "tpf2mp_native_revoke_command", nil)
+    api.cmd.sendCommand = function(command) sent[#sent + 1] = command end
+    commandOk, result = nativeCommandAuthority.send(
+      20, { kind = "standaloneTownInfo" }, nil, "test.standalone")
+    truthy(commandOk, result)
+    equal(sent[#sent].kind, "standaloneTownInfo")
+  end, debug.traceback)
+  api = previousApi
+  rawset(_G, "tpf2mp_native_authorize_command", previousAuthorize)
+  rawset(_G, "tpf2mp_native_revoke_command", previousRevoke)
+  if not ok then error(failure, 0) end
 end)
 
 test("industry resource facts normalize and bind evaluated recipes", function()

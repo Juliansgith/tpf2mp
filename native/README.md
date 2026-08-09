@@ -12,7 +12,7 @@ injector. It supports exactly the locally installed Transport Fever 2 Build
 
 The injector and DLL both validate that complete profile. The DLL additionally
 requires 17 unique code signatures at their pinned locations, verifies the
-same bytes in memory, and checks 23 selected entries in the 37-command visitor
+same bytes in memory, and checks 31 selected entries in the 37-command visitor
 table before MinHook is initialized. A mismatch produces a `rejected` status
 and no game hook is enabled.
 
@@ -21,7 +21,8 @@ and no game hook is enabled.
 The DLL observes the high-level command-interface setup routine, `lua_setfield`
 binding registration, Lua's base `print` function, `CommandList::Swap`,
 `ApplyCommand`, the tag-15 `BuildProposal` visitor, and 23 additional
-consequential-command visitors. When sol2 registers
+consequential-command visitors plus eight autonomous town/industry visitors.
+When sol2 registers
 `api.cmd.sendCommand`, the DLL preserves the original closure without modifying
 it. After the complete command-interface setup routine returns on the same Lua
 thread, it installs a Lua C closure which:
@@ -42,7 +43,7 @@ mod prefers `api.cmd.make.*` and uses the mirror only as a same-state fallback.
 
 The native command observers decode the `Command`/variant discriminator,
 classify all 37 tags, pair queued commands with their `ApplyCommand` result, and
-record direct applies which bypass `CommandList::Swap`. Hook 0.15.0 retains this
+record direct applies which bypass `CommandList::Swap`. Hook 0.16.0 retains this
 accounting path and adds pinned scalar capture for suppressed SetLine,
 BuyVehicle, lifecycle controls, and ReplaceVehicle plus a complete bounded
 SellVehicle vector before mutation. Reference run
@@ -64,7 +65,7 @@ globals:
 - `tpf2mp_native_enable_build_gate()` suppresses BuildProposal visitors by default;
 - `tpf2mp_native_authorize_build()` authorizes exactly one visitor while gated;
 - `tpf2mp_native_disable_build_gate()` disables the gate and clears authorizations.
-- `tpf2mp_native_enable_command_gate()` enables rejection for 23 selected tags;
+- `tpf2mp_native_enable_command_gate()` enables rejection for 31 selected tags;
 - `tpf2mp_native_authorize_command(tag)` authorizes one matching visitor;
 - `tpf2mp_native_revoke_command(tag)` withdraws one unused authorization after
   a Lua submission failure, preventing a later vanilla command from inheriting
@@ -101,10 +102,19 @@ are documented in
 ## Important boundary
 
 This DLL is a proven universal apply observer, a payload-aware pre-mutation
-gate for `BuildProposal`, and a fail-closed pre-mutation gate for 23 selected
-consequential tags. It observes native C++ and Lua-issued command paths even
+gate for `BuildProposal`, and a fail-closed pre-mutation gate for 31 selected
+consequential and autonomous tags. It observes native C++ and Lua-issued command paths even
 when a command bypasses the queued list. It also supplies the same-state Lua
 pre-issue callback and one-shot authorization used by the mod.
+
+Tags 17 through 24 close the pinned native CreateTowns, RemoveTown,
+DevelopTown, SetTownInfo, InstantlyUpdateTownCargoNeeds,
+ConnectTownsAndIndustries, SetSimBuildingManualDevelopment, and
+SetSimBuildingClosureTimeStamp surface. The authored runtime consumes exact
+one-shot tokens only for DevelopTown (19), SetTownInfo (20), and manual industry
+development (23). The other five have no gameplay authorization path. A helper
+revokes an unused token if Lua command submission throws before reaching the
+visitor, so an unrelated later command cannot inherit it.
 
 The DLL itself deliberately does not understand semantic proposal payloads.
 Prototype 0.21 implements road/track/node plus named edge-object codec schema 5
@@ -171,7 +181,8 @@ Accordingly, the hook is useful now for:
 - observing all queued and direct native command applies by exact tag;
 - suppressing or one-shot-authorizing a disposable BuildProposal before mutation;
 - suppressing or tag-authorizing selected speed, line, vehicle, terrain, date,
-  naming, and cheat commands through their ordinary engine completion path;
+  naming, cheat/debug, and autonomous town/industry commands through their
+  ordinary engine completion path;
 - safely exposing suppressed vanilla pause/speed requests to the shared clock;
 - safely exposing suppressed vanilla line-manager create/update/delete/name/color requests
   to the canonical operation protocol;
@@ -235,7 +246,8 @@ world while this component is experimental.
 - `include/tpf2mp/build_profile.hpp`: exact build/signature profile.
 - `src/native_common.cpp`: PE, SHA-256, signature, and atomic-status support.
 - `src/injector.cpp`: exact-profile verification and remote `LoadLibraryW`.
-- `src/hook_dll.cpp`: fail-closed Lua/command hooks, timelines, mirrors, BuildProposal gate, and 23-tag consequential-command gate.
+- `src/hook_dll.cpp`: fail-closed Lua/command hooks, timelines, mirrors,
+  BuildProposal gate, and 31-tag consequential/autonomy command gate.
 - `tests/`: profile and fail-closed-load tests.
 - `third_party/minhook`: official MinHook v1.3.4 at commit
   `c3fcafdc10146beb5919319d0683e44e3c30d537`, BSD-2-Clause.

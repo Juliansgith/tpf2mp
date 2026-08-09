@@ -4,6 +4,7 @@ local revenue = require "tpf2_mp/economy_revenue"
 local townDemand = require "tpf2_mp/economy_town_demand"
 local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
 local freightServiceBinding = require "tpf2_mp/freight_service_binding"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 
 local M = {}
 
@@ -319,7 +320,8 @@ function M.new(deps)
               if madePosition then made, commandOrError = pcall(factory, nativePosition) end
               local ok, err = false, commandOrError
               if made then
-                ok, err = util.sendCommand(commandOrError, nil, "mod.world.town-development")
+                ok, err = nativeCommandAuthority.send(
+                  19, commandOrError, nil, "mod.world.town-development")
               end
               if ok then
                 outcome.calls = outcome.calls + 1
@@ -502,7 +504,10 @@ function M.new(deps)
     for _, townCid in ipairs(util.sortedKeys(targets)) do
       local made, commandOrError = pcall(factory, localIds[townCid], targets[townCid])
       local ok, err = false, commandOrError
-      if made then ok, err = util.sendCommand(commandOrError, nil, "mod.world.town-growth") end
+      if made then
+        ok, err = nativeCommandAuthority.send(
+          20, commandOrError, nil, "mod.world.town-growth")
+      end
       if ok then outcome.towns = outcome.towns + 1
       else outcome.errors[#outcome.errors + 1] = tostring(err) end
     end

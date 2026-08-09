@@ -10,6 +10,7 @@ local lineReadingModule = require "tpf2_mp/world_line_reading"
 local industryReadingModule = require "tpf2_mp/world_industry_reading"
 local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
 local identityModule = require "tpf2_mp/world_identity"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 
 local M = {}
 
@@ -1478,8 +1479,8 @@ function M.freezeAutonomy(worldState, freeze)
         setManualDevelopment, industryId, freeze and true or false)
       local ok, err = false, commandOrError
       if commandOk then
-        ok, err = util.sendCommand(
-          commandOrError, nil, "mod.world.set-industry-manual-development")
+        ok, err = nativeCommandAuthority.send(
+          23, commandOrError, nil, "mod.world.set-industry-manual-development")
       end
       if ok then result.industries = result.industries + 1 else result.errors[#result.errors + 1] = tostring(err) end
     end

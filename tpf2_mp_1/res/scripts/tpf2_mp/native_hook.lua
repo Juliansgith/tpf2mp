@@ -195,11 +195,11 @@ function M.validatedNetworkAuthority(nativeStatus)
     and nativeValidation.valid == true
     and nativeHooks.enabled == true
     and nativeHooks.buildProposalVisitor == true
-    and (tonumber(nativeHooks.authorityCommandVisitors) or 0) == 23
+    and (tonumber(nativeHooks.authorityCommandVisitors) or 0) == 31
     and buildStatus.enabled == true
     and (tonumber(buildStatus.tagMismatches) or 0) == 0
     and commandStatus.enabled == true
-    and (tonumber(commandStatus.hooked) or 0) == 23
+    and (tonumber(commandStatus.hooked) or 0) == 31
     and (tonumber(commandStatus.tagMismatches) or 0) == 0
   return ready, {
     buildGateEnabled = buildStatus.enabled == true,

@@ -442,13 +442,13 @@ try {
             Start-Sleep -Milliseconds 100
         } while ((Get-Date) -lt $nativeEvidenceDeadline)
         Copy-Item -LiteralPath $nativeStatusSource -Destination (Join-Path $runDirectory 'native-hook-status.json') -Force
-        $nativeHookPassed = $nativeHookStatus.hookVersion -eq '0.15.0' -and
+        $nativeHookPassed = $nativeHookStatus.hookVersion -eq '0.16.0' -and
             $nativeHookStatus.active -eq $true -and
             $nativeHookStatus.hooks.enabled -eq $true -and
             $nativeHookStatus.hooks.commandListSwap -eq $true -and
             $nativeHookStatus.hooks.applyCommand -eq $true -and
             $nativeHookStatus.hooks.buildProposalVisitor -eq $true -and
-            $nativeHookStatus.hooks.authorityCommandVisitors -eq 23 -and
+            $nativeHookStatus.hooks.authorityCommandVisitors -eq 31 -and
             @($nativeHookStatus.luaStates).Count -gt 0 -and
             $nativeCommandCalls -gt 0 -and
             $nativeHookStatus.commandList.commands -gt 0 -and
@@ -476,7 +476,7 @@ try {
         }
         if ($CommandGateTest) {
             $nativeHookPassed = $nativeHookPassed -and
-                $nativeHookStatus.gates.commandVisitors.hooked -eq 23 -and
+                $nativeHookStatus.gates.commandVisitors.hooked -eq 31 -and
                 $nativeHookStatus.gates.commandVisitors.suppressedTotal -gt 0 -and
                 $nativeHookStatus.gates.commandVisitors.allowedTotal -gt 0 -and
                 $nativeHookStatus.gates.commandVisitors.pendingTotal -eq 0 -and

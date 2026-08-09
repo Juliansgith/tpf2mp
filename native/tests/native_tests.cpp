@@ -11,7 +11,7 @@
 int main(int argc, char** argv) {
   static_assert(sizeof(void*) == 8, "native probe must be built for x64");
   static_assert(tpf2mp::profile::kSignatures.size() == 16);
-  static_assert(tpf2mp::profile::kAuthorityCommandVisitors.size() == 23);
+  static_assert(tpf2mp::profile::kAuthorityCommandVisitors.size() == 31);
   static_assert(tpf2mp::profile::kSetGameSpeedValueOffset == 0);
   static_assert(tpf2mp::profile::kSetGameSpeedMinimum == 0);
   static_assert(tpf2mp::profile::kSetGameSpeedMaximum == 4);
@@ -396,6 +396,12 @@ int main(int argc, char** argv) {
       return 1;
     }
     visitor_tags[visitor.tag] = true;
+  }
+  for (std::size_t tag = 17; tag <= 24; ++tag) {
+    if (!visitor_tags[tag]) {
+      std::cerr << "autonomous command visitor is not gated\n";
+      return 1;
+    }
   }
   if (argc == 1) {
     std::cout << "pinned profile constants are internally valid\n";

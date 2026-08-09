@@ -2,7 +2,7 @@
 
 Use only fresh disposable worlds. Never continue after a custody, proposal-finalisation, or finance error unless the step explicitly tests recovery. Export evidence once, then close without saving.
 
-Prototype under test: `0.37.0-alpha`, state schema `29`, economy model `8`, operation schema `4`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.15.0`, exact game Build 35924.
+Prototype under test: `0.37.0-alpha`, state schema `29`, economy model `8`, operation schema `4`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.16.0`, exact game Build 35924.
 
 ## 0. Automated baseline
 
@@ -16,7 +16,7 @@ Pass requires:
 
 - all offline tests pass;
 - exact executable and all 17 signatures validate;
-- all 23 selected consequential-command visitors match the pinned dispatch table and hook successfully;
+- all 31 selected consequential/autonomy-command visitors match the pinned dispatch table and hook successfully;
 - 39 in-game checks pass;
 - canonical track proposal binds three outputs;
 - post-proposal reconcile passes;
@@ -34,7 +34,7 @@ For the compound depot/station custody regression, close the game and run:
 
 Reference `runtime/live-validation/20260802-125058` created a rail depot plus attached edge and a modular passenger station with 12 track edges, station, and station group. All 18 player-owned components completed four company cycles, ending `stage=complete`, `success=true`, with 20 independently verified events.
 
-Before a network test, inspect each process's native status and require both `gates.buildProposal.enabled=true` and `gates.commandVisitors.enabled=true`, with `hooks.authorityCommandVisitors.hooked=23`. A missing or inactive gate must leave `networkAuthority=false` and prevent match traffic.
+Before a network test, inspect each process's native status and require both `gates.buildProposal.enabled=true` and `gates.commandVisitors.enabled=true`, with `hooks.authorityCommandVisitors.hooked=31`. A missing or inactive gate must leave `networkAuthority=false` and prevent match traffic. During town-growth/industry-freeze exercise, also require zero visitor mismatches and no unexplained suppression; ordered tags 19, 20, and 23 must consume their exact one-shot tokens.
 
 ## A. Fresh local match
 
