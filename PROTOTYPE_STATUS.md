@@ -635,9 +635,12 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   can be independently replayed in Python. Four-event and deterministic
   randomized 1,024-event cross-language traces pass.
 - Recovery plans identify and hash the latest all-peer agreed boundary.
-- Host sessions automatically watch for the first later stable native save,
-  link it to a verified plan, archive the save triplet, hash every file, and
-  expose watcher state in the launcher/session status.
+- **Prepare & Save Restore Point** orders shared pause, quiescence, and checkpoint
+  convergence. Only while the companion and local runtime expose the same READY
+  boundary and core does each game issue Build 35924's native `SaveGame` command
+  under `tpf2mp_<session>_<peer>_b<boundary>`. The watcher waits for a stable
+  save triplet, links it to the verified boundary, files the ordered peer
+  receipt, archives and hashes every file, and exposes its state in the launcher.
 - The watcher verifies exact PID/path/start time and stops on process exit or PID
   reuse. It passed an end-to-end boundary-8 archive proof.
 - Before that liveness check, every peer now preserves its first published
@@ -647,9 +650,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   bridge/audit, session-specific game and companion log tails, native status,
   and source/install fingerprint; the launcher and status command expose its
   summary path. This is diagnostic only and never uploads or restores state.
-- Build 35924 has no supported exact-tick game-script save command. The archive
-  is explicitly a later native-save candidate associated with a boundary, not a
-  proof of exact-tick rollback. Automatic coordinated restore is still open.
+- The automatic save runtime is nondigested and machine-local, refuses stale
+  local preparation or core state, retries at most three times with a 60-update
+  cooldown, times out a lost callback after 1,800 updates, and never grants
+  restore authority by itself. Distinct ordered receipts remain mandatory. The
+  runtime and watcher's exact-name READY-poll
+  race are offline-proven; the two-live-process capture is not yet proved.
+  Automatic coordinated rollback/relaunch remains open.
 - Normal Host/Join now installs a real `MULTIPLAYER` title-screen entry. The
   game remains idle until the player selects it; selection is receipted, then
   the byte-pinned save is loaded and the session proceeds. Disposable production
@@ -678,15 +685,15 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 122 core Lua tests and 108 cross-language economy scenarios;
+  - 124 core Lua tests and 108 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 111 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 116 mod Lua and 8 investigation/tool Lua syntax checks;
   - 44 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 134 Python protocol/network/checkpoint/recovery/report tests;
-  - a functional first-fault watcher/real-bundle fixture, including the
-    already-exited-game ordering case.
+  - 136 Python protocol/network/checkpoint/recovery/report tests;
+  - functional first-fault watcher/real-bundle fixtures, including the
+    already-exited-game ordering case and the automatic-save READY-poll race.
 
 ## Not yet established
 
@@ -714,8 +721,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   exact one-process command/readback chain now passes.
   Purchase, assignment, peer visibility, and movement have human proof. The
   new station barrier bounds drift without exact-coordinate correction.
-- Safe synchronized commands for every one of the 23 currently rejected command
-  categories or proof that no consequential route bypasses the authority layer.
+- Live proof of the expanded 31-visitor gate under autonomous growth and
+  settlement, codecs for additional gameplay categories, and continuing proof
+  that no consequential direct-script route bypasses the authority layer.
 - Cargo-positive cross-peer transport and standard-UI presentation remain a
   live proof gate. Canonical industry recipes, inventories, production,
   source queues, exact per-vehicle loads, completed deliveries, revenue, and
@@ -733,8 +741,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   growth and canonical industry production are implemented; this open item is
   native physical presentation plus live proof of movement between the already
   authored freight ledgers.
-- Exact-boundary native save capture, automatic two-peer rollback/relaunch,
-  host migration, authentication/encryption, or hostile-Internet deployment.
+- Two-live-process proof of READY-gated automatic native save capture; automatic
+  two-peer rollback/relaunch; host migration; authentication/encryption; or
+  hostile-Internet deployment.
 - Live automatic-economy proof with a freshly purchased consist and newly built
   infrastructure; balance, pre-existing-save cost-basis policy, broader vehicle
   sale/replacement capture, onboarding, and public-release quality. Native

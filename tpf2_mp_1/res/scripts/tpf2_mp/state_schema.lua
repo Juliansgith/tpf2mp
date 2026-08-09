@@ -783,6 +783,9 @@ function M.migrate(saved, context)
   -- their next network session must establish a fresh checkpoint normally.
   saved.recovery = saved.recovery or util.deepCopy(defaults.recovery)
   saved.recovery.schemaVersion = 1
+  -- This is a peer-local in-process command diagnostic. A loaded save must
+  -- wait for a fresh companion READY request instead of reusing it.
+  saved.recovery.nativeSave = nil
   saved.recovery.bridgeRebinds = math.max(0, util.integer(saved.recovery.bridgeRebinds, 0))
   saved.bridge = saved.bridge or bridge.newState(cfg)
   local priorBridge = {

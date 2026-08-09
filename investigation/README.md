@@ -2,6 +2,11 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.16.0`.
 
+[Automatic native restore save](AUTOMATIC_NATIVE_RESTORE_SAVE_2026-08-09.md)
+records the READY/core-gated peer-specific `SaveGame` command, bounded retry,
+watcher-poll race rule, unchanged receipt authority, offline proof boundary, and
+the exact next two-process live gate.
+
 [Autonomy command gates](AUTONOMY_COMMAND_GATES_2026-08-09.md)
 records the exact Build 35924 tag-17-through-24 visitor recovery, expansion to
 31 fail-closed visitors, one-shot authorization for authored town development,
@@ -447,7 +452,7 @@ and passenger/cargo evidence. A parallel bounded GUI-event envelope covers
 actions that bypass the Lua issuing wrapper without intercepting gameplay. It
 is deliberately not a network-convergence test.
 
-The real file-bridge/TCP path, player-2 Lua engine simulation, bidirectional two-live-game replay, and 600-tick finance/structure soak now pass. The audit can generate a checksummed coordinated-restart plan for the latest agreed boundary, while automatic native-save capture/reload remains open. Full details: [BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md](BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md), [LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md](LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md), [NETWORK_COMPLETION_CONSENSUS_2026-08-02.md](NETWORK_COMPLETION_CONSENSUS_2026-08-02.md), and [CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md](CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md).
+The real file-bridge/TCP path, player-2 Lua engine simulation, bidirectional two-live-game replay, and 600-tick finance/structure soak now pass. The audit can generate a checksummed coordinated-restart plan for the latest agreed boundary. READY-gated automatic native-save capture and watcher integration now pass offline; the two-live-process capture/reload and automatic rollback remain open. Full details: [AUTOMATIC_NATIVE_RESTORE_SAVE_2026-08-09.md](AUTOMATIC_NATIVE_RESTORE_SAVE_2026-08-09.md), [BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md](BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md), [LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md](LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md), [NETWORK_COMPLETION_CONSENSUS_2026-08-02.md](NETWORK_COMPLETION_CONSENSUS_2026-08-02.md), and [CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md](CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md).
 
 ### Audit boundary
 

@@ -43,6 +43,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\match_runtime.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\authored_followup_runtime.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\recovery_prepare_runtime.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\recovery_native_save_runtime.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_clock.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_content_gate.lua' = 70
@@ -171,6 +172,7 @@ $requiredModules = @(
     'tpf2_mp/network_clock_runtime',
     'tpf2_mp/authored_followup_runtime',
     'tpf2_mp/recovery_prepare_runtime',
+    'tpf2_mp/recovery_native_save_runtime',
     'tpf2_mp/economy_clock_runtime',
     'tpf2_mp/economy_action_runtime',
     'tpf2_mp/economy_settlement_transaction',

@@ -22,6 +22,7 @@ local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
+local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
 local operationCodecModule = require "tpf2_mp/operation_codec"
@@ -797,6 +798,115 @@ do
   current.networkMode = "standalone"
   assert(runtime.manualCheckpoint({ reason = "debug" }) == true and emitted == 1,
     "standalone debug checkpoint no longer uses the direct exporter")
+end
+
+do
+  local current = {
+    networkMode = "network", tick = 20,
+    bridge = {
+      sessionId = "save-test", peerId = "player2",
+      companion = {
+        anchorReady = true, anchorBoundarySeq = 8,
+        anchorCoreDigest = "deadbeef", anchorConvergenceKey = "1234abcd",
+        anchorPreparationStatus = "ready", anchorPreparationCheckpointSeq = 8,
+        localAnchorsFiled = {},
+      },
+    },
+    recovery = { anchorPreparation = { status = "ready", boundarySeq = 8 } },
+  }
+  local issued, callbackSuccess = {}, true
+  local runtime = recoveryNativeSaveRuntimeModule.new({
+    getState = function() return current end,
+    coreDigest = function() return "deadbeef" end,
+    commandFactory = function(name)
+      assert(name == "saveGame", "automatic recovery used the wrong command factory")
+      return function(saveName) return { kind = name, saveName = saveName } end
+    end,
+    sendCommand = function(command, callback, origin)
+      issued[#issued + 1] = { command = command, origin = origin }
+      callback(command, callbackSuccess)
+      return true
+    end,
+  })
+  assert(recoveryNativeSaveRuntimeModule.saveName("save-test", "player2", 8)
+      == "tpf2mp_save-test_player2_b8"
+      and recoveryNativeSaveRuntimeModule.saveName("../escape", "player2", 8) == nil,
+    "automatic recovery save-name validation is unsafe")
+  local saved, saveResult = runtime.maintain()
+  assert(saved and saveResult.status == "save-command-complete"
+      and saveResult.saveName == "tpf2mp_save-test_player2_b8"
+      and saveResult.attempts == 1 and #issued == 1
+      and issued[1].origin == "mod.recovery.save-game",
+    "READY boundary did not issue one exact peer-specific native save")
+  assert(runtime.maintain() == false and #issued == 1,
+    "automatic recovery repeated a completed native save")
+  current.bridge.companion.localAnchorsFiled = { 8 }
+  local filed, filedResult = runtime.maintain()
+  assert(filed and filedResult.status == "receipt-filed",
+    "ordered local save receipt was not reflected in recovery state")
+
+  current.bridge.companion.localAnchorsFiled = {}
+  current.bridge.companion.anchorBoundarySeq = 9
+  current.bridge.companion.anchorPreparationCheckpointSeq = 9
+  current.recovery.anchorPreparation.boundarySeq = 9
+  callbackSuccess = false
+  local rejected = runtime.maintain()
+  assert(rejected and current.recovery.nativeSave.status == "failed"
+      and current.recovery.nativeSave.attempts == 1 and #issued == 2,
+    "native save rejection did not enter bounded retry state")
+  current.tick = 79
+  assert(runtime.maintain() == false and #issued == 2,
+    "native save retried before its cooldown")
+  current.tick = 80
+  assert(runtime.maintain() == true and #issued == 3,
+    "native save did not retry after its cooldown")
+  current.tick = 140
+  assert(runtime.maintain() == true and #issued == 4,
+    "native save did not use its final bounded retry")
+  current.tick = 200
+  assert(runtime.maintain() == false and #issued == 4,
+    "native save exceeded its three-attempt boundary")
+  current.bridge.companion.anchorBoundarySeq = 10
+  current.bridge.companion.anchorPreparationCheckpointSeq = 10
+  current.bridge.companion.anchorCoreDigest = "different"
+  current.recovery.anchorPreparation.boundarySeq = 10
+  assert(runtime.maintain() == false and #issued == 4,
+    "automatic recovery saved a boundary with a mismatched core digest")
+
+  local delayedCallbacks = {}
+  current.bridge.companion.anchorCoreDigest = "deadbeef"
+  local timeoutRuntime = recoveryNativeSaveRuntimeModule.new({
+    getState = function() return current end,
+    coreDigest = function() return "deadbeef" end,
+    commandFactory = function() return function(name) return { saveName = name } end end,
+    sendCommand = function(command, callback)
+      issued[#issued + 1] = { command = command }
+      delayedCallbacks[#delayedCallbacks + 1] = callback
+      return true
+    end,
+  })
+  current.tick = 300
+  local submitted, submittedResult = timeoutRuntime.maintain()
+  assert(submitted and submittedResult.status == "save-command-submitted",
+    "asynchronous native save submission was not retained")
+  current.tick = 2099
+  assert(timeoutRuntime.maintain() == false
+      and current.recovery.nativeSave.status == "save-command-submitted",
+    "native save callback timed out before the conservative deadline")
+  current.tick = 2100
+  assert(timeoutRuntime.maintain() == false
+      and current.recovery.nativeSave.status == "failed"
+      and current.recovery.nativeSave.attempts == 1,
+    "lost native save callback did not enter bounded retry state")
+  current.tick = 2160
+  assert(timeoutRuntime.maintain() == true
+      and current.recovery.nativeSave.status == "save-command-submitted"
+      and current.recovery.nativeSave.attempts == 2,
+    "callback timeout did not retry after cooldown")
+  delayedCallbacks[1](nil, true)
+  assert(current.recovery.nativeSave.status == "save-command-submitted"
+      and current.recovery.nativeSave.attempts == 2,
+    "a stale native save callback overwrote the active retry")
 end
 
 do

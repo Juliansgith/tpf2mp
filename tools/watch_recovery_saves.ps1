@@ -47,7 +47,7 @@ $expectedSavePrefix = "tpf2mp_${safeSession}_${Peer}"
 New-Item -ItemType Directory -Force -Path $recoveryRoot, $requestRoot, $resultRoot | Out-Null
 
 $watch = [ordered]@{
-    schemaVersion = 4
+    schemaVersion = 5
     session = $safeSession
     peer = $Peer
     status = 'starting'
@@ -57,6 +57,7 @@ $watch = [ordered]@{
     auditPath = if ($Peer -eq 'player1') { $auditPath } else { $null }
     anchorBoundary = $null
     anchorReadyObservedAtUtc = $null
+    automaticSaveName = $null
     candidateSave = $null
     candidateStableSinceUtc = $null
     requestId = $null
@@ -174,11 +175,21 @@ function Get-StableCandidateSignature([IO.FileInfo]$Save) {
     return ($parts -join '|')
 }
 
-function Get-NewRecoverySave([DateTime]$AfterUtc) {
+function Get-NewRecoverySave([DateTime]$AfterUtc, [int]$Boundary) {
+    $automaticBaseName = "${expectedSavePrefix}_b$Boundary"
+    # The game sees the same READY companion status as this watcher. It can
+    # finish the automatic SaveGame command just before our next two-second
+    # poll records READY, so admit only the exact automatic name in that small
+    # pre-observation window. Arbitrary/manual prefix saves still have to be
+    # newer than the watcher observation.
+    $automaticGraceUtc = $AfterUtc.AddSeconds(-[Math]::Max(4, $PollSeconds * 2))
     return @(Get-ChildItem -LiteralPath $saveRoot -File -Filter '*.sav' -ErrorAction SilentlyContinue |
         Where-Object {
+            $automaticRecent = $_.BaseName -ieq $automaticBaseName `
+                -and $_.LastWriteTimeUtc -ge $automaticGraceUtc
+            $manualRecent = $_.LastWriteTimeUtc -ge $AfterUtc
             $_.BaseName.StartsWith($expectedSavePrefix, [StringComparison]::OrdinalIgnoreCase) `
-                -and $_.LastWriteTimeUtc -ge $AfterUtc `
+                -and ($automaticRecent -or $manualRecent) `
                 -and (Test-Path -LiteralPath ($_.FullName + '.lua') -PathType Leaf)
         } |
         Sort-Object LastWriteTimeUtc -Descending) | Select-Object -First 1
@@ -262,6 +273,7 @@ try {
             $candidate = $null
             $watch.anchorBoundary = $readyBoundary
             $watch.anchorReadyObservedAtUtc = $readyObservedAt.ToString('o')
+            $watch.automaticSaveName = "${expectedSavePrefix}_b$readyBoundary"
             $watch.candidateSave = $null
             $watch.candidateStableSinceUtc = $null
             $watch.receiptStatus = $null
@@ -270,7 +282,7 @@ try {
         }
 
         if ($readyObservedAt -and -not $requestId) {
-            $newCandidate = Get-NewRecoverySave $readyObservedAt
+            $newCandidate = Get-NewRecoverySave $readyObservedAt $requestBoundary
             if ($newCandidate) {
                 $signature = Get-StableCandidateSignature $newCandidate
                 if ($signature -and $signature -ne $candidateSignature) {

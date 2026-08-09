@@ -11,7 +11,8 @@ the recovery watcher already sees new native saves appear.
 
 A player therefore never has to understand the invariant. One preparation
 request makes the companion pause and checkpoint both worlds; after READY,
-the ordinary native save is watched and attested automatically.
+each game automatically requests its peer-specific native save. The watcher
+attests that stable file. A correctly prefixed manual save remains a fallback.
 """
 
 from __future__ import annotations

@@ -1,9 +1,11 @@
 """One-action preparation of a coordinated native-save restore point.
 
-The game cannot call Transport Fever 2's native Save command, but it can ask
-the companion to make the world safe to save.  This coordinator owns that
-workflow: fence new work, rendezvous both simulations at pause, order one
-checkpoint request at a shared sequence, and wait for checkpoint consensus.
+The companion makes both worlds safe to save: it fences new work, rendezvouses
+both simulations at pause, orders one checkpoint request at a shared sequence,
+and waits for checkpoint consensus.  Once the exact boundary is READY, each
+game issues Build 35924's native ``SaveGame`` command under a peer-specific
+name; the independent watcher then hashes the stable file and files its ordered
+receipt.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ from .protocol import PROTOCOL_VERSION, ProtocolError, sign, validate_action
 
 
 class AnchorPreparationCoordinator:
-    """Host-side state machine behind the ``Prepare Restore Point`` button."""
+    """Host-side state machine behind ``Prepare & Save Restore Point``."""
 
     PENDING = {"pause-requested", "pausing", "checkpointing"}
 

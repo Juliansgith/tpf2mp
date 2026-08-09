@@ -346,7 +346,9 @@ With the implemented completion consensus, test:
 - disconnect after one peer applies;
 - timeout during ownership correction;
 - generate and verify the checksummed restart plan from the last agreed checkpoint;
-- reload identical saved boundaries under the plan's derived session (manual until save capture is automated);
+- live-prove that one preparation click creates both peer-specific native saves
+  and receipts, then reload those boundary-matched saves under the plan's
+  derived session;
 - dependent second build while the first is unresolved.
 
 Current automated pass: all peers either reach the same postcondition plus checkpoint or fault closed with an identified proposal/reason, and the authority audit yields a checksummed latest-agreed restart plan. Future live recovery pass: both load the identical saved boundary and reconstruct valid local bindings under the derived session. Silent partial continuation is a failure.

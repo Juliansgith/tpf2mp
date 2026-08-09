@@ -156,6 +156,10 @@ Runtime-controller modules:
   payloads, and checkpoint export barriers.
 - `recovery_prepare_runtime.lua` owns game-side preparation/checkpoint handlers
   and the persisted, non-digested preparation status shown after save/load.
+- `recovery_native_save_runtime.lua` issues one peer-specific native `SaveGame`
+  command only while the companion and local checkpoint state identify the
+  same READY boundary and current core. Its bounded retry/command diagnostic is
+  machine-local and deliberately excluded from the authored digest.
 - `public_snapshot.lua` produces the read-only engine-to-GUI state projection.
 - `research_report.lua` owns the full diagnostic export projection, current
   limitation inventory, bridge receipt, and failure status.
@@ -294,11 +298,13 @@ captured table reference would therefore mutate stale state after loading.
   archives respectively. `audit_replay.py` owns whole-audit ordering, physical
   consensus, checkpoint, and digest-chain verification; `cli.py` is only the
   command dispatcher.
-- The long-running `watch_recovery_saves.ps1` process also owns a strictly local
-  one-shot first-fault trigger. `collect_live_evidence.ps1` owns immutable bridge
-  copying, copied-audit replay, bounded session-log tails, native status, and
-  source/install fingerprints; neither tool mutates authority or performs a
-  restore.
+- The long-running `watch_recovery_saves.ps1` process waits for the stable
+  automatically named native save (or a correctly prefixed manual fallback),
+  hands its hash to the ordered receipt path, and also owns a strictly local
+  one-shot first-fault trigger. `collect_live_evidence.ps1` owns immutable
+  bridge copying, copied-audit replay, bounded session-log tails, native status,
+  and source/install fingerprints; neither tool mutates authority or performs
+  a restore.
 
 ## Native modules
 

@@ -38,6 +38,7 @@ local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
+local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local researchReportModule = require "tpf2_mp/research_report"
@@ -201,6 +202,10 @@ local recoveryPrepareRuntime = recoveryPrepareRuntimeModule.new({
   getState = function() return state end,
   emitCheckpoint = emitCheckpoint,
   exportCheckpointBarrier = exportCheckpointBarrier,
+})
+local recoveryNativeSaveRuntime = recoveryNativeSaveRuntimeModule.new({
+  getState = function() return state end,
+  coreDigest = coreDigest,
 })
 local restoreResumeRuntime = restoreResumeRuntimeModule.new({ getState = function() return state end, coreDigest = coreDigest })
 local balanceOf
@@ -3145,7 +3150,7 @@ local function ensureWindow()
     end },
     { "Export Research", function() return { type = "probe.export_research" } end },
     { "Export Snapshot", function() return { type = "snapshot.export" } end },
-    { "Prepare Restore Point", function() return { type = "recovery.prepare" } end },
+    { "Prepare & Save Restore Point", function() return { type = "recovery.prepare" } end },
     { "Refresh", function() return { type = "snapshot.request", localOnly = true } end },
   })
   rootLayout:addItem(gui.details)
@@ -3303,6 +3308,9 @@ local script = {
     local cfg = config()
     if state.tick % cfg.updateStride == 0 then
       bridge.pollCompanionStatus(state.bridge)
+      local nativeSaveOk, nativeSaveError = xpcall(
+        recoveryNativeSaveRuntime.maintain, debug.traceback)
+      if not nativeSaveOk then state.probes.lastError = tostring(nativeSaveError) end
       -- A transient outbox write failure must not lose the second-phase
       -- physical completion report. Completed native proposals remain in the
       -- bounded record set and are retried until the bridge accepts them.

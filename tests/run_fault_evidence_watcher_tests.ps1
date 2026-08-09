@@ -10,6 +10,8 @@ Set-StrictMode -Version Latest
 
 $session = 'fault-watch-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 $sessionRoot = Get-Tpf2mpSessionRoot $session 'player1'
+$automaticSession = 'auto-save-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+$automaticSessionRoot = Get-Tpf2mpSessionRoot $automaticSession 'player1'
 $supportRoot = Get-Tpf2mpSupportRoot
 $supportPrefix = $supportRoot.TrimEnd('\') + '\'
 if (-not $sessionRoot.StartsWith($supportPrefix, [StringComparison]::OrdinalIgnoreCase)) {
@@ -66,7 +68,7 @@ try {
 
     $watcherStatusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
     $watcher = Get-Content -LiteralPath $watcherStatusPath -Raw | ConvertFrom-Json
-    if ($watcher.schemaVersion -ne 4 -or $watcher.status -ne 'stopped-game-exited') {
+    if ($watcher.schemaVersion -ne 5 -or $watcher.status -ne 'stopped-game-exited') {
         throw 'Fault watcher did not preserve its terminal status after capturing evidence.'
     }
     if ($watcher.lifetimeHours -ne 720 -or -not $watcher.expiresAtUtc) {
@@ -95,6 +97,42 @@ try {
         throw 'Fault watcher passed the wrong session identity to its evidence collector.'
     }
     Write-Host 'PASS first session fault survives a transient collector failure and game exit'
+
+    $automaticBridge = Join-Path $TemporaryRoot 'automatic-save-watcher-bridge'
+    $automaticStatusRoot = Join-Path $automaticBridge 'companion_state'
+    $automaticSaveRoot = Join-Path $TemporaryRoot 'automatic-save-watcher\1066780\local\save'
+    New-Item -ItemType Directory -Force -Path $automaticStatusRoot, $automaticSaveRoot | Out-Null
+    [IO.File]::WriteAllText((Join-Path $automaticStatusRoot 'companion_status.json'),
+        ([ordered]@{
+            schemaVersion = 1
+            session = $automaticSession
+            peer = 'player1'
+            anchorReady = $true
+            anchorBoundarySeq = 8
+            anchorCoreDigest = 'deadbeef'
+            anchorConvergenceKey = '1234abcd'
+            sessionFault = $null
+        } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    $automaticSave = Join-Path $automaticSaveRoot "tpf2mp_${automaticSession}_player1_b8.sav"
+    [IO.File]::WriteAllBytes($automaticSave, [byte[]](1, 2, 3))
+    [IO.File]::WriteAllText($automaticSave + '.lua', 'function data() return {} end',
+        [Text.UTF8Encoding]::new($false))
+    $currentProcess = Get-Process -Id $PID
+    & (Join-Path $ProjectRoot 'tools\watch_recovery_saves.ps1') `
+        -Session $automaticSession -Peer player1 -BridgePath $automaticBridge `
+        -SaveDirectory $automaticSaveRoot -GameProcessId $PID `
+        -GameExecutable $currentProcess.Path `
+        -GameStartedAtUtc ($currentProcess.StartTime.ToUniversalTime().ToString('o')) `
+        -BundleRoot $ProjectRoot -EvidenceCollectorPath $fakeCollector -OneShot
+    if (-not $?) { throw 'Automatic native-save watcher fixture returned failure.' }
+    $automaticWatcher = Get-Content -LiteralPath `
+        (Join-Path $automaticSessionRoot 'recovery-watcher-status.json') -Raw | ConvertFrom-Json
+    if ($automaticWatcher.status -ne 'waiting-for-save-stability' `
+        -or $automaticWatcher.automaticSaveName -ne "tpf2mp_${automaticSession}_player1_b8" `
+        -or $automaticWatcher.candidateSave -ne $automaticSave) {
+        throw 'Watcher missed the exact automatic save completed just before its READY poll.'
+    }
+    Write-Host 'PASS automatic native save survives the watcher READY-poll race'
 
     $logRoot = Join-Path $TemporaryRoot 'fault-watcher\logs'
     $companionLog = Join-Path $logRoot 'companion.stdout.log'
@@ -141,11 +179,13 @@ try {
     Write-Host 'PASS first-fault bundle contains exact session and game diagnostics'
 }
 finally {
-    if (Test-Path -LiteralPath $sessionRoot -PathType Container) {
-        $resolved = [IO.Path]::GetFullPath($sessionRoot)
+    foreach ($candidateRoot in @($sessionRoot, $automaticSessionRoot)) {
+      if (Test-Path -LiteralPath $candidateRoot -PathType Container) {
+        $resolved = [IO.Path]::GetFullPath($candidateRoot)
         if (-not $resolved.StartsWith($supportPrefix, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'Refusing to clean a fault-watcher fixture outside the support root.'
         }
         Remove-Item -LiteralPath $resolved -Recurse -Force
+      }
     }
 }
