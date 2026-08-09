@@ -553,6 +553,28 @@ do
   assert(retained == false and retainedError:find("remained after topology replay", 1, true),
     "topology collateral verifier accepted a construction left in the world")
 
+  local topologyRemoved, topologyRemovalError =
+    proposalRuntimeModule.verifyRemovalOnlyInputsRemoved({
+      { kind = "edge", cid = "edge:event:test:old", localId = 91 },
+      { kind = "node", cid = "node:event:test:old", localId = 92 },
+      { kind = "construction", cid = "construction:pre:ignored", localId = 93 },
+    }, {
+      entityExists = function(localId) return localId == 93 end,
+      kindOf = function() return "construction" end,
+    })
+  assert(topologyRemoved and topologyRemovalError == nil,
+    "removal-only verifier rejected absent topology or inspected unrelated collateral")
+  local topologyRetained, topologyRetainedError =
+    proposalRuntimeModule.verifyRemovalOnlyInputsRemoved({
+      { kind = "edge", cid = "edge:event:test:old", localId = 91 },
+    }, {
+      entityExists = function() return true end,
+      kindOf = function() return "edge" end,
+    })
+  assert(topologyRetained == false
+      and topologyRetainedError:find("remained after removal%-only replay"),
+    "removal-only verifier accepted a topology entity left in the world")
+
   local steps = { count = 0 }
   current = {
     engineSteps = steps,

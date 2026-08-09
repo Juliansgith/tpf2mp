@@ -19,6 +19,7 @@ local M = {}
 local CONSTRUCTION_SETTLE_TIMEOUT_TICKS = 600
 
 M.verifyTopologyCollateralRemoved = proposalCollateralRuntime.verifyRemoved
+M.verifyRemovalOnlyInputsRemoved = proposalCollateralRuntime.verifyTopologyRemoved
 
 function M.new(deps)
   assert(type(deps) == "table", "proposal runtime dependencies are required")
@@ -707,13 +708,11 @@ function M.new(deps)
       or #matched.unmatchedEdgeObjects > 0 then
       return proposalFailure(record, tostring(matchError or "proposal created unexpected topology"))
     end
-    if proposalCodec.isTopologyConstructionRemoval(transaction) then
-      -- Native success is not sufficient: a malformed/incomplete replay could
-      -- create the track while silently retaining the obstructing building.
-      -- Verify the original component kind disappeared before retiring its
-      -- canonical binding or charging the company. Entity ids may be reused by
-      -- the same command, hence the kind check rather than entityExists alone.
-      local removed, removalError = M.verifyTopologyCollateralRemoved(record.localInputs, world)
+    local removalVerifier = proposalCodec.isTopologyConstructionRemoval(transaction)
+      and M.verifyTopologyCollateralRemoved
+      or (proposalCodec.isRemovalOnly(transaction) and M.verifyRemovalOnlyInputsRemoved or nil)
+    if removalVerifier then
+      local removed, removalError = removalVerifier(record.localInputs, world)
       if not removed then return proposalFailure(record, removalError) end
     end
     for _, edge in ipairs(transaction.edges) do

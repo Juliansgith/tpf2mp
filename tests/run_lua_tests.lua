@@ -1404,6 +1404,84 @@ test("proposal codec translates existing removals and node references canonicall
   equal(matched.edges["edge:1"], 102)
 end)
 
+test("proposal codec admits and materialises pure connected-segment removals", function()
+  local snapshot = {
+    __observedCost = 0,
+    proposal = {
+      addedNodes = {}, addedSegments = {},
+      removedSegments = {
+        ["2"] = { entity = 102 },
+        ["1"] = { entity = 101 },
+      },
+      removedNodes = { ["1"] = { entity = 201 } },
+      edgeObjectsToAdd = {},
+      edgeObjectsToRemove = { ["1"] = { entity = 301 } },
+    },
+  }
+  local canonicalMap = {
+    [101] = "edge:event:test:a", [102] = "edge:event:test:b",
+    [201] = "node:event:test:junction", [301] = "edge_object:event:test:signal",
+  }
+  local transaction, transactionError = proposalCodec.normalise(snapshot, "company:1", {
+    resolveCanonical = function(_, localId) return canonicalMap[localId] end,
+  })
+  truthy(transaction, transactionError)
+  truthy(proposalCodec.isRemovalOnly(transaction),
+    "pure bulldozer shape was not recognized as removal-only")
+  equal(#transaction.nodes, 0)
+  equal(#transaction.edges, 0)
+  equal(transaction.remove.edges[1], "edge:event:test:a")
+  equal(transaction.remove.edges[2], "edge:event:test:b")
+  equal(transaction.remove.nodes[1], "node:event:test:junction")
+  equal(transaction.edgeObjects.remove[1], "edge_object:event:test:signal")
+  local diagnostic = proposalCodec.diagnose(snapshot)
+  equal(diagnostic.counts.edgesToRemove, 2)
+  equal(diagnostic.counts.nodesToRemove, 1)
+  equal(diagnostic.counts.edgeObjectsToRemove, 1)
+
+  local fakeApi = {
+    type = {
+      SimpleProposal = { new = function() return { streetProposal = {
+        nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
+        edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+      } } end },
+      SegmentAndEntity = { new = function() return { comp = {} } end },
+      NodeAndEntity = { new = function() return { comp = {} } end },
+      Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
+      BaseEdgeStreet = { new = function() return {} end },
+      BaseEdgeTrack = { new = function() return {} end },
+    },
+    res = {},
+  }
+  local localMap = {
+    ["edge:event:test:a"] = 101, ["edge:event:test:b"] = 102,
+    ["node:event:test:junction"] = 201, ["edge_object:event:test:signal"] = 301,
+  }
+  local proposal, metadata = proposalCodec.materialise(transaction, {
+    api = fakeApi,
+    resolveLocal = function(cid) return localMap[cid] end,
+  })
+  truthy(proposal, metadata)
+  equal(#proposal.streetProposal.edgesToAdd, 0)
+  equal(proposal.streetProposal.edgesToRemove[1], 101)
+  equal(proposal.streetProposal.edgesToRemove[2], 102)
+  equal(proposal.streetProposal.nodesToRemove[1], 201)
+  equal(proposal.streetProposal.edgeObjectsToRemove[1], 301)
+  local matched, matchError = proposalCodec.matchCreated(transaction, {}, {})
+  truthy(matched, matchError)
+  equal(#matched.unmatchedEdges, 0)
+
+  local malformed = util.deepCopy(transaction)
+  malformed.remove.edges = {
+    "edge:event:test:b", "edge:event:test:a",
+  }
+  malformed.digest = proposalCodec.digest(malformed)
+  malformed.transactionId = "proposal:" .. malformed.digest
+  local valid, validationError = proposalCodec.validate(malformed)
+  equal(valid, false)
+  truthy(validationError:find("sorted and unique", 1, true), validationError)
+end)
+
 test("proposal codec recovers unambiguous carrier selections from builder data", function()
   local snapshot = linearProposal(-1, -2, -3, "track", 7, true)
   snapshot.streetProposal.edgesToAdd[1].trackEdge = "<userdata>"

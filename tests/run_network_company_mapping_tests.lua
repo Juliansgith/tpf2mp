@@ -1255,6 +1255,54 @@ assert(featureFinal.world.proposalConsensus.completed == 12
   and featureFinal.lastError == nil,
   "signal/depot/construction/station-edit feature sequence did not close healthy consensus")
 
+-- A bulldozer click on a connected spur has no replacement topology. It must
+-- still cross the ordered BuildProposal path, prove the native edge vanished,
+-- retire its canonical custody, settle, and close a checkpoint before another
+-- physical action can start.
+local removalOnlyTransaction = {
+  schemaVersion = proposalCodec.SCHEMA_VERSION,
+  companyCid = "company:1",
+  cost = 0,
+  nodes = {}, edges = {},
+  edgeObjects = { add = {}, retain = {}, remove = {} },
+  remove = { edges = { upgradedEdgeCid }, nodes = {} },
+}
+removalOnlyTransaction.digest = proposalCodec.digest(removalOnlyTransaction)
+removalOnlyTransaction.transactionId = "proposal:" .. removalOnlyTransaction.digest
+assert(proposalCodec.isRemovalOnly(removalOnlyTransaction),
+  "connected-spur fixture was not classified as removal-only")
+writeCommit(39, "player1", { type = "proposal.build", transaction = removalOnlyTransaction })
+script.update()
+local removalOnlyRecord = assert(
+  script.save().world.proposals.byId["network-company-map:player1:39"])
+assert(removalOnlyRecord.status == "queued" and removalOnlyRecord.localRefs[upgradedEdgeCid] == 403,
+  "removal-only edge was not resolved into the physical proposal queue")
+components.BASE_EDGE[403] = nil
+components.BASE_EDGE_TRACK[403] = nil
+components.PLAYER_OWNED[403] = nil
+script.handleEvent("test", "tpf2mp", "proposal.result", {
+  proposalId = removalOnlyRecord.proposalId,
+  success = true,
+  createdNodeIds = {}, createdEdgeIds = {},
+})
+for _ = 1, 31 do script.update() end
+removalOnlyRecord = assert(script.save().world.proposals.byId[removalOnlyRecord.proposalId])
+local removalOnlyApplied = script.save()
+assert(removalOnlyRecord.status == "applied" and #removalOnlyRecord.result.outputs == 0
+    and canonical.resolveLocal(removalOnlyApplied.canonical, upgradedEdgeCid) == nil
+    and removalOnlyApplied.world.logicalOwners["403"] == nil
+    and removalOnlyApplied.world.pinnedCustody["403"] == nil,
+  "removal-only edge replay did not retire canonical and logical custody")
+writeConsensus(40, removalOnlyRecord, 0)
+script.update()
+writeCheckpointConsensus(41, script.save(), 40)
+script.update()
+local removalOnlyFinal = script.save()
+assert(removalOnlyFinal.world.proposalConsensus.completed == 13
+    and removalOnlyFinal.world.checkpointConsensus.completed == 14
+    and removalOnlyFinal.world.proposalConsensus.sessionFault == nil,
+  "removal-only edge did not close physical consensus and its checkpoint")
+
 -- A companion protocol rejection is still an ordered control message. It must
 -- release the origin's awaiting-order latch so a following physical click can
 -- leave the bounded local FIFO instead of freezing every future build.
@@ -1277,7 +1325,7 @@ script.handleEvent("test", "tpf2mp", "intent", {
 })
 assert(script.save().bridge.emitted == emittedAfterRejectedIntent,
   "second physical intent bypassed the awaiting-order FIFO")
-writeOrdered(39, "control", "player1", {
+writeOrdered(42, "control", "player1", {
   type = "network.intent_rejected",
   originPeer = "player2",
   originLocalSeq = firstIntent.local_seq,
@@ -1299,7 +1347,7 @@ assert(releasedIntent.kind == "intent"
 
 -- Release the still-held latch from the rejection test above with another
 -- benign rejection: no origin token means no fault, only the FIFO release.
-writeOrdered(40, "control", "player1", {
+writeOrdered(43, "control", "player1", {
   type = "network.intent_rejected",
   originPeer = "player2",
   originLocalSeq = releasedIntent.local_seq,
@@ -1339,7 +1387,7 @@ assert(tokenIntent.kind == "intent"
 
 -- Rejecting that ordered intent leaves an un-orderable native mutation on
 -- this peer only: the session must fault closed and request the pause.
-writeOrdered(41, "control", "player1", {
+writeOrdered(44, "control", "player1", {
   type = "network.intent_rejected",
   originPeer = "player2",
   originLocalSeq = tokenIntent.local_seq,
@@ -1445,7 +1493,7 @@ do
     "reloaded failed proposal did not retain a completion report")
   resultDigest = loadedCompletion.resultDigest
   coreDigest = loadedCompletion.coreDigest
-  writeOrdered(42, "control", "player1", {
+  writeOrdered(45, "control", "player1", {
     type = "network.proposal_outcome",
     proposalId = proposalId,
     commitSeq = 999,
@@ -1469,14 +1517,14 @@ do
       fault = rejected.world.proposalConsensus.sessionFault,
       record = rejected.world.proposals.byId[proposalId],
     }))
-  assert(rejected.world.checkpointConsensus.byBoundary["42"]
-      and rejected.world.checkpointConsensus.byBoundary["42"].reason
+  assert(rejected.world.checkpointConsensus.byBoundary["45"]
+      and rejected.world.checkpointConsensus.byBoundary["45"].reason
         == "physical-rejection:" .. proposalId,
     "recoverable native rejection did not open a convergence checkpoint")
-  writeCheckpointConsensus(43, rejected, 42)
+  writeCheckpointConsensus(46, rejected, 45)
   script.update()
   local recovered = script.save()
-  assert(recovered.world.checkpointConsensus.byBoundary["42"].status == "complete"
+  assert(recovered.world.checkpointConsensus.byBoundary["45"].status == "complete"
       and recovered.world.checkpointConsensus.sessionFault == nil,
     "recoverable native rejection did not close its convergence checkpoint")
 
@@ -1498,7 +1546,7 @@ do
       errorCode = "native-proposal-failed",
     },
   }
-  writeOrdered(44, "control", "player1", {
+  writeOrdered(47, "control", "player1", {
     type = "network.proposal_outcome",
     proposalId = residueId,
     commitSeq = 1000,

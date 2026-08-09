@@ -81,6 +81,29 @@ Fail immediately on any rival apply, debit, ID replacement, asset theft, ownersh
 
 Pass: public road topology remains shared; explicitly private tracked road edits are rejected for the rival and allowed for the owner. Record this as a gameplay rule, not an engine accident.
 
+## C2. Connected segment demolition and recovery
+
+Status: implemented and fully automated; fresh ordinary-UI proof pending.
+
+1. On Player 1, build a private track mainline and a short connected spur.
+2. After its checkpoint completes, bulldoze only the final spur segment.
+3. Confirm it disappears on both peers, Player 1 remains authoritative, and
+   Player 2 cannot remove another Player 1 segment.
+4. Immediately rebuild the spur and require normal all-peer proposal/checkpoint
+   completion.
+5. Repeat with a public road segment connected to a stock town road.
+6. Confirm the new codec diagnostic reports non-zero `edgesToRemove` (and any
+   exact `nodesToRemove`) rather than `proposal has no supported street/track
+   edges or construction change`.
+7. Export Research after the track and road cases.
+
+Pass: removal and rebuild appear on both peers, only the issuer's authored
+wallet changes by the quoted native amount, custody is retired only after the
+native component disappears, the next build is accepted, and no proposal or
+checkpoint remains pending. If the native deletion creates implicit replacement
+topology not present in the captured transaction, stop and preserve evidence;
+that broader join shape intentionally still fails closed.
+
 ## D. Local asset matrix
 
 Current proven slice: rail-depot construction/custody and a stock modular passenger-station construction/custody cycle. Modular editing, deletion, save/reload, maintenance, and the remaining types below are still open.

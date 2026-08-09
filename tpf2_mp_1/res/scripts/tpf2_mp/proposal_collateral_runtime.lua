@@ -17,4 +17,19 @@ function M.verifyRemoved(localInputs, worldApi)
   return true
 end
 
+function M.verifyTopologyRemoved(localInputs, worldApi)
+  worldApi = worldApi or world
+  for _, input in ipairs(type(localInputs) == "table" and localInputs or {}) do
+    if input.kind == "edge" or input.kind == "node" or input.kind == "edge_object" then
+      local stillPresent = worldApi.entityExists(input.localId)
+        and worldApi.kindOf(input.localId) == input.kind
+      if stillPresent then
+        return false, "removed " .. input.kind
+          .. " remained after removal-only replay: " .. tostring(input.cid)
+      end
+    end
+  end
+  return true
+end
+
 return M

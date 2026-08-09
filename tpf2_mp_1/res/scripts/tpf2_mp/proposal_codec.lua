@@ -5,8 +5,9 @@ local util = require "tpf2_mp/util"
 -- Canonical, pointer-free BuildProposal vertical slice.  The native proposal
 -- types contain process-local entity IDs and userdata; none of those values
 -- may cross the network unchanged.  This module currently supports the
--- physical core that has live proof on Build 35924: street/track edges and
--- their nodes, including topology-preserving edge upgrades. Schema 5 adds
+-- physical core measured on Build 35924: street/track edges and their nodes,
+-- including live-proven topology-preserving upgrades and automated
+-- removal-only bulldozer proposals. Schema 5 adds
 -- canonical edge objects (signals/waypoints), while schema 7 adds portable
 -- construction build/upgrade/remove records, including ASSET_DEFAULT roots
 -- that have ASSET_GROUP but no CONSTRUCTION component. Every data-driven resource is
@@ -376,6 +377,8 @@ function M.diagnose(root)
   end
   local nodeContainer = findField(root, { "nodesToAdd", "addedNodes" })
   local edgeContainer = findField(root, { "edgesToAdd", "addedSegments" })
+  local nodeRemovals = findField(root, { "nodesToRemove", "removedNodes" })
+  local edgeRemovals = findField(root, { "edgesToRemove", "removedSegments" })
   local constructionAdds = constructionAdditions(root)
   local constructionRemovals = constructionRemovals(root)
   local edgeObjectAdds = findField(root, { "edgeObjectsToAdd" })
@@ -387,6 +390,8 @@ function M.diagnose(root)
     counts = {
       nodesToAdd = #entries(nodeContainer),
       edgesToAdd = #entries(edgeContainer),
+      nodesToRemove = #entries(nodeRemovals),
+      edgesToRemove = #entries(edgeRemovals),
       constructionsToAdd = #entries(constructionAdds),
       constructionsToRemove = #entries(constructionRemovals),
       edgeObjectsToAdd = #entries(edgeObjectAdds),
@@ -1268,10 +1273,6 @@ function M.normalise(root, companyCid, options)
   local edgeLimit = hasConstructionChange and M.MAX_CONSTRUCTION_EDGES or M.MAX_EDGES
   if #nodeEntries > nodeLimit then return nil, "proposal exceeds node limit" end
   if #edgeEntries > edgeLimit then return nil, "proposal exceeds edge limit" end
-  if #edgeEntries == 0 and not hasConstruction and not hasConstructionRemoval then
-    return nil, "proposal has no supported street/track edges or construction change"
-  end
-
   local nodeSlots, edgeSlots = {}, {}
   for index, entry in ipairs(nodeEntries) do
     local id = entityId(entry.value)
@@ -1562,11 +1563,24 @@ function M.validate(transaction)
     return false, "invalid removal lists"
   end
   if #remove.edges > M.MAX_REMOVALS or #remove.nodes > M.MAX_REMOVALS then return false, "proposal removal limit exceeded" end
+  if not exactList(remove.edges, #remove.edges) or not exactList(remove.nodes, #remove.nodes) then
+    return false, "proposal removal lists must be contiguous arrays"
+  end
+  local previousEdgeCid
   for _, cid in ipairs(remove.edges) do
     if type(cid) ~= "string" or not cid:match("^edge:") then return false, "invalid canonical edge removal" end
+    if previousEdgeCid and cid <= previousEdgeCid then
+      return false, "edge removals must be sorted and unique"
+    end
+    previousEdgeCid = cid
   end
+  local previousNodeCid
   for _, cid in ipairs(remove.nodes) do
     if type(cid) ~= "string" or not cid:match("^node:") then return false, "invalid canonical node removal" end
+    if previousNodeCid and cid <= previousNodeCid then
+      return false, "node removals must be sorted and unique"
+    end
+    previousNodeCid = cid
   end
   if transaction.schemaVersion == M.SCHEMA_VERSION then
     if transaction.constructions ~= nil then return false, "schema 5 proposal cannot contain constructions" end
@@ -1737,6 +1751,20 @@ function M.isTopologyConstructionRemoval(transaction)
   -- the same native click while demolishing collateral buildings.
   return #(transaction.nodes or {}) > 0 or #(transaction.edges or {}) > 0
     or #(edgeObjects.add or {}) > 0 or #(edgeObjects.retain or {}) > 0
+end
+
+-- Removal-only street proposals are a normal Build 35924 bulldozer shape:
+-- there need not be a replacement edge or node. Keep this predicate narrow so
+-- replacement proposals may still reuse an input entity id for a new output.
+function M.isRemovalOnly(transaction)
+  if type(transaction) ~= "table" or transaction.schemaVersion ~= M.SCHEMA_VERSION then
+    return false
+  end
+  local objects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
+  local remove = type(transaction.remove) == "table" and transaction.remove or {}
+  local changes = #(remove.edges or {}) + #(remove.nodes or {}) + #(objects.remove or {})
+  return changes > 0 and #(transaction.nodes or {}) == 0 and #(transaction.edges or {}) == 0
+    and #(objects.add or {}) == 0 and #(objects.retain or {}) == 0
 end
 
 -- Network proposals must identify data-driven resources by repository name.

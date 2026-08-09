@@ -2,6 +2,12 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.32.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
 
+[Removal-only connected road and track segments](CONNECTED_SEGMENT_REMOVAL_2026-08-09.md)
+records the exact early-admission defect behind the live bulldozer failure,
+portable removal-only replay, strict cross-language ordering, native
+disappearance and custody-retirement postconditions, full ordered integration,
+and the remaining ordinary-UI proof.
+
 [Freight transport and presentation authority](FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md)
 records deterministic industry-to-station contract binding, exact heterogeneous
 consist capacities, canonical cargo queues/loads/completed deliveries,

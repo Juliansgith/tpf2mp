@@ -55,7 +55,10 @@ Those nodes now use a sorted canonical incident-edge anchor; divergent-ID add,
 replacement, and removal paths pass offline. A fresh source-matched ordinary-UI
 two-process run now live-proves the crossing, three-edge public-road split,
 issuer-only debit, identical checkpoints, and a subsequent extension from the
-event-created track end. Connected-segment removal/rebuild remains open.
+event-created track end. Removal-only connected road/track proposals now pass
+canonical capture/materialization, ownership, physical disappearance,
+binding-retirement, finance, consensus, and checkpoint tests. A fresh
+ordinary-UI two-process demolition/rebuild pass remains open.
 The preserved lab also exposed 5,469/6,048 immutable outbox files. Companion
 polling had sorted the full history at 10 Hz; a real-directory benchmark
 measured 15.460 ms versus 0.015912 ms for the exact cursor successor. Polling
@@ -625,13 +628,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 117 core Lua tests and 75 cross-language economy scenarios;
+  - 118 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
   - 107 mod Lua and 8 investigation/tool Lua syntax checks;
   - 42 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 126 Python protocol/network/checkpoint/recovery/report tests;
+  - 127 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 
@@ -646,8 +649,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   recover at the next station; automatic disconnect/reconnect recovery remains
   open.
 - Moving populated worlds remaining equivalent over a long unpaused soak.
-- Connected-segment removal/rebuild and invalid-curve recovery after the
-  live-proven collision-safe road/rail crossing and event-edge extension.
+- Human two-process proof for removal-only connected road/track segments and
+  immediate rebuild, plus invalid-curve recovery after the live-proven
+  collision-safe road/rail crossing and event-edge extension. The former now
+  has complete capture/replay/retirement/consensus automation.
   Broader complex topology splits/joins, bridges, tunnels, terrain mutation, scripted
   construction callbacks, mod construction variants, and arbitrary command
   families. The bounded stock signals/depot/station/graphless-asset matrix now

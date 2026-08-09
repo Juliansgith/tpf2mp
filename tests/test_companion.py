@@ -934,6 +934,29 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "retained"):
             validate_action({"type": "proposal.build", "transaction": retained_and_removed})
 
+    def test_removal_only_proposals_are_portable_and_canonically_sorted(self) -> None:
+        transaction = proposal_transaction("company:1")
+        transaction["nodes"] = {}
+        transaction["edges"] = {}
+        transaction["edgeObjects"] = {"add": {}, "retain": {}, "remove": {}}
+        transaction["remove"] = {
+            "edges": ["edge:event:test:a", "edge:event:test:b"],
+            "nodes": ["node:event:test:a"],
+        }
+        redigest_proposal(transaction)
+        accepted = validate_action({"type": "proposal.build", "transaction": transaction})
+        self.assertEqual(accepted["transaction"]["remove"]["edges"], transaction["remove"]["edges"])
+
+        for invalid_edges in (
+            ["edge:event:test:b", "edge:event:test:a"],
+            ["edge:event:test:a", "edge:event:test:a"],
+        ):
+            malformed = json.loads(json.dumps(transaction))
+            malformed["remove"]["edges"] = invalid_edges
+            redigest_proposal(malformed)
+            with self.assertRaisesRegex(ProtocolError, "sorted and unique"):
+                validate_action({"type": "proposal.build", "transaction": malformed})
+
     def test_portable_depot_asset_upgrade_and_removal_payloads(self) -> None:
         depot = portable_construction_transaction(kind="depot")
         accepted_depot = validate_action({"type": "proposal.build", "transaction": depot})
