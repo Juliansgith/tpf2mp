@@ -2,7 +2,7 @@
 
 Use only fresh disposable worlds. Never continue after a custody, proposal-finalisation, or finance error unless the step explicitly tests recovery. Export evidence once, then close without saving.
 
-Prototype under test: `0.34.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
+Prototype under test: `0.35.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
 
 ## 0. Automated baseline
 
@@ -176,6 +176,19 @@ Pass for observation: stable canonical aggregate reads are available and compara
 
 ## H2. Local bus/tram feeder
 
+Run the focused proof only after closing every Transport Fever 2 process:
+
+```powershell
+.\tools\start_feeder_live_acceptance.ps1 `
+  -Session feeder-live-YYYYMMDD-HHMM -Carrier ROAD
+```
+
+Use `-Carrier TRAM` for a tram-specific pass. The wrapper starts two connected
+clean worlds with `$200m` disposable setup capital, collects evidence when
+either game closes, and automatically requires a settled two-peer report. The
+steps below remain the visual/behavioral portion; the final verdict is not based
+on screenshots.
+
 1. In one town, build a road or tram passenger line with at least two distinct
    stops. Make one stop share the exact station group used by an existing
    intercity passenger line owned by the same company.
@@ -203,6 +216,14 @@ Pass: both processes retain matching core/model/structure, the local service
 earns only completed-trip revenue, its same-town growth credit is not halved or
 doubled, a rival company's intercity service gets no access benefit, and no
 intermediate urban stop creates an all-peer barrier round.
+
+The automatic report additionally requires current exact peer model/canonical/
+vehicle/financial payloads, no fatal or pending physical/checkpoint work, a
+real operational local line and same-company corridor, positive access benefit,
+completed local passengers/revenue, and a settled delivery cursor. It prints the
+exact missing stage on failure. Add `-RequireObservedAboard` only when also
+exporting one checkpoint during a visibly loaded local leg; completed/settled
+proof otherwise needs no manual export.
 
 ## I. First two-peer canonical construction
 

@@ -332,7 +332,21 @@ retain the exact authored carrier/scope/capacity/feeder/revenue table needed to
 audit the later live run. See
 `investigation/PORTABLE_STOCK_VEHICLE_CAPTURE_AUDIT_2026-08-09.md`.
 
-The next gates are the focused local bus/tram feeder run, cargo-positive two-process run, human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
+**2026-08-09 live-evidence checkpoint.** Prototype 0.35 extracts the strict
+ordered/physical/checkpoint audit scanner shared by the freight and passenger
+acceptance reports. The new passenger-feeder report admits only current exact
+two-peer authored payloads and requires an operational two-stop ROAD/TRAM local
+service, an operational same-company corridor, a positive modeled access link,
+completed local passengers/revenue, and a settled payment cursor. Adversarial
+current-format fixtures reject rival ownership, missing benefit, zero stock,
+zero capacity, stale cursors, carrier substitution, missing peers, pending
+barriers, and peer-divergent benefit state. Packaged PowerShell wrappers now
+turn the next manual feeder run into one launch plus an automatic durable
+verdict. No game was launched for this tooling slice, so the ordinary-UI
+non-rail receipt remains open. See
+`investigation/PASSENGER_FEEDER_LIVE_ACCEPTANCE_2026-08-09.md`.
+
+The next gates are the now-scripted focused local bus/tram feeder run, cargo-positive two-process run, human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
 
 ---
 

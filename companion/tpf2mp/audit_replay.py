@@ -7,6 +7,7 @@ from .audit_consensus import verify_physical_consensus
 from .bridge import AuditLog
 from .checkpoint import verify_checkpoint, verify_event_record
 from .completion_validation import operation_completion_payload
+from .live_evidence import CHECKPOINTED_COMMIT_TYPES
 from .network import CommitHost
 from .protocol import ProtocolError, validate_envelope
 
@@ -67,14 +68,7 @@ def replay(path: Path, session: str | None) -> int:
                         "operationDigest": action.get("transaction", {}).get("digest"),
                         "originPeer": str(message.get("origin_peer", "")),
                     }
-                elif action.get("type") in {
-                    "match.initialise",
-                    "town.develop",
-                    "freight.industry_bootstrap",
-                    "freight.milestone",
-                    "probe.structural",
-                    "economy.settle",
-                }:
+                elif action.get("type") in CHECKPOINTED_COMMIT_TYPES:
                     checkpoint_expected_boundaries.add(seq)
             else:
                 controls += 1

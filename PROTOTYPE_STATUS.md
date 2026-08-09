@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.34.0-alpha`, state schema `29`,
+Last updated: 2026-08-09 for prototype `0.35.0-alpha`, state schema `29`,
 checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation
 schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction
 proposal schema `7`, and native hook `0.14.0`.
@@ -638,8 +638,16 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   two-process match, proves its initial checkpoint, hands the windows to the
   player, collects the audit on close, and requires a strict current-format
   two-peer freight report. The report exposes
-  ready/service/waiting/aboard/delivered/settled stages and can require a
+  ready/service/waiting/aboard/delivered/settled stages and can require an
   automatically captured converged checkpoint with cargo aboard.
+- `start_feeder_live_acceptance.ps1` now starts a clean 200M manual two-process
+  match and turns the focused ROAD/TRAM scenario into a strict receipt. Its
+  shared audit scanner requires current exact two-peer authored payloads and no
+  fault or unresolved physical/checkpoint work; the feeder report then requires
+  an operational two-stop local line, a same-company corridor, positive modeled
+  access, completed local passengers/revenue, and a settled payment cursor.
+  Cross-company, zero-stock, zero-capacity, stale-cursor, missing-benefit, and
+  peer-divergent fixtures all fail.
 
 ### Packaging and tests
 
@@ -651,9 +659,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
   - 108 mod Lua and 8 investigation/tool Lua syntax checks;
-  - 42 PowerShell syntax checks;
+  - 44 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 129 Python protocol/network/checkpoint/recovery/report tests;
+  - 131 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 
@@ -692,8 +700,11 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   agent glyph and native cargo history remain scenery by design.
 - Same-town bus/tram registration, portable non-rail purchase, feeder benefit,
   endpoint-only synchronization, and authoritative line text still need a
-  fresh ordinary-UI two-process proof. Ship and air purchase/assignment need
-  the same proof; their passenger barrier deliberately remains every-stop.
+  fresh ordinary-UI two-process proof. The packaged one-command run and strict
+  staged two-peer analyzer are ready, so the next run produces a durable pass
+  or the exact missing stage rather than relying on screenshots. Ship and air
+  purchase/assignment need the same proof; their passenger barrier deliberately
+  remains every-stop.
 - Host-authored physical presentation for town and industry growth. Unproven
   autonomous systems remain frozen during authority tests. Canonical model-town
   growth and canonical industry production are implemented; this open item is
@@ -713,7 +724,8 @@ clock, four-round train barrier, long pause, speed-3 rendezvous, and deliberate
 slow-peer recovery now pass locally. Next use the manual lab for two trains on
 one line to measure signaling interaction, station-barrier latency, and peak
 pending rounds. Then run the remaining two-stop reorder/alternate-terminal
-check and the focused same-town road/tram feeder scenario.
+check and the focused same-town road/tram feeder scenario with
+`start_feeder_live_acceptance.ps1`.
 
 Then run the trusted two-computer populated test: enter via the title-screen
 `MULTIPLAYER` button, compare the initial checkpoint, run several real passenger

@@ -13,6 +13,10 @@ from .freight_live_report import configure_cli as configure_freight_live_cli
 from .freight_live_report import run_cli as run_freight_live_cli
 from .manifest import build_manifest, load_manifest, write_manifest
 from .network import CommitClient, CommitHost
+from .passenger_feeder_live_report import (
+    configure_cli as configure_passenger_feeder_live_cli,
+)
+from .passenger_feeder_live_report import run_cli as run_passenger_feeder_live_cli
 from .protocol import ProtocolError
 from .recovery import verify_recovery_archive, write_recovery_archive, write_recovery_plan
 from .research import write_report
@@ -58,6 +62,7 @@ def parser() -> argparse.ArgumentParser:
     replay.add_argument("--session")
 
     configure_freight_live_cli(commands)
+    configure_passenger_feeder_live_cli(commands)
 
     inspect = commands.add_parser("inspect", help="show bridge cursor and queue state")
     inspect.add_argument("--peer", default="player1")
@@ -163,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
             return replay(args.audit, args.session)
         elif args.command == "freight-live-report":
             return run_freight_live_cli(args, replay)
+        elif args.command == "passenger-feeder-live-report":
+            return run_passenger_feeder_live_cli(args, replay)
         elif args.command == "inspect":
             bridge_path = args.bridge or default_bridge(args.peer)
             game_bridge = GameBridge(bridge_path, args.session, args.peer)

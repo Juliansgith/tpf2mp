@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.34.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.35.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[Passenger-feeder live acceptance](PASSENGER_FEEDER_LIVE_ACCEPTANCE_2026-08-09.md)
+records the shared strict two-peer audit scanner, local-service/corridor/access/
+delivery/settlement proof ladder, adversarial false-positive fixtures, packaged
+one-command localhost gate, and the still-open ordinary-UI ROAD/TRAM receipt.
 
 [Portable stock-vehicle capture audit](PORTABLE_STOCK_VEHICLE_CAPTURE_AUDIT_2026-08-09.md)
 closes the ordinary-UI non-rail filter, bounded-payload truncation, stale

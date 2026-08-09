@@ -5,7 +5,7 @@ TPF2MP is an executable research prototype for competitive Transport Fever 2. It
 1. A playable local hot-seat mode with two native companies, separate wallets, separate logical assets, a turn-desk proxy, contested demand, fares, scoring, match rules, save state, and checkpoints.
 2. A simultaneous-networking laboratory with a TCP commit sequencer, canonical identities, an exact-build native command gate, and canonical road/track, edge-object, and construction replay.
 
-The second item is not yet finished same-world multiplayer. Prototype `0.34`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, and construction proposal schema `7` now cover canonical construction, atomic topology-plus-building demolition, lines, portable vehicle purchase/assignment, station-leg synchronization, exact passenger and cargo queues/loads/completed-trip revenue, local passenger services and feeder access, save-owned economy difficulty, canonical model-town growth, authored physical town development, receipt-bound coordinated restore, authoritative projection into the standard game UI, exact all-peer agreement on loaded industry recipes, and settlement-coupled freight stocks/production/transport. Exact two-process runs converge the established canonical/model/structural domains; cargo-positive and non-rail slices have complete automated Lua/Python/checkpoint proof but still need live two-process runs. Unsupported command families and the first true two-computer usability gate also remain open. See [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md), [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md), and [the investigation index](investigation/README.md) for the precise evidence boundary.
+The second item is not yet finished same-world multiplayer. Prototype `0.35`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, and construction proposal schema `7` now cover canonical construction, atomic topology-plus-building demolition, lines, portable vehicle purchase/assignment, station-leg synchronization, exact passenger and cargo queues/loads/completed-trip revenue, local passenger services and feeder access, save-owned economy difficulty, canonical model-town growth, authored physical town development, receipt-bound coordinated restore, authoritative projection into the standard game UI, exact all-peer agreement on loaded industry recipes, and settlement-coupled freight stocks/production/transport. Exact two-process runs converge the established canonical/model/structural domains; cargo-positive and non-rail slices have complete automated Lua/Python/checkpoint proof plus strict packaged live-acceptance analyzers, but still need their real two-process receipts. Unsupported command families and the first true two-computer usability gate also remain open. See [PROTOTYPE_STATUS.md](PROTOTYPE_STATUS.md), [REMAINING_FROM_BRIEF.md](REMAINING_FROM_BRIEF.md), and [the investigation index](investigation/README.md) for the precise evidence boundary.
 
 ## What works now
 
@@ -30,6 +30,7 @@ The second item is not yet finished same-world multiplayer. Prototype `0.34`, st
 - A populated bidirectional two-live-process localhost harness. It safely starts and hooks two exact game PIDs, loads a byte-pinned save containing towns, industries, a depot, line, stations, train, and passengers, waits for both paused clock samples, proves checkpoints and bidirectional proposals, runs the real train through four station barriers, compares mobility/lifecycle/route phase, restores shared settings, and independently audits the result.
 - Canonical line and vehicle operation codecs with strict schemas, host/company authorization, replay/result checking, finance routing, physical consensus, and checkpoint tests. Ordinary vanilla **New Line**, stop add/remove/reorder/terminal updates, and line deletion feed the line codec through typed capture. **Buy** accepts any bounded portable `vehicle/*.mdl` resource (including data-only mod vehicles) and pairs the GUI's ordered carrier-neutral model list with the pinned native player/depot payload; oversized, deeply nested, missing-resource, or truncated captures fail closed. **Set Line** is captured from the native visitor. Hook 0.14 adds pre-mutation stock adapters for reverse, start/stop, maintenance, immediate departure, send-to-depot/sell-on-arrival, direct single sale, replacement, and manual departure. Replacement refreshes the canonical consist and automatically re-registers its assigned line so capacity/speed/upkeep cannot remain stale. Railway purchase, assignment, peer visibility, movement, and four station rounds have two-process evidence; the new lifecycle adapters and other carriers still need live proof. Tag 12's stock multi-selection remains non-mutating until the canonical layer has atomic batch-sale semantics.
 - A one-window multiplayer launcher (`LAUNCH_TPF2MP.cmd`) with Host, Join, automated Localhost Test, exact fingerprinting, connection/recovery status, logs, evidence collection, and exact-session stop controls. Normal Host/Join installs a real `MULTIPLAYER` title-screen entry and waits for the player to select it before loading the pinned save.
+- Strict packaged freight and passenger-feeder acceptance commands. Both use one shared audit scanner for ordered sequencing, physical outcomes, faults, current checkpoints, exact two-peer authored payload equality, and unresolved barriers. The feeder report additionally requires an operational same-town ROAD/TRAM line, an operational same-company corridor, a real positive access benefit, completed local passengers/revenue, and a settled payment cursor; empty, rival, zero-capacity, stale, or registration-only shapes fail.
 - A second all-peer checkpoint barrier after match start, every successful physical action, and every unanimously rejected no-mutation proposal. Later commands stay blocked until both peers attest the same core, structure, and finances. The host recovery watcher links a later stable native save to the latest verified boundary, hashes and archives its save triplet, and reports it in the launcher. Each peer also captures one bounded local first-fault bundle before process-liveness cleanup, including its bridge, copied audit, exact session logs, native status, and source/install fingerprint. A transient collector failure gets at most three attempts for that same first fault. The exact-process watcher advertises a 30-day finite guard, rather than silently abandoning a still-running match after twelve hours. It explicitly does not claim exact-tick capture, automatic geometry repair, or automatic rollback.
 - A distributable ZIP with a standalone companion executable, auto-detecting installer, verifier, recoverable uninstaller, match-manifest tool, and host/client/native launchers.
 - A one-button coordinated restore boundary: pause/quiescence preparation,
@@ -117,7 +118,7 @@ Run PowerShell from this directory:
 .\tools\package_release.ps1
 ```
 
-This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.34.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
+This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.35.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
 
 An extracted package installs with:
 
@@ -282,6 +283,26 @@ host audit can be checked independently with:
   -RequireStage settled -RequireObservedAboard
 ```
 
+The focused local passenger-feeder gate is:
+
+```powershell
+.\tools\start_feeder_live_acceptance.ps1 -Carrier ROAD
+```
+
+It starts a clean two-process world with enough disposable setup capital for an
+intercity passenger corridor and a same-company local bus/tram line. After the
+automatic five-minute settlement, closing either game checks the complete audit
+and requires exact peer convergence, a two-stop operational local service, an
+operational corridor sharing an exact endpoint station group, a positive
+modeled feeder link, completed local travel,
+and settled authoritative revenue. Use `-Carrier TRAM` for a tram-specific
+receipt. Existing evidence can be checked with:
+
+```powershell
+.\tools\analyze_feeder_live_evidence.ps1 -Session match-1 `
+  -RequireStage settled -Carrier ROAD
+```
+
 The transport is designed for trusted private peers. Its checksums detect corruption and inconsistency; they are not hostile-client authentication or encryption. Do not expose TCP port `29742` directly to the Internet.
 
 Current network boundary:
@@ -312,7 +333,7 @@ The plan names the exact convergence boundary and new session ID. Host sessions 
 - [ARCHITECTURE.md](ARCHITECTURE.md) - runtime layers, module ownership,
   authority invariants, and the supported path for adding command families.
 
-- `tpf2_mp_1/` — installable prototype 0.34; state schema 29, economy model 8, checkpoint format 5, passenger-presentation schema 2, cargo-presentation schema 1, delivery schema 2, edge schema 5, construction schema 7, and freight-industry schema 2.
+- `tpf2_mp_1/` — installable prototype 0.35; state schema 29, economy model 8, checkpoint format 5, passenger-presentation schema 2, cargo-presentation schema 1, delivery schema 2, edge schema 5, construction schema 7, and freight-industry schema 2.
 - `companion/tpf2mp/` — dependency-free protocol, bridge, host/client sequencer, manifests, replay, and reports.
 - `native/` — pinned Build 35924 DLL/injector, signatures, MinHook pin, tests, and documentation.
 - `tests/` — Lua unit/integration/replay tests and Python protocol/TCP tests.

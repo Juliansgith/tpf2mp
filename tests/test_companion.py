@@ -41,6 +41,7 @@ from tpf2mp.freight import (
     withdraw_output as withdraw_freight_output,
 )
 from tpf2mp.freight_live_report import analyse_freight_audit
+from tpf2mp.passenger_feeder_live_report import analyse_passenger_feeder_audit
 from tpf2mp.cli import replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
 from tpf2mp.industry_content import (
@@ -2393,6 +2394,155 @@ class CheckpointTests(unittest.TestCase):
         return cls.resign_checkpoint(payload)
 
     @classmethod
+    def populated_feeder_checkpoint(cls) -> dict:
+        payload = consensus_checkpoint(
+            "checkpoint-feeder", "player1", 1, 1, "economy-settlement",
+        )["payload"]
+        economy = payload["model"]["economy"]
+        economy["version"] = 8
+        economy["epoch"] = 3
+        town_a, town_b = "town:pre:a", "town:pre:b"
+        bus_stops = ["station_group:event:bus:a", "station_group:event:bus:b"]
+        rail_stops = ["station_group:event:rail:a", "station_group:event:rail:b"]
+        bus_line, rail_line = "line:event:bus:1", "line:event:rail:1"
+        bus_vehicle, rail_vehicle = "vehicle:event:bus:1", "vehicle:event:rail:1"
+        local_market, corridor_market = "market:local:a", "market:corridor:a-b"
+        economy["markets"] = {
+            corridor_market: {
+                "cid": corridor_market, "kind": "passenger", "demand": 1200,
+                "metadata": {
+                    "townA": town_a, "townB": town_b,
+                    "marketScope": "corridor", "corridorMeters": 8000,
+                },
+            },
+            local_market: {
+                "cid": local_market, "kind": "passenger", "demand": 600,
+                "metadata": {
+                    "townA": town_a, "townB": town_a,
+                    "marketScope": "local", "corridorMeters": 1500,
+                },
+            },
+        }
+        economy["services"] = {
+            bus_line: {
+                "lineCid": bus_line, "marketCid": local_market,
+                "companyCid": "company:1", "capacity": 240, "enabled": True,
+                "metadata": {
+                    "carrier": "ROAD", "marketScope": "local",
+                    "factsSource": "computed-consist", "vehicleCount": 1,
+                    "endpointTownCids": [town_a, town_a],
+                    "stationGroupCids": bus_stops,
+                },
+            },
+            rail_line: {
+                "lineCid": rail_line, "marketCid": corridor_market,
+                "companyCid": "company:1", "capacity": 480, "enabled": True,
+                "metadata": {
+                    "carrier": "RAIL", "marketScope": "corridor",
+                    "factsSource": "computed-consist", "vehicleCount": 1,
+                    "endpointTownCids": [town_a, town_b],
+                    "stationGroupCids": rail_stops,
+                },
+            },
+        }
+        economy["lastResults"] = {
+            "markets": {
+                local_market: {"services": {bus_line: {
+                    "allocated": 80, "delivered": 20,
+                    "factors": {
+                        "feederAccessCents": 0, "feederAccessEndpoints": 0,
+                    },
+                }}},
+                corridor_market: {"services": {rail_line: {
+                    "allocated": 180, "delivered": 40,
+                    "factors": {
+                        "feederAccessCents": 150, "feederAccessEndpoints": 1,
+                    },
+                }}},
+            },
+            "companies": {}, "totalDemand": 1800, "totalRevenueCents": 12_000_000,
+        }
+        economy["deliveryCursors"] = {
+            bus_line: {
+                "deliveredPassengers": 20, "earnedRevenueCents": 2_000_000,
+            },
+            rail_line: {
+                "deliveredPassengers": 40, "earnedRevenueCents": 10_000_000,
+            },
+        }
+
+        sync = payload["vehicleSynchronization"]
+        sync["cargoPresentation"]["epoch"] = 3
+        sync["vehicles"] = [
+            {
+                "vehicleCid": bus_vehicle, "lineCid": bus_line,
+                "companyCid": "company:1", "lastAuthorizedRound": 2,
+                "stopIndex": 0, "releaseAtGameTime": 100,
+                "releaseWhilePaused": False,
+                "schedule": {"schemaVersion": 1, "enabled": False},
+            },
+            {
+                "vehicleCid": rail_vehicle, "lineCid": rail_line,
+                "companyCid": "company:1", "lastAuthorizedRound": 2,
+                "stopIndex": 1, "releaseAtGameTime": 100,
+                "releaseWhilePaused": False,
+                "schedule": {"schemaVersion": 1, "enabled": False},
+            },
+        ]
+        sync["passengerPresentation"] = {
+            "schemaVersion": 2, "epoch": 3,
+            "lines": [
+                {
+                    "lineCid": bus_line, "companyCid": "company:1",
+                    "marketCid": local_market, "epoch": 3,
+                    "terminalA": bus_stops[0], "terminalB": bus_stops[1],
+                    "stops": bus_stops, "stopCount": 2,
+                    "routeDigest": checksum(bus_stops), "allocated": 80,
+                    "waitingAToB": 18, "waitingBToA": 12,
+                    "departuresPlanned": 4, "departuresAToB": 2,
+                    "departuresBToA": 1, "seatsPerVehicle": 40,
+                    "boardedTotal": 30, "alightedTotal": 20,
+                    "overflowTotal": 0, "earnedRevenueCents": 2_000_000,
+                },
+                {
+                    "lineCid": rail_line, "companyCid": "company:1",
+                    "marketCid": corridor_market, "epoch": 3,
+                    "terminalA": rail_stops[0], "terminalB": rail_stops[1],
+                    "stops": rail_stops, "stopCount": 2,
+                    "routeDigest": checksum(rail_stops), "allocated": 180,
+                    "waitingAToB": 70, "waitingBToA": 60,
+                    "departuresPlanned": 2, "departuresAToB": 1,
+                    "departuresBToA": 1, "seatsPerVehicle": 80,
+                    "boardedTotal": 50, "alightedTotal": 40,
+                    "overflowTotal": 0, "earnedRevenueCents": 10_000_000,
+                },
+            ],
+            "vehicles": [
+                {
+                    "vehicleCid": bus_vehicle, "lineCid": bus_line,
+                    "companyCid": "company:1", "capacity": 40, "aboard": 10,
+                    "lastRound": 2, "boardedEpoch": 3, "lastStopIndex": 0,
+                    "lastStationGroupCid": bus_stops[0],
+                    "originStationGroupCid": bus_stops[0],
+                    "destinationStationGroupCid": bus_stops[1],
+                    "boardedTotal": 30, "alightedTotal": 20,
+                    "discardedTotal": 0, "earnedRevenueCents": 2_000_000,
+                },
+                {
+                    "vehicleCid": rail_vehicle, "lineCid": rail_line,
+                    "companyCid": "company:1", "capacity": 80, "aboard": 10,
+                    "lastRound": 2, "boardedEpoch": 3, "lastStopIndex": 1,
+                    "lastStationGroupCid": rail_stops[1],
+                    "originStationGroupCid": rail_stops[0],
+                    "destinationStationGroupCid": rail_stops[1],
+                    "boardedTotal": 50, "alightedTotal": 40,
+                    "discardedTotal": 0, "earnedRevenueCents": 10_000_000,
+                },
+            ],
+        }
+        return cls.resign_checkpoint(payload)
+
+    @classmethod
     def populated_cargo_checkpoint(cls) -> dict:
         payload = consensus_checkpoint(
             "checkpoint-cargo", "player1", 1, 1, "cargo-test",
@@ -2631,6 +2781,279 @@ class CheckpointTests(unittest.TestCase):
             self.assertTrue(report["passed"], report["problems"])
             self.assertEqual(report["completedCheckpoints"][0]["reason"], reason)
             self.assertEqual(report["maxima"]["aboard"], 15)
+
+    def test_passenger_feeder_live_report_requires_linked_settled_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = "passenger-feeder-live-report"
+            audit = AuditLog(Path(directory) / "audit.ndjson")
+            payloads = []
+            for peer in ("player1", "player2"):
+                payload = self.populated_feeder_checkpoint()
+                payload["sessionId"] = session
+                payload["peerId"] = peer
+                payload["reason"] = "economy-settlement"
+                payload["eventCursor"]["lastCommitSeq"] = 1
+                self.resign_checkpoint(payload)
+                payloads.append(payload)
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 1, "kind": "commit",
+                "origin_peer": "player1", "origin_local_seq": 1, "tick": 1,
+                "payload": {"action": {"type": "economy.settle"}},
+            }))
+            for peer, payload in zip(("player1", "player2"), payloads):
+                audit.append(sign({
+                    "protocol": 1, "session": session, "kind": "record",
+                    "peer": peer, "local_seq": 1,
+                    "record_type": "checkpoint", "payload": payload,
+                }))
+            first = payloads[0]
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 2, "kind": "control",
+                "origin_peer": "player1", "tick": 0,
+                "payload": {"action": {
+                    "type": "network.checkpoint_outcome", "boundarySeq": 1,
+                    "reason": "economy-settlement", "success": True,
+                    "convergenceKey": first["convergenceKey"],
+                    "coreDigest": first["coreDigest"],
+                    "modelDigest": first["modelDigest"],
+                    "canonicalDigest": first["canonicalDigest"],
+                    "financialDigest": first["financialDigest"],
+                    "peers": ["player1", "player2"],
+                }},
+            }))
+            self.assertEqual(replay(audit.path, session), 0)
+            report = analyse_passenger_feeder_audit(
+                audit.path, session, require_stage="settled",
+                carrier="ROAD", require_observed_aboard=True,
+            )
+            self.assertTrue(report["passed"], report["problems"])
+            self.assertTrue(report["observedStages"]["benefit"])
+            self.assertTrue(report["observedStages"]["aboard"])
+            self.assertTrue(report["observedStages"]["delivered"])
+            self.assertTrue(report["observedStages"]["settled"])
+            self.assertEqual(report["maxima"]["localServices"], 1)
+            self.assertEqual(report["maxima"]["corridorServices"], 1)
+            self.assertEqual(report["maxima"]["feederLinks"], 1)
+            self.assertEqual(report["maxima"]["feederAccessCents"], 150)
+            self.assertEqual(report["maxima"]["localAboard"], 10)
+            self.assertEqual(report["maxima"]["localSettledPassengers"], 20)
+            self.assertEqual(report["maxima"]["localSettledRevenueCents"], 2_000_000)
+
+            wrong_carrier = analyse_passenger_feeder_audit(
+                audit.path, session, require_stage="local-service", carrier="TRAM"
+            )
+            self.assertFalse(wrong_carrier["passed"])
+            self.assertIn(
+                "required passenger-feeder stage was not observed: local-service",
+                wrong_carrier["problems"],
+            )
+
+            pending = AuditLog(Path(directory) / "pending.ndjson")
+            for message in list(AuditLog(audit.path).messages())[:-1]:
+                pending.append(message)
+            pending_report = analyse_passenger_feeder_audit(pending.path, session)
+            self.assertFalse(pending_report["passed"])
+            self.assertEqual(pending_report["pending"]["checkpoints"], [1])
+
+            missing = AuditLog(Path(directory) / "missing-peer.ndjson")
+            for message in AuditLog(audit.path).messages():
+                if message.get("kind") == "record" and message.get("peer") == "player2":
+                    continue
+                missing.append(message)
+            with self.assertRaisesRegex(ProtocolError, "lacks passenger-feeder evidence"):
+                analyse_passenger_feeder_audit(missing.path, session)
+
+    def test_passenger_feeder_live_report_rejects_false_positive_shapes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            def write_case(name: str, mutate) -> Path:
+                session = f"feeder-adversarial-{name}"
+                audit = AuditLog(root / f"{name}.ndjson")
+                payloads = []
+                for peer in ("player1", "player2"):
+                    payload = self.populated_feeder_checkpoint()
+                    payload["sessionId"] = session
+                    payload["peerId"] = peer
+                    payload["reason"] = "economy-settlement"
+                    payload["eventCursor"]["lastCommitSeq"] = 1
+                    mutate(payload, peer)
+                    self.resign_checkpoint(payload)
+                    payloads.append(payload)
+                audit.append(sign({
+                    "protocol": 1, "session": session, "seq": 1,
+                    "kind": "commit", "origin_peer": "player1",
+                    "origin_local_seq": 1, "tick": 1,
+                    "payload": {"action": {"type": "economy.settle"}},
+                }))
+                for peer, payload in zip(("player1", "player2"), payloads):
+                    audit.append(sign({
+                        "protocol": 1, "session": session, "kind": "record",
+                        "peer": peer, "local_seq": 1,
+                        "record_type": "checkpoint", "payload": payload,
+                    }))
+                first = payloads[0]
+                audit.append(sign({
+                    "protocol": 1, "session": session, "seq": 2,
+                    "kind": "control", "origin_peer": "player1", "tick": 0,
+                    "payload": {"action": {
+                        "type": "network.checkpoint_outcome", "boundarySeq": 1,
+                        "reason": "economy-settlement", "success": True,
+                        "convergenceKey": first["convergenceKey"],
+                        "coreDigest": first["coreDigest"],
+                        "modelDigest": first["modelDigest"],
+                        "canonicalDigest": first["canonicalDigest"],
+                        "financialDigest": first["financialDigest"],
+                        "peers": ["player1", "player2"],
+                    }},
+                }))
+                return audit.path
+
+            def no_benefit(payload: dict, _peer: str) -> None:
+                payload["model"]["economy"]["lastResults"]["markets"][
+                    "market:corridor:a-b"
+                ]["services"]["line:event:rail:1"]["factors"][
+                    "feederAccessCents"
+                ] = 0
+
+            report = analyse_passenger_feeder_audit(
+                write_case("no-benefit", no_benefit),
+                "feeder-adversarial-no-benefit", require_stage="benefit",
+            )
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["maxima"]["feederLinks"], 0)
+
+            def rival_corridor(payload: dict, _peer: str) -> None:
+                payload["model"]["economy"]["services"][
+                    "line:event:rail:1"
+                ]["companyCid"] = "company:2"
+                passenger = payload["vehicleSynchronization"]["passengerPresentation"]
+                passenger["lines"][1]["companyCid"] = "company:2"
+                passenger["vehicles"][1]["companyCid"] = "company:2"
+                payload["vehicleSynchronization"]["vehicles"][1][
+                    "companyCid"
+                ] = "company:2"
+
+            report = analyse_passenger_feeder_audit(
+                write_case("rival-corridor", rival_corridor),
+                "feeder-adversarial-rival-corridor", require_stage="benefit",
+            )
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["maxima"]["corridorServices"], 1)
+            self.assertEqual(report["maxima"]["feederLinks"], 0)
+
+            def zero_stock(payload: dict, _peer: str) -> None:
+                payload["model"]["economy"]["services"]["line:event:bus:1"][
+                    "metadata"
+                ]["vehicleCount"] = 0
+
+            report = analyse_passenger_feeder_audit(
+                write_case("zero-stock", zero_stock),
+                "feeder-adversarial-zero-stock", require_stage="local-service",
+            )
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["maxima"]["localServices"], 0)
+
+            def zero_capacity(payload: dict, _peer: str) -> None:
+                payload["model"]["economy"]["services"]["line:event:bus:1"][
+                    "capacity"
+                ] = 0
+
+            report = analyse_passenger_feeder_audit(
+                write_case("zero-capacity", zero_capacity),
+                "feeder-adversarial-zero-capacity", require_stage="local-service",
+            )
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["maxima"]["localServices"], 0)
+
+            def stale_cursor(payload: dict, _peer: str) -> None:
+                payload["model"]["economy"]["deliveryCursors"][
+                    "line:event:bus:1"
+                ] = {"deliveredPassengers": 0, "earnedRevenueCents": 0}
+
+            report = analyse_passenger_feeder_audit(
+                write_case("stale-cursor", stale_cursor),
+                "feeder-adversarial-stale-cursor", require_stage="settled",
+            )
+            self.assertFalse(report["passed"])
+            self.assertTrue(report["observedStages"]["benefit"])
+            self.assertTrue(report["observedStages"]["delivered"])
+            self.assertFalse(report["observedStages"]["settled"])
+
+            def legacy_model(payload: dict, _peer: str) -> None:
+                payload["model"]["economy"]["version"] = 7
+
+            report = analyse_passenger_feeder_audit(
+                write_case("legacy-model", legacy_model),
+                "feeder-adversarial-legacy-model", require_stage="settled",
+            )
+            self.assertFalse(report["passed"])
+            self.assertFalse(report["observedStages"]["ready"])
+            self.assertFalse(report["observedStages"]["benefit"])
+
+            def no_completed_trip(payload: dict, _peer: str) -> None:
+                passenger = payload["vehicleSynchronization"]["passengerPresentation"]
+                passenger["lines"][0]["alightedTotal"] = 0
+                passenger["lines"][0]["earnedRevenueCents"] = 0
+                passenger["vehicles"][0]["alightedTotal"] = 0
+                passenger["vehicles"][0]["earnedRevenueCents"] = 0
+
+            report = analyse_passenger_feeder_audit(
+                write_case("no-completed-trip", no_completed_trip),
+                "feeder-adversarial-no-completed-trip", require_stage="settled",
+            )
+            self.assertFalse(report["passed"])
+            self.assertTrue(report["observedStages"]["benefit"])
+            self.assertFalse(report["observedStages"]["delivered"])
+            self.assertFalse(report["observedStages"]["settled"])
+
+            def overpaid_cursor(payload: dict, _peer: str) -> None:
+                payload["model"]["economy"]["deliveryCursors"][
+                    "line:event:bus:1"
+                ] = {
+                    "deliveredPassengers": 21,
+                    "earnedRevenueCents": 2_000_001,
+                }
+
+            report = analyse_passenger_feeder_audit(
+                write_case("overpaid-cursor", overpaid_cursor),
+                "feeder-adversarial-overpaid-cursor", require_stage="settled",
+            )
+            self.assertFalse(report["passed"])
+            self.assertTrue(report["observedStages"]["delivered"])
+            self.assertFalse(report["observedStages"]["settled"])
+
+            def peer_divergence(payload: dict, peer: str) -> None:
+                if peer == "player2":
+                    payload["model"]["economy"]["lastResults"]["markets"][
+                        "market:corridor:a-b"
+                    ]["services"]["line:event:rail:1"]["factors"][
+                        "feederAccessCents"
+                    ] = 151
+
+            with self.assertRaisesRegex(ProtocolError, "convergence mismatch"):
+                analyse_passenger_feeder_audit(
+                    write_case("peer-divergence", peer_divergence),
+                    "feeder-adversarial-peer-divergence",
+                )
+
+            restore_session = "feeder-adversarial-restore-pending"
+            restore_audit = AuditLog(root / "restore-pending.ndjson")
+            restore_audit.append(sign({
+                "protocol": 1, "session": restore_session, "seq": 1,
+                "kind": "commit", "origin_peer": "player1",
+                "origin_local_seq": 1, "tick": 1,
+                "payload": {"action": {
+                    "type": "recovery.resume", "fromSession": "prior",
+                    "boundarySeq": 10, "coreDigest": "12345678",
+                    "convergenceKey": "87654321", "planChecksum": "abcdef12",
+                }},
+            }))
+            report = analyse_passenger_feeder_audit(
+                restore_audit.path, restore_session, require_stage="ready"
+            )
+            self.assertFalse(report["passed"])
+            self.assertEqual(report["pending"]["checkpoints"], [1])
 
     def test_checkpoint_and_event_integrity_and_replay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

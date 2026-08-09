@@ -243,9 +243,11 @@ captured table reference would therefore mutate stale state after loading.
   `freight_checkpoint.py` and `cargo_checkpoint.py` strictly validate the full
   freight and presentation projections, including exact per-line conservation.
   `checkpoint.py` includes those ledgers in the model/core projection and
-  advances them on every replayed economy settlement. `freight_live_report.py`
-  reduces only successful two-peer current-format checkpoints into strict
-  ready/service/waiting/aboard/delivered/settled acceptance evidence.
+  advances them on every replayed economy settlement. `live_evidence.py` owns
+  the shared strict audit sequence, physical-outcome, fault, roster, and exact
+  two-peer checkpoint-payload scanner. `freight_live_report.py` and
+  `passenger_feeder_live_report.py` add only their domain proof ladders; they
+  must not fork their own definitions of physical or checkpoint consensus.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
 - `client.py` owns client connection/retry and bridge forwarding.
 - `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;
