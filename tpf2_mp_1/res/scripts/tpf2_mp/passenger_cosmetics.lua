@@ -98,8 +98,8 @@ function M.sample(existing)
   result.nativeWaiting = waitingOk and waiting or 0
   result.maximumActorsPerVehicle = M.MAX_COSMETIC_ACTORS_PER_VEHICLE
   result.maximumActorsPerStation = M.MAX_COSMETIC_ACTORS_PER_STATION
-  result.lastError = (personsOk and aboardOk and waitingOk) and nil
-    or "one or more direct native passenger component readers are unavailable"
+  result.lastError = not (personsOk and aboardOk and waitingOk)
+    and "one or more direct native passenger component readers are unavailable" or nil
   result.note = "native people remain bounded scenery; authoritative counts are rendered by TPF2MP"
   return result
 end

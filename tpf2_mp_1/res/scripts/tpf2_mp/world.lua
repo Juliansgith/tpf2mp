@@ -899,7 +899,7 @@ function M.initialiseCompanies(worldState, registry, desiredCount, options)
   result.companyPlayerIds = util.deepCopy(worldState.playerIds)
   result.controlPlayerId = worldState.controlPlayerId
   result.proxyMode = proxyMode
-  result.localCompanyIndex = proxyMode and nil or localCompanyIndex
+  if not proxyMode then result.localCompanyIndex = localCompanyIndex end
   result.initialNetworkOwnership = initialNetworkOwnership
   result.nativeOwnershipProjection = ownershipProjection
   return true, result

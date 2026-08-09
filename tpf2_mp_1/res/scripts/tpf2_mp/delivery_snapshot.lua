@@ -38,7 +38,8 @@ function M.combine(passenger, cargo)
     cargoLines = util.deepCopy(cargo.lines or {}),
   }
   local valid, validationError = M.validate(result)
-  return valid and result or nil, valid and nil or validationError
+  if not valid then return nil, validationError end
+  return result, nil
 end
 
 function M.validate(value)

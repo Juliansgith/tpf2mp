@@ -419,7 +419,7 @@ function M.reconcileNetworkAccounts(state, companies, context)
       waiting = waiting,
       commandIssued = commandIssued,
       ok = booked == true,
-      error = booked and nil or tostring(bookingError),
+      error = not booked and tostring(bookingError) or nil,
     }
     run.accounts[companyCid] = item
     if not booked then

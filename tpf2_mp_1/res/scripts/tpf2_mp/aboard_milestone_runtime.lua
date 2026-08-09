@@ -81,7 +81,7 @@ function M.new(spec)
     log(label .. "-milestone-schedule", {
       stage = "aboard", lineCid = vehicle.lineCid, vehicleCid = action.vehicleCid,
       aboard = observed.aboard, queued = ok == true,
-      error = ok and nil or tostring(result), tick = state.tick,
+      error = not ok and tostring(result) or nil, tick = state.tick,
     })
     return ok == true, result
   end

@@ -735,6 +735,9 @@ local final = script.save()
 local remoteConsensus = final.world.proposalConsensus.byId[remoteRecord.proposalId]
 assert(remoteConsensus and remoteConsensus.status == "complete" and remoteConsensus.success == true,
   "remote Company 1 proposal did not reach ordered physical consensus")
+assert(remoteConsensus.errorCode == nil
+    and final.world.checkpointConsensus.lastOutcome.errorCode == nil,
+  "successful physical/checkpoint consensus retained a false error code")
 assert(final.world.proposalConsensus.completed == 3 and final.world.proposalConsensus.failed == 0
   and final.world.proposalConsensus.sessionFault == nil,
   "network consensus counters or session health are incorrect")

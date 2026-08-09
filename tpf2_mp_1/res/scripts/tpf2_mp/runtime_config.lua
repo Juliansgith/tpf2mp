@@ -77,7 +77,7 @@ local function restoreResumeConfig(readEnvironment, enabled)
     coreDigest = coreDigest,
     convergenceKey = convergenceKey,
     planChecksum = planChecksum,
-    error = valid and nil or "launcher restore attestation is malformed",
+    error = not valid and "launcher restore attestation is malformed" or nil,
   }
 end
 

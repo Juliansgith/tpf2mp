@@ -52,14 +52,16 @@ function M.compactStatus(payload)
   for index = firstEvent, #rawCommandEvents do
     local event = rawCommandEvents[index]
     if type(event) == "table" then
-      commandEvents[#commandEvents + 1] = {
+      local commandEvent = {
         localSequence = tonumber(event.localSequence),
         batch = tonumber(event.batch),
         index = tonumber(event.index),
         tag = tonumber(event.tag),
         name = tostring(event.name or "unknown"),
-        success = event.success == true and true or event.success == false and false or nil,
       }
+      if event.success == true then commandEvent.success = true
+      elseif event.success == false then commandEvent.success = false end
+      commandEvents[#commandEvents + 1] = commandEvent
     end
   end
   return {

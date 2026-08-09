@@ -141,8 +141,8 @@ local function configureNativeAuthority(mode)
   local nativeStatus = state.probes.nativeHook
   local validated, authorityView = validatedNetworkAuthority(nativeStatus)
   local statusReady = not network or validated
-  local message = statusReady and nil
-    or "native hook did not report a validated, mismatch-free network authority boundary"
+  local message = not statusReady
+    and "native hook did not report a validated, mismatch-free network authority boundary" or nil
   state.probes.networkAuthority = {
     ready = statusReady,
     mode = mode,
@@ -299,7 +299,8 @@ local function ensureCompanyStartingCash(target, reason)
       ok = verified,
       reason = funding.lastReason,
       tick = state.tick,
-      error = verified and nil or tostring(bookingError or "starting-cash postcondition failed"),
+      error = not verified
+        and tostring(bookingError or "starting-cash postcondition failed") or nil,
     }
     funding.grants[companyCid] = grant
     thisRun.companies[companyCid] = util.deepCopy(grant)
@@ -899,7 +900,8 @@ local function componentEntitySet(componentType)
       if entity and entity >= 0 then result[entity] = true end
     end, componentType)
   end)
-  return ok and result or nil, ok and nil or tostring(err)
+  if not ok then return nil, tostring(err) end
+  return result, nil
 end
 
 local function nodePosition(entity)
@@ -1213,7 +1215,8 @@ handlers["network.operation_outcome"] = function(action)
     canonicalFinanceEntry = util.deepCopy(canonicalFinanceEntry),
     nativeReconciliation = util.deepCopy(nativeReconciliation),
     peers = util.deepCopy(type(action.peers) == "table" and action.peers or {}),
-    errorCode = success and nil or tostring(action.errorCode or "operation-consensus-failed"),
+    errorCode = not success
+      and tostring(action.errorCode or "operation-consensus-failed") or nil,
     tick = state.tick,
   }
   consensus.byId[operationId] = outcome
@@ -1363,7 +1366,8 @@ handlers["network.proposal_outcome"] = function(action)
     canonicalFinanceEntry = util.deepCopy(canonicalFinanceEntry),
     nativeReconciliation = util.deepCopy(nativeReconciliation),
     peers = util.deepCopy(type(action.peers) == "table" and action.peers or {}),
-    errorCode = success and nil or tostring(action.errorCode or "proposal-consensus-failed"),
+    errorCode = not success
+      and tostring(action.errorCode or "proposal-consensus-failed") or nil,
     tick = state.tick,
   }
   consensus.byId[proposalId] = outcome
@@ -1421,7 +1425,7 @@ handlers["network.checkpoint_outcome"] = function(action)
   record.worldManifestDigest = action.worldManifestDigest
     and tostring(action.worldManifestDigest) or nil
   record.peers = util.deepCopy(type(action.peers) == "table" and action.peers or {})
-  record.errorCode = success and nil or errorCode
+  record.errorCode = not success and errorCode or nil
   record.outcomeTick = state.tick
   consensus.byBoundary[key] = record
   consensus.lastOutcome = util.deepCopy(record)
@@ -1583,7 +1587,7 @@ handlers["economy.settle"] = function(action, eventId)
         ok = applied == true,
         canonical = true,
         entry = applied and util.deepCopy(entryOrError) or nil,
-        error = applied and nil or tostring(entryOrError),
+        error = not applied and tostring(entryOrError) or nil,
       }
       if applied then
         state.finance.totalPaid = util.integer(state.finance.totalPaid, 0) + amount
@@ -1662,17 +1666,18 @@ handlers["probe.gui_capabilities"] = function(action)
     local authorityReady, authorityView = validatedNetworkAuthority(state.probes.nativeHook)
     local gameReady = bootstrap.gameReady == true
     local calendarReady = bootstrap.calendarReady == true
+    local bootstrapReady = authorityReady and gameReady and calendarReady
     state.probes.networkAuthority = {
-      ready = authorityReady and gameReady and calendarReady,
+      ready = bootstrapReady,
       mode = "network",
       buildGateEnabled = authorityView.buildGateEnabled,
       commandGateEnabled = authorityView.commandGateEnabled,
       commandVisitors = authorityView.commandVisitors,
       source = "validated-gui-native-bootstrap",
-      error = authorityReady and gameReady and calendarReady and nil
-        or tostring(bootstrap.error or "GUI native authority bootstrap was incomplete"),
+      error = not bootstrapReady
+        and tostring(bootstrap.error or "GUI native authority bootstrap was incomplete") or nil,
     }
-    if authorityReady and gameReady and calendarReady then
+    if bootstrapReady then
       state.world.networkClock.startupPause = {
         requested = true, confirmed = true, source = "validated-gui-native-bootstrap",
         tick = state.tick,
@@ -1891,7 +1896,7 @@ handlers["probe.mobility"] = function(_, eventId)
     lineCount = #(payload.lines or {}),
     totals = util.deepCopy(payload.totals),
     emitted = emitted and true or false,
-    bridgeError = emitted and nil or tostring(outbound),
+    bridgeError = not emitted and tostring(outbound) or nil,
   }
 end
 

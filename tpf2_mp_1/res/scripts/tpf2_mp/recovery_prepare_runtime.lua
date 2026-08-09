@@ -50,7 +50,8 @@ function M.new(env)
       and util.integer(preparation.boundarySeq, 0) == util.integer(action and action.boundarySeq, -1)
       and tostring(record and record.reason or ""):match("^recovery%-prepare:%d+$") then
       preparation.status = success and "ready" or "failed"
-      preparation.errorCode = success and nil or tostring(record.errorCode or "checkpoint-consensus-failed")
+      preparation.errorCode = not success
+        and tostring(record.errorCode or "checkpoint-consensus-failed") or nil
       preparation.outcomeTick = state.tick
     end
   end

@@ -981,7 +981,7 @@ function M.runIndustrySchemaTest()
       return {
         available = true,
         digest = ok and digestOrError or nil,
-        error = ok and nil or tostring(digestOrError),
+        error = not ok and tostring(digestOrError) or nil,
         view = ok and boundedPrimitiveTree(
           industryResourceFacts.digestView(configuredRegistry), 10) or nil,
       }

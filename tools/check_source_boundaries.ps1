@@ -140,6 +140,20 @@ foreach ($relative in $budgets.Keys) {
     }
 }
 
+# Lua's `condition and value or fallback` shorthand cannot represent false or
+# nil: the fallback always wins. These forms previously left successful
+# checkpoint/recovery/UI records carrying false error text and erased explicit
+# native command failures. Keep that class of bug out of shipped Lua.
+$luaSources = Get-ChildItem -LiteralPath (Join-Path $root 'tpf2_mp_1') `
+    -Recurse -File -Filter '*.lua'
+foreach ($file in $luaSources) {
+    $source = [IO.File]::ReadAllText($file.FullName)
+    if ($source -match '\band\s+nil\b' -or $source -match '\band\s+false\s+or\b') {
+        $relative = $file.FullName.Substring($root.Length + 1)
+        throw "Unsafe Lua falsey ternary in ${relative}; use an explicit conditional or invert the condition."
+    }
+}
+
 $entryPoint = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\config\game_script\tpf2_mp.lua') -Raw
 $requiredModules = @(

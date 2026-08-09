@@ -180,7 +180,11 @@ assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not re
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
 assert(initialized.version == 29,
   "state schema was not migrated to the cargo-presentation authority version")
-assert(initialized.checkpoint.exports == 1, "match initialisation did not export a baseline checkpoint")
+assert(initialized.checkpoint.exports == 1 and initialized.checkpoint.lastError == nil,
+  "match initialisation did not export a clean baseline checkpoint")
+assert(initialized.probes.networkAuthority.ready == true
+    and initialized.probes.networkAuthority.error == nil,
+  "successful native authority bootstrap retained a false error")
 
 local checkpointMessage
 for localSeq = 1, initialized.bridge.nextOutSeq - 1 do

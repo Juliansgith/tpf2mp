@@ -279,7 +279,7 @@ function M.new(env)
     currentState().checkpoint.lastModelDigest = ok and payload.modelDigest or currentState().checkpoint.lastModelDigest
     currentState().checkpoint.lastEventSeq = ok and lastEventSeq or currentState().checkpoint.lastEventSeq
     currentState().checkpoint.lastReason = tostring(reason or "manual")
-    currentState().checkpoint.lastError = ok and nil or tostring(outbound)
+    currentState().checkpoint.lastError = not ok and tostring(outbound) or nil
     currentState().checkpoint.lastConvergenceKey = ok and payload.convergenceKey
       or currentState().checkpoint.lastConvergenceKey
     currentState().checkpoint.lastCoreDigest = ok and payload.coreDigest or currentState().checkpoint.lastCoreDigest
@@ -320,7 +320,7 @@ function M.new(env)
     end
     if record.status ~= "pending" or record.exported == true then return true, util.deepCopy(record) end
     local ok, result = emitCheckpoint(record.reason, boundarySeq)
-    record.lastError = ok and nil or tostring(result)
+    record.lastError = not ok and tostring(result) or nil
     if ok then
       record.exported = true
       record.localSeq = result.localSeq

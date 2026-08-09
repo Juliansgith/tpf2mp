@@ -278,7 +278,7 @@ function M.update(gui, snapshot, force)
       status.entity = entityPanel(gui, snapshot)
       managerSurfaces(gui, snapshot)
     end)
-    status.lastError = ok and nil or tostring(errorMessage)
+    status.lastError = not ok and tostring(errorMessage) or nil
   end
   return toolbar
 end

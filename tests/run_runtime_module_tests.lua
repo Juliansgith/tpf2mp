@@ -784,7 +784,8 @@ do
     "host checkpoint request did not export its exact ordered boundary")
   runtime.checkpointOutcome({ boundarySeq = 8 }, true,
     { reason = "recovery-prepare:7" })
-  assert(current.recovery.anchorPreparation.status == "ready",
+  assert(current.recovery.anchorPreparation.status == "ready"
+      and current.recovery.anchorPreparation.errorCode == nil,
     "checkpoint consensus did not complete persisted preparation state")
   assert(runtime.checkpointRequest({ preparationSeq = 7, reason = "wrong" }, nil, 8) == false,
     "malformed host checkpoint request was accepted")
@@ -2048,7 +2049,8 @@ do
     "manual network bootstrap ignored the launcher world-ready boundary")
   assert(cfg.restoreResume and cfg.restoreResume.valid == true
       and cfg.restoreResume.fromSession == "saved-session"
-      and cfg.restoreResume.boundarySeq == 7,
+      and cfg.restoreResume.boundarySeq == 7
+      and cfg.restoreResume.error == nil,
     "launcher restore attestation was not parsed")
   local armed = runtimeConfig.read({
     source = {},
@@ -2411,7 +2413,14 @@ do
       buildProposal = { enabled = true, tagMismatches = 0 },
       commandVisitors = { enabled = true, hooked = 23, tagMismatches = 0 },
     },
+    commandEvents = {
+      { localSequence = 1, tag = 15, name = "BuildProposal", success = false },
+      { localSequence = 2, tag = 8, name = "SetLine", success = true },
+    },
   })
+  assert(status.commandEvents[1].success == false
+      and status.commandEvents[2].success == true,
+    "native command status erased an explicit false result")
   local ready, boundary = nativeHook.validatedNetworkAuthority(status)
   assert(ready == true and boundary.commandVisitors == 23,
     "validated native authority status was not accepted")

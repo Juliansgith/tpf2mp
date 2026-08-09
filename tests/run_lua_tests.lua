@@ -3817,8 +3817,10 @@ test("cargo presentation conserves stock, vehicle load, delivery, and revenue", 
 
   local passenger = passengerPresentation.economySnapshot(passengerPresentation.newState())
   passenger.presentationEpoch = 1
-  local snapshot = assert(deliverySnapshot.combine(
-    passenger, cargoPresentation.economySnapshot(state)))
+  local snapshot, snapshotError = deliverySnapshot.combine(
+    passenger, cargoPresentation.economySnapshot(state))
+  truthy(snapshot, snapshotError)
+  equal(snapshotError, nil, "valid delivery snapshot retained a false validation error")
   local candidate = util.deepCopy(freight)
   local transported, summary = freightIndustryModel.applyTransportSnapshot(
     candidate, snapshot.cargoLines)
@@ -4109,6 +4111,7 @@ test("native passenger cosmetics are telemetry-only and never issue a command", 
   equal(probe.appliedWrites, 0)
   equal(probe.targetWritesEnabled, false)
   equal(probe.targetAddressable, false)
+  equal(probe.lastError, nil, "successful native passenger readers retained a false error")
   equal(made, 2, "the shape probe must only construct the two boolean variants")
   equal(sent, 0, "the unsafe untargeted debug command was issued")
 end)
@@ -4971,10 +4974,21 @@ test("network peer maps its original native player to its canonical company", fu
     proxyMode = false,
     localCompanyIndex = 1,
   })
+  nextPlayer = 100
+  local proxyRegistry = canonical.newState()
+  local proxyWorld = { playerIds = {}, logicalOwners = {} }
+  local proxyOk, proxyResult = world.initialiseCompanies(
+    proxyWorld, proxyRegistry, 2, {
+      proxyMode = true,
+      localCompanyIndex = 2,
+    })
   api, game = previousApi, previousGame
   truthy(hostOk, hostResult)
+  truthy(proxyOk, proxyResult)
   equal(hostResult.companyPlayerIds[1], 100)
   equal(hostResult.companyPlayerIds[2], 101)
+  equal(proxyResult.localCompanyIndex, nil,
+    "proxy company bootstrap leaked a non-authoritative local company index")
   equal(hash.value(canonical.digestView(hostRegistry)), hash.value(canonical.digestView(registry)),
     "peer-local player order changed the canonical registry digest")
 end)
@@ -5145,6 +5159,8 @@ test("canonical network accounts own balances and reconcile native wallet caches
   equal(balances[1], 875, "company 1 native wallet did not follow the canonical debit")
   equal(balances[2], 1000, "company 2 native wallet changed without a canonical entry")
   equal(state.networkAccounts.reconciliation.commands, 1)
+  equal(run.accounts["company:1"].error, nil,
+    "successful native wallet reconciliation retained a false error")
 end)
 
 test("file bridge signs, emits, verifies, and polls in sequence", function()
