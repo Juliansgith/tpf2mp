@@ -701,11 +701,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
   - 117 mod Lua and 8 investigation/tool Lua syntax checks;
-  - 44 PowerShell syntax checks;
+  - 45 PowerShell syntax checks;
   - launcher construction smoke test;
   - 143 Python protocol/network/checkpoint/recovery/report tests;
   - functional first-fault watcher/real-bundle fixtures, including the
-    already-exited-game ordering case and the automatic-save READY-poll race.
+    already-exited-game ordering case and the automatic-save READY-poll race;
+  - a synthetic byte-exact host publication -> player2 receipt-bound archive ->
+    launcher discovery flow, plus last-known-good pointer preservation.
 
 ## Not yet established
 

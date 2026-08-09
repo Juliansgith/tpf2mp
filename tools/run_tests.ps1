@@ -150,6 +150,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Recovery archive pointer promotion test failed' }
 
+    & (Join-Path $projectRoot 'tests\run_restore_plan_handoff_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary -Python $python
+    if (-not $?) { throw 'Automatic restore-plan handoff test failed' }
+
     . (Join-Path $projectRoot 'tools\network_common.ps1')
     $identityCases = @(
         @('tpf2mp.exe host --session match-1 --peer player1 --port 29742', 'match-1', 'player1', $true),

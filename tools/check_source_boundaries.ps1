@@ -8,6 +8,7 @@ if (-not $ProjectRoot) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
 $root = [IO.Path]::GetFullPath($ProjectRoot)
 
 $budgets = [ordered]@{
+    'tools\recovery_plan_common.ps1' = 120
     'tpf2_mp_1\res\config\game_script\tpf2_mp.lua' = 3400
     'tpf2_mp_1\res\scripts\tpf2_mp\economy.lua' = 880
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_costs.lua' = 100
@@ -380,6 +381,10 @@ if (-not $clientSource.Contains('from .restore_plan_exchange import RestorePlanE
 $cliSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\cli.py') -Raw
 if (-not $cliSource.Contains('from .local_restore import latest_local_restore')) {
     throw 'Companion CLI no longer composes verified local restore discovery.'
+}
+$watcherSource = Get-Content -LiteralPath (Join-Path $root 'tools\watch_recovery_saves.ps1') -Raw
+if (-not $watcherSource.Contains(". (Join-Path `$PSScriptRoot 'recovery_plan_common.ps1')")) {
+    throw 'Recovery watcher no longer composes its verified plan handoff boundary.'
 }
 $intentSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua') -Raw

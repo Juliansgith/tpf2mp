@@ -316,6 +316,10 @@ captured table reference would therefore mutate stale state after loading.
   bridge copying, copied-audit replay, bounded session-log tails, native status,
   and source/install fingerprints; neither tool mutates authority or performs
   a restore.
+- `recovery_plan_common.ps1` is the testable shell boundary for metadata
+  verification, byte-exact atomic publication, durable peer-plan copying, and
+  receipt-bound re-archiving. The watcher owns retry/state policy but must not
+  duplicate those file/verification operations.
 
 ## Native modules
 

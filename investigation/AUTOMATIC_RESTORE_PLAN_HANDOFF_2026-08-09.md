@@ -65,6 +65,10 @@ asked which one to load.
 - Discovery builds a real v4 receipt-bound archive, rejects a newer
   path-escaping pointer, selects the older valid candidate, and exercises the
   JSON CLI used by the launcher.
+- A synthetic shell integration now executes byte-exact host publication,
+  player2's real archive writer/verifier, promoted-pointer checks, and the exact
+  launcher discovery wrapper. It caught and fixed an untested assumption that
+  the eight-character protocol checksum was at least twelve characters long.
 - Watcher fault/race fixtures, launcher construction, source budgets, and the
   existing recovery/archive tests remain part of the full suite.
 

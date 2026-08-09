@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
+. (Join-Path $PSScriptRoot 'recovery_plan_common.ps1')
 
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
@@ -259,40 +260,12 @@ function New-VerifiedRestorePlan([int]$Boundary) {
     return $planPath
 }
 
-function Get-VerifiedRestorePlan([string]$Path) {
-    $resolved = Resolve-Tpf2mpFullPath $Path
-    $previousPythonPath = $env:PYTHONPATH
-    if ($companion.Mode -eq 'source') { $env:PYTHONPATH = Join-Path $bundle 'companion' }
-    try {
-        $output = @(& $companion.FilePath @($companion.Prefix + @(
-            'verify-restore-plan', $resolved, '--metadata-only'
-        )) 2>&1)
-        if ($LASTEXITCODE -ne 0) {
-            throw "Restore-plan verification failed: $($output -join ' ')"
-        }
-    }
-    finally { $env:PYTHONPATH = $previousPythonPath }
-    $plan = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
-    if ([string]$plan.session -ne $safeSession) {
-        throw 'Restore plan names a different source session.'
-    }
-    return $plan
-}
-
-function Copy-AtomicRecoveryPlan([string]$Source, [string]$Destination) {
-    $parent = Split-Path -Parent $Destination
-    New-Item -ItemType Directory -Force -Path $parent | Out-Null
-    $temporary = $Destination + '.tmp-' + [guid]::NewGuid().ToString('N')
-    [IO.File]::WriteAllBytes($temporary, [IO.File]::ReadAllBytes($Source))
-    Move-Item -LiteralPath $temporary -Destination $Destination -Force
-}
-
 function Publish-VerifiedRestorePlan([string]$Path) {
     if ($Peer -ne 'player1') { throw 'Only player1 may publish a restore plan.' }
-    $plan = Get-VerifiedRestorePlan $Path
-    Copy-AtomicRecoveryPlan $Path $publishedPlanPath
-    $watch.publishedRecoveryPlan = $publishedPlanPath
-    $watch.publishedRecoveryPlanChecksum = [string]$plan.checksum
+    $publication = Publish-Tpf2mpVerifiedRestorePlan -BundleRoot $bundle `
+        -Session $safeSession -PlanPath $Path -Destination $publishedPlanPath
+    $watch.publishedRecoveryPlan = $publication.path
+    $watch.publishedRecoveryPlanChecksum = $publication.checksum
 }
 
 $script:receivedPlanAttemptHash = $null
@@ -312,7 +285,8 @@ function Receive-And-BindRestorePlan {
     $script:receivedPlanAttempts++
     $watch.receiptBoundArchiveAttempts = $script:receivedPlanAttempts
     try {
-        $plan = Get-VerifiedRestorePlan $receivedPlanPath
+        $plan = Read-Tpf2mpVerifiedRestorePlan -BundleRoot $bundle `
+            -Session $safeSession -PlanPath $receivedPlanPath
         if ([int]$plan.boundarySeq -lt [int]$watch.lastArchivedBoundary) {
             $script:receivedPlanAttempts = 0
             $script:receivedPlanRetryAt = [DateTime]::UtcNow.AddSeconds(10)
@@ -323,21 +297,15 @@ function Receive-And-BindRestorePlan {
             -or @($plan.requiredPeers) -notcontains $Peer) {
             throw 'Received restore plan does not bind this peer and archived boundary.'
         }
-        $safeChecksum = ([string]$plan.checksum).Substring(0, 12)
-        $durablePlan = Join-Path $recoveryRoot `
-            "received-restore-plan-$($plan.boundarySeq)-$safeChecksum.json"
-        Copy-AtomicRecoveryPlan $receivedPlanPath $durablePlan
-        $watch.receivedRecoveryPlan = $durablePlan
-        $watch.receivedRecoveryPlanChecksum = [string]$plan.checksum
         $watch.receiptBoundArchiveError = $null
         Write-RecoveryWatcherStatus 'binding-local-save-to-verified-plan'
-        & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') `
-            -Session $safeSession -Peer $Peer -SavePath ([string]$watch.receiptSave) `
-            -RecoveryPlanPath $durablePlan -BoundarySeq ([int]$plan.boundarySeq) `
-            -BundleRoot $bundle
-        if ($LASTEXITCODE -ne 0) { throw "Receipt-bound recovery archive exited $LASTEXITCODE" }
-        $watch.latestRecoveryPlan = $durablePlan
-        $watch.latestArchivePointer = Join-Path $sessionRoot 'latest-recovery-archive.json'
+        $archive = New-Tpf2mpReceiptBoundArchive -BundleRoot $bundle `
+            -Session $safeSession -Peer $Peer -ReceivedPlanPath $receivedPlanPath `
+            -SavePath ([string]$watch.receiptSave) -BoundarySeq ([int]$plan.boundarySeq)
+        $watch.receivedRecoveryPlan = $archive.durablePlan
+        $watch.receivedRecoveryPlanChecksum = [string]$plan.checksum
+        $watch.latestRecoveryPlan = $archive.durablePlan
+        $watch.latestArchivePointer = $archive.latestPointer
         $watch.archiveCount = [int]$watch.archiveCount + 1
         $watch.receiptBoundArchiveReady = $true
         Write-RecoveryWatcherStatus 'restore-point-ready-awaiting-next-boundary'
