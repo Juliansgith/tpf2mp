@@ -95,6 +95,40 @@ function M.scheduleFor(economyState, lineCid, stopIndex, synchronizationSchedule
   })
 end
 
+-- High-frequency urban fleets would otherwise create one all-peer network
+-- round at every intermediate curb stop. Their authored passenger ledger only
+-- boards/alights at the route endpoints, so ROAD/TRAM services rendezvous at
+-- those two anchors. Freight still uses its exact source/sink indices. Rail,
+-- water, air, unknown and pre-registration services retain every-stop safety.
+function M.synchronizesStop(economyState, lineCid, stopIndex)
+  local service = economyState and economyState.services and economyState.services[lineCid]
+  local metadata = service and service.metadata or {}
+  local index = util.integer(stopIndex, -1)
+  if metadata.freightContractSchema ~= nil then
+    return index == util.integer(metadata.sourceStopIndex, -2)
+      or index == util.integer(metadata.destinationStopIndex, -3)
+  end
+  if metadata.carrier ~= "ROAD" and metadata.carrier ~= "TRAM" then return true end
+  local stops = metadata.stationGroupCids
+  if type(stops) ~= "table" or #stops < 2 then return true end
+  return index == 0 or index == #stops - 1
+end
+
+function M.authoritativeEntry(worldState, vehicleCid)
+  local sync = worldState.vehicleSync
+  sync.vehicles = sync.vehicles or {}
+  return sync.vehicles[vehicleCid]
+end
+
+function M.passThrough(record, lastRound)
+  if record.phase == "held" or record.phase == "holding"
+    or record.phase == "release-armed" then
+    return false, "vehicle reached a pass-through stop before ordered release"
+  end
+  record.phase, record.round, record.departedSinceRelease = "pass-through", lastRound, true
+  return true
+end
+
 function M.digestView(worldState)
   local source = worldState and worldState.vehicleSync or {}
   local vehicles = {}

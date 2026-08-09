@@ -7,6 +7,8 @@ import zlib
 from decimal import Decimal, localcontext, ROUND_HALF_UP
 from typing import Any, Mapping
 
+from .line_registration_protocol import validate_metadata as validate_line_metadata
+
 PROTOCOL_VERSION = 1
 MAX_EXACT_INTEGER = 9_007_199_254_740_991
 
@@ -1327,6 +1329,9 @@ def validate_action(action: Any) -> dict[str, Any]:
         if not isinstance(vehicle_costs, dict):
             raise ProtocolError("line.register vehicleCosts must be an object")
         service_metadata = action["service"].get("metadata", {})
+        metadata_error = validate_line_metadata(market_metadata, service_metadata)
+        if metadata_error:
+            raise ProtocolError(metadata_error)
         service_vehicle_values = _lua_array(
             service_metadata.get("vehicleCids", {}) if isinstance(service_metadata, dict) else {},
             empty=True,

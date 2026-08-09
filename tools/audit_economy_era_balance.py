@@ -1,4 +1,4 @@
-"""Run the exact economy-v7 evaluator against an era calibration matrix.
+"""Run the exact economy-v8 evaluator against an era calibration matrix.
 
 The runtime never reads this file and never hardcodes a vehicle name.  This is
 an offline balance instrument: replace or extend the JSON rows with facts read
@@ -92,7 +92,7 @@ def _new_economy(
     distance_km = max(1, facts["distanceMeters"] // 1000)
     demand = max(50, min(100_000, town_size * town_size // (25 * distance_km)))
     economy: dict[str, Any] = {
-        "version": 7,
+        "version": 8,
         "epoch": 0,
         "params": {
             "alphaUpPm": 350,
@@ -232,7 +232,7 @@ def main() -> int:
                 f"{_money(row['netCents']):13s} {payback:>8s}"
             )
     if args.check:
-        print("PASS economy-v7 era envelope and all four difficulty invariants")
+        print("PASS economy-v8 era envelope and all four difficulty invariants")
     return 0
 
 

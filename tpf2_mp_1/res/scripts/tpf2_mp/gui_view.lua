@@ -325,14 +325,15 @@ function M.render(gui, snapshot, options)
         (service.netRevenueCents or service.revenueCents or 0) / 100)
       lines[#lines + 1] = string.format(
         "      costs the passenger $%.2f = fare %.2f + time %.2f + wait %.2f"
-          .. " + transfers %.2f + crowding %.2f - comfort %.2f",
+          .. " + transfers %.2f + crowding %.2f - comfort %.2f - feeder %.2f",
         (factors.gcCents or 0) / 100,
         (factors.fareCents or service.fareCents or 0) / 100,
         (factors.timeCostCents or 0) / 100,
         (factors.waitCostCents or 0) / 100,
         (factors.transferCostCents or 0) / 100,
         (factors.crowdCostCents or 0) / 100,
-        (factors.comfortCents or 0) / 100)
+        (factors.baseComfortCents or factors.comfortCents or 0) / 100,
+        (factors.feederAccessCents or 0) / 100)
     end
   end
   local boards = snapshot.stationBoards or {}

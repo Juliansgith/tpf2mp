@@ -17,6 +17,7 @@ local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
 local authoredFollowupRuntimeModule = require "tpf2_mp/authored_followup_runtime"
 local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
+local vehicleSyncStateModule = require "tpf2_mp/vehicle_sync_state"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
@@ -2318,7 +2319,9 @@ do
           enabled = true,
           headwaySeconds = 60,
           journeySeconds = 120,
-          metadata = { stationGroupCids = { "station_group:test:1", "station_group:test:2" } },
+          metadata = { carrier = "ROAD", stationGroupCids = {
+            "station_group:test:1", "station_group:test:middle", "station_group:test:2",
+          } },
         },
       },
     },
@@ -2400,15 +2403,28 @@ do
     "prompt vehicle release/presentation ledgers are absent from the convergence view")
   transportVehicle.state, current.tick = 1, 5
   runtime.update()
-  current.economy.services["line:event:test:1"] = nil
   transportVehicle.state, transportVehicle.stopIndex, current.tick = 2, 1, 6
+  runtime.update()
+  assert(#commands == 2 and current.probes.vehicleSync.passThroughStops == 1,
+    "an intermediate road stop created an unnecessary all-peer station round")
+  assert(vehicleSyncStateModule.synchronizesStop(current.economy,
+      "line:event:test:1", 0)
+      and not vehicleSyncStateModule.synchronizesStop(current.economy,
+        "line:event:test:1", 1)
+      and vehicleSyncStateModule.synchronizesStop(current.economy,
+        "line:event:test:1", 2),
+    "road/tram endpoint synchronization policy is inconsistent")
+  transportVehicle.state, current.tick = 1, 7
+  runtime.update()
+  current.economy.services["line:event:test:1"] = nil
+  transportVehicle.state, transportVehicle.stopIndex, current.tick = 2, 1, 8
   runtime.update()
   assert(commands[#commands].stopped == true
       and emitted[#emitted].payload.round == 2
       and emitted[#emitted].payload.stopIndex == 1
       and emitted[#emitted].payload.schedule.enabled == false,
     "ordinary line did not advance with synchronization-only release policy")
-  transportVehicle.state, current.tick = 1, 7
+  transportVehicle.state, current.tick = 1, 9
   runtime.update()
   assert(emitted[#emitted].payload.state == "fault"
       and current.probes.vehicleSync.faults == 1,

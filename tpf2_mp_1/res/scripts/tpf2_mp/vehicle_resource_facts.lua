@@ -1,5 +1,18 @@
 local M = {}
 
+local CARRIERS = { RAIL = true, ROAD = true, TRAM = true, WATER = true, AIR = true }
+
+local function carrier(value)
+  local name = value ~= nil and string.upper(tostring(value)) or ""
+  return (name == "MIXED" or CARRIERS[name]) and name or "UNKNOWN"
+end
+
+local function mergeCarrier(current, nextValue)
+  if nextValue == "UNKNOWN" then return current or nextValue end
+  if current == nil or current == "UNKNOWN" then return nextValue end
+  return current == nextValue and current or "MIXED"
+end
+
 local function modelRepository()
   local repository = api and api.res and api.res.modelRep or nil
   if repository and repository.get ~= nil and repository.find ~= nil then return repository end
@@ -53,10 +66,7 @@ local function compartmentCapacity(compartment)
         local total = totals[kind]
         if total > best[kind] then best[kind] = total end
       end
-      -- A compartment's load configs are alternatives.  Preserve the maximum
-      -- capacity for each named cargo rather than adding mutually exclusive
-      -- configurations together.  This remains exact for modded wagons whose
-      -- resource data names additional cargo types.
+      -- Load configs are alternatives, so retain each named cargo's maximum.
       mergeCargoMaximum(best.cargoByType, totals.cargoByType)
     end
   end)
@@ -77,7 +87,7 @@ end
 function M.consist(modelNames)
   local repository = modelRepository()
   if not repository or type(modelNames) ~= "table" or #modelNames == 0 then return nil end
-  local passenger, cargo, unknown, speedLimit, cargoByType = 0, 0, 0, nil, {}
+  local passenger, cargo, unknown, speedLimit, observedCarrier, cargoByType = 0, 0, 0, nil, nil, {}
   for _, name in ipairs(modelNames) do
     local found, index = pcall(repository.find, name)
     if not found or tonumber(index) == nil or tonumber(index) < 0 then return nil end
@@ -86,6 +96,8 @@ function M.consist(modelNames)
     local metadata = record.metadata or record
     local transport = metadata and metadata.transportVehicle or nil
     if not transport then return nil end
+    local partCarrier = carrier(transport.carrier)
+    observedCarrier = mergeCarrier(observedCarrier, partCarrier)
     local part = { passenger = 0, cargo = 0, unknown = 0, cargoByType = {} }
     local scanned = pcall(function()
       for _, compartment in pairs(transport.compartmentsList or transport.compartments or {}) do
@@ -111,16 +123,14 @@ function M.consist(modelNames)
     passengerCapacity = passenger, cargoCapacity = cargo,
     cargoCapacityByType = cargoByType,
     unknownCapacity = unknown, kind = transportKind(passenger, cargo, unknown),
-    limitSpeedMs = speedLimit,
+    limitSpeedMs = speedLimit, carrier = observedCarrier,
   }
 end
 
--- Combine every consist assigned to a line. Service capacity uses the integer
--- fleet-average seats because the headway already represents fleet-wide
--- departures; classification and speed remain conservative across all trains.
+-- Combine consists conservatively; seats are the integer fleet average.
 function M.combine(consists)
   if type(consists) ~= "table" then return nil end
-  local passenger, cargo, unknown, speedLimit, count = 0, 0, 0, nil, 0
+  local passenger, cargo, unknown, speedLimit, observedCarrier, count = 0, 0, 0, nil, nil, 0
   local cargoByType = {}
   for _, facts in ipairs(consists) do
     if type(facts) ~= "table" then return nil end
@@ -133,6 +143,8 @@ function M.combine(consists)
     if speed and speed > 0 and (speedLimit == nil or speed < speedLimit) then
       speedLimit = speed
     end
+    local itemCarrier = carrier(facts.carrier)
+    observedCarrier = mergeCarrier(observedCarrier, itemCarrier)
   end
   local averageCargoByType = {}
   for name, amount in pairs(cargoByType) do
@@ -144,7 +156,7 @@ function M.combine(consists)
     cargoCapacityByType = cargoByType,
     cargoCapacityPerVehicleByType = averageCargoByType,
     unknownCapacity = unknown, kind = transportKind(passenger, cargo, unknown),
-    limitSpeedMs = speedLimit, consistCount = count,
+    limitSpeedMs = speedLimit, consistCount = count, carrier = observedCarrier,
   }
 end
 

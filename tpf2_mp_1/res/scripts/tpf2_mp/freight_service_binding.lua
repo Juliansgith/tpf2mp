@@ -255,6 +255,7 @@ function M.register(params)
       cargoCapacityByVehicleCid = exactCapacities,
       contractAlternatives = alternatives,
       vehicleCount = params.vehicles,
+      carrier = params.consistFacts.carrier,
       factsSource = "computed-freight-contract",
       distanceMeters = params.computed.distanceMeters,
       topSpeedKmh = params.computed.topSpeedKmh,

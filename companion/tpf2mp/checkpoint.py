@@ -944,8 +944,94 @@ def _wallet_delta_dollars(
     return dollars, residual
 
 
+_FEEDER_CENTS_PER_ENDPOINT = 150
+
+
+def _metadata(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _service_scope(market: Mapping[str, Any], service: Mapping[str, Any]) -> Any:
+    service_scope = _metadata(service.get("metadata")).get("marketScope")
+    return service_scope if service_scope is not None \
+        else _metadata(market.get("metadata")).get("marketScope")
+
+
+def _service_endpoint_towns(
+    market: Mapping[str, Any], service: Mapping[str, Any]
+) -> list[Any]:
+    towns = _metadata(service.get("metadata")).get("endpointTownCids")
+    if isinstance(towns, list):
+        return towns
+    market_metadata = _metadata(market.get("metadata"))
+    return [market_metadata.get("townA"), market_metadata.get("townB")]
+
+
+def _feeder_access_index(economy: Mapping[str, Any]) -> dict[tuple[str, str, str], int]:
+    index: dict[tuple[str, str, str], int] = {}
+    markets = economy.get("markets") if isinstance(economy.get("markets"), Mapping) else {}
+    services = economy.get("services") if isinstance(economy.get("services"), Mapping) else {}
+    for line_cid in sorted(services):
+        service = services[line_cid]
+        if not isinstance(service, Mapping):
+            continue
+        market = markets.get(service.get("marketCid"))
+        service_metadata = _metadata(service.get("metadata"))
+        if not isinstance(market, Mapping) or market.get("kind") == "cargo":
+            continue
+        if _service_scope(market, service) != "local" or service.get("enabled") is False:
+            continue
+        if int(service.get("capacity", 0)) <= 0 or service_metadata.get("carrier") not in {"ROAD", "TRAM"}:
+            continue
+        towns = _service_endpoint_towns(market, service)
+        town_cid = towns[0] if towns else None
+        groups = service_metadata.get("stationGroupCids")
+        if not isinstance(town_cid, str) or not isinstance(groups, list):
+            continue
+        company_cid = service.get("companyCid")
+        if not isinstance(company_cid, str):
+            continue
+        distinct_groups = {group_cid for group_cid in groups if isinstance(group_cid, str)}
+        frequency_cents = 90_000 // max(1, int(service.get("headwaySeconds", 86_400)))
+        access_cents = min(
+            _FEEDER_CENTS_PER_ENDPOINT,
+            max(0, int(service.get("capacity", 0))),
+            frequency_cents,
+        )
+        if len(distinct_groups) < 2 or access_cents <= 0:
+            continue
+        for group_cid in distinct_groups:
+            key = (company_cid, town_cid, group_cid)
+            index[key] = max(index.get(key, 0), access_cents)
+    return index
+
+
+def _feeder_access_cents(
+    market: Mapping[str, Any], service: Mapping[str, Any],
+    index: Mapping[tuple[str, str, str], int],
+) -> tuple[int, int]:
+    if market.get("kind") == "cargo" or _service_scope(market, service) != "corridor":
+        return 0, 0
+    groups = _metadata(service.get("metadata")).get("stationGroupCids")
+    if not isinstance(groups, list) or len(groups) < 2:
+        return 0, 0
+    towns = _service_endpoint_towns(market, service)
+    if len(towns) < 2:
+        return 0, 0
+    company_cid = service.get("companyCid")
+    endpoints = {(towns[0], groups[0]), (towns[1], groups[-1])}
+    values = [
+        int(index.get((company_cid, town_cid, group_cid), 0))
+        for town_cid, group_cid in endpoints
+        if isinstance(company_cid, str) and isinstance(town_cid, str)
+        and isinstance(group_cid, str)
+    ]
+    return sum(value for value in values if value > 0), sum(1 for value in values if value > 0)
+
+
 def _generalized_cost(
-    params: Mapping[str, int], market: Mapping[str, Any], service: Mapping[str, Any]
+    params: Mapping[str, int], market: Mapping[str, Any], service: Mapping[str, Any],
+    feeder_access_cents: int | None = None,
 ) -> tuple[int, dict[str, int]]:
     vot = int(market["votCentsPerHour"])
     # Markets recorded before version 4 carry no kind fields; the explicit
@@ -963,9 +1049,12 @@ def _generalized_cost(
     crowd_span = _SHARE_SCALE - int(params["crowdThresholdPpm"])
     crowd_excess = _clamp(int(service.get("lagLoadPpm", 0)) - int(params["crowdThresholdPpm"]), 0, crowd_span)
     crowd_cost = time_cost * crowd_excess // crowd_span
-    comfort = int(service["quality"])
+    access_model = feeder_access_cents is not None
+    base_comfort = int(service["quality"])
+    feeder_access_cents = max(0, int(feeder_access_cents or 0))
+    comfort = base_comfort + feeder_access_cents
     gc = max(1, int(service["fareCents"]) + time_cost + wait_cost + transfer_cost + crowd_cost - comfort)
-    return gc, {
+    factors = {
         "fareCents": int(service["fareCents"]),
         "timeCostCents": time_cost,
         "waitCostCents": wait_cost,
@@ -974,6 +1063,10 @@ def _generalized_cost(
         "comfortCents": comfort,
         "gcCents": gc,
     }
+    if access_model:
+        factors["baseComfortCents"] = base_comfort
+        factors["feederAccessCents"] = feeder_access_cents
+    return gc, factors
 
 
 def _logit_weight_with_cutoff(
@@ -1081,11 +1174,22 @@ def _evaluate_market_v2(
             demand, int(market.get("demandResid", 0)), period
         )
         market["demandResid"] = demand_resid
+    feeder_index = _feeder_access_index(economy) if version >= 8 else None
     services: list[dict[str, Any]] = []
     for line_cid in sorted(economy.get("services", {})):
         service = economy["services"][line_cid]
         if service.get("enabled") is not False and service.get("marketCid") == market_cid:
-            gc_cents, factors = _generalized_cost(params, market, service)
+            access_cents: int | None = None
+            access_endpoints: int | None = None
+            if feeder_index is not None:
+                access_cents, access_endpoints = _feeder_access_cents(
+                    market, service, feeder_index
+                )
+            gc_cents, factors = _generalized_cost(
+                params, market, service, access_cents
+            )
+            if access_endpoints is not None:
+                factors["feederAccessEndpoints"] = access_endpoints
             available_capacity = int(service["capacity"])
             if v6:
                 available_capacity, capacity_resid = _scaled_rate(

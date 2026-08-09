@@ -406,6 +406,39 @@ addScenario({
   epochs = 24,
 })
 
+addScenario({
+  id = "v8-company-owned-local-feeder-access",
+  markets = {
+    { cid = "market:corridor", kind = "passenger", demand = 1200,
+      gcOutsideCents = 2500, thetaCents = 250,
+      metadata = { marketScope = "corridor", townA = "town:a", townB = "town:b" } },
+    { cid = "market:local:a", kind = "passenger", demand = 400,
+      gcOutsideCents = 2500, thetaCents = 250,
+      metadata = { marketScope = "local", townA = "town:a", townB = "town:a" } },
+  },
+  services = {
+    { lineCid = "line:rail:a", marketCid = "market:corridor", companyCid = "company:1",
+      headwaySeconds = 600, journeySeconds = 1200, fareCents = 1000,
+      capacity = 600, quality = 100, transfers = 0,
+      metadata = { carrier = "RAIL", marketScope = "corridor",
+        endpointTownCids = { "town:a", "town:b" },
+        stationGroupCids = { "station:a", "station:b" } } },
+    { lineCid = "line:rail:b", marketCid = "market:corridor", companyCid = "company:2",
+      headwaySeconds = 600, journeySeconds = 1200, fareCents = 1000,
+      capacity = 600, quality = 100, transfers = 0,
+      metadata = { carrier = "RAIL", marketScope = "corridor",
+        endpointTownCids = { "town:a", "town:b" },
+        stationGroupCids = { "station:a", "station:b" } } },
+    { lineCid = "line:bus:a", marketCid = "market:local:a", companyCid = "company:1",
+      headwaySeconds = 300, journeySeconds = 900, fareCents = 300,
+      capacity = 300, quality = 80, transfers = 0,
+      metadata = { carrier = "ROAD", marketScope = "local",
+        endpointTownCids = { "town:a", "town:a" },
+        stationGroupCids = { "station:suburb", "station:a" } } },
+  },
+  epochs = 12,
+})
+
 local seed = 20260804
 local function nextValue(limit)
   seed = (seed * 48271) % 2147483647

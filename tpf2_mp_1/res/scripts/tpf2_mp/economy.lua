@@ -8,7 +8,7 @@ local townDemand = require "tpf2_mp/economy_town_demand"
 
 local M = {}
 
-M.VERSION = 7
+M.VERSION = 8
 M.EPOCH_SECONDS = 300
 M.HOURS_PER_YEAR = costs.HOURS_PER_YEAR
 M.FINANCIAL_YEAR_SECONDS = costs.FINANCIAL_YEAR_SECONDS

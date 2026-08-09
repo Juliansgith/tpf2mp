@@ -13,6 +13,7 @@ local economy = require "tpf2_mp/economy"
 local economyCosts = require "tpf2_mp/economy_costs"
 local economyRevenue = require "tpf2_mp/economy_revenue"
 local economyDifficulty = require "tpf2_mp/economy_difficulty"
+local economyFeederAccess = require "tpf2_mp/economy_feeder_access"
 local economyServiceQuarantine = require "tpf2_mp/economy_service_quarantine"
 local economyLineRegistration = require "tpf2_mp/economy_line_registration"
 local economySettlementTransaction = require "tpf2_mp/economy_settlement_transaction"
@@ -1166,8 +1167,15 @@ local function vehicleModelRepository()
     ["vehicle/train/db_v100.mdl"] = 17,
     ["vehicle/waggon/open_1910.mdl"] = 18,
     ["vehicle/bus/benz.mdl"] = 19,
+    ["vehicle/truck/opel_blitz.mdl"] = 20,
+    ["vehicle/tram/duewag_gt8.mdl"] = 21,
+    ["vehicle/ship/ferry.mdl"] = 22,
+    ["vehicle/plane/commuter.mdl"] = 23,
   }
-  local loadConfigCounts = { [17] = { 1 }, [18] = { 4 }, [19] = { 1 } }
+  local loadConfigCounts = {
+    [17] = { 1 }, [18] = { 4 }, [19] = { 1 }, [20] = { 2 },
+    [21] = { 1 }, [22] = { 3 }, [23] = { 1 },
+  }
   return {
     find = function(name) return ids[name] end,
     get = function(id)
@@ -1193,14 +1201,19 @@ test("vehicle operations accept every portable carrier resource and reject local
     config = config,
   }))
   truthy(operationCodec.validate(transaction))
-  local roadConfig = operationCodec.defaultVehicleConfig({
-    "vehicle/bus/benz.mdl",
-  }, { res = { modelRep = vehicleModelRepository() } })
-  local roadTransaction = operationCodec.make("vehicle.buy", "company:2", {
-    depotCid = "depot:pre:abc",
-    config = roadConfig,
-  })
-  truthy(roadTransaction, "a valid non-rail vehicle resource was rejected")
+  for _, model in ipairs({
+    "vehicle/bus/benz.mdl", "vehicle/truck/opel_blitz.mdl",
+    "vehicle/tram/duewag_gt8.mdl", "vehicle/ship/ferry.mdl",
+    "vehicle/plane/commuter.mdl",
+  }) do
+    local carrierConfig = operationCodec.defaultVehicleConfig(
+      { model }, { res = { modelRep = vehicleModelRepository() } })
+    local carrierTransaction = operationCodec.make("vehicle.buy", "company:2", {
+      depotCid = "depot:pre:abc", config = carrierConfig,
+    })
+    truthy(carrierTransaction and operationCodec.validate(carrierTransaction),
+      "portable carrier model was rejected: " .. model)
+  end
   local invalid = util.deepCopy(config)
   invalid.vehicles[1].model = "vehicle/../construction/depot.mdl"
   local rejected, err = operationCodec.make("vehicle.buy", "company:2", {
@@ -2813,7 +2826,7 @@ test("economy v2 migration arms the first-settlement fare guard", function()
   state.version = 2
   state.params.alphaDownPm = 250
   local migrated = economy.migrate(state)
-  equal(migrated.version, 7)
+  equal(migrated.version, 8)
   equal(migrated.params.alphaDownPm, 500)
   equal(migrated.services["line:a"].lastFareCents, nil)
   -- The version-4 market step must be passenger-equivalent: same wait weight and
@@ -2822,6 +2835,94 @@ test("economy v2 migration arms the first-settlement fare guard", function()
   equal(market.kind, "passenger")
   equal(market.waitWeightPm, 2000)
   equal(market.transferSeconds, 480)
+end)
+
+test("local road and tram lines improve only their own connected corridor endpoints", function()
+  local state = economy.newState()
+  economy.upsertMarket(state, {
+    cid = "market:corridor", kind = "passenger", demand = 1200,
+    gcOutsideCents = 2500, thetaCents = 250,
+    metadata = { marketScope = "corridor", townA = "town:a", townB = "town:b" },
+  })
+  economy.upsertMarket(state, {
+    cid = "market:local:a", kind = "passenger", demand = 400,
+    gcOutsideCents = 2500, thetaCents = 250,
+    metadata = { marketScope = "local", townA = "town:a", townB = "town:a" },
+  })
+  local function service(lineCid, marketCid, companyCid, metadata)
+    return economy.upsertService(state, {
+      lineCid = lineCid, marketCid = marketCid, companyCid = companyCid,
+      headwaySeconds = 600, journeySeconds = 1200, fareCents = 1000,
+      capacity = 600, quality = 100, transfers = 0, metadata = metadata,
+    })
+  end
+  service("line:rail:a", "market:corridor", "company:1", {
+    carrier = "RAIL", marketScope = "corridor",
+    endpointTownCids = { "town:a", "town:b" },
+    stationGroupCids = { "station:a", "station:b" },
+  })
+  service("line:rail:b", "market:corridor", "company:2", {
+    carrier = "RAIL", marketScope = "corridor",
+    endpointTownCids = { "town:a", "town:b" },
+    stationGroupCids = { "station:a", "station:b" },
+  })
+  local feeder = service("line:bus", "market:local:a", "company:1", {
+    carrier = "ROAD", marketScope = "local",
+    endpointTownCids = { "town:a", "town:a" },
+    stationGroupCids = { "station:suburb", "station:a" },
+  })
+  service("line:rival-bus", "market:local:a", "company:3", {
+    carrier = "TRAM", marketScope = "local",
+    endpointTownCids = { "town:a", "town:a" },
+    stationGroupCids = { "station:a", "station:remote" },
+  })
+
+  local index = economyFeederAccess.buildIndex(state)
+  local access, endpoints = economyFeederAccess.cents(
+    state.markets["market:corridor"], state.services["line:rail:a"], index)
+  equal(access, 150)
+  equal(endpoints, 1)
+  equal(economyFeederAccess.cents(
+    state.markets["market:corridor"], state.services["line:rail:b"], index), 0,
+    "another company's feeder leaked across ownership")
+
+  local result = economy.evaluateAll(state).markets["market:corridor"].services
+  truthy(result["line:rail:a"].equilibriumPpm > result["line:rail:b"].equilibriumPpm,
+    "the connected corridor received no competitive access benefit")
+  equal(result["line:rail:a"].factors.baseComfortCents, 100)
+  equal(result["line:rail:a"].factors.feederAccessCents, 150)
+  equal(result["line:rail:a"].factors.comfortCents, 250)
+
+  feeder.enabled = false
+  equal(economyFeederAccess.cents(state.markets["market:corridor"],
+    state.services["line:rail:a"], economyFeederAccess.buildIndex(state)), 0,
+    "a disabled feeder retained its access benefit")
+  feeder.enabled, feeder.capacity, feeder.headwaySeconds = true, 80, 1800
+  equal(economyFeederAccess.cents(state.markets["market:corridor"],
+    state.services["line:rail:a"], economyFeederAccess.buildIndex(state)), 50,
+    "a low-frequency feeder received the full access benefit")
+  feeder.capacity = 0
+  equal(economyFeederAccess.cents(state.markets["market:corridor"],
+    state.services["line:rail:a"], economyFeederAccess.buildIndex(state)), 0,
+    "a zero-capacity feeder retained its access benefit")
+end)
+
+test("economy v7 replay does not acquire v8 feeder fields or arithmetic", function()
+  local state = economy.newState()
+  state.version = 7
+  economy.upsertMarket(state, { cid = "market:legacy", demand = 100,
+    metadata = { marketScope = "corridor", townA = "town:a", townB = "town:b" } })
+  economy.upsertService(state, { lineCid = "line:legacy", marketCid = "market:legacy",
+    companyCid = "company:1", headwaySeconds = 600, journeySeconds = 1200,
+    fareCents = 1000, capacity = 100, quality = 100,
+    metadata = { marketScope = "corridor", endpointTownCids = { "town:a", "town:b" },
+      stationGroupCids = { "station:a", "station:b" } } })
+  local factors = economy.evaluateAll(state).markets["market:legacy"]
+    .services["line:legacy"].factors
+  equal(factors.comfortCents, 100)
+  equal(factors.baseComfortCents, nil)
+  equal(factors.feederAccessCents, nil)
+  equal(factors.feederAccessEndpoints, nil)
 end)
 
 test("cargo markets weight waiting and transfers as freight", function()
@@ -3218,9 +3319,11 @@ end)
 test("consist transport facts read repository metadata fail-soft", function()
   local previousApi = api
   local models = {
+    -- Some powered/non-capacity mod parts omit carrier; a named coach still
+    -- determines the consist rather than turning it into a false MIXED fleet.
     ["loco.mdl"] = { metadata = { transportVehicle = { topSpeed = 44,
       compartmentsList = { { loadConfigs = { { cargoEntries = { { capacity = 0 } } } } } } } } },
-    ["coach.mdl"] = { metadata = { transportVehicle = { topSpeed = 50,
+    ["coach.mdl"] = { metadata = { transportVehicle = { carrier = "RAIL", topSpeed = 50,
       compartmentsList = {
         { loadConfigs = { { cargoEntries = {
           { capacity = 40, type = "PASSENGERS" },
@@ -3229,12 +3332,12 @@ test("consist transport facts read repository metadata fail-soft", function()
         { loadConfigs = { { cargoEntries = { { capacity = 24, type = "PASSENGERS" } } },
                           { cargoEntries = { { capacity = 80, type = "PASSENGERS" } } } } },
       } } } },
-    ["freight.mdl"] = { metadata = { transportVehicle = { topSpeed = 35,
+    ["freight.mdl"] = { metadata = { transportVehicle = { carrier = "RAIL", topSpeed = 35,
       compartmentsList = { { loadConfigs = {
         { cargoEntries = { { capacity = 48, type = "COAL" } } },
         { cargoEntries = { { capacity = 48, type = "STONE" } } },
       } } } } } },
-    ["ambiguous.mdl"] = { metadata = { transportVehicle = { topSpeed = 30,
+    ["ambiguous.mdl"] = { metadata = { transportVehicle = { carrier = "ROAD", topSpeed = 30,
       compartmentsList = { { loadConfigs = {
         { cargoEntries = { { capacity = 30 } } },
       } } } } } },
@@ -3259,6 +3362,7 @@ test("consist transport facts read repository metadata fail-soft", function()
   equal(facts.kind, "passenger")
   equal(facts.cargoCapacity, 0)
   equal(facts.limitSpeedMs, 44, "the slowest part limits the consist")
+  equal(facts.carrier, "RAIL")
   local freight = world.consistTransportFacts({ "loco.mdl", "freight.mdl" })
   equal(freight.kind, "cargo")
   equal(freight.seats, 0, "freight capacity leaked into passenger seats")
@@ -3271,6 +3375,7 @@ test("consist transport facts read repository metadata fail-soft", function()
   local shortCoach = vehicleResourceFacts.consist({ "coach.mdl" })
   local mixedFleet = vehicleResourceFacts.combine({ facts, freight })
   equal(mixedFleet.kind, "mixed", "a passenger-first freight fleet was not rejected")
+  equal(mixedFleet.carrier, "RAIL")
   equal(mixedFleet.consistCount, 2)
   equal(mixedFleet.cargoCapacityPerVehicleByType.COAL, 24,
     "fleet-average named cargo capacity was not preserved")
@@ -3278,9 +3383,94 @@ test("consist transport facts read repository metadata fail-soft", function()
   equal(passengerFleet.kind, "passenger")
   equal(passengerFleet.seats, 160, "heterogeneous fleet seats were not averaged")
   equal(passengerFleet.limitSpeedMs, 44, "fleet speed did not retain its slowest consist")
+  local mixedCarrier = vehicleResourceFacts.combine({ facts, ambiguous })
+  equal(mixedCarrier.carrier, "MIXED", "cross-carrier fleet identity was hidden")
   api = { res = {} }
   equal(world.consistTransportFacts(names), nil, "missing repository must fail soft")
   api = previousApi
+end)
+
+test("same-town road service registers a local authored passenger market", function()
+  local previousApi = api
+  local busModel = "vehicle/bus/local_test.mdl"
+  local model = { metadata = { transportVehicle = {
+    carrier = "ROAD", topSpeed = 20,
+    compartmentsList = { { loadConfigs = { { cargoEntries = {
+      { capacity = 40, type = "PASSENGERS" },
+    } } } } },
+  } } }
+  api = {
+    type = { ComponentType = {
+      TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE", MAINTENANCE_COST = "MAINTENANCE_COST",
+    } },
+    res = { modelRep = {
+      find = function(name) return name == busModel and 19 or -1 end,
+      get = function(id) return id == 19 and model or nil end,
+      getName = function(id) return id == 19 and busModel or nil end,
+    } },
+    engine = { getComponent = function(id, kind)
+      if id == 501 and kind == "TRANSPORT_VEHICLE" then
+        return { transportVehicleConfig = { vehicles = { { part = { modelId = 19 } } } } }
+      end
+      if id == 501 and kind == "MAINTENANCE_COST" then return { maintenanceCost = 1000 } end
+    end },
+  }
+  local ids = {
+    [77] = "line:event:bus:1", [901] = "station_group:event:bus:a",
+    [902] = "station_group:event:bus:b", [700] = "town:pre:local",
+  }
+  local registry = { byCanonical = {
+    ["vehicle:event:bus:1"] = {
+      kind = "vehicle", localId = 501,
+      metadata = { owner = "company:1", annualVehicleUpkeepCents = 100000 },
+    },
+  } }
+  local binding = corridorBindingModule.new({
+    bindExisting = function(_, localId) return ids[localId] end,
+    lineStopGroups = function() return { 901, 902 } end,
+    lineServiceKind = function() return "passenger", "indexed station" end,
+    stationGroupTown = function() return 700 end,
+    townCapacity = function() return 100, { 100, 100, 100 } end,
+    townBuildingCount = function() return 100 end,
+    lineVehicleIds = function() return { 501 } end,
+    nameOf = function(id) return id == 700 and "Testville" or tostring(id) end,
+    safeEntity = function() return nil end,
+    positionOfEntity = function(id) return id == 901 and { 0, 0 } or { 1000, 0 } end,
+    developmentPositionsOfTown = function() return {} end,
+    resolveLocal = function() return nil end,
+    resolveCanonical = function(_, kind, localId)
+      return kind == "vehicle" and localId == 501 and "vehicle:event:bus:1" or nil
+    end,
+  })
+  local economyState = economy.newState()
+  local ok, result = binding.makeLineService(
+    registry, economy, economyState, 77, "company:1", {})
+  api = previousApi
+  truthy(ok, result)
+  truthy(result.marketCid:match("^market:local:"), "same-town service used a corridor market")
+  equal(result.marketScope, "local")
+  equal(result.carrier, "ROAD")
+  local market = economyState.markets[result.marketCid]
+  equal(market.metadata.townA, "town:pre:local")
+  equal(market.metadata.townB, "town:pre:local")
+  equal(market.metadata.marketScope, "local")
+  local service = economyState.services["line:event:bus:1"]
+  equal(service.metadata.carrier, "ROAD")
+  equal(service.metadata.marketScope, "local")
+  truthy(service.capacity > 0, "local road service received no authored capacity")
+  local presentation = passengerPresentation.newState()
+  local reconciled, line = passengerPresentation.reconcileService(
+    presentation, economyState, "line:event:bus:1")
+  truthy(reconciled and line, "local road service did not enter passenger presentation")
+  local growth = require("tpf2_mp/economy_town_demand").advance(economyState, {
+    markets = { [result.marketCid] = { services = {
+      ["line:event:bus:1"] = { delivered = 125 },
+    } } },
+  })
+  equal(growth.towns["town:pre:local"].carried, 125,
+    "a same-town trip was split away instead of credited once to its town")
+  equal(economyState.towns["town:pre:local"].size, 401)
+  equal(economyState.towns["town:pre:local"].growthResid, 100)
 end)
 
 test("station boards aggregate model allocations per station group", function()

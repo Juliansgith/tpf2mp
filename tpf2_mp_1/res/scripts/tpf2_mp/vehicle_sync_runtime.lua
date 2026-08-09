@@ -8,8 +8,7 @@ local M, disabledSchedule = {}, vehicleSyncState.disabledSchedule
 
 M.digestView = vehicleSyncState.digestView
 function M.new(deps)
-  assert(type(deps) == "table" and type(deps.getState) == "function",
-    "vehicle sync runtime state provider is required")
+  assert(type(deps) == "table" and type(deps.getState) == "function", "vehicle sync runtime state provider is required")
   local getState = deps.getState
   local diagnosticLog = assert(deps.diagnosticLog, "diagnostic logger is required")
   local component = deps.component or function(localId, componentType)
@@ -181,12 +180,6 @@ function M.new(deps)
     return true
   end
 
-  local function authoritativeEntry(vehicleCid)
-    local sync = state.world.vehicleSync
-    sync.vehicles = sync.vehicles or {}
-    return sync.vehicles[vehicleCid]
-  end
-
   local function processVehicle(binding)
     local localId = tonumber(binding.localId)
     local types = api and api.type and api.type.ComponentType or {}
@@ -204,7 +197,7 @@ function M.new(deps)
     local nativeState = tonumber(safeField(vehicle, "state"))
     local stopIndex = tonumber(safeField(vehicle, "stopIndex"))
     stopIndex = stopIndex and math.floor(stopIndex) or nil
-    local entry = authoritativeEntry(binding.canonicalId)
+    local entry = vehicleSyncState.authoritativeEntry(state.world, binding.canonicalId)
     local lastRound = entry and math.max(0, util.integer(entry.lastAuthorizedRound, 0)) or 0
     local record = localVehicles[binding.canonicalId]
     if not record then
@@ -241,6 +234,12 @@ function M.new(deps)
       return fault(binding, record, "terminal vehicle has no bounded stopIndex")
     end
     record.stopIndex = stopIndex
+    if not vehicleSyncState.synchronizesStop(state.economy, lineCid, stopIndex) then
+      local passed, passError = vehicleSyncState.passThrough(record, lastRound)
+      if not passed then return fault(binding, record, passError) end
+      local telemetry = probe(); telemetry.passThroughStops = (telemetry.passThroughStops or 0) + 1
+      return true
+    end
     if entry and entry.lastAuthorizedRound == lastRound
       and entry.lineCid == lineCid and entry.stopIndex == stopIndex
       and record.round <= lastRound and not record.departedSinceRelease

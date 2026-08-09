@@ -174,8 +174,12 @@ function M.line(snapshot, localId)
   local units = cargo and tostring(freight and freight.cargoType or "cargo") or "passengers"
   local speed = service and service.topSpeedKmh
     and (tostring(service.topSpeedKmh) .. " km/h") or "estimated speed"
-  local primary = string.format("%s | fare %s | %s | %s trip | every %s | capacity %d/h",
-    tostring(name), M.moneyCents(service and service.fareCents or 0), speed,
+  local mode = service and service.carrier
+    and (string.lower(tostring(service.carrier)) .. (service.marketScope == "local" and " local" or ""))
+    or (service and service.marketScope == "local" and "local" or nil)
+  local primary = string.format("%s%s | fare %s | %s | %s trip | every %s | capacity %d/h",
+    tostring(name), mode and (" | " .. mode) or "",
+    M.moneyCents(service and service.fareCents or 0), speed,
     minutes(service and service.journeySeconds), minutes(service and service.headwaySeconds),
     tonumber(service and service.capacity) or 0)
   local townScale = service and service.modelTownSizeA and service.modelTownSizeB
@@ -191,6 +195,10 @@ function M.line(snapshot, localId)
     percentPpm(service and service.sharePpm),
     M.moneyCents(service and service.netRevenueCents),
     M.moneyCents(service and service.projectedHourlyNetRevenueCents))
+  if service and (service.feederAccessEndpoints or 0) > 0 then
+    secondary = secondary .. string.format(" | %d connected feeder endpoint(s): -%s passenger cost",
+      service.feederAccessEndpoints, M.moneyCents(service.feederAccessCents))
+  end
   return {
     title = "TPF2MP AUTHORITATIVE LINE " .. tostring(cid or ""),
     primary = primary,

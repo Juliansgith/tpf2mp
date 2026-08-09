@@ -78,6 +78,8 @@ function M.build(state, activeCompanyCid)
       capacity = service.capacity or 0,
       topSpeedKmh = metadata.topSpeedKmh,
       cruiseSpeedKmh = metadata.cruiseSpeedKmh,
+      carrier = metadata.carrier,
+      marketScope = metadata.marketScope or marketMetadata.marketScope,
       departuresPerHourPerDirection = metadata.departuresPerHourPerDirection,
       vehicleCount = metadata.vehicleCount or 0,
       factsSource = metadata.factsSource,
@@ -100,6 +102,8 @@ function M.build(state, activeCompanyCid)
       generalizedCostCents = factors.gcCents,
       timeCostCents = factors.timeCostCents,
       waitCostCents = factors.waitCostCents,
+      feederAccessCents = factors.feederAccessCents or 0,
+      feederAccessEndpoints = factors.feederAccessEndpoints or 0,
       outsideCostCents = market.gcOutsideCents,
       -- This is not a hard recommended fare: it is the fare at which the
       -- service's current non-fare generalized cost reaches the outside option.

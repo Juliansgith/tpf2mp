@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.32.0-alpha`, state schema `29`,
+Last updated: 2026-08-09 for prototype `0.33.0-alpha`, state schema `29`,
 checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation
 schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction
 proposal schema `7`, and native hook `0.14.0`.
@@ -385,7 +385,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   Paused GUI heartbeats preserve resume readiness. Engine rate, absolute skew,
   observed speed, heartbeat age, and backlog drive a slowest-peer cap and
   hysteretic recovery.
-- Every replicated assigned train now observes native terminal state, holds via
+- Every replicated assigned vehicle now observes native terminal state, holds via
   gated tag-8 `setUserStopped`, and reports a canonical vehicle/line/stop/round.
   Both peers must match before one ordered future-time release. State 21 and
   checkpoint 3 persist/digest the authorized round; retries and host restart
@@ -400,7 +400,12 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   acknowledgement, uncorroborated staleness, mismatch, active-time timeout,
   rejection, or premature departure still faults and pauses. Exact coordinates
   remain native and per-peer. Four live populated localhost rounds alternate
-  correctly between both stops.
+  correctly between both stops. Model-v8 passenger rail/water/air and unknown
+  carriers retain every-stop safety; road/tram passenger services rendezvous
+  only at route endpoints, and freight only at its exact source/sink. This
+  avoids a network round at every urban curb stop without weakening the
+  authored boarding/alighting boundary. The carrier-specific policy is fully
+  automated but only rail has live two-process proof.
 
 ### Native authority layer
 
@@ -438,12 +443,22 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Competitive economy
 
-- Demand model 7 retains integer generalized cost, the pinned logit table,
+- Demand model 8 retains integer generalized cost, the pinned logit table,
   carried share residuals, lagged crowding, induced demand, deterministic
   capacity allocation, and passenger/cargo market weighting.
+- Same-town passenger lines now register a shared local market instead of being
+  quarantined. Road and tram services can improve their own company's
+  intercity generalized cost by sharing an exact station group at either
+  endpoint. Each endpoint contributes at most 150 cents, scaled by the weaker
+  of hourly capacity and `floor(90000/headwaySeconds)`; the route needs two
+  distinct stops and only the best feeder at a station counts. Rival feeders,
+  disabled/zero-capacity lines, duplicate shuttles, and cargo never help.
+  The access index is derived afresh at settlement, and the line panel exposes
+  both connected endpoint count and exact cents. Lua/Python replay agrees on
+  the v8 result while explicit v2-v7 states keep their historical factor shape.
 - Automatic line-registration follow-ups now distinguish permanent local
-  facts-derivation failures from transient bridge failures. Unsupported
-  same-town, industry, or stale routes leave the authored queue, appear in a
+  facts-derivation failures from transient bridge failures. Unresolved-town,
+  industry, or stale routes leave the authored queue, appear in a
   bounded panel/research diagnostic, and can recover after a later edit;
   transient bridge failures continue retrying. This prevents an unsupported
   service from keeping anchor readiness false forever without misclassifying
@@ -523,9 +538,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   cash. Native purchase and annual-maintenance figures remain visible because
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
-  exact in Lua 5.1 and Python. Model-v2-v6 behavior remains available for
-  archived replay. The offline gate now includes 117 Lua tests and 75
-  cross-language v2-v7 scenarios, including completed-trip cursors,
+  exact in Lua 5.1 and Python. Model-v2-v7 behavior remains available for
+  archived replay. The offline gate now includes 121 Lua tests and 76
+  cross-language v2-v8 scenarios, including feeder access, completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
   scheduled-boundary rejection, four difficulty presets, canonical town
@@ -628,13 +643,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 118 core Lua tests and 75 cross-language economy scenarios;
+  - 121 core Lua tests and 76 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 107 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 108 mod Lua and 8 investigation/tool Lua syntax checks;
   - 42 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 127 Python protocol/network/checkpoint/recovery/report tests;
+  - 129 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 
@@ -671,6 +686,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   source queues, exact per-vehicle loads, completed deliveries, revenue, and
   conservation now pass automated Lua/Python/checkpoint tests. The stock native
   agent glyph and native cargo history remain scenery by design.
+- Same-town bus/tram registration, portable non-rail purchase, feeder benefit,
+  endpoint-only synchronization, and authoritative line text still need a
+  fresh ordinary-UI two-process proof. Ship and air purchase/assignment need
+  the same proof; their passenger barrier deliberately remains every-stop.
 - Host-authored physical presentation for town and industry growth. Unproven
   autonomous systems remain frozen during authority tests. Canonical model-town
   growth and canonical industry production are implemented; this open item is
@@ -690,7 +709,7 @@ clock, four-round train barrier, long pause, speed-3 rendezvous, and deliberate
 slow-peer recovery now pass locally. Next use the manual lab for two trains on
 one line to measure signaling interaction, station-barrier latency, and peak
 pending rounds. Then run the remaining two-stop reorder/alternate-terminal
-check.
+check and the focused same-town road/tram feeder scenario.
 
 Then run the trusted two-computer populated test: enter via the title-screen
 `MULTIPLAYER` button, compare the initial checkpoint, run several real passenger

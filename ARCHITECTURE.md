@@ -41,7 +41,10 @@ Domain modules under `res/scripts/tpf2_mp`:
   delivery cursors, operating-cost stocks/residuals, signed wallet-cent carry,
   and scoring. `economy_flow.lua` owns generalized cost, pinned-logit share
   movement, exact hourly-rate proration, capacity allocation, and per-market
-  evaluation. `economy_revenue.lua` owns passenger cohorts, distance fares,
+  evaluation. `economy_feeder_access.lua` derives company-owned local
+  road/tram access at exact intercity station groups; its frequency/capacity
+  score is recomputed at settlement and never becomes a stale authored cache.
+  `economy_revenue.lua` owns passenger cohorts, distance fares,
   and cargo unit-kilometre revenue. `economy_difficulty.lua` owns the four
   exact save presets and overflow-safe revenue scaling; `economy_town_demand.lua`
   owns model-town populations, growth residuals, and corridor-demand refresh.
@@ -86,13 +89,15 @@ Domain modules under `res/scripts/tpf2_mp`:
   `world_operational_telemetry.lua` owns read-only clock, journal, autonomy,
   and composed operational snapshots.
 - `corridor_binding.lua` derives line.register market/service facts (gravity
-  demand, geometry/consist journey-headway-capacity), the per-peer station
-  boards, settlement-coupled deterministic town growth, and the departure
-  slot table; origin-computed or settlement-derived, re-exported through
-  `world.lua`.
+  demand, local/corridor scope, carrier, endpoint-town identity, and
+  geometry/consist journey-headway-capacity), the per-peer station boards,
+  settlement-coupled deterministic town growth, and the departure slot table;
+  origin-computed or settlement-derived, re-exported through `world.lua`.
 - `vehicle_resource_facts.lua` classifies every load configuration in a
   consist by portable cargo resource type and aggregates all consists assigned
-  to a line into conservative passenger/cargo/mixed capacity and speed facts.
+  to a line into conservative passenger/cargo/mixed capacity, carrier, and
+  speed facts. Unknown unpowered parts are neutral; conflicting known carriers
+  become `MIXED`.
 - `industry_resource_loader.lua` wraps the loaded construction repository at
   resource-load time and emits immutable content-addressed recipe artifacts.
   `industry_resource_facts.lua`, `industry_resource_view_reader.lua`,
@@ -116,6 +121,9 @@ Domain modules under `res/scripts/tpf2_mp`:
 - `proposal_codec.lua` validates and materializes portable construction/edge
   transactions.
 - `operation_codec.lua` validates and materializes line and vehicle operations.
+- `vehicle_sync_state.lua` owns which native stops are synchronization anchors:
+  every stop for conservative passenger carriers, route endpoints for urban
+  road/tram services, and exact contract endpoints for freight.
 
 Runtime-controller modules:
 
@@ -221,7 +229,9 @@ captured table reference would therefore mutate stale state after loading.
 
 ## Companion modules
 
-- `protocol.py` defines canonical envelopes and strict portable action schemas.
+- `protocol.py` defines canonical envelopes and strict portable action schemas;
+  `line_registration_protocol.py` owns carrier/scope/endpoint metadata checks
+  so a claimed feeder cannot disagree with its authored market.
 - `industry_content.py` strictly validates and merges peer-local loader
   artifacts into the deterministic companion registry; `host_intents.py`
   centralizes host-authored ordered intents, including content claims.

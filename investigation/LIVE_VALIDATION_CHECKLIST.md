@@ -2,7 +2,7 @@
 
 Use only fresh disposable worlds. Never continue after a custody, proposal-finalisation, or finance error unless the step explicitly tests recovery. Export evidence once, then close without saving.
 
-Prototype under test: `0.32.0-alpha`, state schema `29`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
+Prototype under test: `0.33.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
 
 ## 0. Automated baseline
 
@@ -173,6 +173,30 @@ Pass: no unexplained town/industry/topology/ownership change. Classify every cha
 4. Record station queues and vehicle loads visually.
 
 Pass for observation: stable canonical aggregate reads are available and comparable. Product pass requires the native presentation to agree directionally with the score. Detection alone is not synchronization.
+
+## H2. Local bus/tram feeder
+
+1. In one town, build a road or tram passenger line with at least two distinct
+   stops. Make one stop share the exact station group used by an existing
+   intercity passenger line owned by the same company.
+2. Buy and assign one bus/tram through the ordinary depot UI. Confirm purchase,
+   assignment, line, vehicle, and balance synchronize before continuing.
+3. Confirm the Multiplayer line view shows a `road local` or `tram local`
+   service and the intercity line shows one connected feeder endpoint with a
+   passenger-cost reduction between `$0.01` and `$1.50`.
+4. Run through at least one intermediate local stop and both endpoints. The
+   intermediate stop must not create a visible peer wait; endpoint departure
+   must still wait for the slower peer when deliberately delayed.
+5. Complete and settle one local leg plus one intercity leg. Compare authored
+   loads, queues, revenue, market share, balances, and the settlement
+   checkpoint on both peers.
+6. Disable or unassign the feeder. At the next settlement its access endpoint
+   and cost reduction must disappear. Re-enable it and confirm they return.
+
+Pass: both processes retain matching core/model/structure, the local service
+earns only completed-trip revenue, its same-town growth credit is not halved or
+doubled, a rival company's intercity service gets no access benefit, and no
+intermediate urban stop creates an all-peer barrier round.
 
 ## I. First two-peer canonical construction
 

@@ -727,17 +727,22 @@ function M.new(deps)
     end
     local townA, townAError = stationGroupTown(groups[1])
     local townB, townBError = stationGroupTown(groups[#groups])
-    if not townA or not townB or townA == townB then
-      local detail = townA == townB and townA and ("both resolve to town " .. tostring(townA))
-        or ("first: " .. tostring(townAError or townA)
-          .. "; last: " .. tostring(townBError or townB))
-      return false, "line endpoints do not map to two distinct towns (" .. detail .. ")"
+    if not townA or not townB then
+      local detail = "first: " .. tostring(townAError or townA)
+        .. "; last: " .. tostring(townBError or townB)
+      return false, "line endpoints do not map to readable towns (" .. detail .. ")"
     end
     local townCidA = bindExisting(registry, townA, "town", { name = nameOf(townA) })
     local townCidB = bindExisting(registry, townB, "town", { name = nameOf(townB) })
+    if not townCidA or not townCidB then
+      return false, "one or more endpoint towns have no canonical binding"
+    end
+    local localPassenger = townCidA == townCidB
     local first, second = townCidA, townCidB
     if second < first then first, second = second, first end
-    local marketCid = "market:" .. hash.value({ first, second })
+    local marketCid = localPassenger
+      and ("market:local:" .. hash.value({ first }))
+      or ("market:" .. hash.value({ first, second }))
 
     local capacityA = townMarketSize(townA)
     local capacityB = townMarketSize(townB)
@@ -759,13 +764,15 @@ function M.new(deps)
     if existingMarket then demand = math.max(util.integer(existingMarket.demand, 0), demand) end
     economyModule.upsertMarket(economyState, {
       cid = marketCid,
-      name = nameOf(townA) .. " ↔ " .. nameOf(townB),
+      name = localPassenger and (nameOf(townA) .. " local passenger market")
+        or (nameOf(townA) .. " ↔ " .. nameOf(townB)),
       kind = existingMarket and existingMarket.kind or "passenger",
       demand = demand,
       metadata = {
         townA = townCidA, townB = townCidB,
         townSizeA = capacityA, townSizeB = capacityB,
         corridorMeters = corridorMeters,
+        marketScope = localPassenger and "local" or "corridor",
       },
     })
 
@@ -804,6 +811,8 @@ function M.new(deps)
       annualVehicleUpkeepCents = annualVehicleUpkeepCents,
       metadata = {
         vehicleCount = vehicles,
+        carrier = consistFacts and consistFacts.carrier or nil,
+        marketScope = localPassenger and "local" or "corridor",
         factsSource = factsSource,
         distanceMeters = computed and computed.distanceMeters or nil,
         seatsPerVehicle = computed and computed.seatsPerVehicle or nil,
@@ -812,6 +821,7 @@ function M.new(deps)
         cycleSeconds = computed and computed.cycleSeconds or nil,
         departuresPerHourPerDirection = computed
           and computed.departuresPerHourPerDirection or nil,
+        endpointTownCids = { townCidA, townCidB },
         stationGroupCids = stationGroupCids,
         vehicleCids = vehicleCids,
         pricedVehicleCount = pricedVehicles,
@@ -821,6 +831,8 @@ function M.new(deps)
     return true, {
       lineCid = lineCid, marketCid = marketCid, townA = townCidA, townB = townCidB,
       vehicleCount = vehicles, factsSource = factsSource,
+      carrier = consistFacts and consistFacts.carrier or nil,
+      marketScope = localPassenger and "local" or "corridor",
     }
   end
 

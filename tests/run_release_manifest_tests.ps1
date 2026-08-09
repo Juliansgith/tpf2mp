@@ -39,8 +39,8 @@ foreach ($relative in $requiredFiles | Sort-Object) {
 $baseline = [pscustomobject][ordered]@{
     format = 1
     name = 'TPF2MP Competitive Prototype'
-    version = '0.32.0-alpha'
-    modMinorVersion = 32
+    version = '0.33.0-alpha'
+    modMinorVersion = 33
     stateSchemaVersion = 29
     checkpointSchemaVersion = 5
     proposalSchemaVersion = 5
@@ -78,7 +78,7 @@ function Assert-ManifestRejected {
 
 Write-FixtureManifest $baseline
 $valid = Test-Tpf2mpReleaseManifest $bundle
-if ([string]$valid.version -ne '0.32.0-alpha' -or @($valid.files).Count -ne $requiredFiles.Count) {
+if ([string]$valid.version -ne '0.33.0-alpha' -or @($valid.files).Count -ne $requiredFiles.Count) {
     throw 'Valid release manifest did not round-trip.'
 }
 

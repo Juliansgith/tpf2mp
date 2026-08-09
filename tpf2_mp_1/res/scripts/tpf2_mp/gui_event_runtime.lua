@@ -1398,7 +1398,7 @@ function M.new(deps)
                 -- the real visitor correlation is absent.
                 queueAction({ type = "operation.capture", capture = capture })
               else
-                gui.lastError = "vehicle purchase requires native hook 0.13 or a selected railway depot"
+                gui.lastError = "vehicle purchase requires native hook 0.13 or a selected depot"
                 renderGui()
               end
             end

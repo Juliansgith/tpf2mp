@@ -3,6 +3,7 @@ local costs = require "tpf2_mp/economy_costs"
 local revenue = require "tpf2_mp/economy_revenue"
 local difficulty = require "tpf2_mp/economy_difficulty"
 local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
+local feederAccess = require "tpf2_mp/economy_feeder_access"
 
 local M = {}
 local SHARE_SCALE = 1000000
@@ -32,7 +33,7 @@ local function signedAdd(left, right)
     -ACCUMULATOR_LIMIT, ACCUMULATOR_LIMIT)
 end
 
-function M.generalizedCost(params, market, service)
+function M.generalizedCost(params, market, service, feederAccessCents)
   local vot = market.votCentsPerHour
   local waitWeightPm = market.waitWeightPm
   if waitWeightPm == nil then waitWeightPm = 2000 end
@@ -46,14 +47,23 @@ function M.generalizedCost(params, market, service)
   local crowdExcess = util.clamp((service.lagLoadPpm or 0)
     - params.crowdThresholdPpm, 0, crowdSpan)
   local crowdCostCents = math.floor(timeCostCents * crowdExcess / crowdSpan)
-  local comfortCents = service.quality
+  local accessModel = feederAccessCents ~= nil
+  local baseComfortCents = service.quality
+  feederAccessCents = math.max(0, util.integer(feederAccessCents, 0))
+  local comfortCents = baseComfortCents + feederAccessCents
   local gcCents = math.max(1, service.fareCents + timeCostCents + waitCostCents
     + transferCostCents + crowdCostCents - comfortCents)
-  return gcCents, {
+  local factors = {
     fareCents = service.fareCents, timeCostCents = timeCostCents,
     waitCostCents = waitCostCents, transferCostCents = transferCostCents,
-    crowdCostCents = crowdCostCents, comfortCents = comfortCents, gcCents = gcCents,
+    crowdCostCents = crowdCostCents,
+    comfortCents = comfortCents, gcCents = gcCents,
   }
+  if accessModel then
+    factors.baseComfortCents = baseComfortCents
+    factors.feederAccessCents = feederAccessCents
+  end
+  return gcCents, factors
 end
 
 local function logitWeight(gcCents, gcMinCents, thetaCents, cutoffWeight)
@@ -137,11 +147,19 @@ function M.evaluateMarket(state, marketCid, deliverySnapshot, periodSeconds)
   if v6 then demand, demandResid = scaledRate(
     market.demand, market.demandResid, periodSeconds) end
   if v6 then market.demandResid = demandResid end
+  local feederIndex = util.integer(state.version, 1) >= 8
+    and feederAccess.buildIndex(state) or nil
   local services = {}
   for _, lineCid in ipairs(util.sortedKeys(state.services)) do
     local service = state.services[lineCid]
     if service.enabled and service.marketCid == marketCid then
-      local gcCents, factors = M.generalizedCost(state.params, market, service)
+      local accessCents, accessEndpoints
+      if feederIndex then
+        accessCents, accessEndpoints = feederAccess.cents(market, service, feederIndex)
+      end
+      local gcCents, factors = M.generalizedCost(
+        state.params, market, service, accessCents)
+      if feederIndex then factors.feederAccessEndpoints = accessEndpoints end
       local capacity, capacityResid = service.capacity, 0
       if v6 then capacity, capacityResid = scaledRate(
         service.capacity, service.capacityResid, periodSeconds) end

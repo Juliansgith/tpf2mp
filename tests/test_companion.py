@@ -20,6 +20,7 @@ from tpf2mp.completion_validation import (
 )
 from tpf2mp.checkpoint import (
     _apply_portable_action,
+    _advance_town_demand,
     _advance_town_development_cursor,
     _advance_town_development_points,
     _evaluate_all_v2,
@@ -1382,20 +1383,33 @@ class ProtocolTests(unittest.TestCase):
             accepted["transaction"]["data"]["config"]["vehicles"][1]["model"],
             "vehicle/waggon/open_1910.mdl",
         )
-        road = json.loads(json.dumps(transaction))
-        road["data"]["config"]["vehicles"] = [road["data"]["config"]["vehicles"][0]]
-        road["data"]["config"]["vehicles"][0]["model"] = "vehicle/bus/benz.mdl"
-        road["data"]["config"]["vehicleGroups"] = [1]
-        road_content = {
-            key: road[key] for key in ("schemaVersion", "kind", "companyCid", "data")
-        }
-        road["digest"] = checksum(road_content)
-        road["transactionId"] = f"operation:{road['digest']}"
-        accepted_road = validate_action({"type": "operation.execute", "transaction": road})
-        self.assertEqual(
-            accepted_road["transaction"]["data"]["config"]["vehicles"][0]["model"],
+        for model in (
             "vehicle/bus/benz.mdl",
-        )
+            "vehicle/truck/opel_blitz.mdl",
+            "vehicle/tram/duewag_gt8.mdl",
+            "vehicle/ship/ferry.mdl",
+            "vehicle/plane/commuter.mdl",
+            "vehicle/mod_namespace/future.mdl",
+        ):
+            carrier = json.loads(json.dumps(transaction))
+            carrier["data"]["config"]["vehicles"] = [
+                carrier["data"]["config"]["vehicles"][0]
+            ]
+            carrier["data"]["config"]["vehicles"][0]["model"] = model
+            carrier["data"]["config"]["vehicleGroups"] = [1]
+            carrier_content = {
+                key: carrier[key]
+                for key in ("schemaVersion", "kind", "companyCid", "data")
+            }
+            carrier["digest"] = checksum(carrier_content)
+            carrier["transactionId"] = f"operation:{carrier['digest']}"
+            accepted_carrier = validate_action(
+                {"type": "operation.execute", "transaction": carrier}
+            )
+            self.assertEqual(
+                accepted_carrier["transaction"]["data"]["config"]["vehicles"][0]["model"],
+                model,
+            )
 
         invalid = json.loads(json.dumps(transaction))
         invalid["data"]["config"]["vehicles"][1]["model"] = "vehicle/../construction/depot.mdl"
@@ -1447,6 +1461,51 @@ class ProtocolTests(unittest.TestCase):
         invalid["transactionId"] = f"operation:{invalid['digest']}"
         with self.assertRaisesRegex(ProtocolError, "vehicle.assign"):
             validate_action({"type": "operation.execute", "transaction": invalid})
+
+    def test_same_town_road_service_has_strict_portable_scope_and_carrier(self) -> None:
+        action = {
+            "type": "line.register", "lineCid": "line:event:local:1",
+            "companyCid": "company:1", "vehicleCosts": {},
+            "market": {
+                "cid": "market:local:12345678", "name": "Testville local passenger market",
+                "kind": "passenger", "demand": 6400,
+                "metadata": {
+                    "townA": "town:pre:testville", "townB": "town:pre:testville",
+                    "townSizeA": 400, "townSizeB": 400,
+                    "corridorMeters": 1250, "marketScope": "local",
+                },
+            },
+            "service": {
+                "lineCid": "line:event:local:1", "marketCid": "market:local:12345678",
+                "companyCid": "company:1", "name": "Local bus",
+                "headwaySeconds": 600, "journeySeconds": 300,
+                "fareCents": 500, "capacity": 480, "quality": 100,
+                "metadata": {
+                    "carrier": "ROAD", "marketScope": "local",
+                    "endpointTownCids": ["town:pre:testville", "town:pre:testville"],
+                    "stationGroupCids": ["station_group:a", "station_group:b"],
+                    "vehicleCids": [],
+                },
+            },
+        }
+        accepted = validate_action(action)
+        self.assertEqual(accepted["service"]["metadata"]["carrier"], "ROAD")
+        wrong_town = json.loads(json.dumps(action))
+        wrong_town["market"]["metadata"]["townB"] = "town:pre:elsewhere"
+        with self.assertRaisesRegex(ProtocolError, "scope"):
+            validate_action(wrong_town)
+        wrong_carrier = json.loads(json.dumps(action))
+        wrong_carrier["service"]["metadata"]["carrier"] = "HOVERCRAFT"
+        with self.assertRaisesRegex(ProtocolError, "carrier"):
+            validate_action(wrong_carrier)
+        forged_endpoint = json.loads(json.dumps(action))
+        forged_endpoint["service"]["metadata"]["endpointTownCids"][1] = "town:pre:elsewhere"
+        with self.assertRaisesRegex(ProtocolError, "endpoint towns"):
+            validate_action(forged_endpoint)
+        local_loop = json.loads(json.dumps(action))
+        local_loop["service"]["metadata"]["stationGroupCids"] = ["station_group:a"]
+        with self.assertRaisesRegex(ProtocolError, "station groups"):
+            validate_action(local_loop)
 
     def test_canonical_vehicle_lifecycle_scalar_contract(self) -> None:
         cases = {
@@ -1971,6 +2030,34 @@ class BridgeTests(unittest.TestCase):
 
 
 class CheckpointTests(unittest.TestCase):
+    def test_same_town_passenger_growth_counts_the_full_local_trip(self) -> None:
+        economy = {
+            "towns": {
+                "town:local": {
+                    "schemaVersion": 1, "cid": "town:local", "size": 400,
+                    "growthResid": 0, "totalGrowth": 0,
+                }
+            },
+            "markets": {
+                "market:local:test": {
+                    "kind": "passenger", "demand": 6400,
+                    "metadata": {
+                        "townA": "town:local", "townB": "town:local",
+                        "townSizeA": 400, "townSizeB": 400,
+                        "corridorMeters": 1000, "marketScope": "local",
+                    },
+                }
+            },
+        }
+        growth = _advance_town_demand(economy, {
+            "markets": {"market:local:test": {"services": {
+                "line:local": {"delivered": 125},
+            }}},
+        })
+        self.assertEqual(growth["towns"]["town:local"]["carried"], 125)
+        self.assertEqual(economy["towns"]["town:local"]["size"], 401)
+        self.assertEqual(economy["towns"]["town:local"]["growthResid"], 100)
+
     def test_completed_passenger_revenue_cursor_pays_exactly_once(self) -> None:
         economy = {
             "version": 6,
