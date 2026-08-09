@@ -72,6 +72,7 @@ $budgets = [ordered]@{
     'companion\tpf2mp\restore.py' = 400
     'companion\tpf2mp\restore_plan.py' = 180
     'companion\tpf2mp\native_save.py' = 70
+    'companion\tpf2mp\session_identity.py' = 80
     'companion\tpf2mp\recovery_receipt_protocol.py' = 70
     'companion\tpf2mp\consensus.py' = 300
     'companion\tpf2mp\synchronization.py' = 700
@@ -106,6 +107,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_public.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_transport_settlement.lua' = 190
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_transport_validation.lua' = 160
+    'tpf2_mp_1\res\scripts\tpf2_mp\restore_session_identity.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_service_binding.lua' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\cargo_presentation.lua' = 520
     'tpf2_mp_1\res\scripts\tpf2_mp\delivery_snapshot.lua' = 150
@@ -205,6 +207,9 @@ foreach ($module in $requiredModules) {
 }
 if (-not (Get-Content -LiteralPath (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\state_schema.lua') -Raw).Contains('tpf2_mp/state_success_normalization')) {
     throw 'State schema no longer composes historical successful-record normalization'
+}
+if (-not (Get-Content -LiteralPath (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\state_schema.lua') -Raw).Contains('tpf2_mp/restore_session_identity')) {
+    throw 'State schema no longer composes bounded restore-session identity'
 }
 if (-not (Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua') -Raw).Contains('tpf2_mp/freight_industry_revalidation')) {
     throw 'Freight-industry runtime no longer composes its saved-state/content revalidation boundary'

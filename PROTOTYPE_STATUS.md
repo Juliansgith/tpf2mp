@@ -638,6 +638,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   version-4 plans bind both load-bearing native files and the exact source
   match-content profile. Version 2 (main save only) and version 3 (profile but
   no metadata attestation) remain readable with explicit legacy semantics.
+  Current resume identities retain readable `<session>-r<boundary>` spelling
+  when it fits and use the same cross-language collision-tagged 64-character
+  form in Python, Lua, and the launcher for long legal source sessions.
 - **Prepare & Save Restore Point** orders shared pause, quiescence, and checkpoint
   convergence. Only while the companion and local runtime expose the same READY
   boundary and core does each game issue Build 35924's native `SaveGame` command
@@ -694,10 +697,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 124 core Lua tests and 108 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 116 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 117 mod Lua and 8 investigation/tool Lua syntax checks;
   - 44 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 139 Python protocol/network/checkpoint/recovery/report tests;
+  - 140 Python protocol/network/checkpoint/recovery/report tests;
   - functional first-fault watcher/real-bundle fixtures, including the
     already-exited-game ordering case and the automatic-save READY-poll race.
 

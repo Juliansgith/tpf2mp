@@ -23,6 +23,7 @@ local townDevelopmentValidationModule = require "tpf2_mp/validation_town_develop
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
+local restoreSessionIdentityModule = require "tpf2_mp/restore_session_identity"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
 local operationCodecModule = require "tpf2_mp/operation_codec"
@@ -41,6 +42,21 @@ local freightMilestoneRuntimeModule = require "tpf2_mp/freight_milestone_runtime
 local passengerMilestoneRuntimeModule = require "tpf2_mp/passenger_milestone_runtime"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
+
+do
+  assert(restoreSessionIdentityModule.derive("saved-network", 7) == "saved-network-r7",
+    "short restore session identity lost its readable legacy form")
+  local longSource = "session-" .. string.rep("x", 56)
+  local bounded = restoreSessionIdentityModule.derive(longSource, 7)
+  assert(bounded == "session-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-hae6020ae6d5e203d-r7"
+      and #bounded == 64,
+    "long restore session identity diverged from the cross-language contract")
+  assert(restoreSessionIdentityModule.derive(longSource, 9007199254740991)
+      == "session-xxxxxxxxxxxxxxxxxxxx-hb13623c36d5e203d-r9007199254740991",
+    "maximum exact restore boundary diverged from the cross-language contract")
+  local refused = restoreSessionIdentityModule.derive("invalid session", 7)
+  assert(refused == nil, "invalid restore source session was accepted")
+end
 
 do
   local gui = { frames = 0, status = {} }
@@ -2671,6 +2687,23 @@ do
       and next(resumed.world.checkpointConsensus.byBoundary) == nil
       and resumed.world.networkClock.generation == 0,
     "attested restore did not preserve canonical state and reset only bridge identity")
+
+  local longSourceId = "session-" .. string.rep("x", 56)
+  local longResumeId = restoreSessionIdentityModule.derive(longSourceId, 7)
+  local longSource = restoreSource()
+  longSource.bridge.sessionId = longSourceId
+  local longResumeCfg = util.deepCopy(resumeCfg)
+  longResumeCfg.sessionId = longResumeId
+  longResumeCfg.restoreResume.fromSession = longSourceId
+  local longResumed = stateSchema.migrate(longSource, {
+    newState = function() return stateSchema.new(longResumeCfg, versions) end,
+    config = function() return longResumeCfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(longResumed.initialized == true
+      and longResumed.bridge.sessionId == longResumeId
+      and #longResumed.bridge.sessionId == 64,
+    "bounded restore session identity was rejected by saved-state migration")
 
   local refusedCfg = util.deepCopy(resumeCfg)
   refusedCfg.restoreResume.coreDigest = "ffffffff"

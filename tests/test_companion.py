@@ -77,6 +77,7 @@ from tpf2mp.restore import (
     confirm_restore_readiness,
     verify_restore_plan,
 )
+from tpf2mp.session_identity import derive_resume_session, validate_session_id
 
 
 def wait_for(predicate, timeout: float = 5.0) -> bool:
@@ -4153,6 +4154,29 @@ class RestorePointTests(unittest.TestCase):
                     match_profile=profile,
                 )
 
+            long_session = "session-" + "x" * 56
+            long_entries = [
+                self._checkpoint(1, 7),
+                self._receipt(2, "player1", 7, sha1, metadata_sha=metadata_sha1),
+                self._receipt(3, "player2", 7, sha2, metadata_sha=metadata_sha2),
+            ]
+            for entry in long_entries:
+                entry["session"] = long_session
+            long_audit = self._audit(root, long_entries)
+            long_plan = build_restore_plan(
+                long_audit, long_session, required_peers=("player1", "player2"),
+                match_profile=profile,
+            )
+            self.assertEqual(
+                verify_restore_plan(long_plan)["resumeSession"],
+                derive_resume_session(long_session, 7),
+            )
+            with self.assertRaisesRegex(ProtocolError, "legacy restore resume session"):
+                build_restore_plan(
+                    long_audit, long_session, required_peers=("player1", "player2"),
+                    match_profile=None,
+                )
+
     def test_game_event_copies_of_receipts_do_not_invalidate_the_ordered_receipts(self) -> None:
         first = self._receipt(2, "player1", 4, "a" * 64)
         second = self._receipt(3, "player2", 4, "b" * 64)
@@ -4802,6 +4826,60 @@ class NativeSaveTests(unittest.TestCase):
                     hash_load_bearing_save(save)
 
 
+class SessionIdentityTests(unittest.TestCase):
+    def test_long_restore_identity_is_bounded_and_plan_verified(self) -> None:
+        self.assertEqual(derive_resume_session("saved-network", 7), "saved-network-r7")
+        source = "session-" + "x" * 56
+        expected = "session-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-hae6020ae6d5e203d-r7"
+        self.assertEqual(len(source), 64)
+        self.assertEqual(derive_resume_session(source, 7), expected)
+        self.assertEqual(len(expected), 64)
+        self.assertEqual(validate_session_id(expected), expected)
+        self.assertNotEqual(derive_resume_session(source[:-1] + "y", 7), expected)
+        self.assertEqual(
+            derive_resume_session(source, 9_007_199_254_740_991),
+            "session-xxxxxxxxxxxxxxxxxxxx-hb13623c36d5e203d-r9007199254740991",
+        )
+        with self.assertRaisesRegex(ProtocolError, "source session"):
+            derive_resume_session("invalid session", 7)
+        with self.assertRaisesRegex(ProtocolError, "boundary"):
+            derive_resume_session(source, True)
+
+        save = {
+            "saveSha256": "a" * 64, "metadataSha256": "b" * 64,
+            "savedAtUnix": 1000, "receiptCommitSeq": 5, "boundarySeq": 7,
+            "coreDigest": "core-7", "convergenceKey": "key-7",
+        }
+        current = sign({
+            "format": "tpf2mp-restore-plan", "version": 4, "protocol": 1,
+            "session": source, "resumeSession": expected,
+            "generatedAtUtc": "2026-08-09T00:00:00+00:00", "boundarySeq": 7,
+            "convergenceKey": "key-7", "coreDigest": "core-7",
+            "requiredPeers": ["player1", "player2"],
+            "peerSaves": {
+                "player1": save,
+                "player2": {
+                    **save, "saveSha256": "c" * 64,
+                    "metadataSha256": "d" * 64, "receiptCommitSeq": 6,
+                },
+            },
+            "matchContentProfile": {
+                "schemaVersion": 1, "agentMode": "skeleton", "townDevelopment": False,
+            },
+            "steps": ["restore both peers"],
+        })
+        self.assertEqual(verify_restore_plan(current)["resumeSession"], expected)
+
+        legacy = dict(current)
+        legacy.pop("checksum")
+        legacy["version"] = 3
+        legacy["resumeSession"] = f"{source}-r7"
+        for attestation in legacy["peerSaves"].values():
+            attestation.pop("metadataSha256")
+        with self.assertRaisesRegex(ProtocolError, "resume session is invalid"):
+            verify_restore_plan(sign(legacy))
+
+
 class RecoveryArchiveTests(unittest.TestCase):
     def test_native_save_archive_is_signed_hashed_and_tamper_evident(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4818,6 +4896,7 @@ class RecoveryArchiveTests(unittest.TestCase):
                     "version": 1,
                     "protocol": 1,
                     "session": "archive-test",
+                    "resumeSession": "archive-test-r9",
                     "requiredPeers": ["player1", "player2"],
                     "anchor": {"boundarySeq": 9, "convergenceKey": "abc123"},
                 }

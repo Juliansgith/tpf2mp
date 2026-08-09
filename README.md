@@ -38,7 +38,9 @@ The second item is not yet finished same-world multiplayer. Prototype `0.37`, st
   reload, `recovery.resume` admission, and a mandatory fresh checkpoint all
   pass on two exact processes before train service resumes. The formerly manual
   stock Save-dialog step is now a READY-gated automatic native command with
-  bounded retries; that new step has offline coverage and awaits live proof.
+  bounded retries. Derived resume sessions stay within the launcher's
+  64-character identity limit even for the longest legal source match id; the
+  automatic save step has offline coverage and awaits live proof.
 - Optional host-authored physical town development. Points and placement
   cursors are digest-projected/replayed, every ordered batch is strict and
   atomic, and three eight-call rounds converge at every intermediate

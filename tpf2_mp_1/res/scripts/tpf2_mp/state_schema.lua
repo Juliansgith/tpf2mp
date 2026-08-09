@@ -10,6 +10,7 @@ local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 local stateSuccessNormalization = require "tpf2_mp/state_success_normalization"
+local restoreSessionIdentity = require "tpf2_mp/restore_session_identity"
 
 local M = {}
 
@@ -99,8 +100,9 @@ local function restoreResumeValidation(saved, cfg)
     or tostring(priorBridge.peerId or "") ~= tostring(cfg.peerId) then
     return false, "restore source session or peer does not match the attested save"
   end
-  if tostring(cfg.sessionId) ~= tostring(request.fromSession) .. "-r"
-      .. tostring(request.boundarySeq) then
+  local expectedResume = restoreSessionIdentity.derive(
+    request.fromSession, request.boundarySeq)
+  if not expectedResume or tostring(cfg.sessionId) ~= expectedResume then
     return false, "restore resume session does not match its attested boundary"
   end
   local consensus = savedWorld.checkpointConsensus

@@ -297,7 +297,9 @@ captured table reference would therefore mutate stale state after loading.
   transport, independent replay, coordinated restore analysis, and native-save
   archives respectively. `restore_plan.py` owns strict v2/v3/v4 plan schemas;
   `native_save.py` owns stable `.sav`/`.sav.lua` hashing; v4 binds both plus the
-  source match profile. `audit_replay.py` owns whole-audit ordering, physical
+  source match profile. `session_identity.py` and the matching Lua
+  `restore_session_identity.lua` keep derived resume identities portable and
+  within the launcher's 64-character boundary. `audit_replay.py` owns whole-audit ordering, physical
   consensus, checkpoint, and digest-chain verification; `cli.py` is only the
   command dispatcher.
 - The long-running `watch_recovery_saves.ps1` process waits for the stable

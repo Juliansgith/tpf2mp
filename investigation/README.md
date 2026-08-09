@@ -2,6 +2,10 @@
 
 Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.16.0`.
 
+[Bounded restore session identity](BOUNDED_RESTORE_SESSION_IDENTITY_2026-08-09.md)
+records the legal-session overflow bug, readable-or-tagged 64-character
+Python/Lua derivation, legacy behavior, and migration/launcher proof.
+
 [Load-bearing restore save attestation](LOAD_BEARING_RESTORE_ATTESTATION_2026-08-09.md)
 records the `.sav.lua` integrity gap, dual-file ordered receipts, strict v4
 plans, stable pair hashing, archive/startup enforcement, v2/v3 compatibility,

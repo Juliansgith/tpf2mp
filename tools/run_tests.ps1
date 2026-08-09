@@ -159,6 +159,15 @@ try {
     }
     $emptyPeersJson = [pscustomobject][ordered]@{ connectedPeers = @() } | ConvertTo-Json -Compress
     if ($emptyPeersJson -ne '{"connectedPeers":[]}') { throw 'Launcher status empty peer list is not a JSON array.' }
+    $boundedResume = 'session-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-hae6020ae6d5e203d-r7'
+    if ((Assert-Tpf2mpSessionId $boundedResume) -ne $boundedResume `
+        -or $boundedResume.Length -ne 64) {
+        throw 'Bounded restore session identity is not launcher-safe.'
+    }
+    $overlongRefused = $false
+    try { [void](Assert-Tpf2mpSessionId ('x' * 65)) }
+    catch { $overlongRefused = $_.Exception.Message -match '1-64 characters' }
+    if (-not $overlongRefused) { throw 'Launcher accepted an overlong session identity.' }
     Write-Host 'PASS launcher process identity boundaries and status array encoding'
 
     $profileA = Write-Tpf2mpMatchContentProfile -Path (Join-Path $temporary 'profile-a.json') `

@@ -11,6 +11,7 @@ from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
 from .native_save import hash_load_bearing_save, sha256_file
 from .protocol import PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_envelope, verify
 from .restore import verify_restore_plan
+from .session_identity import derive_resume_session, validate_session_id
 
 RECOVERY_PLAN_VERSION = 1
 RECOVERY_ARCHIVE_VERSION = 1
@@ -125,7 +126,7 @@ def build_recovery_plan(audit_path: Path | str, session: str | None = None) -> d
         "version": RECOVERY_PLAN_VERSION,
         "protocol": PROTOCOL_VERSION,
         "session": analysis["session"],
-        "resumeSession": f"{analysis['session']}-r{boundary_seq}",
+        "resumeSession": derive_resume_session(analysis["session"], boundary_seq),
         "generatedAtUtc": datetime.now(timezone.utc).isoformat(),
         "auditSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "anchor": {
@@ -164,6 +165,10 @@ def verify_recovery_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         raise ProtocolError("recovery plan has no required peers")
     if not isinstance(plan.get("anchor"), dict) or not plan["anchor"].get("convergenceKey"):
         raise ProtocolError("recovery plan has no agreed checkpoint anchor")
+    source_session = validate_session_id(plan.get("session"), "recovery plan session")
+    boundary = plan["anchor"].get("boundarySeq")
+    if plan.get("resumeSession") != derive_resume_session(source_session, boundary):
+        raise ProtocolError("recovery plan resume session does not match its boundary")
     return plan
 
 

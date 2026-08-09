@@ -44,6 +44,7 @@ from .restore_plan import (
     validate_match_profile,
     verify_restore_plan,
 )
+from .session_identity import derive_resume_session, validate_session_id
 
 
 def _messages(audit_path: Path, session: str | None) -> list[dict[str, Any]]:
@@ -266,6 +267,12 @@ def build_restore_plan(
         else PROFILE_RESTORE_PLAN_VERSION if match_profile is not None
         else LEGACY_RESTORE_PLAN_VERSION
     )
+    if plan_version == RESTORE_PLAN_VERSION:
+        resume_session = derive_resume_session(analysis["session"], boundary)
+    else:
+        resume_session = validate_session_id(
+            f"{analysis['session']}-r{boundary}", "legacy restore resume session"
+        )
     peer_saves: dict[str, dict[str, Any]] = {}
     for peer, receipt in point["receipts"].items():
         peer_saves[peer] = {
@@ -283,7 +290,7 @@ def build_restore_plan(
         "version": plan_version,
         "protocol": PROTOCOL_VERSION,
         "session": analysis["session"],
-        "resumeSession": f"{analysis['session']}-r{boundary}",
+        "resumeSession": resume_session,
         "generatedAtUtc": datetime.now(timezone.utc).isoformat(),
         "boundarySeq": boundary,
         "convergenceKey": point["convergenceKey"],

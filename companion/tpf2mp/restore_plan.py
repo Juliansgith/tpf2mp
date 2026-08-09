@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from .protocol import PROTOCOL_VERSION, ProtocolError, verify
+from .session_identity import derive_resume_session, validate_session_id
 
 RESTORE_PLAN_VERSION = 4
 PROFILE_RESTORE_PLAN_VERSION = 3
@@ -65,12 +66,24 @@ def verify_restore_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         )
     session = plan.get("session")
     boundary = plan.get("boundarySeq")
-    if not isinstance(session, str) or not session or len(session) > 160:
-        raise ProtocolError("restore plan session is invalid")
+    try:
+        session = validate_session_id(session, "restore plan session")
+    except ProtocolError as exc:
+        raise ProtocolError("restore plan session is invalid") from exc
     if not isinstance(boundary, int) or isinstance(boundary, bool) \
             or not 1 <= boundary <= 9_007_199_254_740_991:
         raise ProtocolError("restore plan boundary is invalid")
-    if plan.get("resumeSession") != f"{session}-r{boundary}":
+    expected_resume = (
+        derive_resume_session(session, boundary)
+        if version == RESTORE_PLAN_VERSION else f"{session}-r{boundary}"
+    )
+    try:
+        resume_session = validate_session_id(
+            plan.get("resumeSession"), "restore plan resume session"
+        )
+    except ProtocolError as exc:
+        raise ProtocolError("restore plan resume session is invalid") from exc
+    if resume_session != expected_resume:
         raise ProtocolError("restore plan resume session does not match its boundary")
     for field in ("convergenceKey", "coreDigest"):
         item = plan.get(field)
