@@ -6,7 +6,7 @@ from typing import Any
 
 from .bridge import AuditLog
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
-from .protocol import ProtocolError, validate_envelope
+from .protocol import ProtocolError, validate_action, validate_envelope
 
 
 CHECKPOINTED_COMMIT_TYPES = frozenset({
@@ -86,6 +86,8 @@ def scan_live_audit(
             if action_type == "network.sync_fault":
                 faults.append(str(action.get("errorCode") or "network-sync-fault"))
             if kind == "commit":
+                if action_type in {"freight.milestone", "passenger.milestone"}:
+                    validate_action(action)
                 if action_type == "proposal.prepare":
                     proposal_prepares.add(seq)
                 elif action_type == "proposal.build":
@@ -215,6 +217,7 @@ def scan_live_audit(
                 )
         completed.append({
             "boundarySeq": boundary,
+            "action": dict(ordered.get(boundary, {}).get("payload", {}).get("action", {})),
             "outcome": dict(outcome),
             "payloads": {peer: records[peer] for peer in peer_roster},
         })

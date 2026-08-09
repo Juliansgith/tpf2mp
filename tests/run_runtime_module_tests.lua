@@ -836,6 +836,27 @@ do
 
     controller.reset()
     emitted = {}
+    current.world.checkpointConsensus.byBoundary[99] = { status = "pending" }
+    local physicalQueued, physicalResult = controller.submit({
+      type = "proposal.build", companyCid = "company:1",
+    })
+    current.world.checkpointConsensus.byBoundary[99] = nil
+    assert(physicalQueued == true and physicalResult.deferred == true
+        and #controller.deferredIntents() == 1,
+      "synthetic physical work did not enter the deferred lane")
+    controller.scheduleFollowup({
+      type = "freight.milestone", stage = "aboard",
+      lineCid = "line:event:priority:cargo",
+      vehicleCid = "vehicle:event:priority:cargo",
+      observedRound = 1, boardedTotal = 4, aboard = 4,
+    })
+    assert(controller.processDeferred() == true and #emitted == 1
+        and emitted[1].payload.action.type == "freight.milestone"
+        and #controller.deferredIntents() == 1,
+      "bounded load evidence did not outrun older uncommitted physical work")
+
+    controller.reset()
+    emitted = {}
     controller.scheduleFollowup({
       type = "line.register", lineCid = "line:event:deleted:1",
       companyCid = "company:1",
@@ -952,18 +973,29 @@ do
 
     controller.reset()
     emitted = {}
+    local invalidQueued = controller.scheduleFollowup({
+      type = "freight.milestone", stage = "aboard",
+      lineCid = "line:event:invalid", vehicleCid = "vehicle:event:invalid",
+      observedRound = 0, boardedTotal = 1, aboard = 1,
+    })
+    assert(invalidQueued == false and #controller.deferredFollowups() == 0,
+      "invalid internal aboard witness entered the persistent retry queue")
     local milestoneQueued, milestoneResult = controller.scheduleFollowup({
       type = "freight.milestone", stage = "aboard",
       lineCid = "line:event:cargo:1", vehicleCid = "vehicle:event:cargo:1",
+      observedRound = 1, boardedTotal = 4, aboard = 4,
     })
     local duplicateMilestone = controller.scheduleFollowup({
       type = "freight.milestone", stage = "aboard",
       lineCid = "line:event:cargo:2", vehicleCid = "vehicle:event:cargo:2",
+      observedRound = 2, boardedTotal = 9, aboard = 5,
     })
     assert(milestoneQueued == true and milestoneResult.deferred == true
         and duplicateMilestone == true and #emitted == 0
         and #controller.deferredFollowups() == 1
-        and controller.deferredFollowups()[1].coalesced == 1,
+        and controller.deferredFollowups()[1].coalesced == 1
+        and controller.deferredFollowups()[1].action.lineCid == "line:event:cargo:2"
+        and controller.deferredFollowups()[1].action.observedRound == 2,
       "cargo milestone bypassed or duplicated the ordered follow-up lane")
     current.bridge.companion = { connected = false }
     assert(controller.processDeferred() == false and #emitted == 0
@@ -972,8 +1004,9 @@ do
     current.bridge.companion.connected = true
     assert(controller.processDeferred() == true and #emitted == 1
         and emitted[1].payload.action.type == "freight.milestone"
+        and emitted[1].payload.action.vehicleCid == "vehicle:event:cargo:2"
         and #controller.deferredFollowups() == 0,
-      "cargo milestone did not drain through one ordered network round")
+      "cargo milestone did not drain its newest witness through one ordered round")
 
     controller.reset()
     emitted = {}
@@ -998,6 +1031,10 @@ do
     controller.reset()
     emitted = {}
     controller.scheduleFollowup({
+      type = "line.register", lineCid = "line:event:after-evidence",
+      companyCid = "company:1",
+    })
+    controller.scheduleFollowup({
       type = "freight.milestone", stage = "aboard",
       lineCid = "line:event:cargo:both", vehicleCid = "vehicle:event:cargo:both",
     })
@@ -1005,8 +1042,12 @@ do
       type = "passenger.milestone", stage = "aboard",
       lineCid = "line:event:feeder:both", vehicleCid = "vehicle:event:bus:both",
     })
-    assert(#controller.deferredFollowups() == 2,
-      "cargo and passenger milestones coalesced across evidence domains")
+    local evidenceQueue = controller.deferredFollowups()
+    assert(#evidenceQueue == 3
+        and evidenceQueue[1].action.type == "freight.milestone"
+        and evidenceQueue[2].action.type == "passenger.milestone"
+        and evidenceQueue[3].action.type == "line.register",
+      "evidence priorities crossed domains, reversed FIFO order, or stayed behind registration")
   end, debug.traceback)
   bridgeModule.emit = originalEmit
   if not ok then error(failure, 0) end
@@ -1036,8 +1077,10 @@ do
       },
     } } },
     world = { passengerPresentation = {
-      lines = { [lineCid] = { lineCid = lineCid } },
-      vehicles = { [vehicleCid] = { lineCid = lineCid, aboard = 7 } },
+      lines = { [lineCid] = { lineCid = lineCid, boardedTotal = 7 } },
+      vehicles = { [vehicleCid] = {
+        lineCid = lineCid, aboard = 7, lastRound = 3, boardedTotal = 7,
+      } },
     } },
   }
   local handlers = {}
@@ -1077,12 +1120,20 @@ do
       and #scheduled == 0,
     "disconnected host scheduled a passenger milestone")
   current.bridge.companion.connected = true
+  current.world.passengerPresentation.vehicles[vehicleCid].lastRound = 0
+  assert(passengerMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == false,
+    "passenger proof scheduled an invalid zero-round witness")
+  current.world.passengerPresentation.vehicles[vehicleCid].lastRound = 3
   assert(passengerMilestoneRuntimeModule.observeRelease(
       current, { vehicleCid = vehicleCid }, controller, log) == true
-      and #scheduled == 1 and scheduled[1].type == "passenger.milestone",
+      and #scheduled == 1 and scheduled[1].type == "passenger.milestone"
+      and scheduled[1].observedRound == 3 and scheduled[1].boardedTotal == 7
+      and scheduled[1].aboard == 7,
     "first authoritative feeder load did not schedule its proof milestone")
+  current.world.passengerPresentation.vehicles[vehicleCid].aboard = 0
   assert(handlers["passenger.milestone"](scheduled[1]) == true,
-    "host could not apply its ordered passenger proof milestone")
+    "host could not apply a witnessed passenger milestone after alighting")
 
   local exported = {}
   assert(passengerMilestoneRuntimeModule.afterCommit(
@@ -1093,6 +1144,14 @@ do
       and exported[1].boundary == 23
       and exported[1].reason == "passenger-milestone:aboard",
     "passenger milestone did not open its convergence checkpoint")
+
+  current.probes.passengerMilestone = nil
+  current.world.passengerPresentation.lines[lineCid].boardedTotal = 6
+  local staleOk, staleResult = handlers["passenger.milestone"](scheduled[1])
+  assert(staleOk == true and staleResult.stale == true
+      and current.probes.passengerMilestone.aboardCheckpointed == false,
+    "stale passenger witness faulted the session or consumed the proof")
+  current.world.passengerPresentation.lines[lineCid].boardedTotal = 7
 
   current.probes.passengerMilestone = nil
   current.economy.services[lineCid].metadata.carrier = "RAIL"
@@ -1122,8 +1181,10 @@ do
     bridge = { peerId = "player2", companion = { connected = true } },
     probes = {},
     world = { cargoPresentation = {
-      lines = { [lineCid] = { retired = false } },
-      vehicles = { [vehicleCid] = { lineCid = lineCid, aboard = 12 } },
+      lines = { [lineCid] = { retired = false, boardedTotal = 12 } },
+      vehicles = { [vehicleCid] = {
+        lineCid = lineCid, aboard = 12, lastRound = 1, boardedTotal = 12,
+      } },
     } },
   }
   local handlers = {}
@@ -1166,17 +1227,25 @@ do
       and #scheduled == 0,
     "disconnected host scheduled a consensus-bound cargo milestone")
   current.bridge.companion.connected = true
+  current.world.cargoPresentation.vehicles[vehicleCid].lastRound = 0
+  assert(freightMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == false,
+    "cargo proof scheduled an invalid zero-round witness")
+  current.world.cargoPresentation.vehicles[vehicleCid].lastRound = 1
   local queued = freightMilestoneRuntimeModule.observeRelease(
     current, { vehicleCid = vehicleCid }, controller, log)
   assert(queued == true and #scheduled == 1
-      and scheduled[1].lineCid == lineCid and scheduled[1].vehicleCid == vehicleCid,
+      and scheduled[1].lineCid == lineCid and scheduled[1].vehicleCid == vehicleCid
+      and scheduled[1].observedRound == 1 and scheduled[1].boardedTotal == 12
+      and scheduled[1].aboard == 12,
     "first authoritative cargo load did not schedule its proof milestone")
   assert(freightMilestoneRuntimeModule.observeRelease(
       current, { vehicleCid = vehicleCid }, controller, log) == true
       and #scheduled == 1,
     "pending cargo proof did not defer to queue-owned duplicate suppression")
+  current.world.cargoPresentation.vehicles[vehicleCid].aboard = 0
   assert(handlers["freight.milestone"](scheduled[1]) == true,
-    "host could not apply its ordered cargo proof milestone")
+    "host could not apply a witnessed cargo milestone after alighting")
 
   local exported = {}
   assert(freightMilestoneRuntimeModule.afterCommit(
@@ -1187,11 +1256,14 @@ do
       and exported[1].boundary == 19
       and exported[1].reason == "freight-milestone:aboard",
     "cargo milestone did not automatically open its convergence checkpoint")
-  current.world.cargoPresentation.vehicles[vehicleCid].aboard = 0
+  current.world.cargoPresentation.vehicles[vehicleCid].boardedTotal = 0
   current.probes.freightMilestone = nil
   freightMilestoneRuntimeModule.reset()
-  assert(handlers["freight.milestone"](scheduled[1]) == false,
-    "cargo milestone accepted a ledger with no cargo aboard")
+  local staleOk, staleResult = handlers["freight.milestone"](scheduled[1])
+  assert(staleOk == true and staleResult.stale == true
+      and current.probes.freightMilestone.aboardCheckpointed == false,
+    "stale cargo witness faulted the session or consumed the proof")
+  current.world.cargoPresentation.vehicles[vehicleCid].boardedTotal = 12
   current.world.cargoPresentation.vehicles[vehicleCid].aboard = 12
   current.probes.freightMilestone = {
     aboardCheckpointed = true, sessionId = "superseded-session",

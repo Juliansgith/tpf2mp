@@ -84,9 +84,14 @@ Domain modules under `res/scripts/tpf2_mp`:
   policies select the ledger; the passenger policy admits only a valid
   same-town ROAD/TRAM service with two distinct station groups, so an earlier
   rail departure cannot consume feeder evidence. `aboard_milestone_integration.lua`
-  is the game-script seam, and `aboard_milestone_followup.lua` coalesces retries
-  through the existing bounded ordered FIFO. Milestones verify existing ledger
-  state and open a checkpoint; they never mutate a load a second time.
+  is the game-script seam. `aboard_milestone_witness.lua` owns the strict wire
+  shape and monotonic round/boarding-cursor proof that survives a vehicle
+  alighting before the checkpoint. `aboard_milestone_followup.lua` coalesces
+  retries and maintains a FIFO evidence-priority prefix ahead of uncommitted
+  physical/registration work. Milestones verify existing ledger state and open
+  a checkpoint; they never mutate a load a second time. A semantically stale
+  witness is a non-proof no-op so a later release can retry without faulting a
+  healthy match.
   `passenger_cosmetics.lua` owns read-only native-person telemetry
   and the fail-closed optional-write boundary.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.

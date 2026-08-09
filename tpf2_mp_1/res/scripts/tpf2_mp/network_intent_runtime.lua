@@ -338,12 +338,10 @@ function M.new(deps)
   end
   
   local function processDeferredNetworkIntent()
-    local lane = "physical"
-    local pending = deferredNetworkIntents[1]
-    if not pending then
-      lane = "followup"
-      pending = followups.head()
-    end
+    local pending = followups.priorityHead()
+    local lane = pending and "followup" or "physical"
+    pending = pending or deferredNetworkIntents[1]
+    if not pending then lane, pending = "followup", followups.head() end
     if not pending then return false end
     local consensus = state.world.proposalConsensus or {}
     local operationConsensus = state.world.operationConsensus or {}

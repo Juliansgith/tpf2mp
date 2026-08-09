@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .aboard_witness import verify_aboard_witness
 from .live_evidence import scan_live_audit
 from .protocol import ProtocolError
 
@@ -186,7 +187,10 @@ def _corridor(row: Mapping[str, Any]) -> bool:
     )
 
 
-def _checkpoint_summary(payload: Mapping[str, Any], carrier: str) -> dict[str, Any]:
+def _checkpoint_summary(
+    payload: Mapping[str, Any], carrier: str,
+    action: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     economy = _mapping(payload["model"].get("economy"))
     passenger = payload["vehicleSynchronization"]["passengerPresentation"]
     rows = _service_rows(payload)
@@ -213,6 +217,13 @@ def _checkpoint_summary(payload: Mapping[str, Any], carrier: str) -> dict[str, A
 
     linked_line_cids = {link["localLineCid"] for link in links}
     linked_local = [row for row in local if row["lineCid"] in linked_line_cids]
+    presentation = payload["vehicleSynchronization"]["passengerPresentation"]
+    witness = verify_aboard_witness(
+        action or {}, "passenger.milestone",
+        [dict(item) for item in _array(presentation.get("lines"))],
+        [dict(item) for item in _array(presentation.get("vehicles"))],
+        allowed_line_cids=linked_line_cids,
+    )
     completed_local = [
         row for row in linked_local
         if row["deliveredPassengers"] > 0
@@ -240,7 +251,7 @@ def _checkpoint_summary(payload: Mapping[str, Any], carrier: str) -> dict[str, A
         "local-service": local_service,
         "corridor-service": corridor_service,
         "benefit": benefit,
-        "aboard": benefit and local_aboard > 0,
+        "aboard": benefit and (local_aboard > 0 or witness is not None),
         "delivered": benefit and bool(completed_local),
         "settled": benefit and bool(settled_local),
     }
@@ -260,6 +271,8 @@ def _checkpoint_summary(payload: Mapping[str, Any], carrier: str) -> dict[str, A
         "linkedCompletedLinesSettled": len(settled_local) == len(completed_local)
             if completed_local else True,
         "localAboard": local_aboard,
+        "localWitnessedAboard": int(witness["aboard"]) if witness else 0,
+        "aboardWitness": witness,
         "localDeliveredPassengers": local_delivered,
         "localPresentationRevenueCents": local_revenue,
         "localSettledPassengers": settled_passengers,
@@ -292,13 +305,14 @@ def analyse_passenger_feeder_audit(
     completed: list[dict[str, Any]] = []
     for item in shared["completed"]:
         payload = item["payloads"][peer_roster[0]]
-        summary = _checkpoint_summary(payload, carrier)
+        summary = _checkpoint_summary(payload, carrier, item.get("action"))
         summary["peers"] = list(peer_roster)
         completed.append(summary)
 
     observed = {stage: any(row["stages"][stage] for row in completed) for stage in STAGES}
     maxima_fields = (
         "localAboard",
+        "localWitnessedAboard",
         "localDeliveredPassengers",
         "localPresentationRevenueCents",
         "localSettledPassengers",
@@ -355,7 +369,7 @@ def analyse_passenger_feeder_audit(
         )
     if require_observed_aboard and not observed["aboard"]:
         problems.append(
-            "no converged checkpoint captured passengers aboard the local feeder"
+            "no converged checkpoint captured or witnessed local feeder passengers aboard"
         )
 
     return {

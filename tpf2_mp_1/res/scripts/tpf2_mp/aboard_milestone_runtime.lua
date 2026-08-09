@@ -1,12 +1,7 @@
 local util = require "tpf2_mp/util"
+local witness = require "tpf2_mp/aboard_milestone_witness"
 
 local M = {}
-
-local function validCid(value, prefix)
-  return type(value) == "string" and #value <= 240
-    and value:sub(1, #prefix + 1) == prefix .. ":"
-    and not value:find("[%z\1-\31]")
-end
 
 function M.new(spec)
   local actionType = assert(spec.actionType, "actionType is required")
@@ -15,24 +10,7 @@ function M.new(spec)
   local ledgerOf = assert(spec.ledgerOf, "ledgerOf is required")
   local eligible = spec.eligible or function() return true end
 
-  local function normalise(action)
-    if type(action) ~= "table" then
-      return nil, label .. " milestone must be a table"
-    end
-    for key in pairs(action) do
-      if key ~= "type" and key ~= "stage" and key ~= "lineCid"
-        and key ~= "vehicleCid" then
-        return nil, label .. " milestone has an unknown field: " .. tostring(key)
-      end
-    end
-    if action.type ~= actionType or action.stage ~= "aboard"
-      or not validCid(action.lineCid, "line")
-      or not validCid(action.vehicleCid, "vehicle") then
-      return nil, label .. " aboard milestone has invalid canonical identity"
-    end
-    return { type = actionType, stage = "aboard",
-      lineCid = action.lineCid, vehicleCid = action.vehicleCid }
-  end
+  local function normalise(action) return witness.normalise(action, actionType, label) end
 
   local runtime = {}
 
@@ -53,18 +31,32 @@ function M.new(spec)
       local ledger = ledgerOf(state) or {}
       local vehicle = ledger.vehicles and ledger.vehicles[action.vehicleCid] or nil
       local line = ledger.lines and ledger.lines[action.lineCid] or nil
-      if not vehicle or vehicle.lineCid ~= action.lineCid or not line
-        or util.integer(vehicle.aboard, 0) < 1
-        or not eligible(state, vehicle, line) then
-        return false, label .. " aboard milestone is not present in the authored ledger"
+      local verified, currentAboard = witness.verify(
+        normalised, vehicle, line,
+        function(candidate, candidateLine)
+          return eligible(state, candidate, candidateLine)
+        end)
+      if not verified then
+        state.probes[probeKey] = {
+          aboardCheckpointed = false, stale = true,
+          lineCid = action.lineCid, vehicleCid = action.vehicleCid,
+          sessionId = state.bridge.sessionId, tick = state.tick,
+        }
+        return true, { stage = "aboard", stale = true,
+          lineCid = action.lineCid, vehicleCid = action.vehicleCid }
       end
       state.probes[probeKey] = {
         aboardCheckpointed = true, lineCid = action.lineCid,
         vehicleCid = action.vehicleCid, sessionId = state.bridge.sessionId,
-        tick = state.tick,
+        observedRound = normalised.observedRound,
+        boardedTotal = normalised.boardedTotal,
+        aboard = normalised.aboard or currentAboard, tick = state.tick,
       }
       return true, { stage = "aboard", lineCid = action.lineCid,
-        vehicleCid = action.vehicleCid, aboard = util.integer(vehicle.aboard, 0) }
+        vehicleCid = action.vehicleCid,
+        aboard = normalised.aboard or currentAboard,
+        observedRound = normalised.observedRound,
+        boardedTotal = normalised.boardedTotal }
     end
   end
 
@@ -78,16 +70,17 @@ function M.new(spec)
     local ledger = ledgerOf(state) or {}
     local vehicle = ledger.vehicles and ledger.vehicles[action.vehicleCid] or nil
     local line = vehicle and ledger.lines and ledger.lines[vehicle.lineCid] or nil
-    if not vehicle or not line or util.integer(vehicle.aboard, 0) < 1
-      or not validCid(vehicle.lineCid, "line")
-      or not eligible(state, vehicle, line) then return false end
+    local observed = witness.capture(vehicle)
+    if not observed or not line or not eligible(state, vehicle, line) then return false end
     local ok, result = controller.scheduleFollowup({
       type = actionType, stage = "aboard",
       lineCid = vehicle.lineCid, vehicleCid = action.vehicleCid,
+      observedRound = observed.observedRound,
+      boardedTotal = observed.boardedTotal, aboard = observed.aboard,
     })
     log(label .. "-milestone-schedule", {
       stage = "aboard", lineCid = vehicle.lineCid, vehicleCid = action.vehicleCid,
-      aboard = util.integer(vehicle.aboard, 0), queued = ok == true,
+      aboard = observed.aboard, queued = ok == true,
       error = ok and nil or tostring(result), tick = state.tick,
     })
     return ok == true, result

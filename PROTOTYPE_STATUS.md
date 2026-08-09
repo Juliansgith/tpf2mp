@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.36.0-alpha`, state schema `29`,
+Last updated: 2026-08-09 for prototype `0.37.0-alpha`, state schema `29`,
 checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation
 schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction
 proposal schema `7`, and native hook `0.14.0`.
@@ -593,11 +593,12 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   rejects both a one-unit conservation tamper and a payment cursor one unit
   ahead of delivery.
 - The first authoritative cargo load above zero now queues one host-authored
-  `freight.milestone` through the ordinary ordered follow-up lane. Both peers
-  must verify that exact canonical vehicle and line have cargo aboard before a
-  `freight-milestone:aboard` checkpoint can complete. This removes the
-  timing-dependent manual checkpoint from strict live evidence without adding
-  a network round at every station.
+  `freight.milestone`. Its exact release round, cumulative boarding cursor, and
+  immediate load survive a short route unloading before the action commits;
+  both peers bind that witness to the same canonical line/vehicle and monotonic
+  presentation ledger before `freight-milestone:aboard` can count as proof.
+  This removes the timing-dependent manual checkpoint without adding a network
+  round at every station.
 - The same one-shot protocol now covers the first non-zero authored passenger
   load on a valid local ROAD/TRAM feeder. A shared runtime verifies both peers'
   canonical line/vehicle ledger, while a passenger policy requires local scope,
@@ -605,7 +606,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   duplicate-stop routes, disabled services, and malformed bindings cannot
   consume the proof. The ordered `passenger.milestone` opens
   `passenger-milestone:aboard`; the focused feeder wrapper requires it
-  automatically, removing its last timed checkpoint click.
+  automatically, removing its last timed checkpoint click. Passenger and cargo
+  evidence share a FIFO priority prefix ahead of queued-but-uncommitted builds;
+  stale witnesses remain non-proofs and may retry rather than faulting a
+  healthy match.
 - Native people remain bounded scenery. Exact-build reverse engineering shows
   `Debug_SetSimPersonState` contains only a person ID and boolean, with no
   train/station target; the cosmetic adapter therefore issues zero writes.

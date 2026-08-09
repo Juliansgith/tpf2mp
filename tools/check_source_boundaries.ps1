@@ -88,6 +88,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua' = 560
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_runtime.lua' = 190
     'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_runtime.lua' = 140
+    'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_witness.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_integration.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\freight_milestone_runtime.lua' = 20
     'tpf2_mp_1\res\scripts\tpf2_mp\passenger_milestone_runtime.lua' = 50
@@ -109,6 +110,8 @@ $budgets = [ordered]@{
     'companion\tpf2mp\cargo_checkpoint.py' = 230
     'companion\tpf2mp\freight_checkpoint.py' = 220
     'companion\tpf2mp\live_evidence.py' = 300
+    'companion\tpf2mp\aboard_witness.py' = 80
+    'companion\tpf2mp\aboard_milestone_protocol.py' = 60
     'companion\tpf2mp\freight_live_report.py' = 260
     'companion\tpf2mp\passenger_feeder_live_report.py' = 500
     'companion\tpf2mp\protocol.py' = 1650
@@ -189,6 +192,21 @@ foreach ($module in @('tpf2_mp/freight_milestone_runtime',
     'tpf2_mp/passenger_milestone_runtime')) {
     if (-not $milestoneSource.Contains($module)) {
         throw "Aboard milestone integration no longer composes $module"
+    }
+}
+$aboardRuntimeSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\aboard_milestone_runtime.lua') -Raw
+if (-not $aboardRuntimeSource.Contains('tpf2_mp/aboard_milestone_witness')) {
+    throw 'Aboard milestone runtime no longer composes its strict witness boundary.'
+}
+$protocolSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\protocol.py') -Raw
+if (-not $protocolSource.Contains('from .aboard_milestone_protocol import')) {
+    throw 'Companion protocol no longer composes its aboard-milestone wire boundary.'
+}
+foreach ($report in @('freight_live_report.py', 'passenger_feeder_live_report.py')) {
+    $reportSource = Get-Content -LiteralPath (Join-Path $root "companion\tpf2mp\$report") -Raw
+    if (-not $reportSource.Contains('from .aboard_witness import')) {
+        throw "$report no longer composes the shared checkpoint witness verifier."
     }
 }
 $freightModelSource = Get-Content -LiteralPath `

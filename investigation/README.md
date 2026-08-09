@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.36.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[Witnessed aboard-evidence hardening](WITNESSED_ABOARD_EVIDENCE_HARDENING_2026-08-09.md)
+records the short-route alighting race, exact monotonic load witnesses, stale
+no-op/retry behavior, evidence-priority FIFO, checkpoint action binding, and
+adversarial false-positive coverage.
 
 [Automatic passenger-aboard milestone](AUTOMATIC_PASSENGER_ABOARD_MILESTONE_2026-08-09.md)
 records the shared one-shot aboard runtime, strict local ROAD/TRAM eligibility,

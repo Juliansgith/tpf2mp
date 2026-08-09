@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from .aboard_witness import verify_aboard_witness
 from .live_evidence import scan_live_audit
 from .protocol import ProtocolError
 
@@ -33,7 +34,9 @@ def _count(value: Any, label: str) -> int:
     return value
 
 
-def _checkpoint_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
+def _checkpoint_summary(
+    payload: Mapping[str, Any], action: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     model = payload["model"]
     freight = model["freightIndustry"]
     economy = model.get("economy", {})
@@ -42,6 +45,9 @@ def _checkpoint_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
     lines = [dict(item) for item in _array(cargo.get("lines"))]
     vehicles = [dict(item) for item in _array(cargo.get("vehicles"))]
     active = [item for item in lines if item.get("retired") is not True]
+    witness = verify_aboard_witness(
+        action or {}, "freight.milestone", lines, vehicles, reject_retired=True,
+    )
 
     allocated = sum(_count(item.get("allocated"), "line allocation") for item in active)
     boarded_epoch = sum(
@@ -79,7 +85,7 @@ def _checkpoint_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "ready": freight.get("ready") is True,
         "service": len(active) > 0,
         "waiting": waiting > 0,
-        "aboard": aboard > 0,
+        "aboard": aboard > 0 or witness is not None,
         "delivered": (
             delivered > 0
             and freight_delivered > 0
@@ -105,6 +111,8 @@ def _checkpoint_summary(payload: Mapping[str, Any]) -> dict[str, Any]:
         "boardedThisEpoch": boarded_epoch,
         "waiting": waiting,
         "aboard": aboard,
+        "witnessedAboard": int(witness["aboard"]) if witness else 0,
+        "aboardWitness": witness,
         "boardedTotal": boarded,
         "deliveredTotal": delivered,
         "discardedTotal": discarded,
@@ -134,13 +142,14 @@ def analyse_freight_audit(
     completed: list[dict[str, Any]] = []
     for item in shared["completed"]:
         payload = item["payloads"][peer_roster[0]]
-        summary = _checkpoint_summary(payload)
+        summary = _checkpoint_summary(payload, item.get("action"))
         summary["peers"] = list(peer_roster)
         completed.append(summary)
 
     observed = {stage: any(row["stages"][stage] for row in completed) for stage in STAGES}
     maxima_fields = (
         "activeCargoLines", "cargoVehicles", "allocatedThisEpoch", "waiting", "aboard",
+        "witnessedAboard",
         "boardedTotal", "deliveredTotal", "presentationRevenueCents",
         "freightTransportedTotal", "freightDeliveredTotal", "settledDeliveredTotal",
         "settledRevenueCents",
@@ -169,7 +178,7 @@ def analyse_freight_audit(
     if not observed[require_stage]:
         problems.append(f"required freight stage was not observed: {require_stage}")
     if require_observed_aboard and not observed["aboard"]:
-        problems.append("no converged checkpoint captured cargo aboard a vehicle")
+        problems.append("no converged checkpoint captured or witnessed cargo aboard")
 
     return {
         "schemaVersion": 1,
@@ -220,7 +229,7 @@ def configure_cli(commands: Any) -> None:
     command.add_argument("--require-stage", choices=STAGES, default="settled")
     command.add_argument(
         "--require-observed-aboard", action="store_true",
-        help="also require a converged checkpoint captured while cargo was on a vehicle",
+        help="also require a converged checkpoint with a verified cargo-aboard witness",
     )
 
 

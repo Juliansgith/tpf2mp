@@ -358,6 +358,19 @@ acceptance wrapper now requires the receipt automatically. This removes test
 timing but does not replace the still-open real two-process ROAD/TRAM run. See
 `investigation/AUTOMATIC_PASSENGER_ABOARD_MILESTONE_2026-08-09.md`.
 
+**2026-08-09 witnessed-load hardening checkpoint.** Prototype 0.37 closes a
+short-route race in both one-shot aboard domains. The host now carries the
+exact authored release round, cumulative vehicle boarding cursor, and observed
+load in the milestone. Each peer binds those values to monotonic line/vehicle
+presentation cursors, so a checkpoint remains valid after the vehicle has
+already alighted. Stale but structurally valid evidence is a retryable non-proof
+rather than a match fault. Passenger and freight milestones form a FIFO
+priority prefix ahead of locally queued uncommitted work without bypassing a
+sent intent, active consensus barrier, or missing peer. Completed live-evidence
+records retain their exact boundary action, and strict reports verify historical
+loads independently against the checkpoint. See
+`investigation/WITNESSED_ABOARD_EVIDENCE_HARDENING_2026-08-09.md`.
+
 The next gates are the now-scripted focused local bus/tram feeder run, cargo-positive two-process run, human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
 
 ---

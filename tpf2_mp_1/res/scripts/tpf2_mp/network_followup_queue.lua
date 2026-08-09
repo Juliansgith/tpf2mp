@@ -38,12 +38,9 @@ function M.new(deps)
     end
     local actionType = tostring(action.type or "")
     if actionType ~= "line.register" and actionType ~= "town.develop"
-      and actionType ~= "freight.milestone"
-      and actionType ~= "passenger.milestone" then
-      return false, "unsupported ordered follow-up: " .. actionType
-    end
-    local proposalFault = state.world.proposalConsensus
-      and state.world.proposalConsensus.sessionFault
+      and not aboardMilestoneFollowup.supports(actionType) then return false,
+        "unsupported ordered follow-up: " .. actionType end
+    local proposalFault = state.world.proposalConsensus and state.world.proposalConsensus.sessionFault
     local operationFault = state.world.operationConsensus
       and state.world.operationConsensus.sessionFault
     if proposalFault or operationFault then return false, "network session is faulted" end
@@ -96,7 +93,7 @@ function M.new(deps)
           }
         end
       end
-    elseif actionType == "freight.milestone" or actionType == "passenger.milestone" then
+    elseif aboardMilestoneFollowup.supports(actionType) then
       local handled, result = aboardMilestoneFollowup.coalesce(
         items, action, state, diagnosticLog, count)
       if handled ~= nil then return handled, result end
@@ -105,14 +102,16 @@ function M.new(deps)
     if count() >= maximum then
       return false, "ordered follow-up queue is full (" .. tostring(maximum) .. ")"
     end
-    items[#items + 1] = {
+    local pending = {
       action = util.deepCopy(action), queuedTick = state.tick, coalesced = 0,
     }
+    local queuePosition = aboardMilestoneFollowup.insert(items, pending, actionType)
     diagnosticLog("network-followup-deferred", {
-      type = actionType, queueDepth = count(), tick = state.tick,
+      type = actionType, queuePosition = queuePosition,
+      queueDepth = count(), tick = state.tick,
     })
     return true, {
-      queued = true, deferred = true, queuePosition = count(),
+      queued = true, deferred = true, queuePosition = queuePosition,
       queueDepth = count(), queueCapacity = maximum,
     }
   end
@@ -166,6 +165,7 @@ function M.new(deps)
     schedule = schedule,
     count = count,
     head = function() return items[1] end,
+    priorityHead = function() return aboardMilestoneFollowup.priorityHead(items) end,
     copy = function() return util.deepCopy(items) end,
     clear = function() items = {} end,
     cancelLineRegistration = cancelLineRegistration,

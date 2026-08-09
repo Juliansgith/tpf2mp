@@ -118,7 +118,7 @@ Run PowerShell from this directory:
 .\tools\package_release.ps1
 ```
 
-This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.36.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
+This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, creates `dist\TPF2MP-0.37.0-alpha.zip`, and performs a temporary install/verify/uninstall round trip.
 
 An extracted package installs with:
 
@@ -275,7 +275,9 @@ audit to prove loaded-industry bootstrap plus a converged checkpoint with
 non-zero delivered cargo and settled authoritative revenue. With
 `-RequireObservedAboard`, the first authoritative non-zero cargo load creates a
 one-time host-ordered `freight-milestone:aboard` checkpoint automatically; no
-manual timing or **Export Checkpoint** click is required. An already collected
+manual timing or **Export Checkpoint** click is required. Its bounded authored
+round/load witness remains valid if the vehicle unloads before the checkpoint.
+An already collected
 host audit can be checked independently with:
 
 ```powershell
@@ -297,7 +299,8 @@ operational corridor sharing an exact endpoint station group, a positive
 modeled feeder link, completed local travel, and settled authoritative revenue.
 The first non-zero authored load on a valid local ROAD/TRAM feeder automatically
 opens a one-time `passenger-milestone:aboard` checkpoint; the wrapper requires
-that receipt, so there is no timed **Export Checkpoint** click. Rail corridors,
+that receipt, so there is no timed **Export Checkpoint** click. The proof is
+bound to monotonic vehicle/line boarding cursors and survives alighting. Rail corridors,
 rival services, duplicate-stop routes, and malformed local bindings cannot
 consume the milestone. Use `-Carrier TRAM` for a tram-specific receipt. Existing
 evidence can be checked with:

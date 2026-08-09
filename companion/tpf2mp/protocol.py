@@ -7,6 +7,7 @@ import zlib
 from decimal import Decimal, localcontext, ROUND_HALF_UP
 from typing import Any, Mapping
 
+from .aboard_milestone_protocol import AboardMilestoneError, validate as validate_aboard_milestone
 from .line_registration_protocol import validate_metadata as validate_line_metadata
 
 PROTOCOL_VERSION = 1
@@ -1615,12 +1616,10 @@ def validate_action(action: Any) -> dict[str, Any]:
         from .freight_protocol import validate_industry_bootstrap
         validate_industry_bootstrap(action)
     if action_type in {"freight.milestone", "passenger.milestone"}:
-        if set(action) != {"type", "stage", "lineCid", "vehicleCid"} \
-                or action.get("stage") != "aboard" \
-                or not _operation_cid(action.get("lineCid"), "line") \
-                or not _operation_cid(action.get("vehicleCid"), "vehicle"):
-            label = "passenger" if action_type == "passenger.milestone" else "freight"
-            raise ProtocolError(f"{label} aboard milestone is invalid")
+        try:
+            validate_aboard_milestone(action, action_type, MAX_EXACT_INTEGER)
+        except AboardMilestoneError as exc:
+            raise ProtocolError(str(exc)) from exc
     if action_type == "recovery.prepare":
         if set(action) != {"type"}:
             raise ProtocolError("recovery.prepare has client-supplied fields")

@@ -2,7 +2,7 @@
 
 Use only fresh disposable worlds. Never continue after a custody, proposal-finalisation, or finance error unless the step explicitly tests recovery. Export evidence once, then close without saving.
 
-Prototype under test: `0.36.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
+Prototype under test: `0.37.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
 
 ## 0. Automated baseline
 
@@ -225,7 +225,8 @@ exact missing stage on failure. Add `-RequireObservedAboard` only when also
 checking an existing audit directly. The focused wrapper always requires it:
 the first non-zero valid local ROAD/TRAM load opens one host-ordered
 `passenger-milestone:aboard` checkpoint automatically. Do not race a manual
-**Export Checkpoint** click.
+**Export Checkpoint** click. The exact authored witness remains valid if the
+vehicle reaches its next stop and unloads before that checkpoint completes.
 
 ## I. First two-peer canonical construction
 
@@ -252,7 +253,8 @@ bootstrap. In the host window:
 4. If cargo aboard must be captured as evidence, start the wrapper with
    `-RequireObservedAboard`. The first authoritative non-zero load now opens a
    one-time `freight-milestone:aboard` checkpoint automatically; do not race a
-   manual **Export Checkpoint** click.
+   manual **Export Checkpoint** click. It may unload normally while the bounded
+   release-round and boarding-cursor witness reaches consensus.
 5. Close either disposable game only after delivered cargo, positive authored
    cargo revenue, and the settled epoch are visible.
 

@@ -41,6 +41,7 @@ from tpf2mp.freight import (
     withdraw_output as withdraw_freight_output,
 )
 from tpf2mp.freight_live_report import analyse_freight_audit
+from tpf2mp.aboard_witness import verify_aboard_witness
 from tpf2mp.passenger_feeder_live_report import analyse_passenger_feeder_audit
 from tpf2mp.cli import replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
@@ -678,12 +679,21 @@ class ProtocolTests(unittest.TestCase):
                 "vehicleCid": "vehicle:event:aboard-proof",
             }
             self.assertEqual(validate_action(action), action)
+            witnessed = {
+                **action, "observedRound": 7,
+                "boardedTotal": 40, "aboard": 12,
+            }
+            self.assertEqual(validate_action(witnessed), witnessed)
             invalid = (
                 {**action, "stage": "delivered"},
                 {**action, "lineCid": "station_group:event:not-a-line"},
                 {**action, "vehicleCid": "line:event:not-a-vehicle"},
                 {**action, "lineCid": "line:" + "x" * 236},
                 {**action, "unexpected": True},
+                {**action, "observedRound": 7},
+                {**witnessed, "observedRound": 0},
+                {**witnessed, "boardedTotal": 11},
+                {**witnessed, "aboard": True},
             )
             for candidate in invalid:
                 with self.subTest(
@@ -2772,6 +2782,10 @@ class CheckpointTests(unittest.TestCase):
                 payload["peerId"] = peer
                 payload["reason"] = reason
                 payload["eventCursor"]["lastCommitSeq"] = 1
+                cargo = payload["vehicleSynchronization"]["cargoPresentation"]
+                cargo["lines"][0]["discardedTotal"] = 15
+                cargo["vehicles"][0]["aboard"] = 0
+                cargo["vehicles"][0]["discardedTotal"] = 15
                 self.resign_checkpoint(payload)
                 payloads.append(payload)
             audit.append(sign({
@@ -2781,6 +2795,7 @@ class CheckpointTests(unittest.TestCase):
                     "type": "freight.milestone", "stage": "aboard",
                     "lineCid": "line:event:cargo:1",
                     "vehicleCid": "vehicle:event:cargo:1",
+                    "observedRound": 2, "boardedTotal": 40, "aboard": 15,
                 }},
             }))
             for peer, payload in zip(("player1", "player2"), payloads):
@@ -2811,7 +2826,59 @@ class CheckpointTests(unittest.TestCase):
             )
             self.assertTrue(report["passed"], report["problems"])
             self.assertEqual(report["completedCheckpoints"][0]["reason"], reason)
-            self.assertEqual(report["maxima"]["aboard"], 15)
+            self.assertEqual(report["maxima"]["aboard"], 0)
+            self.assertEqual(report["maxima"]["witnessedAboard"], 15)
+
+            malformed = AuditLog(Path(directory) / "malformed-witness.ndjson")
+            for message in AuditLog(audit.path).messages():
+                candidate = json.loads(json.dumps(message))
+                if candidate.get("kind") == "commit":
+                    del candidate["payload"]["action"]["aboard"]
+                    candidate = sign(candidate)
+                malformed.append(candidate)
+            with self.assertRaisesRegex(ProtocolError, "aboard milestone is invalid"):
+                analyse_freight_audit(
+                    malformed.path, session, require_stage="aboard",
+                    require_observed_aboard=True,
+                )
+
+    def test_aboard_witness_is_bound_to_checkpoint_identity_and_cursors(self) -> None:
+        action = {
+            "type": "freight.milestone", "stage": "aboard",
+            "lineCid": "line:event:cargo:1",
+            "vehicleCid": "vehicle:event:cargo:1",
+            "observedRound": 2, "boardedTotal": 40, "aboard": 15,
+        }
+        lines = [{"lineCid": action["lineCid"], "boardedTotal": 40}]
+        vehicles = [{
+            "vehicleCid": action["vehicleCid"], "lineCid": action["lineCid"],
+            "lastRound": 2, "boardedTotal": 40, "aboard": 0,
+        }]
+        self.assertEqual(
+            verify_aboard_witness(action, "freight.milestone", lines, vehicles),
+            {key: action[key] for key in (
+                "lineCid", "vehicleCid", "observedRound", "boardedTotal", "aboard"
+            )},
+        )
+        cases = (
+            ({**action, "observedRound": 3}, lines, vehicles),
+            ({**action, "boardedTotal": 41}, lines, vehicles),
+            ({**action, "vehicleCid": "vehicle:event:other"}, lines, vehicles),
+            (action, [{**lines[0], "lineCid": "line:event:other"}], vehicles),
+        )
+        for candidate, candidate_lines, candidate_vehicles in cases:
+            with self.subTest(candidate=candidate, lines=candidate_lines):
+                self.assertIsNone(verify_aboard_witness(
+                    candidate, "freight.milestone", candidate_lines, candidate_vehicles
+                ))
+        self.assertIsNone(verify_aboard_witness(
+            action, "freight.milestone", lines, vehicles,
+            allowed_line_cids={"line:event:other"},
+        ))
+        self.assertIsNone(verify_aboard_witness(
+            action, "freight.milestone", [{**lines[0], "retired": True}], vehicles,
+            reject_retired=True,
+        ))
 
     def test_passenger_feeder_live_report_requires_linked_settled_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2906,6 +2973,12 @@ class CheckpointTests(unittest.TestCase):
                 payload["peerId"] = peer
                 payload["reason"] = reason
                 payload["eventCursor"]["lastCommitSeq"] = 1
+                passenger = payload["vehicleSynchronization"]["passengerPresentation"]
+                passenger["lines"][0]["alightedTotal"] = 30
+                passenger["lines"][0]["earnedRevenueCents"] = 3_000_000
+                passenger["vehicles"][0]["aboard"] = 0
+                passenger["vehicles"][0]["alightedTotal"] = 30
+                passenger["vehicles"][0]["earnedRevenueCents"] = 3_000_000
                 self.resign_checkpoint(payload)
                 payloads.append(payload)
             audit.append(sign({
@@ -2915,6 +2988,7 @@ class CheckpointTests(unittest.TestCase):
                     "type": "passenger.milestone", "stage": "aboard",
                     "lineCid": "line:event:bus:1",
                     "vehicleCid": "vehicle:event:bus:1",
+                    "observedRound": 2, "boardedTotal": 30, "aboard": 10,
                 }},
             }))
             for peer, payload in zip(("player1", "player2"), payloads):
@@ -2946,7 +3020,8 @@ class CheckpointTests(unittest.TestCase):
             self.assertTrue(report["passed"], report["problems"])
             self.assertTrue(report["observedStages"]["aboard"])
             self.assertEqual(report["completedCheckpoints"][0]["reason"], reason)
-            self.assertEqual(report["maxima"]["localAboard"], 10)
+            self.assertEqual(report["maxima"]["localAboard"], 0)
+            self.assertEqual(report["maxima"]["localWitnessedAboard"], 10)
 
     def test_passenger_feeder_live_report_rejects_false_positive_shapes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
