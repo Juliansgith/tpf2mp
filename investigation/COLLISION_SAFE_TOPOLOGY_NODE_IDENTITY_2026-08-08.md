@@ -2,8 +2,9 @@
 
 Date: 2026-08-08 (Europe/Amsterdam)
 
-Status: implemented and fully offline-tested in prototype `0.29.0-alpha`;
-fresh two-process road/rail crossing proof remains required.
+Status: implemented, fully offline-tested, and live-proven on two exact Build
+35924 processes in prototype `0.29.0-alpha`. Connected-segment removal/rebuild
+remains a separate acceptance item.
 
 ## Live failure
 
@@ -90,16 +91,56 @@ commands with no unknown layout or tag. This refreshes the underlying engine
 track-build baseline; it does not exercise the two-peer co-located-node
 identity path below.
 
-## Live acceptance
+## Exact two-process ordinary-UI proof
 
-In a fresh two-process session:
+Session `crossing-ui-20260809-0330` installed the current source tree before
+launch; final evidence reports `sourceInstalledMatch=True`. The validator first
+converged its two independent worlds, then left both ordinary game windows
+connected with the native authority gate active. UI automation used the stock
+rail toolbar, stock standard-track picker, mouse drag, and stock blue confirm
+button. No game-script proposal factory was used for the tested crossing.
 
-1. draw ordinary track across an existing public town road;
-2. confirm one click appears on both peers and only the issuer pays;
-3. extend both resulting track ends;
-4. remove one connected segment and rebuild it;
-5. perform another unrelated build to prove the proposal lane remains healthy;
-6. export research/snapshot evidence.
+The drawn 74 m track crossed an existing public town road. Capture produced
+proposal `crossing-ui-20260809-0330:player1:20`, including two private track
+edges and the three public street edges created by the native road split. Both
+peers completed it and filed the same checkpoint:
 
-Until that pass, collision-safe crossing support is implemented and simulated,
-not claimed as live-proven.
+- core `af4d7487`;
+- model `50e8da1d`;
+- structure `a0b56ed3`;
+- canonical `acc15508`;
+- financial `fd683bcb`;
+- convergence key `a2fd6a67`.
+
+Only company 1 paid: its balance moved from `4,975,000` to `4,947,384`, while
+company 2 remained at `4,975,000`. The origin then extended the event-created
+track end through the same ordinary UI. Proposal
+`crossing-ui-20260809-0330:player1:24` also converged; both peers ended at core
+`ab7c1b0c`, model `7ce9da18`, canonical `fcabfb83`, financial `f66f3bbe`, and
+convergence key `a82c6b56`, with company 2 still unchanged.
+
+The independently replayed evidence is
+`runtime/manual-network-evidence/crossing-ui-20260809-0330-20260809-033831/evidence.json`.
+It contains 17 converged commits, four completed physical proposals, five
+completed checkpoint barriers, ten checkpoints, no pending or faulted physical
+work, and no session fault. The five-minute lab expired normally and cleaned up
+both games and both companions.
+
+The reusable input helper gained DPI-aware drag and wheel actions while running
+this proof. Drag receipts preserve both UI-space and actual client/screen-space
+endpoints, which makes future ordinary-builder regressions reproducible at a
+different window size.
+
+## Remaining acceptance
+
+The collision-safe crossing and subsequent own-track extension are now
+live-proven. The next topology lab should still:
+
+1. extend the opposite resulting track end;
+2. remove one connected segment and rebuild it;
+3. issue an invalid curve and prove the immediately following valid edit still
+   synchronizes;
+4. cover a more complex multi-road split/join.
+
+Those items broaden destructive/rejection recovery; they no longer block the
+claim that an ordinary public-road/rail crossing synchronizes correctly.

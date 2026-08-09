@@ -40,8 +40,8 @@ cross-language trace.
 
 [Collision-safe topology node identity](COLLISION_SAFE_TOPOLOGY_NODE_IDENTITY_2026-08-08.md)
 records the live road-crossing ambiguity, incident-edge-anchored canonical node
-identity, unchanged wire schema, adversarial divergent-ID proof, and remaining
-fresh two-process acceptance pass.
+identity, unchanged wire schema, adversarial divergent-ID proof, and the
+source-matched ordinary-UI crossing plus event-edge-extension acceptance pass.
 
 [Depot-open UI hang and GUI performance correction](DEPOT_UI_HANG_AND_GUI_PERFORMANCE_2026-08-08.md)
 records the exact Build 35924 ContentView assertion, preserved hang evidence,

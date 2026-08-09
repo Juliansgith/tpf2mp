@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][int]$GameProcessId,
-    [Parameter(Mandatory = $true)][ValidateSet('start', 'load', 'quit', 'free-game', 'maximize', 'click-client', 'click-ui', 'inspect', 'accept', 'accept-down', 'accept-up', 'escape', 'resume', 'replace-ui-text', 'custom', 'custom-active', 'custom-stay', 'custom-active-stay', 'custom-stage', 'custom-active-stage', 'toggle-console', 'toggle-console-down', 'toggle-console-up')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('start', 'load', 'quit', 'free-game', 'maximize', 'click-client', 'click-ui', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui', 'inspect', 'accept', 'accept-down', 'accept-up', 'escape', 'resume', 'replace-ui-text', 'custom', 'custom-active', 'custom-stay', 'custom-active-stay', 'custom-stage', 'custom-active-stage', 'toggle-console', 'toggle-console-down', 'toggle-console-up')][string]$Action,
     [string]$Command,
     [string]$SavePath,
     [int]$DelayMilliseconds = 2500,
@@ -11,6 +11,10 @@ param(
     [int]$ConsoleInputY = 814,
     [int]$ClientX = -1,
     [int]$ClientY = -1,
+    [int]$EndClientX = -1,
+    [int]$EndClientY = -1,
+    [ValidateRange(100, 5000)][int]$DragMilliseconds = 600,
+    [ValidateRange(-12000, 12000)][int]$WheelDelta = 1200,
     [int]$UiWidth = -1,
     [int]$UiHeight = -1,
     [switch]$PhysicalPixels,
@@ -150,10 +154,16 @@ elseif ($Action -eq 'free-game') {
     [Tpf2ConsoleInput]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
     [Tpf2ConsoleInput]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
 }
-elseif ($Action -in @('click-client', 'click-ui')) {
+elseif ($Action -in @('click-client', 'click-ui', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui')) {
     if ($ClientX -lt 0 -or $ClientY -lt 0) { throw "$Action requires non-negative ClientX and ClientY" }
-    if ($Action -eq 'click-ui') {
-        if ($UiWidth -le 0 -or $UiHeight -le 0) { throw 'click-ui requires positive UiWidth and UiHeight' }
+    $isDrag = $Action -in @('drag-client', 'drag-ui')
+    $isWheel = $Action -in @('wheel-client', 'wheel-ui')
+    $isUi = $Action -in @('click-ui', 'drag-ui', 'wheel-ui')
+    if ($isDrag -and ($EndClientX -lt 0 -or $EndClientY -lt 0)) {
+        throw "$Action requires non-negative EndClientX and EndClientY"
+    }
+    if ($isUi) {
+        if ($UiWidth -le 0 -or $UiHeight -le 0) { throw "$Action requires positive UiWidth and UiHeight" }
         $clientRect = New-Object Tpf2ConsoleInput+RECT
         if (-not [Tpf2ConsoleInput]::GetClientRect($target, [ref]$clientRect)) {
             throw 'Could not read the game client rectangle'
@@ -163,6 +173,10 @@ elseif ($Action -in @('click-client', 'click-ui')) {
         if ($clientWidth -le 0 -or $clientHeight -le 0) { throw 'The game client rectangle is empty' }
         $ClientX = [Math]::Max(0, [Math]::Min($clientWidth - 1, [Math]::Round($ClientX * $clientWidth / $UiWidth)))
         $ClientY = [Math]::Max(0, [Math]::Min($clientHeight - 1, [Math]::Round($ClientY * $clientHeight / $UiHeight)))
+        if ($isDrag) {
+            $EndClientX = [Math]::Max(0, [Math]::Min($clientWidth - 1, [Math]::Round($EndClientX * $clientWidth / $UiWidth)))
+            $EndClientY = [Math]::Max(0, [Math]::Min($clientHeight - 1, [Math]::Round($EndClientY * $clientHeight / $UiHeight)))
+        }
         $receiptDetails.uiWidth = $UiWidth
         $receiptDetails.uiHeight = $UiHeight
         $receiptDetails.clientWidth = $clientWidth
@@ -180,9 +194,41 @@ elseif ($Action -in @('click-client', 'click-ui')) {
     $receiptDetails.screenX = $point.x
     $receiptDetails.screenY = $point.y
     Start-Sleep -Milliseconds 120
-    [Tpf2ConsoleInput]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-    Start-Sleep -Milliseconds 70
-    [Tpf2ConsoleInput]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+    if ($isWheel) {
+        $wheelData = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$WheelDelta), 0)
+        [Tpf2ConsoleInput]::mouse_event(0x0800, 0, 0, $wheelData, [UIntPtr]::Zero)
+        $receiptDetails.wheelDelta = $WheelDelta
+    }
+    else {
+        [Tpf2ConsoleInput]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    }
+    if ($isDrag) {
+        $endPoint = New-Object Tpf2ConsoleInput+POINT
+        $endPoint.x = $EndClientX
+        $endPoint.y = $EndClientY
+        if (-not [Tpf2ConsoleInput]::ClientToScreen($target, [ref]$endPoint)) {
+            throw 'Could not translate drag endpoint to screen coordinates'
+        }
+        $steps = 12
+        $stepDelay = [Math]::Max(10, [Math]::Floor($DragMilliseconds / $steps))
+        for ($step = 1; $step -le $steps; $step++) {
+            $dragScreenX = [Math]::Round($point.x + ($endPoint.x - $point.x) * $step / $steps)
+            $dragScreenY = [Math]::Round($point.y + ($endPoint.y - $point.y) * $step / $steps)
+            [void][Tpf2ConsoleInput]::SetCursorPos($dragScreenX, $dragScreenY)
+            Start-Sleep -Milliseconds $stepDelay
+        }
+        $receiptDetails.endClientX = $EndClientX
+        $receiptDetails.endClientY = $EndClientY
+        $receiptDetails.endScreenX = $endPoint.x
+        $receiptDetails.endScreenY = $endPoint.y
+        $receiptDetails.dragMilliseconds = $DragMilliseconds
+    }
+    elseif (-not $isWheel) {
+        Start-Sleep -Milliseconds 70
+    }
+    if (-not $isWheel) {
+        [Tpf2ConsoleInput]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+    }
 }
 elseif ($Action -eq 'accept') {
     # One physical pulse is long enough to cross an input frame but releases

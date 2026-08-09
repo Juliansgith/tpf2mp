@@ -50,8 +50,10 @@ Vehicle Manager open-close cycles; the two views showed roughly 135-163 and
 159 FPS during the captured idle checks, and the full companion audit passed.
 The same live lab exposed two co-located native nodes when track crossed a road.
 Those nodes now use a sorted canonical incident-edge anchor; divergent-ID add,
-replacement, and removal paths pass offline, while a fresh live crossing pass
-remains pending.
+replacement, and removal paths pass offline. A fresh source-matched ordinary-UI
+two-process run now live-proves the crossing, three-edge public-road split,
+issuer-only debit, identical checkpoints, and a subsequent extension from the
+event-created track end. Connected-segment removal/rebuild remains open.
 The preserved lab also exposed 5,469/6,048 immutable outbox files. Companion
 polling had sorted the full history at 10 Hz; a real-directory benchmark
 measured 15.460 ms versus 0.015912 ms for the exact cursor successor. Polling
@@ -540,8 +542,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   recover at the next station; automatic disconnect/reconnect recovery remains
   open.
 - Moving populated worlds remaining equivalent over a long unpaused soak.
-- Fresh live proof of the collision-safe road/rail crossing path. Broader
-  complex topology splits/joins, bridges, tunnels, terrain mutation, scripted
+- Connected-segment removal/rebuild and invalid-curve recovery after the
+  live-proven collision-safe road/rail crossing and event-edge extension.
+  Broader complex topology splits/joins, bridges, tunnels, terrain mutation, scripted
   construction callbacks, mod construction variants, and arbitrary command
   families. The bounded stock signals/depot/station/graphless-asset matrix now
   has automated, exact-build, and ordinary two-process UI proof. Stock
