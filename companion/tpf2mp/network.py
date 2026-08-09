@@ -177,6 +177,8 @@ class CommitHost(HostIntentMixin):
                         self._track_checkpoint_boundary(seq, "town-development")
                     elif action.get("type") == "freight.industry_bootstrap":
                         self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
+                    elif action.get("type") == "economy.settle":
+                        self._track_checkpoint_boundary(seq, "economy-settlement")
                     elif action.get("type") == "content.industry_attest":
                         self.industry_content_consensus.observe(
                             action, origin_peer, restoring=True,
@@ -501,6 +503,8 @@ class CommitHost(HostIntentMixin):
                 self._track_checkpoint_boundary(seq, "town-development")
             elif action["type"] == "freight.industry_bootstrap":
                 self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
+            elif action["type"] == "economy.settle":
+                self._track_checkpoint_boundary(seq, "economy-settlement")
             elif action["type"] == "content.industry_attest":
                 self.industry_content_consensus.observe(action, origin)
             elif action["type"] == "probe.structural":

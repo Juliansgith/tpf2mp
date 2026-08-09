@@ -73,7 +73,10 @@ Domain modules under `res/scripts/tpf2_mp`:
   digest/public projections. `cargo_presentation.lua` owns the corresponding
   exact freight queues, each vehicle's named-cargo capacity and load,
   boarding/delivery/discard conservation, settlement epochs, and public
-  projection. `passenger_cosmetics.lua` owns read-only native-person telemetry
+  projection. `cargo_presentation_validation.lua` owns save-boundary
+  conservation and cross-checks against economy contracts, freight cursors,
+  economy payment cursors, and synchronized vehicle rounds.
+  `passenger_cosmetics.lua` owns read-only native-person telemetry
   and the fail-closed optional-write boundary.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, and autonomy;
@@ -230,7 +233,9 @@ captured table reference would therefore mutate stale state after loading.
   `freight_checkpoint.py` and `cargo_checkpoint.py` strictly validate the full
   freight and presentation projections, including exact per-line conservation.
   `checkpoint.py` includes those ledgers in the model/core projection and
-  advances them on every replayed economy settlement.
+  advances them on every replayed economy settlement. `freight_live_report.py`
+  reduces only successful two-peer current-format checkpoints into strict
+  ready/service/waiting/aboard/delivered/settled acceptance evidence.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
 - `client.py` owns client connection/retry and bridge forwarding.
 - `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;
@@ -252,7 +257,9 @@ captured table reference would therefore mutate stale state after loading.
   the same current clock generation; mixed-generation projection is diagnostic.
 - `bridge.py`, `checkpoint.py`, `restore.py`, and `recovery.py` own durable local
   transport, independent replay, all-peer restore plans, and native-save
-  archives respectively.
+  archives respectively. `audit_replay.py` owns whole-audit ordering, physical
+  consensus, checkpoint, and digest-chain verification; `cli.py` is only the
+  command dispatcher.
 - The long-running `watch_recovery_saves.ps1` process also owns a strictly local
   one-shot first-fault trigger. `collect_live_evidence.ps1` owns immutable bridge
   copying, copied-audit replay, bounded session-log tails, native status, and

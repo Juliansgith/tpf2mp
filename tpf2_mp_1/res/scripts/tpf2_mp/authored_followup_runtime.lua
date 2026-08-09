@@ -105,9 +105,13 @@ function M.installHandlers(handlers, deps)
 end
 
 function M.afterCommit(state, action, success, authoritySeq, exportCheckpoint, log)
-  if not success or action.type ~= "town.develop" or not authoritySeq then return false end
+  if not success or not authoritySeq then return false end
+  local reason
+  if action.type == "town.develop" then reason = "town-development"
+  elseif action.type == "economy.settle" then reason = "economy-settlement"
+  else return false end
   local checkpointed, checkpointError = exportCheckpoint(
-    authoritySeq, "town-development")
+    authoritySeq, reason)
   if not checkpointed then
     log("checkpoint-barrier-error", {
       tick = state.tick,

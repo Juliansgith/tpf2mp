@@ -30,6 +30,9 @@ local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtim
 local economyPublicViewModule = require "tpf2_mp/economy_public_view"
 local financeModule = require "tpf2_mp/finance"
 local bridgeModule = require "tpf2_mp/bridge"
+local cargoPresentationModule = require "tpf2_mp/cargo_presentation"
+local freightIndustryModelModule = require "tpf2_mp/freight_industry_model"
+local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 
 do
@@ -718,6 +721,20 @@ do
   extra.unexpected = true
   assert(authoredFollowupRuntimeModule.acknowledgeSaveReceipt(current, extra) == false,
     "Lua accepted an unknown save-receipt field")
+
+  local exported = {}
+  local function exportBoundary(boundary, reason)
+    exported[#exported + 1] = { boundary = boundary, reason = reason }
+    return true
+  end
+  assert(authoredFollowupRuntimeModule.afterCommit(
+      current, { type = "economy.settle" }, true, 11, exportBoundary, function() end)
+      and exported[1].boundary == 11
+      and exported[1].reason == "economy-settlement",
+    "an authoritative economy settlement did not request a convergence checkpoint")
+  assert(authoredFollowupRuntimeModule.afterCommit(
+      current, { type = "fare.adjust" }, true, 12, exportBoundary, function() end) == false,
+    "an unrelated authored action requested an economy checkpoint")
 end
 
 do
@@ -1621,6 +1638,145 @@ do
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
+
+  -- A native save can be taken while a synchronized freight train is between
+  -- terminals. Preserve that exact authored load, then preserve the delivered
+  -- stock/cursor state on a second load. A partial or edited ledger must be
+  -- surfaced instead of silently creating cargo.
+  local cargoSave = stateSchema.new(cfg, versions)
+  cargoSave.initialized = true
+  local function freightRecipe(cid, resource, capacity, stocks, inputs, outputs)
+    local recipe = {
+      cid = cid, resource = resource, params = { productionLevel = 0 },
+      capacity = capacity, stocks = stocks, inputs = inputs, outputs = outputs,
+    }
+    recipe.recipeDigest = hashModule.value({
+      resource = recipe.resource, params = recipe.params, stocks = recipe.stocks,
+      inputs = recipe.inputs, outputs = recipe.outputs, capacity = recipe.capacity,
+    })
+    return recipe
+  end
+  local sourceCid, sinkCid = "industry:pre:save-source", "industry:pre:save-sink"
+  local bootstrap = assert(freightIndustryModelModule.bootstrapAction(
+    "edc7a517", 1, {
+      freightRecipe(sourceCid, "industry/farm.con", 120, {}, { {} },
+        { { cargoType = "GRAIN", amount = 1 } }),
+      freightRecipe(sinkCid, "mod/sink.con", 120,
+        { { index = 0, cargoType = "GRAIN", stockType = "RECEIVING", moreCapacity = 0 } },
+        { { { stockIndex = 0, cargoType = "GRAIN", amount = 1 } } }, {}),
+    }))
+  assert(freightIndustryModelModule.applyBootstrap(
+    cargoSave.world.freightIndustry, bootstrap,
+    { ready = true, digest = "edc7a517" }))
+  cargoSave.world.freightIndustry.industries[sourceCid].outputStock.GRAIN = 100
+  economyModule.upsertMarket(cargoSave.economy, {
+    cid = "market:save-cargo", kind = "cargo", demand = 120,
+  })
+  economyModule.upsertService(cargoSave.economy, {
+    lineCid = "line:save-cargo", marketCid = "market:save-cargo",
+    companyCid = "company:1", fareCents = 1000, capacity = 40,
+    metadata = {
+      freightContractSchema = 1, freightContractDigest = "1234abcd",
+      sourceIndustryCid = sourceCid, destinationIndustryCid = sinkCid,
+      destinationStockIndex = 0, cargoType = "GRAIN",
+      sourceStationGroupCid = "station_group:save-source",
+      destinationStationGroupCid = "station_group:save-sink",
+      sourceStopIndex = 0, destinationStopIndex = 1,
+      stationGroupCids = {
+        "station_group:save-source", "station_group:save-sink",
+      },
+      vehicleCids = { "vehicle:save-cargo" }, vehicleCount = 1,
+      cargoCapacityPerVehicle = 40,
+      cargoCapacityByVehicleCid = { ["vehicle:save-cargo"] = 40 },
+      distanceMeters = 10000,
+    },
+  })
+  cargoSave.economy.epoch = 1
+  cargoSave.economy.lastResults.markets["market:save-cargo"] = {
+    services = { ["line:save-cargo"] = { allocated = 40 } },
+  }
+  assert(cargoPresentationModule.beginEpoch(
+    cargoSave.world.cargoPresentation, cargoSave.economy))
+  local loaded, loadResult = cargoPresentationModule.applyRelease(
+    cargoSave.world.cargoPresentation, cargoSave.economy,
+    cargoSave.world.freightIndustry, {
+      type = "vehicle.sync_release", vehicleCid = "vehicle:save-cargo",
+      lineCid = "line:save-cargo", round = 1, stopIndex = 0,
+    }, { owner = "company:1" })
+  assert(loaded and loadResult.aboard == 40, "cargo save fixture did not board")
+  cargoSave.world.vehicleSync.vehicles["vehicle:save-cargo"] = {
+    vehicleCid = "vehicle:save-cargo", lineCid = "line:save-cargo",
+    companyCid = "company:1", lastAuthorizedRound = 1, stopIndex = 0,
+    releaseAtGameTime = 100, releaseWhilePaused = false,
+    schedule = { schemaVersion = 1, enabled = false },
+  }
+  local aboardDigest = hashModule.value(
+    cargoPresentationModule.digestView(cargoSave.world.cargoPresentation))
+  local loadedSave = stateSchema.migrate(util.deepCopy(cargoSave), {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(loadedSave.lastError == nil
+      and loadedSave.world.cargoPresentation.vehicles["vehicle:save-cargo"].aboard == 40
+      and hashModule.value(cargoPresentationModule.digestView(
+        loadedSave.world.cargoPresentation)) == aboardDigest,
+    "save/load changed authoritative cargo aboard a synchronized train")
+  local tamperedCargoSave = util.deepCopy(cargoSave)
+  tamperedCargoSave.world.cargoPresentation.vehicles[
+    "vehicle:save-cargo"].aboard = 39
+  local rejectedCargoSave = stateSchema.migrate(tamperedCargoSave, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(type(rejectedCargoSave.lastError) == "string"
+      and rejectedCargoSave.lastError:find("conservation", 1, true),
+    "save migration silently accepted a non-conserving cargo ledger")
+
+  local delivered, deliveryResult = cargoPresentationModule.applyRelease(
+    loadedSave.world.cargoPresentation, loadedSave.economy,
+    loadedSave.world.freightIndustry, {
+      type = "vehicle.sync_release", vehicleCid = "vehicle:save-cargo",
+      lineCid = "line:save-cargo", round = 2, stopIndex = 1,
+    }, { owner = "company:1" })
+  assert(delivered and deliveryResult.delivered == 40,
+    "loaded cargo could not complete its destination release")
+  loadedSave.world.vehicleSync.vehicles["vehicle:save-cargo"].lastAuthorizedRound = 2
+  loadedSave.world.vehicleSync.vehicles["vehicle:save-cargo"].stopIndex = 1
+  local transport = cargoPresentationModule.economySnapshot(
+    loadedSave.world.cargoPresentation)
+  assert(freightIndustryModelModule.applyTransportSnapshot(
+    loadedSave.world.freightIndustry, transport.lines))
+  loadedSave.economy.deliveryCursors["line:save-cargo"] = {
+    deliveredCargo = 40,
+    earnedRevenueCents = loadedSave.world.cargoPresentation.lines[
+      "line:save-cargo"].earnedRevenueCents,
+  }
+  local deliveredDigest = hashModule.value(
+    cargoPresentationModule.digestView(loadedSave.world.cargoPresentation))
+  local settledSave = stateSchema.migrate(util.deepCopy(loadedSave), {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(settledSave.lastError == nil
+      and settledSave.world.freightIndustry.totalDelivered.GRAIN == 40
+      and settledSave.economy.deliveryCursors["line:save-cargo"].deliveredCargo == 40
+      and hashModule.value(cargoPresentationModule.digestView(
+        settledSave.world.cargoPresentation)) == deliveredDigest,
+    "save/load changed delivered cargo, destination stock, or revenue cursor")
+  local overpaidCargoSave = util.deepCopy(loadedSave)
+  overpaidCargoSave.economy.deliveryCursors[
+    "line:save-cargo"].deliveredCargo = 41
+  local rejectedOverpaidSave = stateSchema.migrate(overpaidCargoSave, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(type(rejectedOverpaidSave.lastError) == "string"
+      and rejectedOverpaidSave.lastError:find("economy settlement", 1, true),
+    "save migration silently accepted an economy cursor ahead of delivered cargo")
 
   local legacyEconomy = stateSchema.new(cfg, versions)
   legacyEconomy.economy.version = 5

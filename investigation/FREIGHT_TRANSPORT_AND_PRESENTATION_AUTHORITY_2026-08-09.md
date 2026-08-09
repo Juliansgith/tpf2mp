@@ -127,8 +127,23 @@ boundary with no movement, and changes an unused idle contract without pinning
 a cursor. Lua and Python finish at the same digest `74b018d9`. The pre-existing
 broader freight arithmetic fixture remains pinned at `f758bc34`.
 
+Every five-minute economy settlement now opens an automatic two-peer
+`economy-settlement` checkpoint, so its post-transfer stock, cargo ledger,
+revenue cursor, and finances receive a convergence receipt without one barrier
+per station visit. Save migration also revalidates exact line/vehicle
+conservation, service/contract identity, synchronized rounds/stops, and freight
+cursors plus economy payment cursors. An automated fixture preserves 40 units
+aboard through a save/load migration, completes their delivery, preserves the
+settled cursor through a second migration, and rejects one-unit conservation
+and overpayment tampering.
+
+The new `freight-live-report` command and
+`tools/start_freight_live_acceptance.ps1` turn the next human run into a strict
+staged audit gate. Details are in
+[`FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md`](FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md).
+
 The complete repository gate passes 117 core Lua tests, 75 economy parity
-scenarios, 119 Python tests, runtime/game/GUI/network tests, focused and
+scenarios, 121 Python tests, runtime/game/GUI/network tests, focused and
 256-boundary freight transport parity, the 1,024-event replay, source budgets,
 launcher smoke, and
 release-oriented checks. The distilled automated receipt is
@@ -146,7 +161,14 @@ release-oriented checks. The distilled automated receipt is
 - Road/tram/ship/air freight inherits the portable consist facts in principle,
   but only railway station releases have human synchronization proof.
 
-The shortest useful human test is a fresh two-process farm-to-food chain:
-allow one settlement to produce grain, observe a source queue, run one freight
-train to the processor, verify equal exact load/delivery/stock/revenue on both
-peers, settle again, checkpoint, save both peers, and reload.
+The shortest useful human test is now packaged as:
+
+```powershell
+.\tools\start_freight_live_acceptance.ps1 -RequireObservedAboard
+```
+
+Build a fresh two-process farm-to-food chain, allow one settlement to produce
+grain, observe a source queue, export one checkpoint while the train is loaded,
+deliver to the processor, and cross the next automatic settlement. The wrapper
+collects and strictly analyzes both peers when the lab closes. Save both peers
+and reload during the run to close the remaining native persistence gate.

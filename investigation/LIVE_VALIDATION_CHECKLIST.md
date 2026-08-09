@@ -2,7 +2,7 @@
 
 Use only fresh disposable worlds. Never continue after a custody, proposal-finalisation, or finance error unless the step explicitly tests recovery. Export evidence once, then close without saving.
 
-Prototype under test: `0.16.0-alpha`, state schema `13`, checkpoint format `2`, proposal schema `3`, native hook `0.8.0`, exact game Build 35924.
+Prototype under test: `0.32.0-alpha`, state schema `29`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
 
 ## 0. Automated baseline
 
@@ -152,6 +152,49 @@ Pass: no unexplained town/industry/topology/ownership change. Classify every cha
 Pass for observation: stable canonical aggregate reads are available and comparable. Product pass requires the native presentation to agree directionally with the score. Detection alone is not synchronization.
 
 ## I. First two-peer canonical construction
+
+### Focused two-process freight acceptance
+
+Run this only after closing every Transport Fever 2 process:
+
+```powershell
+.\tools\start_freight_live_acceptance.ps1 -Session freight-live-YYYYMMDD-HHMM
+```
+
+The wrapper starts a clean manual-network match with 50M per company, requires
+the initial two-peer checkpoint, and then leaves both disposable windows open
+without synthetic validator construction. The final audit gate—not a visual
+assumption—requires identical industry content and an authored freight
+bootstrap. In the host window:
+
+1. Build and connect one cargo source, one compatible cargo sink, two cargo
+   stations, a depot, a cargo line, and a suitable vehicle.
+2. Let at least one unit become visibly waiting, travel aboard the vehicle, and
+   arrive at the compatible sink.
+3. Wait for the automatic five-minute economy settlement. Do not treat native
+   floating income text as the authoritative payment.
+4. If cargo aboard must be captured as evidence, click **Export Checkpoint**
+   while the vehicle is visibly loaded and start the wrapper with
+   `-RequireObservedAboard`.
+5. Close either disposable game only after delivered cargo, positive authored
+   cargo revenue, and the settled epoch are visible.
+
+The wrapper then collects both bridge trees and runs:
+
+```powershell
+.\tools\analyze_freight_live_evidence.ps1 `
+  -Session freight-live-YYYYMMDD-HHMM `
+  -RequireStage settled
+```
+
+Pass requires a current-format, successful two-peer checkpoint with identical
+freight stocks, cargo presentation, delivery cursors, and authored revenue;
+zero fatal consensus faults; and no unresolved prepare, proposal, operation, or
+checkpoint barrier. The report distinguishes `ready`, `service`, `waiting`,
+`aboard`, `delivered`, and `settled`, so an incomplete run fails with the exact
+missing stage. A successful settlement now creates this checkpoint
+automatically. The first cargo-positive two-process live pass is still open;
+automated tests do not satisfy this gate.
 
 Automated localhost baseline (already passed bidirectionally as `localhost-20260802-175636`):
 

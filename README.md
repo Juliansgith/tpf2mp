@@ -261,6 +261,26 @@ After any manual test, click **Collect evidence** in the launcher. It copies the
 .\tools\collect_live_evidence.ps1 -Session match-1
 ```
 
+The focused cargo-positive localhost gate is:
+
+```powershell
+.\tools\start_freight_live_acceptance.ps1 -RequireObservedAboard
+```
+
+It starts a clean manually playable two-process network world with 50M per
+company, verifies match-start consensus, leaves both synchronized windows open
+for a real freight line, collects the evidence on close, and requires the final
+audit to prove loaded-industry bootstrap plus a converged checkpoint with
+non-zero delivered cargo and settled authoritative revenue. With
+`-RequireObservedAboard`, press
+**Export Checkpoint** once while the train is loaded. An already collected host
+audit can be checked independently with:
+
+```powershell
+.\tools\analyze_freight_live_evidence.ps1 -Session match-1 `
+  -RequireStage settled -RequireObservedAboard
+```
+
 The transport is designed for trusted private peers. Its checksums detect corruption and inconsistency; they are not hostile-client authentication or encryption. Do not expose TCP port `29742` directly to the Internet.
 
 Current network boundary:
@@ -270,7 +290,7 @@ Current network boundary:
 - The native BuildProposal gate and all 23 selected consequential-command visitors are mandatory in network mode. Missing/inactive authority gates prevent both outgoing intents and incoming gameplay commits.
 - Every peer can reconstruct the supported road/track transaction and bind its own result IDs to the same canonical output identities.
 - Queue acknowledgements remain diagnostic only. A physical proposal is complete only after both pinned peers report matching canonical outputs and physical/core digest. Schemas 5 and 7 carry the bounded integer builder quote; the ordered outcome applies its signed cost to the canonical account and reconciles each peer's native wallet cache before the financial checkpoint.
-- Match initialization and each successful physical outcome immediately open a checkpoint barrier. Later network intents remain blocked until both peers report the same format-5 convergence key, including canonical company finances, authorized train station rounds, exact model passenger/cargo queues and loads, and freight stock/transport state, and consume the ordered checkpoint outcome.
+- Match initialization, every successful physical outcome, and each five-minute economy settlement immediately open a checkpoint barrier. Later network intents remain blocked until both peers report the same format-5 convergence key, including canonical company finances, authorized train station rounds, exact model passenger/cargo queues and loads, and freight stock/transport state, and consume the ordered checkpoint outcome. Settlement therefore gains one convergence round per five model minutes without adding a checkpoint round at every station visit.
 - A prepare rejection is non-fatal because no native world has changed. A post-commit native rejection is also recoverable only when every peer fails, emits no outputs or finance delta, agrees on result/core/error, and retains the exact prepare-barrier core; it receives its own checkpoint before play continues. Mixed results, residue, digest mismatch, or the default 45-second physical/checkpoint timeout still fault the session closed. In-place native geometry repair is not implemented. The host watcher verifies the audit and hashes/archives the first later stable native save candidate against the latest agreed boundary; exact-tick capture and automatic coordinated restore remain open.
 - Populated bidirectional construction, shared-clock rendezvous, four real-train station rounds, and intermediate/final mobility convergence pass on localhost; a two-computer usability/latency/disconnect run is the next manual gate.
 - The ordinary vanilla line manager now has typed capture for New Line, complete UpdateLine stop/terminal state, Delete Line, rename, and color. Two independent two-process sessions live-prove the actual stock widgets: create/rename/color/delete and a populated line's Add Station/remove-stop actions all reached ordered physical consensus and peer checkpoints, with matching stock Line Manager displays and zero native decode errors. Reordering two populated stops and alternate-terminal changes still need a focused visual pass. Railway BuyVehicle/SetLine have pre-mutation typed capture. The stock UI has now bought a train, replicated it into the peer depot, assigned it to the line, and shown the canonical train moving in both worlds; the latest observation exposed the expected mid-leg phase lead after a one-sided Escape pause. Stock modular station placement and its 80-320 m/1-8-track matrix are human-live-proven. Signals/waypoints, a rail depot, station editing/removal, bench placement/removal, and lamp/fence placement also pass ordinary two-process UI capture, ownership, physical consensus, and checkpoints. Unadapted command families remain safely rejected where gated; complex topology, mod construction variants, and unlisted/autonomous paths remain explicit authority gaps.

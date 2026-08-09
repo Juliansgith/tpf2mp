@@ -39,6 +39,7 @@ from tpf2mp.freight import (
     new_state as new_freight_state,
     withdraw_output as withdraw_freight_output,
 )
+from tpf2mp.freight_live_report import analyse_freight_audit
 from tpf2mp.cli import replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
 from tpf2mp.industry_content import (
@@ -2369,6 +2370,87 @@ class CheckpointTests(unittest.TestCase):
             with self.subTest(error=error), self.assertRaisesRegex(ProtocolError, error):
                 verify_checkpoint(tampered)
 
+    def test_freight_live_report_requires_two_peer_settled_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = "freight-live-report"
+            audit = AuditLog(Path(directory) / "audit.ndjson")
+            player1 = self.populated_cargo_checkpoint()
+            line_cid = "line:event:cargo:1"
+            player1["sessionId"] = session
+            player1["peerId"] = "player1"
+            player1["reason"] = "economy-settlement"
+            player1["eventCursor"]["lastCommitSeq"] = 1
+            player1["model"]["economy"].setdefault("deliveryCursors", {})[line_cid] = {
+                "deliveredCargo": 25,
+                "earnedRevenueCents": 25_000_000,
+            }
+            self.resign_checkpoint(player1)
+            player2 = json.loads(json.dumps(player1))
+            player2["peerId"] = "player2"
+            self.resign_checkpoint(player2)
+
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 1, "kind": "commit",
+                "origin_peer": "player1", "origin_local_seq": 1, "tick": 1,
+                "payload": {"action": {"type": "economy.settle"}},
+            }))
+            for local_seq, peer, payload in (
+                (1, "player1", player1), (1, "player2", player2),
+            ):
+                audit.append(sign({
+                    "protocol": 1, "session": session, "kind": "record",
+                    "peer": peer, "local_seq": local_seq,
+                    "record_type": "checkpoint", "payload": payload,
+                }))
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 2, "kind": "control",
+                "origin_peer": "player1", "tick": 0,
+                "payload": {"action": {
+                    "type": "network.checkpoint_outcome", "boundarySeq": 1,
+                    "reason": "economy-settlement", "success": True,
+                    "convergenceKey": player1["convergenceKey"],
+                    "coreDigest": player1["coreDigest"],
+                    "modelDigest": player1["modelDigest"],
+                    "canonicalDigest": player1["canonicalDigest"],
+                    "financialDigest": player1["financialDigest"],
+                    "peers": ["player1", "player2"],
+                }},
+            }))
+            self.assertEqual(replay(audit.path, session), 0)
+            report = analyse_freight_audit(
+                audit.path, session, require_stage="settled",
+                require_observed_aboard=True,
+            )
+            self.assertTrue(report["passed"], report["problems"])
+            self.assertTrue(report["observedStages"]["aboard"])
+            self.assertTrue(report["observedStages"]["delivered"])
+            self.assertTrue(report["observedStages"]["settled"])
+            self.assertEqual(report["maxima"]["aboard"], 15)
+            self.assertEqual(report["maxima"]["settledRevenueCents"], 25_000_000)
+            waiting_report = analyse_freight_audit(
+                audit.path, session, require_stage="waiting"
+            )
+            self.assertFalse(waiting_report["passed"])
+            self.assertIn(
+                "required freight stage was not observed: waiting",
+                waiting_report["problems"],
+            )
+
+            pending = AuditLog(Path(directory) / "pending-checkpoint.ndjson")
+            for message in list(AuditLog(audit.path).messages())[:-1]:
+                pending.append(message)
+            pending_report = analyse_freight_audit(pending.path, session)
+            self.assertFalse(pending_report["passed"])
+            self.assertEqual(pending_report["pending"]["checkpoints"], [1])
+
+            missing = AuditLog(Path(directory) / "missing-peer.ndjson")
+            for message in AuditLog(audit.path).messages():
+                if message.get("kind") == "record" and message.get("peer") == "player2":
+                    continue
+                missing.append(message)
+            with self.assertRaisesRegex(ProtocolError, "lacks freight evidence"):
+                analyse_freight_audit(missing.path, session)
+
     def test_checkpoint_and_event_integrity_and_replay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3701,6 +3783,46 @@ class RecoveryArchiveTests(unittest.TestCase):
 
 
 class NetworkIntegrationTests(unittest.TestCase):
+    def test_economy_settlement_requires_and_restores_checkpoint_consensus(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "settlement-checkpoint"
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "economy.settle", "results": {},
+                    "deliverySnapshot": {
+                        "schemaVersion": 2, "presentationEpoch": 0,
+                        "passengerLines": {}, "cargoLines": {},
+                    },
+                }},
+            }))
+            boundary = int(commit["seq"])
+            self.assertEqual(
+                host.checkpoint_consensus[boundary]["reason"], "economy-settlement"
+            )
+            host._record_non_intent(consensus_checkpoint(
+                session, "player1", 2, boundary, "economy-settlement"
+            ))
+            host._record_non_intent(consensus_checkpoint(
+                session, "player2", 3, boundary, "economy-settlement"
+            ))
+            self.assertEqual(host.checkpoint_consensus[boundary]["status"], "complete")
+            restored = CommitHost(
+                GameBridge(root / "restored", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            self.assertEqual(
+                restored.checkpoint_consensus[boundary]["reason"], "economy-settlement"
+            )
+            self.assertEqual(restored.checkpoint_consensus[boundary]["status"], "complete")
+
     def test_receipt_bound_restore_blocks_gameplay_until_fresh_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

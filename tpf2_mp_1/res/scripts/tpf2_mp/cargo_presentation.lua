@@ -1,6 +1,7 @@
 local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
 local revenue = require "tpf2_mp/economy_revenue"
+local validation = require "tpf2_mp/cargo_presentation_validation"
 
 local M = {}
 
@@ -251,6 +252,17 @@ function M.alignWithVehicleSync(value, economyState, vehicleSync)
     end
   end
   return true, state
+end
+
+-- ScriptSave is an authority boundary, not a trusted cache.  Re-check the
+-- cross-ledger invariants after migration so an interrupted/edited save cannot
+-- resume with cargo duplicated between a station, vehicle, and industry.
+function M.validateState(value, economyState, freightState, vehicleSync)
+  return validation.validate(value, economyState, freightState, vehicleSync, {
+    schemaVersion = M.SCHEMA_VERSION, maxCount = M.MAX_COUNT,
+    maxCents = M.MAX_CENTS, count = count, add = add,
+    cargoService = cargoService,
+  })
 end
 
 local function unsettledReservations(state, freightState, sourceCid, cargoType)

@@ -98,6 +98,8 @@ if ($LASTEXITCODE -ne 0) { throw "Packaged companion recovery-plan smoke test fa
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion archive-save smoke test failed with exit code $LASTEXITCODE" }
 & (Join-Path $companionDist 'tpf2mp.exe') verify-recovery-archive --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion recovery verification smoke test failed with exit code $LASTEXITCODE" }
+& (Join-Path $companionDist 'tpf2mp.exe') freight-live-report --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Packaged companion freight report smoke test failed with exit code $LASTEXITCODE" }
 
 $releaseName = "TPF2MP-$Version"
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $dist $releaseName))
@@ -136,7 +138,9 @@ $toolNames = @(
     'new_match_manifest.ps1', 'new_recovery_plan.ps1',
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
     'network_common.ps1', 'native_load_common.ps1', 'start_network_session.ps1', 'stop_network_session.ps1',
-    'get_network_session_status.ps1', 'collect_live_evidence.ps1', 'multiplayer_launcher.ps1',
+    'get_network_session_status.ps1', 'collect_live_evidence.ps1',
+    'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
+    'multiplayer_launcher.ps1',
     'watch_recovery_saves.ps1',
     'run_localhost_live_validation.ps1', 'start_operational_capture_lab.ps1',
     'analyze_operational_capture.ps1', 'localhost_bootstrap.lua', 'multiplayer_menu_bootstrap.lua',
@@ -200,6 +204,8 @@ Useful commands:
     .\tools\start_client_release.ps1 -HostAddress 192.168.1.10 -Session match-1 -ManifestPath "$env:LOCALAPPDATA\TPF2MP\matches\match-1-manifest.json"
     .\tools\start_hooked_game.ps1
     .\tools\start_operational_capture_lab.ps1 -Minutes 120
+    .\tools\start_freight_live_acceptance.ps1 -RequireObservedAboard
+    .\tools\analyze_freight_live_evidence.ps1 -Session match-1 -RequireStage settled
     .\tools\new_recovery_plan.ps1 -AuditPath "$env:TEMP\tpf2mp_bridge\player1\audit\match-1.ndjson" -Session match-1
     .\tools\archive_recovery_save.ps1 -Session match-1 -Peer player1 -SavePath C:\saves\match.sav
     .\tools\get_network_session_status.ps1 -Session match-1 -Peer player1

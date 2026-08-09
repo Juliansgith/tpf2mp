@@ -619,18 +619,22 @@ function M.migrate(saved, context)
         .. tostring(alignmentResult)
     end
   end
-  local hadCargoPresentation = type(saved.world.cargoPresentation) == "table"
   saved.world.cargoPresentation = cargoPresentation.migrate(
     saved.world.cargoPresentation or defaults.world.cargoPresentation)
-  if not hadCargoPresentation then
-    local aligned, alignmentResult = cargoPresentation.alignWithVehicleSync(
-      saved.world.cargoPresentation, saved.economy, saved.world.vehicleSync)
-    if aligned then
-      saved.world.cargoPresentation = alignmentResult
-    else
+  local cargoAligned, cargoAlignmentResult = cargoPresentation.alignWithVehicleSync(
+    saved.world.cargoPresentation, saved.economy, saved.world.vehicleSync)
+  if cargoAligned then
+    saved.world.cargoPresentation = cargoAlignmentResult
+    local cargoValid, cargoValidationError = cargoPresentation.validateState(
+      saved.world.cargoPresentation, saved.economy,
+      saved.world.freightIndustry, saved.world.vehicleSync)
+    if not cargoValid then
       saved.lastError = "cargo presentation migration failed: "
-        .. tostring(alignmentResult)
+        .. tostring(cargoValidationError)
     end
+  else
+    saved.lastError = "cargo presentation migration failed: "
+      .. tostring(cargoAlignmentResult)
   end
   if saved.world.pauseOnSwitch == nil then saved.world.pauseOnSwitch = config().pauseOnSwitch end
   if saved.world.proxyMode == nil then saved.world.proxyMode = false end

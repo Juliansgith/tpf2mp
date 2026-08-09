@@ -561,6 +561,15 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   show the authored counts, including waiting cargo at the source and cumulative
   delivery at the destination. The separate HUD rows remain only as a fail-soft
   fallback when a supported stock component cannot be located.
+- Every five-minute economy settlement now opens one two-peer checkpoint, so
+  its stock transfer, cargo delivery cursor, authoritative revenue, and finance
+  are automatically convergence-receipted without checkpointing every station
+  visit. Save migration revalidates cargo line/vehicle conservation, service
+  contracts, synchronized rounds/stops, and freight cursors. A functional
+  fixture preserves 40 units aboard, completes their delivery after load,
+  preserves the settled cursor through another save/load migration, and
+  rejects both a one-unit conservation tamper and a payment cursor one unit
+  ahead of delivery.
 - Native people remain bounded scenery. Exact-build reverse engineering shows
   `Debug_SetSimPersonState` contains only a person ID and boolean, with no
   train/station target; the cosmetic adapter therefore issues zero writes.
@@ -597,6 +606,12 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 - The launcher provides Host, Join, automated Localhost Test, local-only
   Populated Capture Lab, fingerprints, status/logs, evidence collection, and
   exact-session stop controls.
+- `start_freight_live_acceptance.ps1` now starts a clean 50M-per-company manual
+  two-process match, proves its initial checkpoint, hands the windows to the
+  player, collects the audit on close, and requires a strict current-format
+  two-peer freight report. The report exposes
+  ready/service/waiting/aboard/delivered/settled stages and can require a
+  manual checkpoint captured with cargo aboard.
 
 ### Packaging and tests
 
@@ -607,10 +622,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 117 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 104 mod Lua and 8 investigation/tool Lua syntax checks;
-  - 40 PowerShell syntax checks;
+  - 105 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 42 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 119 Python protocol/network/checkpoint/recovery/report tests;
+  - 121 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 
