@@ -348,12 +348,18 @@ function M.new(deps)
     ["line.update"] = "targetCid",
     ["vehicle.assign"] = "lineCid",
   }
+  local AUTO_REGISTER_VEHICLE_TARGET_KINDS = { ["vehicle.replace"] = true }
 
   function binding.autoRegisterLine(state, transaction, outputCid, deps)
     if type(transaction) ~= "table" then return end
     local field = AUTO_REGISTER_KINDS[transaction.kind]
-    if not field then return end
-    local lineCid = transaction.data and transaction.data[field] or nil
+    if not field and not AUTO_REGISTER_VEHICLE_TARGET_KINDS[transaction.kind] then return end
+    local data = transaction.data or {}
+    local lineCid = field and data[field] or nil
+    if AUTO_REGISTER_VEHICLE_TARGET_KINDS[transaction.kind] then
+      local vehicle = state.canonical.byCanonical[data.targetCid]
+      lineCid = vehicle and vehicle.metadata and vehicle.metadata.lineCid or nil
+    end
     if transaction.kind == "line.create" then lineCid = outputCid end
     if type(lineCid) ~= "string" or lineCid == "" then return end
     local companyCid = transaction.companyCid
@@ -792,7 +798,12 @@ function M.new(deps)
         or math.max(300, math.floor(3600 / math.max(1, vehicles)))
       local estimatedCycle = headway * math.max(1, vehicles)
       journey = math.max(300, util.integer(estimatedCycle / 2, #groups * 900))
-      capacity = math.max(50, nativeRate > 0 and util.integer(nativeRate) or vehicles * 100)
+      -- The legacy estimate is a presentation fallback, never rolling stock.
+      -- Preserve the same zero-vehicle invariant as computedServiceFacts or
+      -- an unreadable route could earn forever with no physical vehicle.
+      capacity = vehicles > 0
+        and math.max(50, nativeRate > 0 and util.integer(nativeRate) or vehicles * 100)
+        or 0
       factsSource = "estimated-legacy"
     end
 

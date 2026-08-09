@@ -37,6 +37,16 @@ def _value(value: Any) -> str:
     return str(value)
 
 
+def _cell(value: Any) -> str:
+    return _value(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def _money_cents(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return "unknown"
+    return f"${value / 100:,.2f}"
+
+
 def _tag_summary(value: Any) -> str:
     if not isinstance(value, list) or not value:
         return "none"
@@ -69,6 +79,9 @@ def render_markdown(report: Mapping[str, Any]) -> str:
         for item in passenger_vehicles if isinstance(item, Mapping)
     )
     passenger_cosmetics = report.get("passengerCosmetics", {})
+    economy_presentation = report.get("economyPresentation", {})
+    economy_services = economy_presentation.get("services", {}) \
+        if isinstance(economy_presentation, Mapping) else {}
     match = report.get("match", {})
     checkpoint = report.get("checkpoint", {})
     proposals = report.get("proposals", {})
@@ -113,6 +126,42 @@ def render_markdown(report: Mapping[str, Any]) -> str:
             f"- Vehicles: {_value(structural.get('vehicleCount') if isinstance(structural, Mapping) else None)}",
             f"- Depots: {_value(structural.get('depotCount') if isinstance(structural, Mapping) else None)}",
             f"- Constructions: {_value(structural.get('constructionCount') if isinstance(structural, Mapping) else None)}",
+            "",
+            "## Authoritative economy",
+            "",
+            f"- Difficulty: `{_value(economy_presentation.get('economyDifficultyLabel') if isinstance(economy_presentation, Mapping) else None)}`; "
+            f"settlement interval `{_value(economy_presentation.get('intervalSeconds') if isinstance(economy_presentation, Mapping) else None)}` seconds",
+            f"- Projected services: {_value(len(economy_services) if isinstance(economy_services, Mapping) else None)}",
+            "",
+            "| Canonical line | Company | Kind / carrier / scope | Vehicles / hourly capacity | Facts | Feeder benefit | Last delivered / net |",
+            "|---|---|---|---:|---|---:|---:|",
+        ]
+    )
+    if isinstance(economy_services, Mapping) and economy_services:
+        for line_cid in sorted(economy_services):
+            service = economy_services[line_cid]
+            if not isinstance(service, Mapping):
+                continue
+            mode = " / ".join(
+                _cell(value) for value in (
+                    service.get("kind"), service.get("carrier"), service.get("marketScope")
+                ) if value is not None
+            ) or "unknown"
+            endpoints = int(service.get("feederAccessEndpoints", 0) or 0)
+            feeder = _money_cents(service.get("feederAccessCents", 0)) \
+                + f" / {endpoints} endpoint(s)"
+            delivered = _value(service.get("delivered"))
+            net = _money_cents(service.get("netRevenueCents"))
+            lines.append(
+                f"| `{_cell(line_cid)}` | `{_cell(service.get('companyCid'))}` | "
+                f"{mode} | {_cell(service.get('vehicleCount'))} / {_cell(service.get('capacity'))} | "
+                f"`{_cell(service.get('factsSource'))}` | {feeder} | {delivered} / {net} |"
+            )
+    else:
+        lines.append("| _no authored services_ |  |  |  |  |  |  |")
+
+    lines.extend(
+        [
             "",
             "## Native hook and mobility",
             "",

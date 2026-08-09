@@ -5,6 +5,13 @@ Prototype: `0.33.0-alpha`
 State schema: `29`  
 Economy model: `8`
 
+> Superseding audit: this `0.33` slice proved the portable codec and replay,
+> but its ordinary stock-GUI normalizer still filtered model names to
+> `vehicle/train/` and `vehicle/waggon/`. Prototype `0.34` closes that live-click
+> boundary and adds fail-closed capture limits, replacement re-registration,
+> and 32 more parity scenarios. See
+> [the portable stock-vehicle capture audit](PORTABLE_STOCK_VEHICLE_CAPTURE_AUDIT_2026-08-09.md).
+
 ## Outcome
 
 Same-town passenger routes are no longer an unsupported line shape. They

@@ -454,6 +454,81 @@ local outsideCosts = { 1, 50, 2499, 2500, 999999, 100000000 }
 local thetas = { 50, 51, 249, 250, 913, 999999 }
 local vots = { 30, 31, 449, 450, 12345, 99999, 100000 }
 
+-- Randomized model-v8 multimodal cases exercise best-feeder selection,
+-- endpoint/company isolation, carrier filtering, duplicate-stop rejection,
+-- capacity/frequency caps, and same-town growth across Lua/Python replay.
+local feederCarriers = { "ROAD", "TRAM", "RAIL", "WATER", "UNKNOWN" }
+local feederCapacities = { 0, 1, 17, 149, 150, 151, 600 }
+local feederHeadways = { 30, 299, 300, 599, 600, 3601, 86400 }
+for scenarioIndex = 1, 32 do
+  local townA = "town:feeder-" .. scenarioIndex .. "-a"
+  local townB = "town:feeder-" .. scenarioIndex .. "-b"
+  local stationA = "station_group:feeder-" .. scenarioIndex .. "-a"
+  local stationB = "station_group:feeder-" .. scenarioIndex .. "-b"
+  local corridorCid = "market:feeder-" .. scenarioIndex
+  local markets = {
+    { cid = corridorCid, name = "Feeder corridor " .. scenarioIndex,
+      kind = "passenger", demand = demands[nextValue(#demands) + 1],
+      votCentsPerHour = vots[nextValue(#vots) + 1],
+      gcOutsideCents = outsideCosts[nextValue(#outsideCosts) + 1],
+      thetaCents = thetas[nextValue(#thetas) + 1],
+      metadata = { marketScope = "corridor", townA = townA, townB = townB,
+        townSizeA = 80 + nextValue(500), townSizeB = 80 + nextValue(500),
+        corridorMeters = 500 + nextValue(25000) } },
+    { cid = corridorCid .. ":local-a", name = "Local A", kind = "passenger",
+      demand = 100 + nextValue(1000), gcOutsideCents = 2500, thetaCents = 250,
+      metadata = { marketScope = "local", townA = townA, townB = townA,
+        townSizeA = 80 + nextValue(500), townSizeB = 80 + nextValue(500),
+        corridorMeters = 1000 + nextValue(5000) } },
+    { cid = corridorCid .. ":local-b", name = "Local B", kind = "passenger",
+      demand = 100 + nextValue(1000), gcOutsideCents = 2500, thetaCents = 250,
+      metadata = { marketScope = "local", townA = townB, townB = townB,
+        townSizeA = 80 + nextValue(500), townSizeB = 80 + nextValue(500),
+        corridorMeters = 1000 + nextValue(5000) } },
+  }
+  local services = {}
+  for companyIndex = 1, 2 do
+    services[#services + 1] = {
+      lineCid = "line:feeder-corridor-" .. scenarioIndex .. "-" .. companyIndex,
+      marketCid = corridorCid, companyCid = "company:" .. companyIndex,
+      name = "Corridor " .. companyIndex,
+      headwaySeconds = feederHeadways[nextValue(#feederHeadways) + 1],
+      journeySeconds = 300 + nextValue(7200), fareCents = nextValue(5001),
+      capacity = feederCapacities[nextValue(#feederCapacities) + 1],
+      quality = nextValue(501), transfers = nextValue(3),
+      metadata = { carrier = "RAIL", marketScope = "corridor",
+        endpointTownCids = { townA, townB },
+        stationGroupCids = { stationA, stationB } },
+    }
+  end
+  for feederIndex = 1, 6 do
+    local atA = nextValue(2) == 0
+    local townCid, endpoint = atA and townA or townB, atA and stationA or stationB
+    local other = "station_group:feeder-" .. scenarioIndex .. "-local-" .. feederIndex
+    local duplicate = nextValue(5) == 0
+    local connects = nextValue(4) ~= 0
+    services[#services + 1] = {
+      lineCid = "line:feeder-local-" .. scenarioIndex .. "-" .. feederIndex,
+      marketCid = corridorCid .. (atA and ":local-a" or ":local-b"),
+      companyCid = "company:" .. (nextValue(2) + 1), name = "Local " .. feederIndex,
+      headwaySeconds = feederHeadways[nextValue(#feederHeadways) + 1],
+      journeySeconds = 120 + nextValue(2400), fareCents = nextValue(1001),
+      capacity = feederCapacities[nextValue(#feederCapacities) + 1],
+      quality = nextValue(201), transfers = nextValue(2), enabled = nextValue(5) ~= 0,
+      metadata = {
+        carrier = feederCarriers[nextValue(#feederCarriers) + 1], marketScope = "local",
+        endpointTownCids = { townCid, townCid },
+        stationGroupCids = duplicate and { other, other }
+          or { other, connects and endpoint or (other .. "-miss") },
+      },
+    }
+  end
+  addScenario({
+    id = "feeder-fuzz-" .. scenarioIndex,
+    markets = markets, services = services, epochs = nextValue(4) + 1,
+  })
+end
+
 for scenarioIndex = 1, 64 do
   local marketCid = "market:fuzz-" .. scenarioIndex
   local market = {

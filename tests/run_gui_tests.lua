@@ -1036,6 +1036,41 @@ assert(vanillaReplace and vanillaReplace.param.capture.targetLocalId == 760
     and vanillaReplace.param.capture.vehicleConfig[2] == replacementConfig[2],
   "suppressed stock replacement was not correlated into vehicle.replace")
 
+-- GUI/native correlation must preserve carrier-neutral model resources.  The
+-- game-script normalizer now extracts these exact names instead of silently
+-- discarding everything outside train/ and waggon/.
+for index, model in ipairs({
+  "vehicle/bus/ecitaro_v2.mdl",
+  "vehicle/truck/40_tons_universal_v2.mdl",
+  "vehicle/tram/asia/ktm_1_v2.mdl",
+  "vehicle/ship/damen_ferry_v2.mdl",
+  "vehicle/plane/airbus_a320_v2.mdl",
+  "vehicle/example_mod/hoverbus.mdl",
+}) do
+  local priorEventCount = #sentEvents
+  script.guiHandleEvent("vehicleManager", "accept", {
+    entity = -1, vehicleConfig = { model },
+  })
+  nativeVehicleCommands[#nativeVehicleCommands + 1] =
+    "V2|13|100|" .. tostring(750 + index) .. "|0"
+  local capture
+  for _ = 1, 8 do
+    script.guiUpdate()
+    for eventIndex = priorEventCount + 1, #sentEvents do
+      local candidate = sentEvents[eventIndex]
+      local value = candidate and candidate.param and candidate.param.capture
+      if candidate.name == "intent" and candidate.param.type == "operation.capture"
+        and value and value.kind == "vehicle.buy" and value.vehicleConfig[1] == model then
+        capture = value
+        break
+      end
+    end
+    if capture then break end
+  end
+  assert(capture and capture.depotLocalId == 750 + index,
+    "stock vehicle-manager correlation lost portable carrier " .. model)
+end
+
 nativeVehicleCommands[#nativeVehicleCommands + 1] = "V2|6|760|700|-1"
 script.guiUpdate()
 local vanillaAssign = sentEvents[#sentEvents]

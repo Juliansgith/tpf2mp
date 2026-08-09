@@ -491,6 +491,26 @@ do
     "an optimistic origin could not certify its captured intermediate line state")
   assert(#advanced.stops == 2,
     "line postcondition reconciliation mutated the observed physical state")
+
+  local binding = { metadata = {
+    owner = "company:1", lineCid = "line:test",
+    models = { { model = "vehicle/train/old.mdl" } },
+  } }
+  local replacementParts = {
+    { model = "vehicle/bus/new.mdl", reversed = false, loadConfig = { 0 },
+      color = { r = 1000, g = 1000, b = 1000 }, logo = "" },
+  }
+  operationRuntimeModule.applyBindingMetadata(binding, {
+    kind = "vehicle.replace", digest = "replacement-digest",
+    data = { config = { vehicles = replacementParts, vehicleGroups = { 1 } } },
+  }, "company:1")
+  assert(binding.metadata.models[1].model == "vehicle/bus/new.mdl"
+      and binding.metadata.lastOperationDigest == "replacement-digest"
+      and binding.metadata.lineCid == "line:test",
+    "vehicle replacement retained stale canonical consist metadata")
+  replacementParts[1].model = "vehicle/bus/mutated-after-apply.mdl"
+  assert(binding.metadata.models[1].model == "vehicle/bus/new.mdl",
+    "replacement metadata retained a mutable transaction reference")
 end
 
 do

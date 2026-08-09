@@ -1925,8 +1925,8 @@ handlers["probe.export_research"] = function()
   report.coreDigest = coreDigest(); report.townDevelopmentQueue = util.deepCopy(state.probes.townDevelopmentQueue)
   report.passengerPresentation = passengerPresentation.digestView(
     state.world.passengerPresentation)
-  report.passengerPresentationDigest = hash.value(report.passengerPresentation)
-  report.passengerCosmetics = util.deepCopy(state.probes.passengerCosmetics)
+  report.passengerPresentationDigest = hash.value(report.passengerPresentation); report.passengerCosmetics = util.deepCopy(state.probes.passengerCosmetics)
+  report.economyPresentation = util.deepCopy(publicSnapshot().economyPresentation)
   report.serviceRegistration = util.deepCopy(state.probes.serviceRegistration)
   report.proposals = {
     queued = state.world.proposals.queued or 0,
@@ -1957,7 +1957,7 @@ handlers["probe.export_research"] = function()
     report.accounts.companies[companyCid] = accountOf(state.companies[companyCid].playerId)
   end
   report.knownLimits = {
-    "BuildProposal has a payload-aware pre-mutation gate. Of the twenty-three additional exact visitor gates, fifteen line/railway-vehicle/name/color tags have strict canonical operation codecs. Native SetGameSpeed is now host-ordered; calendar/logo/field/terrain/date/cheat/person-debug categories stay fail-closed for player input.",
+    "BuildProposal has a payload-aware pre-mutation gate. Of the twenty-three additional exact visitor gates, fifteen line/portable-vehicle/name/color tags have strict canonical operation codecs. Native SetGameSpeed is now host-ordered; calendar/logo/field/terrain/date/cheat/person-debug categories stay fail-closed for player input.",
     "Proposal schema 5 canonically serializes road/track changes plus named signal/waypoint edge objects, including retained objects across edge replacement, with quoted cost and no machine-local IDs. Schema 7 adds stock rail-station placement and bounded generic named .con/.module payloads for depots, ordinary constructions, ASSET_DEFAULT roots, upgrades, modular station edits, and removal. Both paths use repository names, strict ownership, preflight and physical consensus. Opaque/script callbacks and ambiguous dependency migration fail closed; every peer still requires an identical pinned mod pack.",
     "Construction uses all-peer prepare before native mutation, then two-peer physical completion consensus, ordered success/fault controls, a bounded timeout, and fail-closed dependency gating. A readiness rejection is non-fatal because neither world changed. Match start and each successful physical result are followed by a host-verified checkpoint barrier; in-place native geometry rollback is deliberately not claimed.",
     "Shared-clock v2 projects staggered peer heartbeats to one host time, orders future-time pause/speed rendezvous, corrects bounded overshoot, emits paused heartbeats, and adaptively caps the effective speed from engine/backlog health. Populated localhost is live-proven; two-computer long-pause and slowdown/recovery proof remains.",
@@ -2449,14 +2449,14 @@ local function normaliseOperationCapture(action)
     end
     local depotCid, depotError = bindLocal(capture.depotLocalId, "depot")
     if not depotCid then return nil, depotError end
-    local names = operationCodec.railwayModelNames(capture.modelNames or capture.vehicleConfig)
+    local names, namesError = operationCodec.vehicleModelNames(capture.modelNames or capture.vehicleConfig); if not names then return nil, namesError end
     local config, configError = operationCodec.defaultVehicleConfig(names, api)
     if not config then return nil, configError end
     data = { depotCid = depotCid, config = config }
   elseif kind == "vehicle.replace" then
     local targetCid, targetError = bindLocal(capture.targetLocalId, "vehicle")
     if not targetCid then return nil, targetError end
-    local names = operationCodec.railwayModelNames(capture.modelNames or capture.vehicleConfig)
+    local names, namesError = operationCodec.vehicleModelNames(capture.modelNames or capture.vehicleConfig); if not names then return nil, namesError end
     local config, configError = operationCodec.defaultVehicleConfig(names, api)
     if not config then return nil, configError end
     data = { targetCid = targetCid, config = config }

@@ -2,7 +2,7 @@
 
 Use only fresh disposable worlds. Never continue after a custody, proposal-finalisation, or finance error unless the step explicitly tests recovery. Export evidence once, then close without saving.
 
-Prototype under test: `0.33.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
+Prototype under test: `0.34.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
 
 ## 0. Automated baseline
 
@@ -192,6 +192,12 @@ Pass for observation: stable canonical aggregate reads are available and compara
    checkpoint on both peers.
 6. Disable or unassign the feeder. At the next settlement its access endpoint
    and cost reduction must disappear. Re-enable it and confirm they return.
+7. Replace the local vehicle with a visibly different capacity or speed class.
+   Wait for the automatic registration follow-up and confirm both the line
+   panel and next settlement use the replacement facts, not the old consist.
+8. Export Research on both peers before shutdown. The authoritative economy
+   table must name the same local line, company, ROAD/TRAM carrier, local scope,
+   capacity, `factsSource`, feeder endpoints, delivery count, and net revenue.
 
 Pass: both processes retain matching core/model/structure, the local service
 earns only completed-trip revenue, its same-town growth credit is not halved or

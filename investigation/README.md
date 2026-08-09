@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.33.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.34.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+
+[Portable stock-vehicle capture audit](PORTABLE_STOCK_VEHICLE_CAPTURE_AUDIT_2026-08-09.md)
+closes the ordinary-UI non-rail filter, bounded-payload truncation, stale
+replacement consist/service facts, empty legacy-line capacity, and missing
+post-session economy evidence while preserving the honest live boundary.
 
 [Local passenger feeders and portable carriers](LOCAL_PASSENGER_FEEDERS_AND_PORTABLE_CARRIERS_2026-08-09.md)
 records same-town authored markets, model-v8 company-owned feeder access,

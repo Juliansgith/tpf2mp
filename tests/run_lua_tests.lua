@@ -1191,6 +1191,34 @@ local function vehicleModelRepository()
 end
 
 test("vehicle operations accept every portable carrier resource and reject local ids", function()
+  local extracted = operationCodec.vehicleModelNames({
+    [2] = "vehicle/tram/duewag_gt8.mdl",
+    [1] = "vehicle/bus/benz.mdl",
+    nested = {
+      "vehicle/truck/opel_blitz.mdl", "vehicle/ship/ferry.mdl",
+      "vehicle/plane/commuter.mdl", "vehicle/mod_namespace/custom.mdl",
+      "construction/depot.mdl", "vehicle/../construction/depot.mdl",
+    },
+  })
+  equal(#extracted, 6)
+  equal(extracted[1], "vehicle/bus/benz.mdl")
+  equal(extracted[2], "vehicle/tram/duewag_gt8.mdl")
+  equal(extracted[6], "vehicle/mod_namespace/custom.mdl")
+  local cyclic = { "vehicle/bus/benz.mdl" }
+  cyclic.self = cyclic
+  equal(#operationCodec.vehicleModelNames(cyclic), 1)
+  local tooMany = {}
+  for index = 1, operationCodec.MAX_VEHICLE_PARTS + 1 do
+    tooMany[index] = "vehicle/bus/benz.mdl"
+  end
+  local excessive, excessiveError = operationCodec.vehicleModelNames(tooMany)
+  equal(excessive, nil)
+  truthy(tostring(excessiveError):match("part count"), excessiveError)
+  local deeplyNested = "vehicle/bus/benz.mdl"
+  for _ = 1, 17 do deeplyNested = { deeplyNested } end
+  local tooDeep, depthError = operationCodec.vehicleModelNames(deeplyNested)
+  equal(tooDeep, nil)
+  truthy(tostring(depthError):match("nesting limit"), depthError)
   local config = operationCodec.defaultVehicleConfig({
     "vehicle/train/db_v100.mdl", "vehicle/waggon/open_1910.mdl",
   }, { res = { modelRep = vehicleModelRepository() } })
@@ -3279,6 +3307,41 @@ test("computed service facts derive journey, headway, and capacity from geometry
   equal(hash.value(facts), hash.value(repeatFacts), "computed facts must be repeatable")
 end)
 
+test("vehicle replacement automatically refreshes its assigned service facts", function()
+  local registry = canonical.newState()
+  truthy(canonical.bind(registry, "line:event:replace", "line", 700,
+    { owner = "company:1" }))
+  truthy(canonical.bind(registry, "vehicle:event:replace", "vehicle", 701,
+    { owner = "company:1", lineCid = "line:event:replace" }))
+  local state = {
+    tick = 43, networkMode = "network", canonical = registry,
+    economy = { services = {
+      ["line:event:replace"] = { companyCid = "company:1" },
+    } },
+  }
+  local submitted = {}
+  local queued = world.autoRegisterLine(state, {
+    kind = "vehicle.replace", companyCid = "company:1",
+    data = { targetCid = "vehicle:event:replace" },
+  }, nil, {
+    activeCompany = function() return "company:1" end,
+    submit = function(action) submitted[#submitted + 1] = action; return true, {} end,
+  })
+  truthy(queued)
+  equal(#submitted, 1)
+  equal(submitted[1].type, "line.register")
+  equal(submitted[1].lineCid, "line:event:replace")
+  equal(submitted[1].companyCid, "company:1")
+  world.autoRegisterLine(state, {
+    kind = "vehicle.replace", companyCid = "company:1",
+    data = { targetCid = "vehicle:event:replace" },
+  }, nil, {
+    activeCompany = function() return "company:2" end,
+    submit = function(action) submitted[#submitted + 1] = action; return true, {} end,
+  })
+  equal(#submitted, 1, "the non-owning peer independently derived replacement facts")
+end)
+
 test("initial checkpoint revalidates every runnable pre-existing company line", function()
   local registry = canonical.newState()
   truthy(canonical.bind(registry, "line:pre:own", "line", 700))
@@ -3445,7 +3508,6 @@ test("same-town road service registers a local authored passenger market", funct
   local economyState = economy.newState()
   local ok, result = binding.makeLineService(
     registry, economy, economyState, 77, "company:1", {})
-  api = previousApi
   truthy(ok, result)
   truthy(result.marketCid:match("^market:local:"), "same-town service used a corridor market")
   equal(result.marketScope, "local")
@@ -3471,6 +3533,31 @@ test("same-town road service registers a local authored passenger market", funct
     "a same-town trip was split away instead of credited once to its town")
   equal(economyState.towns["town:pre:local"].size, 401)
   equal(economyState.towns["town:pre:local"].growthResid, 100)
+
+  local emptyFallback = corridorBindingModule.new({
+    bindExisting = function(_, localId) return ids[localId] end,
+    lineStopGroups = function() return { 901, 902 } end,
+    lineServiceKind = function() return "passenger", "indexed station" end,
+    stationGroupTown = function() return 700 end,
+    townCapacity = function() return 100, { 100, 100, 100 } end,
+    townBuildingCount = function() return 100 end,
+    lineVehicleIds = function() return {} end,
+    nameOf = function(id) return id == 700 and "Testville" or tostring(id) end,
+    safeEntity = function() return { frequency = 1 / 300, rate = 999 } end,
+    positionOfEntity = function() return nil end,
+    developmentPositionsOfTown = function() return {} end,
+    resolveLocal = function() return nil end,
+    resolveCanonical = function() return nil end,
+  })
+  local fallbackState = economy.newState()
+  local fallbackOk, fallbackResult = emptyFallback.makeLineService(
+    { byCanonical = {} }, economy, fallbackState, 77, "company:1", {})
+  api = previousApi
+  truthy(fallbackOk, fallbackResult)
+  local fallbackService = fallbackState.services["line:event:bus:1"]
+  equal(fallbackService.metadata.factsSource, "estimated-legacy")
+  equal(fallbackService.capacity, 0,
+    "legacy frequency/rate fallback invented capacity for an empty line")
 end)
 
 test("station boards aggregate model allocations per station group", function()

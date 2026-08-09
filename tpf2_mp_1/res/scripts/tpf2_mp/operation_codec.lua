@@ -11,25 +11,6 @@ local M = {
   MAX_VEHICLE_PARTS = 128,
 }
 
-function M.railwayModelNames(value, output, seen)
-  output, seen = output or {}, seen or {}
-  if type(value) == "string" then
-    local normalized = value:gsub("\\", "/")
-    local railwayModel = normalized:sub(1, 14) == "vehicle/train/"
-      or normalized:sub(1, 15) == "vehicle/waggon/"
-    if railwayModel and normalized:sub(-4) == ".mdl" then
-      output[#output + 1] = normalized
-    end
-  elseif type(value) == "table" and not seen[value] then
-    seen[value] = true
-    for _, key in ipairs(util.sortedKeys(value)) do
-      M.railwayModelNames(value[key], output, seen)
-    end
-    seen[value] = nil
-  end
-  return output
-end
-
 local SPECS = {
   ["line.create"] = { tag = 3, factory = "createLine", outputKind = "line" },
   ["line.delete"] = { tag = 4, factory = "deleteLine", targetKind = "line" },
@@ -86,6 +67,45 @@ local function vehicleModelResource(value)
     and not value:find("..", 1, true)
     and not value:find("\\", 1, true)
 end
+
+-- The stock vehicle manager exposes its selected consist through a GUI event,
+-- while the native visitor contributes the authoritative depot/target.  Keep
+-- this extractor carrier-neutral: buses, trucks, trams, ships, aircraft, and
+-- data-only mod vehicles use the same BuyVehicle/ReplaceVehicle command.
+-- Traversal is bounded because GUI payloads are not an authored wire format.
+function M.vehicleModelNames(value)
+  local output, seen = {}, {}
+  local budget = 2048
+  local function walk(current, depth)
+    if budget <= 0 then return false, "vehicle GUI payload exceeds traversal budget" end
+    if depth > 16 then return false, "vehicle GUI payload exceeds nesting limit" end
+    budget = budget - 1
+    if type(current) == "string" then
+      local normalized = current:gsub("\\", "/")
+      if vehicleModelResource(normalized) then
+        output[#output + 1] = normalized
+        if #output > M.MAX_VEHICLE_PARTS then
+          return false, "vehicle GUI payload exceeds maximum part count"
+        end
+      end
+    elseif type(current) == "table" and not seen[current] then
+      seen[current] = true
+      for _, key in ipairs(util.sortedKeys(current)) do
+        local ok, err = walk(current[key], depth + 1)
+        if not ok then seen[current] = nil; return false, err end
+      end
+      seen[current] = nil
+    end
+    return true
+  end
+  local ok, err = walk(value, 0)
+  if not ok then return nil, err end
+  return output
+end
+
+-- Retain the old symbol for old helper scripts, but do not preserve its
+-- railway-only semantics.  New call sites should use vehicleModelNames.
+M.railwayModelNames = M.vehicleModelNames
 
 local function boundedInteger(value, low, high)
   return type(value) == "number" and value == math.floor(value)

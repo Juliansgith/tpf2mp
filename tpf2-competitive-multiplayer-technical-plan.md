@@ -319,6 +319,19 @@ Vanilla roads, tracks, stations, station modules, depots, signals, waypoints, as
 
 **2026-08-09 local-feeder checkpoint.** Prototype 0.33/economy model 8 promotes same-town passenger lines from quarantine to canonical local markets. Portable carrier facts cover rail, road, tram, water, and air, while a same-company ROAD/TRAM service sharing an exact intercity station group contributes a bounded frequency/capacity-scaled access benefit. The best feeder wins without stacking and rival, disabled, zero-capacity, single-stop-loop, or cargo services cannot help. Road/tram passenger vehicles now rendezvous at route endpoints rather than every curb stop; freight uses exact contract endpoints and conservative carriers retain every-stop safety. Lua and Python agree across 76 v2-v8 scenarios and the strict companion rejects mismatched scope/town/station metadata. This slice is offline-complete but has no ordinary-UI non-rail two-process receipt. See `investigation/LOCAL_PASSENGER_FEEDERS_AND_PORTABLE_CARRIERS_2026-08-09.md`.
 
+**2026-08-09 portable-stock hardening checkpoint.** Prototype 0.34 closes the
+gap between the carrier-neutral operation codec and the ordinary stock
+vehicle-manager click: the GUI/native FIFO now preserves any bounded
+`vehicle/*.mdl` list, including road, tram, water, air, and mod namespaces,
+while missing resources and truncated payloads fail closed. A completed
+replacement refreshes its canonical consist and automatically re-registers
+the assigned line, and the unreadable-geometry fallback can no longer invent
+capacity for an empty line. Thirty-two deterministic multimodal feeder fuzz
+cases raise Lua/Python v2-v8 parity to 108 scenarios. Research exports now
+retain the exact authored carrier/scope/capacity/feeder/revenue table needed to
+audit the later live run. See
+`investigation/PORTABLE_STOCK_VEHICLE_CAPTURE_AUDIT_2026-08-09.md`.
+
 The next gates are the focused local bus/tram feeder run, cargo-positive two-process run, human two-computer latency/slow-peer/disconnect proof, automatic identical-save recovery, and broader mod-command coverage. The earlier dated status paragraphs remain as historical milestones rather than the current capability statement.
 
 ---

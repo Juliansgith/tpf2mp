@@ -3120,6 +3120,28 @@ class ResearchReportTests(unittest.TestCase):
                     "targetWritesEnabled": False,
                     "appliedWrites": 0,
                 },
+                "economyPresentation": {
+                    "economyDifficultyLabel": "Normal",
+                    "intervalSeconds": 300,
+                    "services": {
+                        "line:event:rail:1": {
+                            "companyCid": "company:1", "kind": "passenger",
+                            "carrier": "RAIL", "marketScope": "corridor",
+                            "vehicleCount": 1, "capacity": 320,
+                            "factsSource": "computed-consist",
+                            "feederAccessCents": 150, "feederAccessEndpoints": 1,
+                            "delivered": 12, "netRevenueCents": 123400,
+                        },
+                        "line:event:bus:1": {
+                            "companyCid": "company:1", "kind": "passenger",
+                            "carrier": "ROAD", "marketScope": "local",
+                            "vehicleCount": 2, "capacity": 240,
+                            "factsSource": "computed-consist",
+                            "feederAccessCents": 0, "feederAccessEndpoints": 0,
+                            "delivered": 8, "netRevenueCents": 45600,
+                        },
+                    },
+                },
                 "proposals": {"queued": 2, "applied": 1, "failed": 1, "retained": 2},
                 "proposalConsensus": {"completed": 1, "failed": 0, "sessionFault": None},
                 "checkpointConsensus": {
@@ -3177,6 +3199,12 @@ class ResearchReportTests(unittest.TestCase):
             self.assertIn("Authoritative passenger ledger digest/epoch: `13579bdf` / 3", markdown)
             self.assertIn("Authoritative passenger lines/vehicles/aboard/waiting: 1 / 1 / 11 / 12", markdown)
             self.assertIn("Native cosmetic aboard/waiting; target writes/applied: 1 / 2; no / 0", markdown)
+            self.assertIn("Difficulty: `Normal`; settlement interval `300` seconds", markdown)
+            self.assertIn("line:event:rail:1", markdown)
+            self.assertIn("passenger / RAIL / corridor", markdown)
+            self.assertIn("$1.50 / 1 endpoint(s)", markdown)
+            self.assertIn("line:event:bus:1", markdown)
+            self.assertIn("passenger / ROAD / local", markdown)
             self.assertIn(
                 "Vehicle capture queued / captured / consumed / invalid / dropped: 0 / 2 / 2 / 0 / 0",
                 markdown,

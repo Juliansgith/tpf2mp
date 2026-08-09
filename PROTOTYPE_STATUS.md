@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.33.0-alpha`, state schema `29`,
+Last updated: 2026-08-09 for prototype `0.34.0-alpha`, state schema `29`,
 checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation
 schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction
 proposal schema `7`, and native hook `0.14.0`.
@@ -357,8 +357,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   prove New Line, rename, color, Delete Line, Add Station, and per-stop removal
   visually on two independent processes. Reorder and alternate-terminal visual
   proof remain. Hook 0.14 also captures BuyVehicle's pinned native
-  player/depot scalars and correlates them with the stock GUI's ordered
-  `vehicle/train/` + `vehicle/waggon/` consist; SetLine carries canonical
+  player/depot scalars and correlates them with the stock GUI's ordered,
+  carrier-neutral `vehicle/*.mdl` list; bounded capture fails closed instead
+  of truncating oversized or deeply nested payloads. SetLine carries canonical
   vehicle/line/stop identities. The exact NOHAB + two BC4 purchase now passes
   a disposable Build 35924 engine run with concrete model-derived load configs,
   and a stock human NOHAB + two BC4 purchase now reaches matching physical and
@@ -368,6 +369,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   station barrier. Reverse, start/stop, maintenance, immediate departure,
   send-to-depot/sell-on-arrival, direct single sale, replacement, and manual-departure stock
   adapters now pass exact-layout and integration tests but remain live-unproven.
+  Replacement also refreshes canonical consist metadata and schedules an
+  owning-peer line registration, so new speed/capacity/upkeep facts cannot stay
+  hidden behind the old service record.
   Stock multi-vehicle sale remains deliberately fail-closed.
 - Later commits remain blocked until both peers agree on physical output and
   then on core/model/canonical-structure/canonical-finance checkpoint state.
@@ -539,7 +543,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v7 behavior remains available for
-  archived replay. The offline gate now includes 121 Lua tests and 76
+  archived replay. The offline gate now includes 122 Lua tests and 108
   cross-language v2-v8 scenarios, including feeder access, completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
@@ -643,7 +647,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 121 core Lua tests and 76 cross-language economy scenarios;
+  - 122 core Lua tests and 108 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
   - 108 mod Lua and 8 investigation/tool Lua syntax checks;

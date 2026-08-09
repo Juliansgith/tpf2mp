@@ -44,6 +44,35 @@ function M.reconcileLinePostcondition(transaction, targetCid, observed, originAp
   return expected
 end
 
+-- Apply only the portable metadata implied by a completed operation. Keeping
+-- this pure makes lifecycle changes independently testable and prevents a
+-- physically successful replacement from leaving the old consist in the
+-- manager/economy projection until an unrelated assignment occurs.
+function M.applyBindingMetadata(binding, transaction, companyCid)
+  if type(binding) ~= "table" or type(transaction) ~= "table"
+      or type(transaction.data) ~= "table" then return binding end
+  local data = transaction.data
+  binding.metadata = binding.metadata or {}
+  binding.metadata.owner = binding.metadata.owner or companyCid
+  binding.metadata.lastOperationDigest = transaction.digest
+  if transaction.kind == "line.update" then
+    binding.metadata.stops = util.deepCopy(data.line.stops)
+  elseif transaction.kind == "vehicle.assign" then
+    binding.metadata.lineCid = data.lineCid
+  elseif transaction.kind == "vehicle.replace" then
+    binding.metadata.models = util.deepCopy(data.config.vehicles)
+  elseif transaction.kind == "entity.name" then
+    binding.metadata.name = data.name
+  elseif transaction.kind == "entity.color" then
+    binding.metadata.color = util.deepCopy(data.color)
+  elseif transaction.kind == "vehicle.stop" then
+    binding.metadata.userStopped = data.stopped
+  elseif transaction.kind == "vehicle.maintenance" then
+    binding.metadata.maintenanceBasisPoints = data.valueBasisPoints
+  end
+  return binding
+end
+
 function M.new(env)
   assert(type(env) == "table", "operation runtime environment is required")
   assert(type(env.getState) == "function", "operation runtime state provider is required")
@@ -359,19 +388,7 @@ function M.new(env)
   local function applyOperationMetadata(record)
     local transaction, data = record.transaction, record.transaction.data
     local binding = data.targetCid and currentState().canonical.byCanonical[data.targetCid] or nil
-    if binding then
-      binding.metadata = binding.metadata or {}
-      binding.metadata.owner = binding.metadata.owner or record.companyCid
-      binding.metadata.lastOperationDigest = transaction.digest
-      if transaction.kind == "line.update" then binding.metadata.stops = util.deepCopy(data.line.stops)
-      elseif transaction.kind == "vehicle.assign" then binding.metadata.lineCid = data.lineCid
-      elseif transaction.kind == "entity.name" then binding.metadata.name = data.name
-      elseif transaction.kind == "entity.color" then binding.metadata.color = util.deepCopy(data.color)
-      elseif transaction.kind == "vehicle.stop" then binding.metadata.userStopped = data.stopped
-      elseif transaction.kind == "vehicle.maintenance" then
-        binding.metadata.maintenanceBasisPoints = data.valueBasisPoints
-      end
-    end
+    M.applyBindingMetadata(binding, transaction, record.companyCid)
     if transaction.kind == "line.delete" or transaction.kind == "vehicle.sell" then
       local localId = binding and binding.localId or record.localRefs[data.targetCid]
       canonical.unbindCanonical(currentState().canonical, data.targetCid)
