@@ -118,14 +118,19 @@ vehicles, per-line conservation, presentation/economy epoch equality, and the
 vehicle synchronization round.
 
 The Python companion independently validates unified delivery schema 2,
-replays transport and production, and verifies current checkpoints. A two-step
-Lua/Python vector covers one line followed by two lines and finishes at exact
-freight digest `3c79af8d`. The pre-existing broader freight arithmetic fixture
-remains pinned at `f758bc34`.
+replays transport and production, and verifies current checkpoints. A focused
+two-step Lua/Python vector covers one line followed by two lines and finishes
+at exact freight digest `3c79af8d`. A second deterministic 256-boundary trace
+drives 12 active lines across `GRAIN`, `CRUDE`, and `LOGS`, shares each source
+between four services, delays one service per cargo, inserts every seventeenth
+boundary with no movement, and changes an unused idle contract without pinning
+a cursor. Lua and Python finish at the same digest `74b018d9`. The pre-existing
+broader freight arithmetic fixture remains pinned at `f758bc34`.
 
 The complete repository gate passes 117 core Lua tests, 75 economy parity
-scenarios, 119 Python tests, runtime/game/GUI/network tests, two-step freight
-transport parity, the 1,024-event replay, source budgets, launcher smoke, and
+scenarios, 119 Python tests, runtime/game/GUI/network tests, focused and
+256-boundary freight transport parity, the 1,024-event replay, source budgets,
+launcher smoke, and
 release-oriented checks. The distilled automated receipt is
 [`freight_transport_authority_evidence_2026-08-09.json`](freight_transport_authority_evidence_2026-08-09.json).
 

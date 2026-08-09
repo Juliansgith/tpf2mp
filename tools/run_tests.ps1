@@ -48,6 +48,12 @@ try {
     & $python (Join-Path $projectRoot 'tests\check_freight_transport_parity.py') $projectRoot $freightParity
     if ($LASTEXITCODE -ne 0) { throw "Cross-language freight transport parity failed with exit code $LASTEXITCODE" }
 
+    $freightStress = Join-Path $temporary 'freight-transport-stress.json'
+    & $lua (Join-Path $projectRoot 'tests\run_freight_transport_stress.lua') $projectRoot $freightStress
+    if ($LASTEXITCODE -ne 0) { throw "Lua freight transport stress generation failed with exit code $LASTEXITCODE" }
+    & $python (Join-Path $projectRoot 'tests\check_freight_transport_stress.py') $projectRoot $freightStress
+    if ($LASTEXITCODE -ne 0) { throw "Cross-language freight transport stress failed with exit code $LASTEXITCODE" }
+
     & $python (Join-Path $projectRoot 'tools\audit_economy_era_balance.py') --check
     if ($LASTEXITCODE -ne 0) { throw "Economy era-balance audit failed with exit code $LASTEXITCODE" }
 

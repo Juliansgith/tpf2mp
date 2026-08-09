@@ -121,7 +121,8 @@ it is a live cargo run. It proves exact heterogeneous consist capacities,
 portable source/sink binding, ordered boarding/delivery, aggregate stock
 reservation, zero-movement cursor behavior, line retirement/discard
 conservation, atomic registration and settlement rollback, state-29/checkpoint-5
-validation, and independent Lua/Python two-step transport replay. See
+validation, an independent Lua/Python two-step vector, and a 256-boundary
+three-cargo/12-line stress replay ending at digest `74b018d9`. See
 `investigation/FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md`.
 
 State 24 retains two newer gates. `round3-town-construction-pos-20260807` ran
