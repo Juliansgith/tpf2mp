@@ -24,11 +24,11 @@ $packagedBundle = Test-Path -LiteralPath (Join-Path $projectRoot 'bin\tpf2mp.exe
 Write-Host 'This acceptance run starts a clean two-process manual network world and verifies its match checkpoint.'
 Write-Host "Each company receives $StartingCash; when both windows are handed to you, build one complete vanilla cargo service."
 Write-Host 'Required proof before closing either window:'
-Write-Host '  1. The multiplayer panel reports freight ready and the cargo line is registered.'
-Write-Host '  2. Let the source produce, settle one epoch if needed, and observe cargo waiting.'
-Write-Host '  3. Let a train load, deliver, and then cross one automatic five-minute settlement.'
+Write-Host '  1. The multiplayer panel reports Freight model READY and Cargo proof shows one active line.'
+Write-Host '  2. Let the source produce; Cargo proof should progress through waiting and aboard.'
+Write-Host '  3. Let the train deliver, then wait for Cargo proof settled/revenue after the automatic five-minute boundary.'
 if ($RequireObservedAboard) {
-    Write-Host '  4. While the train visibly carries cargo, press Export Checkpoint once.'
+    Write-Host '  4. The first authoritative non-zero load automatically opens a cargo-aboard checkpoint; no manual export is needed.'
     Write-Host '  5. Save both peers, reload only if testing persistence, and complete another delivery.'
 }
 else {

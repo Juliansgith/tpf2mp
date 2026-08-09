@@ -15,18 +15,20 @@ $gameInbox = Join-Path $temporary 'game_inbox'
 $mainBridge = Join-Path $temporary 'main'
 $mainOutbox = Join-Path $mainBridge 'game_outbox'
 $mainInbox = Join-Path $mainBridge 'game_inbox'
+$mainCompanionState = Join-Path $mainBridge 'companion_state'
 $hotseatBridge = Join-Path $temporary 'hotseat'
 $hotseatOutbox = Join-Path $hotseatBridge 'game_outbox'
 $hotseatInbox = Join-Path $hotseatBridge 'game_inbox'
 $networkMapBridge = Join-Path $temporary 'network-company-map'
 $networkMapOutbox = Join-Path $networkMapBridge 'game_outbox'
 $networkMapInbox = Join-Path $networkMapBridge 'game_inbox'
+$networkMapCompanionState = Join-Path $networkMapBridge 'companion_state'
 $traceBridge = Join-Path $temporary 'replay-trace'
 $traceOutbox = Join-Path $traceBridge 'game_outbox'
 $traceInbox = Join-Path $traceBridge 'game_inbox'
 $industryContent = Join-Path $temporary 'content\industry'
 $industryState = Join-Path $temporary 'companion_state'
-New-Item -ItemType Directory -Force -Path $gameOutbox, $gameInbox, $mainOutbox, $mainInbox, $hotseatOutbox, $hotseatInbox, $networkMapOutbox, $networkMapInbox, $traceOutbox, $traceInbox | Out-Null
+New-Item -ItemType Directory -Force -Path $gameOutbox, $gameInbox, $mainOutbox, $mainInbox, $mainCompanionState, $hotseatOutbox, $hotseatInbox, $networkMapOutbox, $networkMapInbox, $networkMapCompanionState, $traceOutbox, $traceInbox | Out-Null
 New-Item -ItemType Directory -Force -Path $industryContent, $industryState | Out-Null
 
 try {

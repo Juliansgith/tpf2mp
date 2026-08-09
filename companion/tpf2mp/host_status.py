@@ -14,6 +14,11 @@ def write_host_status(host: Any, status: str | None = None) -> None:
     pending_prepare = host._pending_prepare()
     pending_operation = host._pending_operation()
     pending_checkpoint = host._pending_checkpoint()
+    checkpoint_counts = {"pending": 0, "complete": 0, "faulted": 0}
+    for tracker in host.checkpoint_consensus.values():
+        tracker_status = str(tracker.get("status", "pending"))
+        if tracker_status in checkpoint_counts:
+            checkpoint_counts[tracker_status] += 1
     host.bridge.write_status({
         "role": "host",
         "status": host.status,
@@ -33,8 +38,12 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         "pendingProposalSeq": pending_proposal and pending_proposal.get("commitSeq"),
         "pendingOperationSeq": pending_operation and pending_operation.get("commitSeq"),
         "pendingCheckpointSeq": pending_checkpoint and pending_checkpoint.get("boundarySeq"),
+        "pendingCheckpointReason": pending_checkpoint and pending_checkpoint.get("reason"),
         "lastAgreedCheckpointSeq": host.last_agreed_checkpoint
         and host.last_agreed_checkpoint.get("boundarySeq"),
+        "lastAgreedCheckpointReason": host.last_agreed_checkpoint
+        and host.last_agreed_checkpoint.get("reason"),
+        "checkpointCounts": checkpoint_counts,
         "sessionFault": host.session_fault,
         "lastError": host.last_error,
         "matchFingerprint": host.match_fingerprint,

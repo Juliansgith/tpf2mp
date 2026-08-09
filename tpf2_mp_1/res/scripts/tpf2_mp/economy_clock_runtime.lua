@@ -22,6 +22,18 @@ function M.new(deps)
     if state.networkMode == "network" and state.bridge.peerId ~= "player1" then
       return false, "host-only"
     end
+    if state.networkMode == "network"
+      and (not state.bridge.companion or state.bridge.companion.connected ~= true) then
+      if pending then
+        diagnosticLog("economy-clock-peer-disconnected", {
+          boundaryGameTimeSeconds = pending.boundary,
+          submittedTick = pending.tick,
+          tick = state.tick,
+        })
+      end
+      pending = nil
+      return false, "peer-disconnected"
+    end
     local boundary = tonumber(scheduler.nextBoundaryGameTimeSeconds)
     local observed = clockSnapshot() or {}
     local gameTime = tonumber(observed.time)
@@ -29,6 +41,7 @@ function M.new(deps)
       return false, "not-due"
     end
     if pending and pending.boundary ~= boundary then pending = nil end
+    local work = localWorkState() or {}
     if pending and state.tick - pending.tick < 300 then return false, "submitted" end
     if pending then
       diagnosticLog("economy-clock-retry", {
@@ -37,7 +50,6 @@ function M.new(deps)
       })
       pending = nil
     end
-    local work = localWorkState() or {}
     if work.pending then return false, tostring(work.barrierReason or "authority-busy") end
     local accepted, result = submitIntent({
       type = "economy.settle",
@@ -64,5 +76,4 @@ function M.new(deps)
 
   return { update = update, reset = reset }
 end
-
 return M

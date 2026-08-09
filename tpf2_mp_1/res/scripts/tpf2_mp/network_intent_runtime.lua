@@ -3,12 +3,10 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local bridgeConsumerModule = require "tpf2_mp/network_bridge_consumer"
 local followupQueueModule = require "tpf2_mp/network_followup_queue"
-
 local M = {
   MAX_DEFERRED_INTENTS = 32,
   MAX_DEFERRED_FOLLOWUPS = 512,
 }
-
 function M.new(deps)
   assert(type(deps) == "table", "network intent runtime dependencies are required")
   local getState = assert(deps.getState, "getState dependency is required")
@@ -25,19 +23,16 @@ function M.new(deps)
     tonumber(deps.maxDeferredIntents) or M.MAX_DEFERRED_INTENTS
   local MAX_DEFERRED_FOLLOWUPS =
     tonumber(deps.maxDeferredFollowups) or M.MAX_DEFERRED_FOLLOWUPS
-
   local state = setmetatable({}, {
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
   })
-  local deferredNetworkIntents = {}
+  local deferredNetworkIntents, networkIntentAwaitingOrder = {}, nil
   local followups = followupQueueModule.new({
     getState = getState, diagnosticLog = diagnosticLog,
     maximum = MAX_DEFERRED_FOLLOWUPS,
   })
-  local networkIntentAwaitingOrder = nil
   local networkPendingBarrierReason
-
   local function localWorkState()
     local barrierReason = networkPendingBarrierReason and networkPendingBarrierReason() or nil
     return {
@@ -52,6 +47,7 @@ function M.new(deps)
   end
 
   networkPendingBarrierReason = function()
+    if type(state.bridge.companion) == "table" and state.bridge.companion.connected ~= true then return "network companion is not connected to all required peers" end
     local rendezvous = state.world.networkClock and state.world.networkClock.rendezvous
     if rendezvous then
       return "shared clock rendezvous is awaiting all-peer simulation time: "

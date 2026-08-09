@@ -115,6 +115,14 @@ api = {
   },
 }
 
+local companionStatus = assert(io.open(
+  bridgeRoot .. "/companion_state/companion_status.json", "wb"))
+companionStatus:write(json.encode({
+  session = "engine-test", peer = "player1", status = "running",
+  connected = true, connectedPeers = { "player2" },
+}) .. "\n")
+companionStatus:close()
+
 assert(loadfile(project .. "/tpf2_mp_1/res/config/game_script/tpf2_mp.lua"))()
 local script = assert(data())
 script.init()

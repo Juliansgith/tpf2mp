@@ -13,6 +13,29 @@ local function compactResult(value)
   return "table"
 end
 
+local function cargoProof(snapshot)
+  local cargo = snapshot.cargoPresentation or {}
+  local totals = cargo.totals or {}
+  local cursors = snapshot.deliveryCursors or {}
+  local active, settled, revenue = 0, 0, 0
+  for lineCid, line in pairs(cargo.lines or {}) do
+    if type(line) == "table" and line.retired ~= true then
+      active = active + 1
+      local cursor = cursors[lineCid]
+      if type(cursor) == "table" then
+        settled = settled + math.max(0, tonumber(cursor.deliveredCargo) or 0)
+        revenue = revenue + math.max(0, tonumber(cursor.earnedRevenueCents) or 0)
+      end
+    end
+  end
+  return active,
+    math.max(0, tonumber(totals.waiting) or 0),
+    math.max(0, tonumber(totals.aboard) or 0),
+    math.max(0, tonumber(totals.capacity) or 0),
+    math.max(0, tonumber(totals.delivered) or 0),
+    settled, revenue
+end
+
 -- Log-scale crowd glyphs: one large block is five hundred people, one medium
 -- is one hundred, one small is twenty. Reading magnitude beats counting.
 function M.crowdIcons(count)
@@ -114,6 +137,12 @@ function M.render(gui, snapshot, options)
       tonumber(freight.inputUnits) or 0,
       tonumber(freight.outputUnits) or 0,
       tostring(localFreight.status or "waiting-for-content"))
+    local cargoLines, waitingCargo, aboardCargo, cargoCapacity,
+      deliveredCargo, settledCargo, settledCargoRevenue = cargoProof(snapshot)
+    lines[#lines + 1] = string.format(
+      "Cargo proof: %d active lines | %d waiting | %d/%d aboard | %d delivered | %d settled / $%.2f",
+      cargoLines, waitingCargo, aboardCargo, cargoCapacity, deliveredCargo,
+      settledCargo, settledCargoRevenue / 100)
     local capture = gui.nativeBuildCapture or {}
     lines[#lines + 1] = string.format(
       "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",

@@ -71,6 +71,7 @@ def replay(path: Path, session: str | None) -> int:
                     "match.initialise",
                     "town.develop",
                     "freight.industry_bootstrap",
+                    "freight.milestone",
                     "probe.structural",
                     "economy.settle",
                 }:

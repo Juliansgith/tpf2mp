@@ -32,6 +32,7 @@ local financeModule = require "tpf2_mp/finance"
 local bridgeModule = require "tpf2_mp/bridge"
 local cargoPresentationModule = require "tpf2_mp/cargo_presentation"
 local freightIndustryModelModule = require "tpf2_mp/freight_industry_model"
+local freightMilestoneRuntimeModule = require "tpf2_mp/freight_milestone_runtime"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 
@@ -904,9 +905,125 @@ do
     assert(emitted[1].payload.action.batch["town:event:1"] == 8
         and controller.deferredFollowups()[1].action.batch["town:event:1"] == 4,
       "town-development follow-up was not split into protocol-valid chunks")
+
+    controller.reset()
+    emitted = {}
+    local milestoneQueued, milestoneResult = controller.scheduleFollowup({
+      type = "freight.milestone", stage = "aboard",
+      lineCid = "line:event:cargo:1", vehicleCid = "vehicle:event:cargo:1",
+    })
+    local duplicateMilestone = controller.scheduleFollowup({
+      type = "freight.milestone", stage = "aboard",
+      lineCid = "line:event:cargo:2", vehicleCid = "vehicle:event:cargo:2",
+    })
+    assert(milestoneQueued == true and milestoneResult.deferred == true
+        and duplicateMilestone == true and #emitted == 0
+        and #controller.deferredFollowups() == 1
+        and controller.deferredFollowups()[1].coalesced == 1,
+      "cargo milestone bypassed or duplicated the ordered follow-up lane")
+    current.bridge.companion = { connected = false }
+    assert(controller.processDeferred() == false and #emitted == 0
+        and #controller.deferredFollowups() == 1,
+      "consensus-bound follow-up emitted while its required peer was disconnected")
+    current.bridge.companion.connected = true
+    assert(controller.processDeferred() == true and #emitted == 1
+        and emitted[1].payload.action.type == "freight.milestone"
+        and #controller.deferredFollowups() == 0,
+      "cargo milestone did not drain through one ordered network round")
   end, debug.traceback)
   bridgeModule.emit = originalEmit
   if not ok then error(failure, 0) end
+end
+
+do
+  -- The host authors the first non-zero cargo milestone, but both peers must
+  -- apply and verify it against their local authored cargo ledger.
+  freightMilestoneRuntimeModule.reset()
+  local lineCid, vehicleCid = "line:event:freight-proof", "vehicle:event:freight-proof"
+  local current = {
+    initialized = true, networkMode = "network", tick = 44,
+    match = { status = "running" },
+    bridge = { peerId = "player2", companion = { connected = true } },
+    probes = {},
+    world = { cargoPresentation = {
+      lines = { [lineCid] = { retired = false } },
+      vehicles = { [vehicleCid] = { lineCid = lineCid, aboard = 12 } },
+    } },
+  }
+  local handlers = {}
+  freightMilestoneRuntimeModule.installHandler(handlers, {
+    getState = function() return current end,
+    requireRunningMatch = function() return true end,
+  })
+  assert(freightMilestoneRuntimeModule.normaliseIntent(current, {
+      type = "freight.milestone", stage = "aboard",
+      lineCid = lineCid, vehicleCid = vehicleCid,
+    }) == nil,
+    "client peer was allowed to author a freight milestone")
+  local applied, result = handlers["freight.milestone"]({
+    type = "freight.milestone", stage = "aboard",
+    lineCid = lineCid, vehicleCid = vehicleCid,
+  })
+  assert(applied == true and result.aboard == 12
+      and current.probes.freightMilestone.aboardCheckpointed == true,
+    "client peer rejected or failed to record a valid host-authored milestone")
+  assert(handlers["freight.milestone"]({
+      type = "freight.milestone", stage = "aboard", lineCid = lineCid,
+      vehicleCid = vehicleCid, unexpected = true,
+    }) == false,
+    "freight milestone accepted an unknown wire field")
+
+  freightMilestoneRuntimeModule.reset()
+  current.bridge.peerId = "player1"
+  current.probes.freightMilestone = nil
+  current.bridge.companion.connected = false
+  local scheduled, diagnostics = {}, {}
+  local controller = { scheduleFollowup = function(action)
+    if #scheduled == 0 then scheduled[1] = util.deepCopy(action) end
+    return true, { deferred = true, coalesced = #scheduled > 0 }
+  end }
+  local function log(kind, fields)
+    diagnostics[#diagnostics + 1] = { kind = kind, fields = fields }
+  end
+  assert(freightMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == false
+      and #scheduled == 0,
+    "disconnected host scheduled a consensus-bound cargo milestone")
+  current.bridge.companion.connected = true
+  local queued = freightMilestoneRuntimeModule.observeRelease(
+    current, { vehicleCid = vehicleCid }, controller, log)
+  assert(queued == true and #scheduled == 1
+      and scheduled[1].lineCid == lineCid and scheduled[1].vehicleCid == vehicleCid,
+    "first authoritative cargo load did not schedule its proof milestone")
+  assert(freightMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == true
+      and #scheduled == 1,
+    "pending cargo proof did not defer to queue-owned duplicate suppression")
+  assert(handlers["freight.milestone"](scheduled[1]) == true,
+    "host could not apply its ordered cargo proof milestone")
+
+  local exported = {}
+  assert(freightMilestoneRuntimeModule.afterCommit(
+      current, scheduled[1], true, 19, function(boundary, reason)
+        exported[#exported + 1] = { boundary = boundary, reason = reason }
+        return true
+      end, log) == true
+      and exported[1].boundary == 19
+      and exported[1].reason == "freight-milestone:aboard",
+    "cargo milestone did not automatically open its convergence checkpoint")
+  current.world.cargoPresentation.vehicles[vehicleCid].aboard = 0
+  current.probes.freightMilestone = nil
+  freightMilestoneRuntimeModule.reset()
+  assert(handlers["freight.milestone"](scheduled[1]) == false,
+    "cargo milestone accepted a ledger with no cargo aboard")
+  current.world.cargoPresentation.vehicles[vehicleCid].aboard = 12
+  current.probes.freightMilestone = {
+    aboardCheckpointed = true, sessionId = "superseded-session",
+  }
+  assert(freightMilestoneRuntimeModule.observeRelease(
+      current, { vehicleCid = vehicleCid }, controller, log) == true,
+    "a saved milestone from another session suppressed fresh-session evidence")
+  freightMilestoneRuntimeModule.reset()
 end
 
 do
@@ -1984,11 +2101,27 @@ do
     match = { status = "running", rules = {} },
     bridge = { companion = { connected = true, status = "connected" } },
     companyOrder = {},
+    cargoPresentation = {
+      lines = {
+        ["line:cargo:a"] = { retired = false },
+        ["line:cargo:retired"] = { retired = true },
+      },
+      totals = { waiting = 17, aboard = 8, capacity = 40, delivered = 29 },
+    },
+    deliveryCursors = {
+      ["line:cargo:a"] = { deliveredCargo = 23, earnedRevenueCents = 456700 },
+      ["line:cargo:retired"] = { deliveredCargo = 99, earnedRevenueCents = 999900 },
+      ["line:passenger:a"] = { deliveredCargo = 88, earnedRevenueCents = 888800 },
+    },
     probes = {},
   }, { maxDeferredNetworkIntents = 32 })
   assert(status.value:find("Peer: player1", 1, true), "GUI status formatter lost peer identity")
   assert(details.value:find("Session: runtime-module-test", 1, true),
     "GUI detail formatter lost session identity")
+  assert(details.value:find(
+      "Cargo proof: 1 active lines | 17 waiting | 8/40 aboard | 29 delivered | 23 settled / $4567.00",
+      1, true),
+    "GUI did not expose authored cargo progress and settled evidence")
 
   -- The panel must present the model as the contest and native agents as
   -- scenery, so a player never has to infer which layer is authoritative.
@@ -2268,7 +2401,7 @@ do
     initialized = true,
     match = { status = "running" },
     networkMode = "network",
-    bridge = { peerId = "player1" },
+    bridge = { peerId = "player1", companion = { connected = true } },
     tick = 1,
     economy = economyModule.newState(),
   }
@@ -2305,11 +2438,25 @@ do
   ok, reason = runtime.update()
   assert(ok == false and reason == "submitted" and #submitted == 1,
     "pending economy boundary was submitted more than once")
+  -- A peer loss clears the stale submission without needing an engine tick;
+  -- reconnect may therefore retry the still-due boundary while paused.
+  current.bridge.companion.connected = false
+  ok, reason = runtime.update()
+  assert(ok == false and reason == "peer-disconnected" and #submitted == 1,
+    "economy clock emitted settlement work while a peer was disconnected")
+  current.bridge.companion.connected = true
+  ok, reason = runtime.update()
+  assert(ok == true and #submitted == 2
+      and submitted[2].boundaryGameTimeSeconds == 160,
+    "reconnected economy boundary did not retry while simulation ticks were paused")
+  assert(diagnostics[#diagnostics - 1]
+      and diagnostics[#diagnostics - 1].kind == "economy-clock-peer-disconnected",
+    "paused economy retry did not explain why its stale submission was cleared")
   economyModule.evaluateAll(current.economy, 160)
   gameTime, current.tick = 220, 5
   current.bridge.peerId = "player2"
   ok, reason = runtime.update()
-  assert(ok == false and reason == "host-only" and #submitted == 1,
+  assert(ok == false and reason == "host-only" and #submitted == 2,
     "a client attempted to author an economy settlement")
   assert(diagnostics[1] and diagnostics[1].kind == "economy-clock-submit",
     "automatic economy submission was not observable")

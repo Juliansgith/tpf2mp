@@ -1525,6 +1525,7 @@ try {
         Write-Host "labStatus=$labStatusPath"
         Write-Host 'Export useful Research/Snapshot records before stopping; evidence is bundled automatically after both games close.'
         $interactiveDeadline = (Get-Date).AddMinutes($InteractiveMinutes)
+        $lastInteractiveCheckpointState = $null
         while ((Get-Date) -lt $interactiveDeadline) {
             $peer1Game.Refresh()
             $peer2Game.Refresh()
@@ -1535,6 +1536,37 @@ try {
                 -Context 'during the player2 post-validation lab')
             if ((Test-Path -LiteralPath (Join-Path $peer1Bridge 'launcher\stop')) `
                 -or (Test-Path -LiteralPath (Join-Path $peer2Bridge 'launcher\stop'))) { break }
+            $liveHostStatus = Read-CompanionStatus $peer1Bridge
+            if ($liveHostStatus) {
+                $pendingBoundary = if ($liveHostStatus.PSObject.Properties['pendingCheckpointSeq']) {
+                    $liveHostStatus.pendingCheckpointSeq
+                } else { $null }
+                $pendingReason = if ($liveHostStatus.PSObject.Properties['pendingCheckpointReason']) {
+                    [string]$liveHostStatus.pendingCheckpointReason
+                } else { '' }
+                $agreedBoundary = if ($liveHostStatus.PSObject.Properties['lastAgreedCheckpointSeq']) {
+                    $liveHostStatus.lastAgreedCheckpointSeq
+                } else { $null }
+                $agreedReason = if ($liveHostStatus.PSObject.Properties['lastAgreedCheckpointReason']) {
+                    [string]$liveHostStatus.lastAgreedCheckpointReason
+                } else { '' }
+                $faultText = if ($liveHostStatus.PSObject.Properties['sessionFault']) {
+                    [string]$liveHostStatus.sessionFault
+                } else { '' }
+                $checkpointState = "$pendingBoundary|$pendingReason|$agreedBoundary|$agreedReason|$faultText"
+                if ($checkpointState -ne $lastInteractiveCheckpointState) {
+                    if ($faultText) {
+                        Write-Warning "Live consensus fault: $faultText"
+                    }
+                    elseif ($pendingBoundary) {
+                        Write-Host "Live checkpoint pending: boundary $pendingBoundary ($pendingReason)"
+                    }
+                    elseif ($agreedBoundary) {
+                        Write-Host "Live checkpoint agreed: boundary $agreedBoundary ($agreedReason)"
+                    }
+                    $lastInteractiveCheckpointState = $checkpointState
+                }
+            }
             Start-Sleep -Seconds 1
         }
         $labStatus.status = 'stopping'

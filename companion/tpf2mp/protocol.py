@@ -34,6 +34,7 @@ NETWORK_ACTIONS = {
     "town.develop",
     "content.industry_attest",
     "freight.industry_bootstrap",
+    "freight.milestone",
     "proposal.prepare",
     "proposal.build",
     "operation.execute",
@@ -1607,6 +1608,12 @@ def validate_action(action: Any) -> dict[str, Any]:
     if action_type == "freight.industry_bootstrap":
         from .freight_protocol import validate_industry_bootstrap
         validate_industry_bootstrap(action)
+    if action_type == "freight.milestone":
+        if set(action) != {"type", "stage", "lineCid", "vehicleCid"} \
+                or action.get("stage") != "aboard" \
+                or not _operation_cid(action.get("lineCid"), "line") \
+                or not _operation_cid(action.get("vehicleCid"), "vehicle"):
+            raise ProtocolError("freight aboard milestone is invalid")
     if action_type == "recovery.prepare":
         if set(action) != {"type"}:
             raise ProtocolError("recovery.prepare has client-supplied fields")

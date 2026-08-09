@@ -7,6 +7,15 @@ from typing import Any, Callable, Mapping
 from .protocol import ProtocolError, validate_vehicle_schedule
 
 
+# Actions that either need all-peer evidence or immediately open a checkpoint.
+CONSENSUS_BOUND_ACTIONS = {
+    "match.initialise", "proposal.prepare", "operation.execute", "line.register",
+    "town.develop", "recovery.prepare", "recovery.resume", "recovery.save_receipt",
+    "content.industry_attest", "freight.industry_bootstrap", "freight.milestone",
+    "economy.settle", "probe.structural",
+}
+
+
 class ConsensusTrackers:
     """Owns bounded host-side consensus registries and tracker construction."""
 

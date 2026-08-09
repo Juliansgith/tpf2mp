@@ -668,6 +668,24 @@ class ProtocolTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ProtocolError):
                 validate_action(tampered)
 
+    def test_freight_aboard_milestone_is_strict_and_portable(self) -> None:
+        action = {
+            "type": "freight.milestone", "stage": "aboard",
+            "lineCid": "line:event:freight-proof",
+            "vehicleCid": "vehicle:event:freight-proof",
+        }
+        self.assertEqual(validate_action(action), action)
+        invalid = (
+            {**action, "stage": "delivered"},
+            {**action, "lineCid": "station_group:event:not-a-line"},
+            {**action, "vehicleCid": "line:event:not-a-vehicle"},
+            {**action, "lineCid": "line:" + "x" * 236},
+            {**action, "unexpected": True},
+        )
+        for candidate in invalid:
+            with self.subTest(candidate=candidate), self.assertRaises(ProtocolError):
+                validate_action(candidate)
+
     def test_match_lifecycle_actions_require_canonical_rules_and_result(self) -> None:
         initial = validate_action(
             {
@@ -2451,6 +2469,59 @@ class CheckpointTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "lacks freight evidence"):
                 analyse_freight_audit(missing.path, session)
 
+    def test_freight_live_report_accepts_automatic_aboard_milestone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session = "freight-automatic-aboard"
+            audit = AuditLog(Path(directory) / "audit.ndjson")
+            reason = "freight-milestone:aboard"
+            payloads = []
+            for peer in ("player1", "player2"):
+                payload = self.populated_cargo_checkpoint()
+                payload["sessionId"] = session
+                payload["peerId"] = peer
+                payload["reason"] = reason
+                payload["eventCursor"]["lastCommitSeq"] = 1
+                self.resign_checkpoint(payload)
+                payloads.append(payload)
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 1, "kind": "commit",
+                "origin_peer": "player1", "origin_local_seq": 1, "tick": 1,
+                "payload": {"action": {
+                    "type": "freight.milestone", "stage": "aboard",
+                    "lineCid": "line:event:cargo:1",
+                    "vehicleCid": "vehicle:event:cargo:1",
+                }},
+            }))
+            for peer, payload in zip(("player1", "player2"), payloads):
+                audit.append(sign({
+                    "protocol": 1, "session": session, "kind": "record",
+                    "peer": peer, "local_seq": 1,
+                    "record_type": "checkpoint", "payload": payload,
+                }))
+            first = payloads[0]
+            audit.append(sign({
+                "protocol": 1, "session": session, "seq": 2, "kind": "control",
+                "origin_peer": "player1", "tick": 0,
+                "payload": {"action": {
+                    "type": "network.checkpoint_outcome", "boundarySeq": 1,
+                    "reason": reason, "success": True,
+                    "convergenceKey": first["convergenceKey"],
+                    "coreDigest": first["coreDigest"],
+                    "modelDigest": first["modelDigest"],
+                    "canonicalDigest": first["canonicalDigest"],
+                    "financialDigest": first["financialDigest"],
+                    "peers": ["player1", "player2"],
+                }},
+            }))
+            self.assertEqual(replay(audit.path, session), 0)
+            report = analyse_freight_audit(
+                audit.path, session, require_stage="aboard",
+                require_observed_aboard=True,
+            )
+            self.assertTrue(report["passed"], report["problems"])
+            self.assertEqual(report["completedCheckpoints"][0]["reason"], reason)
+            self.assertEqual(report["maxima"]["aboard"], 15)
+
     def test_checkpoint_and_event_integrity_and_replay(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3284,6 +3355,49 @@ class RestorePointTests(unittest.TestCase):
                 "town-development",
             )
 
+    def test_freight_milestone_opens_and_restores_its_checkpoint_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "freight-milestone-checkpoint"
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            action = {
+                "type": "freight.milestone", "stage": "aboard",
+                "lineCid": "line:event:freight-proof",
+                "vehicleCid": "vehicle:event:freight-proof",
+            }
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 10, "kind": "intent",
+                "payload": {"action": action},
+            }))
+            boundary = int(commit["seq"])
+            self.assertEqual(
+                host.checkpoint_consensus[boundary]["reason"],
+                "freight-milestone:aboard",
+            )
+            host._record_non_intent(consensus_checkpoint(
+                session, "player1", 1, boundary, "freight-milestone:aboard"
+            ))
+            host._record_non_intent(consensus_checkpoint(
+                session, "player2", 1, boundary, "freight-milestone:aboard"
+            ))
+            self.assertEqual(host.checkpoint_consensus[boundary]["status"], "complete")
+
+            restored = CommitHost(
+                GameBridge(root / "restored", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            self.assertEqual(
+                restored.checkpoint_consensus[boundary]["reason"],
+                "freight-milestone:aboard",
+            )
+            self.assertEqual(restored.checkpoint_consensus[boundary]["status"], "complete")
+            self.assertEqual(replay(audit, session), 0)
+
     def test_restore_analysis_refuses_to_mix_sessions_implicitly(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3783,6 +3897,20 @@ class RecoveryArchiveTests(unittest.TestCase):
 
 
 class NetworkIntegrationTests(unittest.TestCase):
+    @staticmethod
+    def _settlement_intent(session: str, local_seq: int) -> dict:
+        return sign({
+            "protocol": 1, "session": session, "peer": "player1",
+            "local_seq": local_seq, "tick": local_seq, "kind": "intent",
+            "payload": {"action": {
+                "type": "economy.settle", "results": {},
+                "deliverySnapshot": {
+                    "schemaVersion": 2, "presentationEpoch": 0,
+                    "passengerLines": {}, "cargoLines": {},
+                },
+            }},
+        })
+
     def test_economy_settlement_requires_and_restores_checkpoint_consensus(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -3822,6 +3950,156 @@ class NetworkIntegrationTests(unittest.TestCase):
                 restored.checkpoint_consensus[boundary]["reason"], "economy-settlement"
             )
             self.assertEqual(restored.checkpoint_consensus[boundary]["status"], "complete")
+
+    def test_settlement_barrier_survives_restart_and_repeated_pressure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "settlement-restart-stress"
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host-before-restart", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            first = host._commit(self._settlement_intent(session, 1))
+            first_boundary = int(first["seq"])
+            host._record_non_intent(consensus_checkpoint(
+                session, "player1", 1, first_boundary, "economy-settlement"
+            ))
+            self.assertEqual(
+                set(host.checkpoint_consensus[first_boundary]["checkpoints"]),
+                {"player1"},
+            )
+
+            # Reconstruct in the exact interrupted state. The first peer's
+            # evidence must survive and physical work must not overtake it.
+            host = CommitHost(
+                GameBridge(root / "host-after-restart", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            pending = host._pending_checkpoint()
+            self.assertIsNotNone(pending)
+            self.assertEqual(pending["boundarySeq"], first_boundary)
+            self.assertEqual(set(pending["checkpoints"]), {"player1"})
+            blocked_actions = (
+                self._settlement_intent(session, 1001),
+                sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 1002, "tick": 0, "kind": "intent",
+                    "payload": {"action": {
+                        "type": "proposal.prepare",
+                        "transaction": proposal_transaction("company:1"),
+                    }},
+                }),
+                sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 1003, "tick": 0, "kind": "intent",
+                    "payload": {"action": {
+                        "type": "operation.execute",
+                        "transaction": operation_transaction("company:1"),
+                    }},
+                }),
+            )
+            for blocked in blocked_actions:
+                with self.assertRaisesRegex(
+                    ProtocolError, f"checkpoint boundary {first_boundary}"
+                ):
+                    host._commit(blocked)
+
+            host._write_status("running")
+            status = json.loads(host.bridge.status_path.read_text(encoding="utf-8"))
+            self.assertEqual(status["pendingCheckpointSeq"], first_boundary)
+            self.assertEqual(status["pendingCheckpointReason"], "economy-settlement")
+            self.assertEqual(
+                status["checkpointCounts"],
+                {"pending": 1, "complete": 0, "faulted": 0},
+            )
+
+            host._record_non_intent(consensus_checkpoint(
+                session, "player2", 2, first_boundary, "economy-settlement"
+            ))
+            last_boundary = first_boundary
+            # Thirty-two total settlements is long enough to exercise repeated
+            # commit/outcome alternation without turning this into a slow soak.
+            for iteration in range(2, 33):
+                commit = host._commit(self._settlement_intent(session, iteration))
+                last_boundary = int(commit["seq"])
+                self.assertIsNone(host.session_fault)
+                self.assertEqual(host._pending_checkpoint()["boundarySeq"], last_boundary)
+                host._record_non_intent(consensus_checkpoint(
+                    session, "player1", iteration * 2 + 1,
+                    last_boundary, "economy-settlement",
+                ))
+                host._record_non_intent(consensus_checkpoint(
+                    session, "player2", iteration * 2 + 2,
+                    last_boundary, "economy-settlement",
+                ))
+                self.assertEqual(
+                    host.checkpoint_consensus[last_boundary]["status"], "complete"
+                )
+
+            self.assertIsNone(host._pending_checkpoint())
+            self.assertEqual(len(host.checkpoint_consensus), 32)
+            self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], last_boundary)
+            self.assertEqual(host.next_seq, 65)
+            host._write_status()
+            status = json.loads(host.bridge.status_path.read_text(encoding="utf-8"))
+            self.assertIsNone(status["pendingCheckpointSeq"])
+            self.assertEqual(status["lastAgreedCheckpointSeq"], last_boundary)
+            self.assertEqual(status["lastAgreedCheckpointReason"], "economy-settlement")
+            self.assertEqual(
+                status["checkpointCounts"],
+                {"pending": 0, "complete": 32, "faulted": 0},
+            )
+
+            restored = CommitHost(
+                GameBridge(root / "host-final", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            self.assertIsNone(restored._pending_checkpoint())
+            self.assertEqual(len(restored.checkpoint_consensus), 32)
+            self.assertTrue(all(
+                tracker["status"] == "complete"
+                for tracker in restored.checkpoint_consensus.values()
+            ))
+            self.assertEqual(
+                restored.last_agreed_checkpoint["boundarySeq"], last_boundary
+            )
+            self.assertEqual(replay(audit, session), 0)
+
+    def test_checkpoint_opening_actions_require_connected_roster(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "checkpoint-roster-gate"
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, audit,
+            )
+            actions = (
+                self._settlement_intent(session, 1),
+                sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 2, "tick": 0, "kind": "intent",
+                    "payload": {"action": {"type": "probe.structural"}},
+                }),
+                sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 3, "tick": 0, "kind": "intent",
+                    "payload": {"action": {
+                        "type": "freight.milestone", "stage": "aboard",
+                        "lineCid": "line:event:proof",
+                        "vehicleCid": "vehicle:event:proof",
+                    }},
+                }),
+            )
+            for intent in actions:
+                with self.assertRaisesRegex(
+                    ProtocolError, "consensus-bound action.*player2"
+                ):
+                    host._commit(intent)
+            self.assertEqual(host.next_seq, 1)
+            self.assertEqual(list(host.audit.messages()), [])
+            self.assertIsNone(host._pending_checkpoint())
 
     def test_receipt_bound_restore_blocks_gameplay_until_fresh_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

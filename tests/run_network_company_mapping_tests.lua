@@ -370,6 +370,14 @@ local function writeCheckpointConsensus(seq, saved, boundarySeq)
   })
 end
 
+local companionStatus = assert(io.open(
+  bridgeRoot .. "/companion_state/companion_status.json", "wb"))
+companionStatus:write(json.encode({
+  session = "network-company-map", peer = "player2", status = "connected",
+  connected = true,
+}) .. "\n")
+companionStatus:close()
+
 assert(loadfile(project .. "/tpf2_mp_1/res/config/game_script/tpf2_mp.lua"))()
 local script = assert(data())
 script.init()

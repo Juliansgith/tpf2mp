@@ -570,6 +570,12 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   preserves the settled cursor through another save/load migration, and
   rejects both a one-unit conservation tamper and a payment cursor one unit
   ahead of delivery.
+- The first authoritative cargo load above zero now queues one host-authored
+  `freight.milestone` through the ordinary ordered follow-up lane. Both peers
+  must verify that exact canonical vehicle and line have cargo aboard before a
+  `freight-milestone:aboard` checkpoint can complete. This removes the
+  timing-dependent manual checkpoint from strict live evidence without adding
+  a network round at every station.
 - Native people remain bounded scenery. Exact-build reverse engineering shows
   `Debug_SetSimPersonState` contains only a person ID and boolean, with no
   train/station target; the cosmetic adapter therefore issues zero writes.
@@ -611,7 +617,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   player, collects the audit on close, and requires a strict current-format
   two-peer freight report. The report exposes
   ready/service/waiting/aboard/delivered/settled stages and can require a
-  manual checkpoint captured with cargo aboard.
+  automatically captured converged checkpoint with cargo aboard.
 
 ### Packaging and tests
 
@@ -622,10 +628,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 117 core Lua tests and 75 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 105 mod Lua and 8 investigation/tool Lua syntax checks;
+  - 107 mod Lua and 8 investigation/tool Lua syntax checks;
   - 42 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 121 Python protocol/network/checkpoint/recovery/report tests;
+  - 126 Python protocol/network/checkpoint/recovery/report tests;
   - a functional first-fault watcher/real-bundle fixture, including the
     already-exited-game ordering case.
 

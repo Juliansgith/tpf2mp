@@ -48,8 +48,12 @@ agree. Host restart reconstructs the `economy-settlement` tracker from audit.
 
 This closes an observability gap: a successful delivery no longer depends on a
 human remembering to export a checkpoint after the next settlement. A manual
-checkpoint is still required if the acceptance run specifically wants direct
-evidence of cargo aboard between terminals.
+checkpoint is no longer required for direct aboard evidence either. The first
+host-side `vehicle.sync_release` that leaves authoritative cargo aboard queues
+one ordered `freight.milestone` action. Both peers independently verify the
+same line/vehicle identity and non-zero ledger load, then automatically export
+the `freight-milestone:aboard` checkpoint. This happens once per match rather
+than at every station visit.
 
 ## Save/load invariant
 
@@ -82,8 +86,8 @@ The work stayed inside repository size budgets by extracting:
 - `freight_live_report.py` as the semantic audit/report owner.
 
 The current complete gate passes 117 core Lua tests, 75 cross-language economy
-scenarios, two focused and 256 stressed freight parity boundaries, 121 Python
-tests, runtime/game/GUI/network integration, 1,024-event replay, 105 mod Lua
+scenarios, two focused and 256 stressed freight parity boundaries, 126 Python
+tests, runtime/game/GUI/network integration, 1,024-event replay, 107 mod Lua
 syntax checks, 42 PowerShell syntax checks, release-manifest checks, launcher
 smoke, fault-bundle fixtures, and native-load boundaries.
 

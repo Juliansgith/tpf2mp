@@ -180,7 +180,7 @@ def analyse_freight_audit(
                     operations.add(seq)
                 elif action_type in {
                     "match.initialise", "town.develop", "freight.industry_bootstrap",
-                    "probe.structural", "economy.settle",
+                    "freight.milestone", "probe.structural", "economy.settle",
                 }:
                     expected_checkpoints.add(seq)
                 elif action_type == "network.sync_fault":

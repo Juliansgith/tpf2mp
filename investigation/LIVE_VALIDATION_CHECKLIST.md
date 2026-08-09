@@ -173,9 +173,10 @@ bootstrap. In the host window:
    arrive at the compatible sink.
 3. Wait for the automatic five-minute economy settlement. Do not treat native
    floating income text as the authoritative payment.
-4. If cargo aboard must be captured as evidence, click **Export Checkpoint**
-   while the vehicle is visibly loaded and start the wrapper with
-   `-RequireObservedAboard`.
+4. If cargo aboard must be captured as evidence, start the wrapper with
+   `-RequireObservedAboard`. The first authoritative non-zero load now opens a
+   one-time `freight-milestone:aboard` checkpoint automatically; do not race a
+   manual **Export Checkpoint** click.
 5. Close either disposable game only after delivered cargo, positive authored
    cargo revenue, and the settled epoch are visible.
 

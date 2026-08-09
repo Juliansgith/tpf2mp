@@ -15,7 +15,7 @@ from .completion_validation import (
     proposal_completion_payload,
     proposal_completion_result_view,
 )
-from .consensus import ConsensusTrackers
+from .consensus import CONSENSUS_BOUND_ACTIONS, ConsensusTrackers
 from .anchor import AnchorCoordinator
 from .anchor_prepare import AnchorPreparationCoordinator
 from .anchor_io import AnchorRequestStore
@@ -44,12 +44,12 @@ HOST_AUTHORITY_ACTIONS = {
     "finance.toggle_neutralizer",
     "town.develop",
     "freight.industry_bootstrap",
+    "freight.milestone",
     "recovery.resume",
 }
 
 # Company-bound actions may originate on either peer; owners carry their service facts.
 COMPANY_BOUND_ACTIONS = {"proposal.prepare", "operation.execute", "line.register"}
-
 
 class CommitHost(HostIntentMixin):
     def __init__(
@@ -177,6 +177,10 @@ class CommitHost(HostIntentMixin):
                         self._track_checkpoint_boundary(seq, "town-development")
                     elif action.get("type") == "freight.industry_bootstrap":
                         self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
+                    elif action.get("type") == "freight.milestone":
+                        self._track_checkpoint_boundary(
+                            seq, f"freight-milestone:{action.get('stage')}"
+                        )
                     elif action.get("type") == "economy.settle":
                         self._track_checkpoint_boundary(seq, "economy-settlement")
                     elif action.get("type") == "content.industry_attest":
@@ -413,12 +417,7 @@ class CommitHost(HostIntentMixin):
                         "cannot resume the shared clock while peers are disconnected: "
                         + ", ".join(missing)
                     )
-            if action["type"] in {
-                "match.initialise", "proposal.prepare", "operation.execute",
-                "line.register", "town.develop", "recovery.prepare", "recovery.resume",
-                "recovery.save_receipt", "content.industry_attest",
-                "freight.industry_bootstrap",
-            }:
+            if action["type"] in CONSENSUS_BOUND_ACTIONS:
                 if self.require_connected_peers:
                     with self.peers_lock:
                         connected = set(self.peers)
@@ -503,6 +502,8 @@ class CommitHost(HostIntentMixin):
                 self._track_checkpoint_boundary(seq, "town-development")
             elif action["type"] == "freight.industry_bootstrap":
                 self._track_checkpoint_boundary(seq, "freight-industry-bootstrap")
+            elif action["type"] == "freight.milestone":
+                self._track_checkpoint_boundary(seq, f"freight-milestone:{action['stage']}")
             elif action["type"] == "economy.settle":
                 self._track_checkpoint_boundary(seq, "economy-settlement")
             elif action["type"] == "content.industry_attest":

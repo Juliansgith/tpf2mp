@@ -75,8 +75,12 @@ else {
         nextCommitSeq = if ($companionStatus -and $companionStatus.PSObject.Properties['nextCommitSeq']) { $companionStatus.nextCommitSeq } else { $null }
         lastCommitSeq = if ($companionStatus -and $companionStatus.PSObject.Properties['lastCommitSeq']) { $companionStatus.lastCommitSeq } else { $null }
         pendingProposalPrepareSeq = if ($companionStatus -and $companionStatus.PSObject.Properties['pendingProposalPrepareSeq']) { $companionStatus.pendingProposalPrepareSeq } else { $null }
+        pendingCheckpointSeq = if ($companionStatus -and $companionStatus.PSObject.Properties['pendingCheckpointSeq']) { $companionStatus.pendingCheckpointSeq } else { $null }
+        pendingCheckpointReason = if ($companionStatus -and $companionStatus.PSObject.Properties['pendingCheckpointReason']) { $companionStatus.pendingCheckpointReason } else { $null }
+        checkpointCounts = if ($companionStatus -and $companionStatus.PSObject.Properties['checkpointCounts']) { $companionStatus.checkpointCounts } else { $null }
         sharedClock = if ($companionStatus -and $companionStatus.PSObject.Properties['clock']) { $companionStatus.clock } else { $null }
         lastCheckpointSeq = if ($companionStatus -and $companionStatus.PSObject.Properties['lastAgreedCheckpointSeq']) { $companionStatus.lastAgreedCheckpointSeq } else { $null }
+        lastCheckpointReason = if ($companionStatus -and $companionStatus.PSObject.Properties['lastAgreedCheckpointReason']) { $companionStatus.lastAgreedCheckpointReason } else { $null }
         fault = if ($companionStatus -and $companionStatus.PSObject.Properties['sessionFault']) { $companionStatus.sessionFault } else { $null }
         error = if ($companionStatus -and $companionStatus.PSObject.Properties['lastError']) { $companionStatus.lastError } elseif ($state.PSObject.Properties['error']) { $state.error } else { $null }
         fingerprint = $state.fingerprint

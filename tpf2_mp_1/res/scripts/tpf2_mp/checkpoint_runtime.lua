@@ -144,7 +144,8 @@ function M.new(env)
       or actionType == "probe.structural"
       or actionType == "recovery.resume" or actionType == "town.develop"
       or actionType == "content.industry_attest"
-      or actionType == "freight.industry_bootstrap" then
+      or actionType == "freight.industry_bootstrap"
+      or actionType == "freight.milestone" then
       return action.localLineId == nil
     end
     if actionType == "line.register" then

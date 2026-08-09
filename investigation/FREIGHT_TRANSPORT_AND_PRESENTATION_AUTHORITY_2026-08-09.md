@@ -143,7 +143,7 @@ staged audit gate. Details are in
 [`FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md`](FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md).
 
 The complete repository gate passes 117 core Lua tests, 75 economy parity
-scenarios, 121 Python tests, runtime/game/GUI/network tests, focused and
+scenarios, 126 Python tests, runtime/game/GUI/network tests, focused and
 256-boundary freight transport parity, the 1,024-event replay, source budgets,
 launcher smoke, and
 release-oriented checks. The distilled automated receipt is

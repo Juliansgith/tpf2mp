@@ -414,6 +414,7 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [AUTOMATIC_SETTLEMENT_BARRIER_AND_CARGO_MILESTONE_2026-08-09.md](AUTOMATIC_SETTLEMENT_BARRIER_AND_CARGO_MILESTONE_2026-08-09.md) - disconnect-safe automatic settlements, restart/32-boundary pressure proof, and a one-time host-ordered cargo-aboard evidence checkpoint.
 - [FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md](FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md) - strict staged two-peer freight audit reports, automatic economy-settlement checkpoints, cargo-bearing save migration, tamper rejection, and the exact human gate.
 - [FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md](FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md) - exact freight service contracts, heterogeneous vehicle capacities, queues/loads/deliveries/revenue, atomic stock settlement, standard-UI projection, format-5 validation, cross-language replay, and the remaining live gate.
 - [freight_transport_authority_evidence_2026-08-09.json](freight_transport_authority_evidence_2026-08-09.json) - distilled automated state-29 freight transport, rollback, parity, integrity, and test receipt.

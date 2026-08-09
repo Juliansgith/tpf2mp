@@ -1,6 +1,6 @@
 local util = require "tpf2_mp/util"
 local serviceRegistrationRuntime = require "tpf2_mp/service_registration_runtime"
-
+local freightMilestoneFollowup = require "tpf2_mp/freight_milestone_followup"
 local M = {}
 
 function M.new(deps)
@@ -9,9 +9,7 @@ function M.new(deps)
   local registrations = serviceRegistrationRuntime.new(getState, diagnosticLog)
   local maximum = math.max(1, tonumber(deps.maximum) or 512)
   local items = {}
-
   local function count() return #items end
-
   local function cancelLineRegistration(lineCid)
     if type(lineCid) ~= "string" or lineCid == "" then return 0 end
     local state = getState()
@@ -39,7 +37,8 @@ function M.new(deps)
       return false, "ordered follow-ups exist only in network mode"
     end
     local actionType = tostring(action.type or "")
-    if actionType ~= "line.register" and actionType ~= "town.develop" then
+    if actionType ~= "line.register" and actionType ~= "town.develop"
+      and actionType ~= "freight.milestone" then
       return false, "unsupported ordered follow-up: " .. actionType
     end
     local proposalFault = state.world.proposalConsensus
@@ -69,7 +68,7 @@ function M.new(deps)
           }
         end
       end
-    else
+    elseif actionType == "town.develop" then
       if type(action.batch) ~= "table" or next(action.batch) == nil then
         return false, "town development follow-up requires a non-empty batch"
       end
@@ -96,6 +95,9 @@ function M.new(deps)
           }
         end
       end
+    elseif actionType == "freight.milestone" then
+      local handled, result = freightMilestoneFollowup.coalesce(items, action, state, diagnosticLog, count)
+      if handled ~= nil then return handled, result end
     end
 
     if count() >= maximum then
