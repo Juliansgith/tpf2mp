@@ -34,8 +34,20 @@ function M.new(deps)
       or record.vehicleCostRecorded == true then return nil end
     local kind = record.transaction.kind
     if kind ~= "vehicle.buy" and kind ~= "vehicle.replace"
-      and kind ~= "vehicle.maintenance" and kind ~= "vehicle.sell" then return nil end
+      and kind ~= "vehicle.maintenance" and kind ~= "vehicle.sell"
+      and kind ~= "vehicle.sell_batch" then return nil end
     local state = getState()
+    if kind == "vehicle.sell_batch" then
+      local removed = {}
+      for _, targetCid in ipairs(record.transaction.data.targetCids or {}) do
+        removed[#removed + 1] = {
+          vehicleCid = targetCid,
+          removed = economy.removeVehicleCost(state.economy, targetCid),
+        }
+      end
+      record.vehicleCostRecorded = true
+      return { vehicles = removed }
+    end
     local output = kind == "vehicle.buy" and record.result and record.result.outputs
       and record.result.outputs[1] or nil
     local vehicleCid = output and output.cid

@@ -442,7 +442,7 @@ try {
             Start-Sleep -Milliseconds 100
         } while ((Get-Date) -lt $nativeEvidenceDeadline)
         Copy-Item -LiteralPath $nativeStatusSource -Destination (Join-Path $runDirectory 'native-hook-status.json') -Force
-        $nativeHookPassed = $nativeHookStatus.hookVersion -eq '0.14.0' -and
+        $nativeHookPassed = $nativeHookStatus.hookVersion -eq '0.15.0' -and
             $nativeHookStatus.active -eq $true -and
             $nativeHookStatus.hooks.enabled -eq $true -and
             $nativeHookStatus.hooks.commandListSwap -eq $true -and

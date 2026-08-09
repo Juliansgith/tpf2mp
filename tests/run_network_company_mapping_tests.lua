@@ -46,6 +46,7 @@ tpf2mp_native_enable_command_gate = function()
 end
 tpf2mp_native_disable_command_gate = function() commandGateEnabled = false end
 tpf2mp_native_authorize_command = function() end
+tpf2mp_native_revoke_command = function() end
 tpf2mp_native_status = function()
   return {
     active = true,

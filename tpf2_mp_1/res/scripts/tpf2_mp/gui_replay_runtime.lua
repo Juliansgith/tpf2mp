@@ -335,6 +335,11 @@ function M.new(deps)
   local function queueGuiOperationResult(payload)
     gui.operationResults[#gui.operationResults + 1] = util.deepCopy(payload)
   end
+
+  local function revokeNativeCommandAuthorization(tag)
+    local revoke = rawget(_G, "tpf2mp_native_revoke_command")
+    if type(revoke) == "function" then pcall(revoke, tostring(tag)) end
+  end
   
   local function operationResultEntity(command, outputKind, beforeSet)
     for _, field in ipairs({
@@ -454,6 +459,71 @@ function M.new(deps)
           })
           return true
         end
+        if type(spec.batchArgs) == "table" then
+          -- The public API exposes scalar sellVehicle commands even though the
+          -- stock widget carries a vector. Admission and consensus remain one
+          -- canonical transaction; issue the fully preflighted local targets
+          -- serially and report one aggregate financial/result boundary.
+          local balanceBefore = balanceOf(record.nativePlayerId)
+          local batchIndex, batchFinished = 1, false
+          local function failBatch(message)
+            if batchFinished then return end
+            batchFinished = true
+            queueGuiOperationResult({
+              operationId = operationId, success = false,
+              error = "native vehicle sale batch failed at item "
+                .. tostring(batchIndex) .. ": " .. tostring(message),
+            })
+          end
+          local issueNext
+          issueNext = function()
+            if batchFinished then return end
+            local args = spec.batchArgs[batchIndex]
+            local commandOk, commandOrError = gui.invokeOperationFactory(spec.factory, args or {})
+            if not commandOk then failBatch(commandOrError); return end
+            if state.networkMode == "network" then
+              local authorize = rawget(_G, "tpf2mp_native_authorize_command")
+              if type(authorize) ~= "function" then
+                failBatch("network operation requires GUI-state native command authorization")
+                return
+              end
+              local called, authorized, authorizeError = pcall(authorize, tostring(spec.tag))
+              if not called or authorized == false then
+                failBatch(authorizeError or authorized)
+                return
+              end
+            end
+            local sent, sendError = util.sendCommand(commandOrError, function(_, success)
+              if success ~= true then
+                failBatch("sellVehicle command was rejected")
+                return
+              end
+              if batchIndex < #spec.batchArgs then
+                batchIndex = batchIndex + 1
+                issueNext()
+                return
+              end
+              batchFinished = true
+              local balance = balanceOf(record.nativePlayerId)
+              gui.pendingOperationCaptures[#gui.pendingOperationCaptures + 1] = {
+                operationId = operationId,
+                nativePlayerId = record.nativePlayerId,
+                balanceBefore = balanceBefore,
+                affectsFinance = true,
+                lastSignature = nil,
+                stableFrames = 0,
+                minimumFrame = gui.frames + 30,
+                maximumFrame = gui.frames + 240,
+              }
+            end, "mod.canonical-operation.vehicle.sell_batch")
+            if not sent then
+              revokeNativeCommandAuthorization(spec.tag)
+              failBatch(sendError)
+            end
+          end
+          issueNext()
+          return true
+        end
         local beforeSet = {}
         if spec.outputKind then
           local types = api.type and api.type.ComponentType or {}
@@ -529,6 +599,7 @@ function M.new(deps)
           }
         end, "mod.canonical-operation." .. tostring(record.transaction.kind))
         if not sent then
+          revokeNativeCommandAuthorization(spec.tag)
           queueGuiOperationResult({
             operationId = operationId, success = false, error = tostring(sendError),
           })

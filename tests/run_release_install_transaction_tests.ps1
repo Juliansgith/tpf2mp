@@ -49,6 +49,7 @@ $manifest = [pscustomobject][ordered]@{
     stateSchemaVersion = 29
     checkpointSchemaVersion = 5
     proposalSchemaVersion = 5
+    operationSchemaVersion = 4
     passengerPresentationSchemaVersion = 2
     cargoPresentationSchemaVersion = 1
     deliverySchemaVersion = 2
@@ -111,7 +112,8 @@ if ([int]$installedCurrent.schemaVersion -ne 2 `
         -or [int]$installedCurrent.manifestFormat -ne 2 `
         -or [string]$installedCurrent.sourceCommit -ne $manifest.source.commit `
         -or $installedCurrent.sourceDirty -isnot [bool] `
-        -or [bool]$installedCurrent.sourceDirty) {
+        -or [bool]$installedCurrent.sourceDirty `
+        -or [int]$installedCurrent.operationSchemaVersion -ne 4) {
     throw 'Successful install current pointer did not retain exact source provenance.'
 }
 if ((Get-Content -LiteralPath (Join-Path $versionRoot 'tpf2_mp_1\mod.lua') -Raw) -ne 'new-mod' `

@@ -70,7 +70,11 @@ bool DecodeSaleTargets(const std::uint8_t* data, SuppressedVehicleCommand& outpu
     std::memcpy(&target,
                 layout.begin + index * tpf2mp::profile::kSellVehicleTargetSize,
                 sizeof(target));
-    if (target < 0) return false;
+    if (target < 0 || std::find(output.targets.begin(), output.targets.end(), target) !=
+                          output.targets.end()) {
+      return false;
+    }
+    output.targets.push_back(target);
     if (index == 0) output.target = target;
   }
   output.secondary = static_cast<std::int32_t>(count);
@@ -144,8 +148,18 @@ bool DecodeSuppressedVehicleCommand(const int tag, const void* command_data,
 }
 
 std::string EncodeSuppressedVehicleCommand(const SuppressedVehicleCommand& command) {
-  // V2 widens the pointer-free envelope to the pinned lifecycle scalar tags.
   std::ostringstream output;
+  if (command.tag == 12 && !command.targets.empty()) {
+    // V3 is sale-specific and carries every bounded vector member. Count is
+    // retained independently so Lua can reject truncation before mutation.
+    output << "V3|12|" << command.targets.size() << '|';
+    for (std::size_t index = 0; index < command.targets.size(); ++index) {
+      if (index != 0) output << ',';
+      output << command.targets[index];
+    }
+    return output.str();
+  }
+  // V2 remains the pointer-free scalar envelope for every other pinned tag.
   output << "V2|" << command.tag << '|' << command.target << '|'
          << command.secondary << '|' << command.value;
   return output.str();

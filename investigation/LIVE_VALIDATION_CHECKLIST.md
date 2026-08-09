@@ -2,7 +2,7 @@
 
 Use only fresh disposable worlds. Never continue after a custody, proposal-finalisation, or finance error unless the step explicitly tests recovery. Export evidence once, then close without saving.
 
-Prototype under test: `0.37.0-alpha`, state schema `29`, economy model `8`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`, exact game Build 35924.
+Prototype under test: `0.37.0-alpha`, state schema `29`, economy model `8`, operation schema `4`, checkpoint format `5`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.15.0`, exact game Build 35924.
 
 ## 0. Automated baseline
 

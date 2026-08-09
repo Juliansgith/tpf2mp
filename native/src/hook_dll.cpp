@@ -429,23 +429,42 @@ int SetCommandGate(bool enabled) {
 int NativeEnableCommandGate(lua_State*) { return SetCommandGate(true); }
 int NativeDisableCommandGate(lua_State*) { return SetCommandGate(false); }
 
-int NativeAuthorizeCommand(lua_State* state) {
-  if (g_lua_gettop(state) < 1) return 0;
+bool ParseAuthorityCommandTag(lua_State* state, std::size_t& tag) {
+  if (g_lua_gettop(state) < 1) return false;
   std::size_t length = 0;
   const char* raw = g_lua_tolstring(state, 1, &length);
-  if (raw == nullptr || length == 0 || length > 8) return 0;
+  if (raw == nullptr || length == 0 || length > 8) return false;
   std::string value(raw, length);
   char* end = nullptr;
   const long parsed = std::strtol(value.c_str(), &end, 10);
   if (end == value.c_str() || *end != '\0' || parsed < 0 ||
       parsed >= static_cast<long>(kNativeCommandTypeCount) ||
       !IsAuthorityCommandTag(static_cast<int>(parsed))) {
-    return 0;
+    return false;
   }
+  tag = static_cast<std::size_t>(parsed);
+  return true;
+}
+
+int NativeAuthorizeCommand(lua_State* state) {
+  std::size_t tag = 0;
+  if (!ParseAuthorityCommandTag(state, tag)) return 0;
   {
     StateLock lock;
-    auto& tokens = g_command_gate_authorizations[static_cast<std::size_t>(parsed)];
+    auto& tokens = g_command_gate_authorizations[tag];
     if (g_command_gate_enabled && tokens < 1024) ++tokens;
+  }
+  RequestStatusWrite();
+  return 0;
+}
+
+int NativeRevokeCommand(lua_State* state) {
+  std::size_t tag = 0;
+  if (!ParseAuthorityCommandTag(state, tag)) return 0;
+  {
+    StateLock lock;
+    auto& tokens = g_command_gate_authorizations[tag];
+    if (g_command_gate_enabled && tokens > 0) --tokens;
   }
   RequestStatusWrite();
   return 0;
@@ -521,6 +540,13 @@ int NativeTakeSuppressedVehicleCommand(lua_State* state) {
   RequestStatusWrite();
   return 1;
 }
+
+void RegisterNativeFunction(lua_State* state, const char* name, LuaCFunction function) {
+  g_lua_pushlstring(state, name, std::strlen(name));
+  g_lua_pushcclosure(state, function, 0);
+  g_lua_rawset(state, -3);
+}
+
 void RegisterNativeApi(lua_State* state) {
   {
     StateLock lock;
@@ -530,62 +556,25 @@ void RegisterNativeApi(lua_State* state) {
   }
   g_native_registration = true;
   g_lua_rawgeti(state, kLuaRegistryIndex, kLuaGlobalsRegistryIndex);
-  g_lua_pushlstring(state, "tpf2mp_native_status", std::strlen("tpf2mp_native_status"));
-  g_lua_pushcclosure(state, NativeStatus, 0);
-  g_lua_rawset(state, -3);
+  RegisterNativeFunction(state, "tpf2mp_native_status", NativeStatus);
   tpf2mp::launcher::RegisterBootstrapApi(state, g_lua_pushlstring, g_lua_pushcclosure, g_lua_rawset);
-  g_lua_pushlstring(state, "tpf2mp_native_mark_context",
-                    std::strlen("tpf2mp_native_mark_context"));
-  g_lua_pushcclosure(state, NativeMarkContext, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_enable_build_gate",
-                    std::strlen("tpf2mp_native_enable_build_gate"));
-  g_lua_pushcclosure(state, NativeEnableBuildGate, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_disable_build_gate",
-                    std::strlen("tpf2mp_native_disable_build_gate"));
-  g_lua_pushcclosure(state, NativeDisableBuildGate, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_authorize_build",
-                    std::strlen("tpf2mp_native_authorize_build"));
-  g_lua_pushcclosure(state, NativeAuthorizeBuild, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_enable_command_gate",
-                    std::strlen("tpf2mp_native_enable_command_gate"));
-  g_lua_pushcclosure(state, NativeEnableCommandGate, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_disable_command_gate",
-                    std::strlen("tpf2mp_native_disable_command_gate"));
-  g_lua_pushcclosure(state, NativeDisableCommandGate, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_authorize_command",
-                    std::strlen("tpf2mp_native_authorize_command"));
-  g_lua_pushcclosure(state, NativeAuthorizeCommand, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_set_command_observer",
-                    std::strlen("tpf2mp_native_set_command_observer"));
-  g_lua_pushcclosure(state, NativeSetCommandObserver, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_take_suppressed_game_speed",
-                    std::strlen("tpf2mp_native_take_suppressed_game_speed"));
-  g_lua_pushcclosure(state, NativeTakeSuppressedGameSpeed, 0);
-  g_lua_rawset(state, -3);
-  g_lua_pushlstring(state, "tpf2mp_native_take_suppressed_line_command",
-                    std::strlen("tpf2mp_native_take_suppressed_line_command"));
-  g_lua_pushcclosure(state, NativeTakeSuppressedLineCommand, 0);
-  g_lua_rawset(state, -3);
-  constexpr auto kTakeVehicleCommand = "tpf2mp_native_take_suppressed_vehicle_command";
-  g_lua_pushlstring(state, kTakeVehicleCommand, std::strlen(kTakeVehicleCommand));
-  g_lua_pushcclosure(state, NativeTakeSuppressedVehicleCommand, 0);
-  g_lua_rawset(state, -3);
+  RegisterNativeFunction(state, "tpf2mp_native_mark_context", NativeMarkContext);
+  RegisterNativeFunction(state, "tpf2mp_native_enable_build_gate", NativeEnableBuildGate);
+  RegisterNativeFunction(state, "tpf2mp_native_disable_build_gate", NativeDisableBuildGate);
+  RegisterNativeFunction(state, "tpf2mp_native_authorize_build", NativeAuthorizeBuild);
+  RegisterNativeFunction(state, "tpf2mp_native_enable_command_gate", NativeEnableCommandGate);
+  RegisterNativeFunction(state, "tpf2mp_native_disable_command_gate", NativeDisableCommandGate);
+  RegisterNativeFunction(state, "tpf2mp_native_authorize_command", NativeAuthorizeCommand);
+  RegisterNativeFunction(state, "tpf2mp_native_revoke_command", NativeRevokeCommand);
+  RegisterNativeFunction(state, "tpf2mp_native_set_command_observer", NativeSetCommandObserver);
+  RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_game_speed", NativeTakeSuppressedGameSpeed);
+  RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_line_command", NativeTakeSuppressedLineCommand);
+  RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_vehicle_command", NativeTakeSuppressedVehicleCommand);
   // 0.11 names the actual contract: an unauthorised vanilla line command is
   // decoded, allowed to complete locally so its stock UI callback remains
   // valid, and then consumed for canonical peer replay.  Keep the old symbol
   // for 0.10 mod-script compatibility during rolling development installs.
-  g_lua_pushlstring(state, "tpf2mp_native_take_line_command",
-                    std::strlen("tpf2mp_native_take_line_command"));
-  g_lua_pushcclosure(state, NativeTakeSuppressedLineCommand, 0);
-  g_lua_rawset(state, -3);
+  RegisterNativeFunction(state, "tpf2mp_native_take_line_command", NativeTakeSuppressedLineCommand);
   g_lua_settop(state, -2); // pop the global table; restore caller stack
   g_native_registration = false;
   RequestStatusWrite();
@@ -1283,7 +1272,7 @@ DWORD WINAPI Worker(void*) {
 } // namespace
 
 extern "C" __declspec(dllexport) const char* TPF2MP_HookProfile() {
-  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.12.0";
+  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.15.0";
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

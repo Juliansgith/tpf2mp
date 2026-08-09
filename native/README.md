@@ -42,10 +42,11 @@ mod prefers `api.cmd.make.*` and uses the mirror only as a same-state fallback.
 
 The native command observers decode the `Command`/variant discriminator,
 classify all 37 tags, pair queued commands with their `ApplyCommand` result, and
-  record direct applies which bypass `CommandList::Swap`. Hook 0.14.0 retains this
-  accounting path and adds pinned scalar capture for suppressed SetLine,
-  BuyVehicle, lifecycle controls, and ReplaceVehicle before mutation. Reference
-  run `runtime/live-validation/20260802-075533` passed
+record direct applies which bypass `CommandList::Swap`. Hook 0.15.0 retains this
+accounting path and adds pinned scalar capture for suppressed SetLine,
+BuyVehicle, lifecycle controls, and ReplaceVehicle plus a complete bounded
+SellVehicle vector before mutation. Reference run
+`runtime/live-validation/20260802-075533` passed
 all 39 checks, registered one
 GUI pre-issue observer state, and closed the queue/apply/direct conservation
 equation with zero unknown tags/applies, invalid layouts, pending overwrites,
@@ -65,6 +66,9 @@ globals:
 - `tpf2mp_native_disable_build_gate()` disables the gate and clears authorizations.
 - `tpf2mp_native_enable_command_gate()` enables rejection for 23 selected tags;
 - `tpf2mp_native_authorize_command(tag)` authorizes one matching visitor;
+- `tpf2mp_native_revoke_command(tag)` withdraws one unused authorization after
+  a Lua submission failure, preventing a later vanilla command from inheriting
+  the token;
 - `tpf2mp_native_disable_command_gate()` disables that gate and clears its tokens;
 - `tpf2mp_native_take_suppressed_game_speed()` consumes the oldest valid normal
   UI speed request captured while the tag-0 gate suppressed it;
@@ -73,14 +77,15 @@ globals:
   3-5/28-29 are suppressed. The returned `L3` envelope contains no native
   pointers;
 - `tpf2mp_native_take_suppressed_vehicle_command()` consumes the oldest
-  pre-mutation `V2` envelope. Tags 6-11 and 30 contain only bounded vehicle,
-  line, boolean, or basis-point scalars. Tag 13 contains native-player/depot;
-  tag 14 contains the replacement target. No `TransportVehicleConfig` pointer
-  or native model ID crosses this boundary: Lua correlates BuyVehicle and
-  ReplaceVehicle with the bounded stock GUI consist by FIFO and treats the
-  visitor identities as authoritative. Tag 12 validates a bounded native
-  entity vector and carries first-target/selection-count; Lua admits count one
-  and visibly blocks multi-selection before mutation. V1 is accepted only for
+  pre-mutation vehicle envelope. Scalar tags 6-11, 13-14, and 30 use `V2` and
+  contain only bounded vehicle, line, boolean, basis-point, player, or depot
+  values. No `TransportVehicleConfig` pointer or native model ID crosses this
+  boundary: Lua correlates BuyVehicle and ReplaceVehicle with the bounded stock
+  GUI consist by FIFO and treats the visitor identities as authoritative. Tag
+  12 uses `V3`, validates and copies every member of a 1-256 target native
+  vector, and rejects negatives, duplicates, malformed lists, count mismatch,
+  or truncation before mutation. Lua maps one target to the legacy sale and a
+  larger selection to one canonical schema-4 batch. V1 is accepted only for
   old tag-6/tag-13 envelopes;
 - `tpf2mp_native_set_command_observer(callback)` roots an opt-in no-throw Lua
   callback in that exact state and invokes it with the original command before

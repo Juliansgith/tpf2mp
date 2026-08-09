@@ -558,7 +558,7 @@ function M.render(gui, snapshot, options)
     lines[#lines + 1] = string.format(
       "Tracked edge custody: %d | native holder desk/rightful company; rival edits blocked before commit",
       tonumber(pinned.total) or 0)
-    lines[#lines + 1] = "Native borrow/repay is locked on the turn desk; competitive credit is not implemented yet."
+    lines[#lines + 1] = "Native borrow/repay is locked on the turn desk; authored credit applies only to network matches."
   end
   local codecFailure = capture.lastProposalCodecFailure
   if codecFailure then

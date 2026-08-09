@@ -1504,6 +1504,46 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "vehicle.assign"):
             validate_action({"type": "operation.execute", "transaction": invalid})
 
+    def test_atomic_vehicle_sale_batch_is_sorted_unique_and_current_schema_only(self) -> None:
+        content = {
+            "schemaVersion": OPERATION_SCHEMA_VERSION,
+            "kind": "vehicle.sell_batch",
+            "companyCid": "company:1",
+            "data": {"targetCids": ["vehicle:pre:a", "vehicle:pre:z"]},
+        }
+        digest = checksum(content)
+        transaction = {**content, "digest": digest, "transactionId": f"operation:{digest}"}
+        accepted = validate_action({"type": "operation.execute", "transaction": transaction})
+        self.assertEqual(accepted["transaction"]["data"]["targetCids"], content["data"]["targetCids"])
+
+        for targets in (
+            ["vehicle:pre:a"],
+            ["vehicle:pre:a", "vehicle:pre:a"],
+            ["vehicle:pre:z", "vehicle:pre:a"],
+            ["vehicle:pre:a", "line:pre:z"],
+        ):
+            invalid_content = json.loads(json.dumps(content))
+            invalid_content["data"]["targetCids"] = targets
+            invalid_digest = checksum(invalid_content)
+            invalid = {
+                **invalid_content,
+                "digest": invalid_digest,
+                "transactionId": f"operation:{invalid_digest}",
+            }
+            with self.assertRaisesRegex(ProtocolError, "vehicle.sell_batch"):
+                validate_action({"type": "operation.execute", "transaction": invalid})
+
+        legacy_content = json.loads(json.dumps(content))
+        legacy_content["schemaVersion"] = 3
+        legacy_digest = checksum(legacy_content)
+        legacy = {
+            **legacy_content,
+            "digest": legacy_digest,
+            "transactionId": f"operation:{legacy_digest}",
+        }
+        with self.assertRaisesRegex(ProtocolError, "vehicle.sell_batch"):
+            validate_action({"type": "operation.execute", "transaction": legacy})
+
     def test_same_town_road_service_has_strict_portable_scope_and_carrier(self) -> None:
         action = {
             "type": "line.register", "lineCid": "line:event:local:1",

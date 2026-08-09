@@ -23,6 +23,8 @@ local townDevelopmentValidationModule = require "tpf2_mp/validation_town_develop
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
+local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
+local operationCodecModule = require "tpf2_mp/operation_codec"
 local operationVehiclePostcondition = require "tpf2_mp/operation_vehicle_postcondition"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local researchReportModule = require "tpf2_mp/research_report"
@@ -1446,6 +1448,111 @@ do
 end
 
 do
+  -- A stock multi-selection is one canonical operation even though Build
+  -- 35924's public command factory accepts only one vehicle per call.
+  local previousApi, previousGame = api, game
+  local previousAuthorize = rawget(_G, "tpf2mp_native_authorize_command")
+  local previousRevoke = rawget(_G, "tpf2mp_native_revoke_command")
+  local ok, failure = xpcall(function()
+    local balance, authorized, sold, results = 1000, 0, {}, {}
+    local transaction = assert(operationCodecModule.make(
+      "vehicle.sell_batch", "company:1", {
+        targetCids = { "vehicle:event:a", "vehicle:event:b" },
+      }))
+    local current = {
+      networkMode = "network",
+      world = { operations = { byId = {
+        ["operation-batch"] = {
+          status = "queued", transaction = transaction,
+          localRefs = {
+            ["vehicle:event:a"] = 71,
+            ["vehicle:event:b"] = 72,
+          },
+          nativePlayerId = 9,
+        },
+      } } },
+    }
+    local gui = {
+      frames = 100,
+      pendingOperationCaptures = {}, operationResults = {}, operationIssued = {},
+      pendingVehicleCaptures = {}, pendingProposalCaptures = {}, proposalResults = {},
+    }
+    api = { cmd = {
+      make = { sellVehicle = function(localId) return { localId = localId } end },
+      sendCommand = function(command, callback)
+        sold[#sold + 1] = command.localId
+        balance = balance + 100
+        callback(command, true)
+      end,
+    }, type = { ComponentType = {} } }
+    game = { interface = {
+      sendScriptEvent = function(_, name, payload)
+        results[#results + 1] = { name = name, payload = util.deepCopy(payload) }
+      end,
+    } }
+    rawset(_G, "tpf2mp_native_authorize_command", function(tag)
+      assert(tag == "12", "batch replay authorized the wrong native visitor")
+      authorized = authorized + 1
+      return true
+    end)
+    local replay = guiReplayRuntimeModule.new({
+      getState = function() return current end,
+      gui = gui,
+      collectNumeric = function() return {} end,
+      safeField = function(value, key) return value and value[key] end,
+      eventShape = function() return {} end,
+      componentEntitySet = function() return {} end,
+      balanceOf = function() return balance end,
+      queueAction = function() end,
+    })
+    assert(replay.processOperationQueue() == true
+        and #sold == 2 and sold[1] == 71 and sold[2] == 72
+        and authorized == 2 and #gui.pendingOperationCaptures == 1,
+      "canonical sale batch did not replay every preflighted target once")
+    for frame = 130, 135 do
+      gui.frames = frame
+      replay.processOperationQueue()
+    end
+    replay.processOperationQueue()
+    assert(#results == 1 and results[1].name == "operation.result"
+        and results[1].payload.operationId == "operation-batch"
+        and results[1].payload.success == true
+        and results[1].payload.financeDelta == 200,
+      "canonical sale batch did not report one aggregate result/finance boundary")
+
+    current.world.operations.byId["operation-batch-failure"] = {
+      status = "queued", transaction = transaction,
+      localRefs = {
+        ["vehicle:event:a"] = 71,
+        ["vehicle:event:b"] = 72,
+      },
+      nativePlayerId = 9,
+    }
+    local attempted, revoked = 0, 0
+    api.cmd.sendCommand = function(command, callback)
+      attempted = attempted + 1
+      if attempted == 2 then error("forced pre-visitor transport failure") end
+      callback(command, true)
+    end
+    rawset(_G, "tpf2mp_native_revoke_command", function(tag)
+      assert(tag == "12", "batch failure revoked the wrong native visitor")
+      revoked = revoked + 1
+    end)
+    assert(replay.processOperationQueue() == true
+        and attempted == 2 and revoked == 1 and #gui.operationResults == 1,
+      "failed batch submission retained its unused native authorization")
+    replay.processOperationQueue()
+    assert(#results == 2 and results[2].payload.success == false
+        and tostring(results[2].payload.error):find("item 2", 1, true),
+      "failed batch submission did not close its one aggregate operation")
+  end, debug.traceback)
+  api, game = previousApi, previousGame
+  rawset(_G, "tpf2mp_native_authorize_command", previousAuthorize)
+  rawset(_G, "tpf2mp_native_revoke_command", previousRevoke)
+  if not ok then error(failure, 0) end
+end
+
+do
   -- Model the actual eight-assignment burst: one operation is in flight,
   -- seven fit in the physical FIFO, and all eight commit-derived registration
   -- requests coalesce behind that FIFO into one final ordered action.
@@ -2827,6 +2934,41 @@ do
   assert(emitted[#emitted].payload.state == "fault"
       and current.probes.vehicleSync.faults == 1,
     "departure before authority release did not fault closed")
+  current.world.vehicleSync.vehicles["vehicle:batch:a"] = {
+    vehicleCid = "vehicle:batch:a", lineCid = "line:event:test:1",
+  }
+  current.world.vehicleSync.vehicles["vehicle:batch:b"] = {
+    vehicleCid = "vehicle:batch:b", lineCid = "line:event:test:1",
+  }
+  current.world.passengerPresentation = {
+    schemaVersion = 2, epoch = 0, lines = {}, vehicles = {
+      ["vehicle:batch:a"] = { vehicleCid = "vehicle:batch:a" },
+      ["vehicle:batch:b"] = { vehicleCid = "vehicle:batch:b" },
+    },
+  }
+  current.world.cargoPresentation = {
+    schemaVersion = 1, epoch = 0,
+    lines = { ["line:event:test:1"] = { discardedTotal = 0 } },
+    vehicles = {
+      ["vehicle:batch:a"] = { lineCid = "line:event:test:1", aboard = 3 },
+      ["vehicle:batch:b"] = { lineCid = "line:event:test:1", aboard = 5 },
+    },
+  }
+  local batchCleaned, batchCleanup = runtime.onOperationConsensus({
+    companyCid = "company:1",
+    transaction = { kind = "vehicle.sell_batch", data = {
+      targetCids = { "vehicle:batch:a", "vehicle:batch:b" },
+    } },
+  })
+  assert(batchCleaned == true and batchCleanup
+      and current.world.vehicleSync.vehicles["vehicle:batch:a"] == nil
+      and current.world.vehicleSync.vehicles["vehicle:batch:b"] == nil
+      and current.world.passengerPresentation.vehicles["vehicle:batch:a"] == nil
+      and current.world.passengerPresentation.vehicles["vehicle:batch:b"] == nil
+      and current.world.cargoPresentation.vehicles["vehicle:batch:a"] == nil
+      and current.world.cargoPresentation.vehicles["vehicle:batch:b"] == nil
+      and current.world.cargoPresentation.lines["line:event:test:1"].discardedTotal == 8,
+    "batch sale did not atomically retire synchronization/passenger/cargo state")
   api = priorApi
 end
 
@@ -2999,6 +3141,20 @@ do
   }, 1000000)
   assert(sold.removed == true and current.economy.vehicleCosts["vehicle:new:1"] == nil,
     "sold vehicle continued accruing authored upkeep")
+  economyModule.upsertVehicleCost(current.economy, "vehicle:batch:1", "company:1", 100)
+  economyModule.upsertVehicleCost(current.economy, "vehicle:batch:2", "company:1", 200)
+  local batchSold = runtime.recordVehicle({
+    companyCid = "company:1",
+    transaction = { kind = "vehicle.sell_batch", data = {
+      targetCids = { "vehicle:batch:1", "vehicle:batch:2" },
+    } },
+  }, 2000000)
+  assert(batchSold and #batchSold.vehicles == 2
+      and batchSold.vehicles[1].removed == true
+      and batchSold.vehicles[2].removed == true
+      and current.economy.vehicleCosts["vehicle:batch:1"] == nil
+      and current.economy.vehicleCosts["vehicle:batch:2"] == nil,
+    "atomic vehicle sale batch retained authored upkeep for one or more targets")
   api = previousApi
 end
 

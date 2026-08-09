@@ -84,12 +84,16 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Post-install verification failed with exit code $LASTEXITCODE" }
     }
 
+    $operationProperty = $manifest.PSObject.Properties['operationSchemaVersion']
     $current = [ordered]@{
         schemaVersion = 2
         version = $version
         manifestFormat = [int]$manifest.format
         sourceCommit = $(if ([int]$manifest.format -ge 2) { [string]$manifest.source.commit } else { $null })
         sourceDirty = $(if ([int]$manifest.format -ge 2) { [bool]$manifest.source.dirty } else { $null })
+        operationSchemaVersion = $(if ($null -ne $operationProperty) {
+                [int]$operationProperty.Value
+            } else { $null })
         installedAtUtc = [DateTime]::UtcNow.ToString('o')
         bundleRoot = $versionRoot
         modPath = $targetMod

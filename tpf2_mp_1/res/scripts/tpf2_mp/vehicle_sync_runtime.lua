@@ -357,8 +357,7 @@ function M.new(deps)
     if type(transaction) ~= "table" or type(data) ~= "table" then return false end
     local sync = state.world.vehicleSync
     local function applyPassengerOperation()
-      return vehicleSyncPassengers.applyOperation(
-        state.world, state.economy, transaction, record.companyCid)
+      return vehicleSyncPassengers.applyOperation(state.world, state.economy, transaction, record.companyCid)
     end
     if transaction.kind == "vehicle.assign" then
       local binding = state.canonical.byCanonical[data.targetCid]
@@ -375,9 +374,10 @@ function M.new(deps)
       }
       localVehicles[data.targetCid] = nil
       return applyPassengerOperation()
-    elseif transaction.kind == "vehicle.sell" then
-      sync.vehicles[data.targetCid] = nil
-      localVehicles[data.targetCid] = nil
+    elseif transaction.kind == "vehicle.sell" or transaction.kind == "vehicle.sell_batch" then
+      for _, targetCid in ipairs(data.targetCids or { data.targetCid }) do
+        sync.vehicles[targetCid], localVehicles[targetCid] = nil, nil
+      end
       return applyPassengerOperation()
     elseif transaction.kind == "line.delete" then
       for vehicleCid, entry in pairs(sync.vehicles) do

@@ -24,7 +24,9 @@ Any failure restores the prior mod and support bundle, preserves the previous
 current pointer byte-for-byte, and removes generated staging trees. Backup names
 carry millisecond time plus a random suffix so repeated same-version installs do
 not collide. Successful schema-2 `current.json` files also record manifest
-format, source commit, and source dirty state.
+format, source commit, source dirty state, and the operation schema when its
+package records one. The field is optional so an earlier format-2 archive
+remains installable.
 
 Rollback deletes only the newly generated copies at the two exact validated
 install targets; the source archive remains intact and every pre-existing copy

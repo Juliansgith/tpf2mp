@@ -437,6 +437,8 @@ function M.onOperation(value, economyState, transaction, companyCid)
     state.vehicles[data.targetCid].companyCid = companyCid
   elseif transaction.kind == "vehicle.sell" then
     state.vehicles[data.targetCid] = nil
+  elseif transaction.kind == "vehicle.sell_batch" then
+    for _, targetCid in ipairs(data.targetCids or {}) do state.vehicles[targetCid] = nil end
   elseif transaction.kind == "line.delete" then
     state.lines[data.targetCid] = nil
     for vehicleCid, vehicle in pairs(state.vehicles) do

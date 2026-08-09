@@ -53,6 +53,7 @@ if ($StrictNative -and -not ($nativeCompatible -and $nativeVerified)) {
     throw 'Installed game does not pass the exact Build 35924 native-hook profile.'
 }
 
+$operationProperty = $manifest.PSObject.Properties['operationSchemaVersion']
 $result = [ordered]@{
     valid = $true
     manifestFormat = [int]$manifest.format
@@ -61,6 +62,9 @@ $result = [ordered]@{
     sourceDirty = $(if ([int]$manifest.format -ge 2) { [bool]$manifest.source.dirty } else { $null })
     stateSchemaVersion = [int]$manifest.stateSchemaVersion
     checkpointSchemaVersion = [int]$manifest.checkpointSchemaVersion
+    operationSchemaVersion = $(if ($null -ne $operationProperty) {
+            [int]$operationProperty.Value
+        } else { $null })
     passengerPresentationSchemaVersion = [int]$manifest.passengerPresentationSchemaVersion
     cargoPresentationSchemaVersion = [int]$manifest.cargoPresentationSchemaVersion
     freightIndustrySchemaVersion = [int]$manifest.freightIndustrySchemaVersion
@@ -78,7 +82,10 @@ if ($AsJson) {
     $result | ConvertTo-Json -Depth 4
 }
 else {
-    Write-Host "TPF2MP install valid: version $($result.version), state $($result.stateSchemaVersion), checkpoint $($result.checkpointSchemaVersion), passenger $($result.passengerPresentationSchemaVersion), cargo $($result.cargoPresentationSchemaVersion), freight $($result.freightIndustrySchemaVersion); $($result.modFileCount) mod files verified."
+    $operationLabel = if ($null -ne $result.operationSchemaVersion) {
+        [string]$result.operationSchemaVersion
+    } else { 'legacy-unrecorded' }
+    Write-Host "TPF2MP install valid: version $($result.version), state $($result.stateSchemaVersion), checkpoint $($result.checkpointSchemaVersion), operation $operationLabel, passenger $($result.passengerPresentationSchemaVersion), cargo $($result.cargoPresentationSchemaVersion), freight $($result.freightIndustrySchemaVersion); $($result.modFileCount) mod files verified."
     if ($result.manifestFormat -ge 2) {
         if ($result.sourceDirty) { Write-Warning "Source: $($result.sourceCommit) (dirty development build)." }
         else { Write-Host "Source: $($result.sourceCommit) (clean)." }

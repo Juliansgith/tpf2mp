@@ -951,6 +951,7 @@ function M.new(deps)
       nativeCommandGate = type(rawget(_G, "tpf2mp_native_enable_command_gate")) == "function"
         and type(rawget(_G, "tpf2mp_native_disable_command_gate")) == "function" or false,
       nativeCommandAuthorize = type(rawget(_G, "tpf2mp_native_authorize_command")) == "function",
+      nativeCommandRevoke = type(rawget(_G, "tpf2mp_native_revoke_command")) == "function",
       nativeCommandObserverApi = type(rawget(_G, "tpf2mp_native_set_command_observer")) == "function",
       nativeGameSpeedCaptureApi =
         type(rawget(_G, "tpf2mp_native_take_suppressed_game_speed")) == "function",

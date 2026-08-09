@@ -64,11 +64,12 @@ MAX_PROPOSAL_OUTPUTS = (
 )
 LEGACY_OPERATION_SCHEMA_VERSION = 1
 FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION = 2
-OPERATION_SCHEMA_VERSION = 3
+STATION_TERMINAL_OPERATION_SCHEMA_VERSION, OPERATION_SCHEMA_VERSION = 3, 4
 MAX_OPERATION_STOPS = 256
 MAX_OPERATION_ALTERNATIVE_TERMINALS = 64
 MAX_OPERATION_ALTERNATIVE_TERMINALS_TOTAL = 1024
 MAX_OPERATION_VEHICLE_PARTS = 128
+MAX_OPERATION_VEHICLE_BATCH = 256
 
 
 class ProtocolError(ValueError):
@@ -1205,6 +1206,7 @@ def validate_operation_transaction(value: Any) -> dict[str, Any]:
     if value["schemaVersion"] not in {
         LEGACY_OPERATION_SCHEMA_VERSION,
         FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION,
+        STATION_TERMINAL_OPERATION_SCHEMA_VERSION,
         OPERATION_SCHEMA_VERSION,
     }:
         raise ProtocolError("unsupported operation schemaVersion")
@@ -1271,6 +1273,14 @@ def validate_operation_transaction(value: Any) -> dict[str, Any]:
     elif kind in unary_vehicle:
         if set(data) != {"targetCid"} or not _operation_cid(data["targetCid"], "vehicle"):
             raise ProtocolError(f"{kind} data is invalid")
+    elif kind == "vehicle.sell_batch":
+        targets = data.get("targetCids")
+        if value["schemaVersion"] != OPERATION_SCHEMA_VERSION \
+                or set(data) != {"targetCids"} or not isinstance(targets, list) \
+                or not 2 <= len(targets) <= MAX_OPERATION_VEHICLE_BATCH \
+                or any(not _operation_cid(target, "vehicle") for target in targets) \
+                or targets != sorted(targets) or len(set(targets)) != len(targets):
+            raise ProtocolError("vehicle.sell_batch data is invalid")
     else:
         raise ProtocolError(f"unsupported canonical operation kind: {kind}")
 

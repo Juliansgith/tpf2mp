@@ -20,14 +20,18 @@ archive remains verifiable but the installer verifier prints a warning.
 
 The shared verifier accepts format 1 for existing archives and format 2 for new
 ones. Format 2 fails closed when the source object, full commit, or boolean flag
-is absent or malformed. Install verification exposes `manifestFormat`,
-`sourceCommit`, and `sourceDirty` in JSON as well as human-readable output.
+is absent or malformed. New format-2 packages also record the operation schema;
+that later-added field is optional for compatibility with earlier format-2
+archives and strictly positive whenever present. Install verification exposes
+`manifestFormat`, `sourceCommit`, `sourceDirty`, and the recorded or explicitly
+unrecorded operation schema in JSON as well as human-readable output.
 
 ## Evidence contract
 
 `tests/run_release_manifest_tests.ps1` now proves:
 
 - valid format-2 provenance round-trips;
+- an earlier format-2 manifest without operation-schema metadata remains valid;
 - malformed or missing provenance is rejected;
 - the dirty flag cannot be a truthy string masquerading as a boolean; and
 - a valid historical format-1 manifest still verifies.

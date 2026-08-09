@@ -135,6 +135,9 @@ function M.new(env)
     local owner = operationOwner(localId)
     local metadataOwner = binding and binding.metadata and binding.metadata.owner or nil
     owner = owner or metadataOwner
+    if expectedKind == "vehicle" and not owner then
+      return false, "operation cannot establish vehicle ownership for " .. tostring(cid)
+    end
     if owner and owner ~= transaction.companyCid then
       return false, "operation cannot mutate rival-owned " .. tostring(expectedKind or "entity")
         .. " " .. tostring(cid)
@@ -161,6 +164,14 @@ function M.new(env)
     if data.targetCid then
       local ok, err = operationAccess(transaction, data.targetCid, spec.targetKind, localRefs)
       if not ok then return false, err end
+    end
+    for _, targetCid in ipairs(data.targetCids or {}) do
+      local ok, localIdOrError = operationAccess(
+        transaction, targetCid, spec.targetKind, localRefs)
+      if not ok then return false, localIdOrError end
+      if not world.entityExists(tonumber(localIdOrError)) then
+        return false, "vehicle sale batch target no longer exists: " .. tostring(targetCid)
+      end
     end
     if data.depotCid then
       local ok, err = operationAccess(transaction, data.depotCid, "depot", localRefs)
@@ -282,6 +293,20 @@ function M.new(env)
     if not localId and data.targetCid then localId = operationResolve(record, data.targetCid) end
     if kind == "line.delete" or kind == "vehicle.sell" then
       return { kind = kind, targetCid = data.targetCid, exists = world.entityExists(localId) }
+    elseif kind == "vehicle.sell_batch" then
+      local remaining = {}
+      for _, targetCid in ipairs(data.targetCids) do
+        local targetLocalId = operationResolve(record, targetCid, "vehicle")
+        if targetLocalId and world.entityExists(targetLocalId) then
+          remaining[#remaining + 1] = targetCid
+        end
+      end
+      return {
+        kind = kind,
+        targetCids = util.deepCopy(data.targetCids),
+        exists = #remaining > 0,
+        remaining = remaining,
+      }
     end
     if not localId or not world.entityExists(localId) then
       return nil, "operation output/target does not exist after native success"
@@ -389,7 +414,14 @@ function M.new(env)
     local transaction, data = record.transaction, record.transaction.data
     local binding = data.targetCid and currentState().canonical.byCanonical[data.targetCid] or nil
     M.applyBindingMetadata(binding, transaction, record.companyCid)
-    if transaction.kind == "line.delete" or transaction.kind == "vehicle.sell" then
+    if transaction.kind == "vehicle.sell_batch" then
+      for _, targetCid in ipairs(data.targetCids) do
+        local targetBinding = currentState().canonical.byCanonical[targetCid]
+        local localId = targetBinding and targetBinding.localId or record.localRefs[targetCid]
+        canonical.unbindCanonical(currentState().canonical, targetCid)
+        if localId then currentState().world.logicalOwners[tostring(localId)] = nil end
+      end
+    elseif transaction.kind == "line.delete" or transaction.kind == "vehicle.sell" then
       local localId = binding and binding.localId or record.localRefs[data.targetCid]
       canonical.unbindCanonical(currentState().canonical, data.targetCid)
       if localId then currentState().world.logicalOwners[tostring(localId)] = nil end
@@ -462,7 +494,8 @@ function M.new(env)
       emitOperationCompletion(record, false, result)
       return ok, result
     end
-    if (record.transaction.kind == "line.delete" or record.transaction.kind == "vehicle.sell")
+    if (record.transaction.kind == "line.delete" or record.transaction.kind == "vehicle.sell"
+      or record.transaction.kind == "vehicle.sell_batch")
       and postcondition.exists == true then
       local ok, result = operationFailure(record, "native delete/sell left the target entity alive")
       emitOperationCompletion(record, false, result)
@@ -473,11 +506,19 @@ function M.new(env)
     -- unbinds a sold vehicle, so this fact would otherwise disappear before
     -- the owning peer can remove its seats/upkeep from the old line.
     if record.transaction.kind == "vehicle.assign"
-      or record.transaction.kind == "vehicle.sell" then
-      local targetCid = record.transaction.data and record.transaction.data.targetCid
-      local targetBinding = targetCid and currentState().canonical.byCanonical[targetCid] or nil
-      record.previousLineCid = targetBinding and targetBinding.metadata
-        and targetBinding.metadata.lineCid or nil
+      or record.transaction.kind == "vehicle.sell"
+      or record.transaction.kind == "vehicle.sell_batch" then
+      local data = record.transaction.data or {}
+      local targetCids = data.targetCids or (data.targetCid and { data.targetCid } or {})
+      local priorSet = {}
+      for _, targetCid in ipairs(targetCids) do
+        local targetBinding = currentState().canonical.byCanonical[targetCid]
+        local lineCid = targetBinding and targetBinding.metadata
+          and targetBinding.metadata.lineCid or nil
+        if type(lineCid) == "string" and lineCid ~= "" then priorSet[lineCid] = true end
+      end
+      record.previousLineCids = util.sortedKeys(priorSet)
+      record.previousLineCid = record.previousLineCids[1]
     end
     applyOperationMetadata(record)
     local balanceAfter = tonumber(payload.balanceAfter) or env.balanceOf(record.nativePlayerId)
@@ -505,6 +546,14 @@ function M.new(env)
     -- after both peers agree, in the operation-outcome handler.
     if currentState().networkMode ~= "network" and env.autoRegisterLine then
       pcall(env.autoRegisterLine, record.transaction, output and output.cid or nil)
+      for _, lineCid in ipairs(record.previousLineCids or {}) do
+        if not (record.transaction.data and record.transaction.data.lineCid == lineCid) then
+          pcall(env.autoRegisterLine, {
+            kind = "vehicle.assign", companyCid = record.companyCid,
+            data = { lineCid = lineCid },
+          }, nil)
+        end
+      end
     end
     currentState().world.operations.applied = (currentState().world.operations.applied or 0) + 1
     currentState().probes.capture.operationReplayCount =

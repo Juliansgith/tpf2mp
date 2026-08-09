@@ -2,13 +2,15 @@ local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
 
 local M = {
-  SCHEMA_VERSION = 3,
+  SCHEMA_VERSION = 4,
+  STATION_TERMINAL_SCHEMA_VERSION = 3,
   FLAT_ALTERNATIVE_SCHEMA_VERSION = 2,
   LEGACY_SCHEMA_VERSION = 1,
   MAX_STOPS = 256,
   MAX_ALTERNATIVE_TERMINALS = 64,
   MAX_ALTERNATIVE_TERMINALS_TOTAL = 1024,
   MAX_VEHICLE_PARTS = 128,
+  MAX_VEHICLE_BATCH = 256,
 }
 
 local SPECS = {
@@ -22,6 +24,7 @@ local SPECS = {
   ["vehicle.depart"] = { tag = 10, factory = "setVehicleShouldDepart", targetKind = "vehicle" },
   ["vehicle.send_to_depot"] = { tag = 11, factory = "sendToDepot", targetKind = "vehicle" },
   ["vehicle.sell"] = { tag = 12, factory = "sellVehicle", targetKind = "vehicle" },
+  ["vehicle.sell_batch"] = { tag = 12, factory = "sellVehicle", targetKind = "vehicle", batch = true },
   ["vehicle.buy"] = { tag = 13, factory = "buyVehicle", outputKind = "vehicle" },
   ["vehicle.replace"] = { tag = 14, factory = "replaceVehicle", targetKind = "vehicle" },
   ["entity.color"] = { tag = 28, factory = "setColor", targetKind = "entity" },
@@ -225,6 +228,7 @@ function M.validate(transaction)
     "schemaVersion", "kind", "companyCid", "data", "digest", "transactionId",
   }) then return false, "operation transaction has unknown or missing fields" end
   if transaction.schemaVersion ~= M.SCHEMA_VERSION
+    and transaction.schemaVersion ~= M.STATION_TERMINAL_SCHEMA_VERSION
     and transaction.schemaVersion ~= M.FLAT_ALTERNATIVE_SCHEMA_VERSION
     and transaction.schemaVersion ~= M.LEGACY_SCHEMA_VERSION then
     return false, "unsupported operation schemaVersion"
@@ -277,6 +281,17 @@ function M.validate(transaction)
       and canonicalId(data.targetCid, "vehicle") and type(data.manual) == "boolean"
   elseif kind == "vehicle.reverse" or kind == "vehicle.sell" or kind == "vehicle.depart" then
     ok = exactFields(data, { "targetCid" }) and canonicalId(data.targetCid, "vehicle")
+  elseif kind == "vehicle.sell_batch" then
+    local targets, count = array(data.targetCids, false)
+    ok = transaction.schemaVersion == M.SCHEMA_VERSION
+      and exactFields(data, { "targetCids" }) and targets
+      and count >= 2 and count <= M.MAX_VEHICLE_BATCH
+    local previous
+    for _, targetCid in ipairs(ok and data.targetCids or {}) do
+      if not canonicalId(targetCid, "vehicle")
+        or (previous and targetCid <= previous) then ok = false; break end
+      previous = targetCid
+    end
   else
     ok = false
   end
@@ -297,6 +312,10 @@ function M.make(kind, companyCid, data)
     companyCid = tostring(companyCid or ""),
     data = util.deepCopy(data or {}),
   }
+  if transaction.kind == "vehicle.sell_batch"
+    and type(transaction.data.targetCids) == "table" then
+    table.sort(transaction.data.targetCids)
+  end
   local line = transaction.data and transaction.data.line
   for _, stop in ipairs(type(line) == "table" and line.stops or {}) do
     if type(stop) == "table" and stop.alternativeTerminals == nil then
@@ -626,6 +645,20 @@ function M.materialise(transaction, options)
     local line; line, err = resolve(options, data.lineCid, "line")
     if not line then return nil, err end
     args = { target, line, data.stopIndex }
+  elseif transaction.kind == "vehicle.sell_batch" then
+    local batchArgs = {}
+    for _, targetCid in ipairs(data.targetCids) do
+      local target, err = resolve(options, targetCid, "vehicle")
+      if not target then return nil, err end
+      batchArgs[#batchArgs + 1] = { target }
+    end
+    return {
+      factory = factory,
+      factoryName = spec.factory,
+      tag = spec.tag,
+      batchArgs = batchArgs,
+      outputKind = spec.outputKind,
+    }
   elseif transaction.kind == "vehicle.stop" then
     local target, err = resolve(options, data.targetCid, "vehicle")
     if not target then return nil, err end

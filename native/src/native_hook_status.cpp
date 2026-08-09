@@ -15,7 +15,7 @@ std::string SerializeHookStatus(const HookStatusView& status) {
   std::ostringstream output;
   output << "{\"schemaVersion\":1"
          << ",\"component\":\"tpf2mp-native-hook\""
-         << ",\"hookVersion\":\"0.14.0\""
+         << ",\"hookVersion\":\"0.15.0\""
          << ",\"profile\":\"" << tpf2mp::JsonEscape(std::string(tpf2mp::profile::kProfileName)) << "\""
          << ",\"processId\":" << status.process_id
          << ",\"stage\":\"" << tpf2mp::JsonEscape(status.stage) << "\""

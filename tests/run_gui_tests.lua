@@ -57,6 +57,7 @@ tpf2mp_native_authorize_command = function(tag)
   authorizedCommandTags[#authorizedCommandTags + 1] = tonumber(tag)
   return true
 end
+tpf2mp_native_revoke_command = function() return true end
 
 local function object(methods)
   methods = methods or {}
@@ -262,6 +263,8 @@ assert(sentEvents[1].param.capabilities.nativeLineCommandCaptureApi == true,
   "native line-command capture API was not reported")
 assert(sentEvents[1].param.capabilities.nativeVehicleCommandCaptureApi == true,
   "native vehicle-command capture API was not reported")
+assert(sentEvents[1].param.capabilities.nativeCommandRevoke == true,
+  "native command-authorization revocation API was not reported")
 assert(sentEvents[2].id == "tpf2mp" and sentEvents[2].name == "snapshot.request", "GUI used the wrong snapshot envelope")
 
 nativeCommandObserver({
@@ -1144,14 +1147,21 @@ assert(decoder("V1|6|760|700|-1") and decoder("V1|13|100|750|0"),
 for _, invalid in ipairs({
   "V1|7|760|0|0", "V2|8|760|0|2", "V2|9|760|0|10001",
   "V2|10|760|1|0", "V2|12|760|0|0", "V2|12|760|257|0",
-  "V2|12|760|1|1", "V2|14|760|0|1", "V2|30|760|0|-1",
+  "V2|12|760|2|0", "V2|12|760|1|1", "V2|14|760|0|1",
+  "V2|30|760|0|-1", "V3|12|0|760", "V3|12|2|760",
+  "V3|12|2|760,760", "V3|12|2|760,-1", "V3|12|2|760,",
 }) do
   assert(not decoder(invalid), "invalid native lifecycle envelope was admitted: " .. invalid)
 end
-nativeVehicleCommands[#nativeVehicleCommands + 1] = "V2|12|760|2|0"
-assert(decoderRuntime.process() == false and #decodedActions == 0
-    and tostring(decoderGui.lastError):find("atomic batch sale", 1, true),
-  "multi-vehicle stock sale was not blocked before canonical mutation")
+nativeVehicleCommands[#nativeVehicleCommands + 1] = "V3|12|2|760,761"
+assert(decoderRuntime.process() == true and #decodedActions == 1
+    and decodedActions[1].type == "operation.capture"
+    and decodedActions[1].capture.kind == "vehicle.sell_batch"
+    and decodedActions[1].capture.targetLocalIds[1] == 760
+    and decodedActions[1].capture.targetLocalIds[2] == 761
+    and decoderGui.nativeVehicleCapture.sales == 2
+    and decoderGui.nativeVehicleCapture.saleBatches == 1,
+  "multi-vehicle stock sale was not preserved as one canonical batch capture")
 
 -- A canonical replay arrives after the issuing builder's original command was
 -- suppressed.  If that replay replaces a signalled edge, Build 35924 can keep

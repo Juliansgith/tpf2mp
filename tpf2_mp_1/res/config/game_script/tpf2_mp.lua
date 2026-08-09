@@ -113,12 +113,16 @@ local function configureNativeAuthority(mode)
     or "tpf2mp_native_disable_build_gate"
   local commandName = network and "tpf2mp_native_enable_command_gate"
     or "tpf2mp_native_disable_command_gate"
+  local revokeName = "tpf2mp_native_revoke_command"
   local buildGate = rawget(_G, buildName)
   local commandGate = rawget(_G, commandName)
-  if network and (type(buildGate) ~= "function" or type(commandGate) ~= "function") then
+  local revokeCommand = rawget(_G, revokeName)
+  if network and (type(buildGate) ~= "function" or type(commandGate) ~= "function"
+      or type(revokeCommand) ~= "function") then
     local missing = {}
     if type(buildGate) ~= "function" then missing[#missing + 1] = buildName end
     if type(commandGate) ~= "function" then missing[#missing + 1] = commandName end
+    if type(revokeCommand) ~= "function" then missing[#missing + 1] = revokeName end
     local message = "network mode requires exact-build native authority gates: "
       .. table.concat(missing, ", ")
     state.probes.networkAuthority = { ready = false, mode = mode, error = message }
@@ -1666,7 +1670,8 @@ handlers["probe.gui_capabilities"] = function(action)
     local authorityReady, authorityView = validatedNetworkAuthority(state.probes.nativeHook)
     local gameReady = bootstrap.gameReady == true
     local calendarReady = bootstrap.calendarReady == true
-    local bootstrapReady = authorityReady and gameReady and calendarReady
+    local revokeReady = capabilities.nativeCommandRevoke == true
+    local bootstrapReady = authorityReady and gameReady and calendarReady and revokeReady
     state.probes.networkAuthority = {
       ready = bootstrapReady,
       mode = "network",
@@ -1674,8 +1679,9 @@ handlers["probe.gui_capabilities"] = function(action)
       commandGateEnabled = authorityView.commandGateEnabled,
       commandVisitors = authorityView.commandVisitors,
       source = "validated-gui-native-bootstrap",
-      error = not bootstrapReady
-        and tostring(bootstrap.error or "GUI native authority bootstrap was incomplete") or nil,
+      error = not bootstrapReady and tostring(not revokeReady
+        and "GUI native command revocation API is unavailable"
+        or bootstrap.error or "GUI native authority bootstrap was incomplete") or nil,
     }
     if bootstrapReady then
       state.world.networkClock.startupPause = {
@@ -2404,6 +2410,22 @@ local function normaliseOperationCapture(action)
     local lineCid, lineError = bindLocal(capture.lineLocalId, "line")
     if not lineCid then return nil, lineError end
     data = { targetCid = targetCid, lineCid = lineCid, stopIndex = util.integer(capture.stopIndex, 0) }
+  elseif kind == "vehicle.sell_batch" then
+    if type(capture.targetLocalIds) ~= "table"
+      or #capture.targetLocalIds < 2 or #capture.targetLocalIds > operationCodec.MAX_VEHICLE_BATCH then
+      return nil, "captured vehicle sale batch has an invalid target count"
+    end
+    local targetCids, seen = {}, {}
+    for index, localId in ipairs(capture.targetLocalIds) do
+      local targetCid, targetError = bindLocal(localId, "vehicle")
+      if not targetCid then
+        return nil, "vehicle sale batch target " .. tostring(index) .. ": " .. tostring(targetError)
+      end
+      if seen[targetCid] then return nil, "vehicle sale batch contains a duplicate target" end
+      seen[targetCid] = true
+      targetCids[#targetCids + 1] = targetCid
+    end
+    data = { targetCids = targetCids }
   elseif kind == "line.delete" then
     local targetCid, targetError
     if originApplied then
@@ -2768,14 +2790,18 @@ applyCommitted = function(action, actor, commitSeq)
       local outputCid = record.result and record.result.outputs
         and record.result.outputs[1] and record.result.outputs[1].cid or nil
       autoRegisterLineFor(record.transaction, outputCid)
-      if type(record.previousLineCid) == "string" and record.previousLineCid ~= ""
-        and not (record.transaction.data
-          and record.transaction.data.lineCid == record.previousLineCid) then
-        autoRegisterLineFor({
-          kind = "vehicle.assign",
-          companyCid = record.companyCid,
-          data = { lineCid = record.previousLineCid },
-        }, nil)
+      local priorLines = record.previousLineCids
+        or (record.previousLineCid and { record.previousLineCid } or {})
+      for _, previousLineCid in ipairs(priorLines) do
+        if type(previousLineCid) == "string" and previousLineCid ~= ""
+          and not (record.transaction.data
+            and record.transaction.data.lineCid == previousLineCid) then
+          autoRegisterLineFor({
+            kind = "vehicle.assign",
+            companyCid = record.companyCid,
+            data = { lineCid = previousLineCid },
+          }, nil)
+        end
       end
     end
     local reason = "operation-consensus:" .. tostring(action.operationId or "unknown")

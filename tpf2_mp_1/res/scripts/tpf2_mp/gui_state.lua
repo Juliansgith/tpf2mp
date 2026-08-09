@@ -96,7 +96,7 @@ function M.new()
     departures = 0,
     sendToDepot = 0,
     sales = 0,
-    unsupportedSaleBatches = 0,
+    saleBatches = 0,
     manualDepartures = 0,
     lastTag = nil,
     lastTarget = nil,

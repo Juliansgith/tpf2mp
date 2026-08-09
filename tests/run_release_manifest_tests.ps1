@@ -44,6 +44,7 @@ $baseline = [pscustomobject][ordered]@{
     stateSchemaVersion = 29
     checkpointSchemaVersion = 5
     proposalSchemaVersion = 5
+    operationSchemaVersion = 4
     passengerPresentationSchemaVersion = 2
     cargoPresentationSchemaVersion = 1
     deliverySchemaVersion = 2
@@ -86,13 +87,23 @@ if ([string]$valid.version -ne '0.37.0-alpha' -or @($valid.files).Count -ne $req
     throw 'Valid release manifest did not round-trip.'
 }
 if ([int]$valid.format -ne 2 -or [string]$valid.source.commit -ne $baseline.source.commit `
-        -or [bool]$valid.source.dirty) {
+        -or [bool]$valid.source.dirty -or [int]$valid.operationSchemaVersion -ne 4) {
     throw 'Valid release source provenance did not round-trip.'
+}
+
+$earlyFormatTwo = Copy-FixtureManifest
+$earlyFormatTwo.PSObject.Properties.Remove('operationSchemaVersion')
+Write-FixtureManifest $earlyFormatTwo
+$earlyFormatTwoValid = Test-Tpf2mpReleaseManifest $bundle
+if ([int]$earlyFormatTwoValid.format -ne 2 `
+        -or $null -ne $earlyFormatTwoValid.PSObject.Properties['operationSchemaVersion']) {
+    throw 'Pre-operation-schema format-2 release manifest was not accepted unchanged.'
 }
 
 $legacy = Copy-FixtureManifest
 $legacy.format = 1
 $legacy.PSObject.Properties.Remove('source')
+$legacy.PSObject.Properties.Remove('operationSchemaVersion')
 Write-FixtureManifest $legacy
 $legacyValid = Test-Tpf2mpReleaseManifest $bundle
 if ([int]$legacyValid.format -ne 1) { throw 'Legacy format-1 release manifest was not accepted.' }
@@ -118,6 +129,10 @@ Assert-ManifestRejected 'a non-boolean source dirty flag' {
 Assert-ManifestRejected 'a missing schema version' {
     param($value)
     $value.PSObject.Properties.Remove('cargoPresentationSchemaVersion')
+}
+Assert-ManifestRejected 'an invalid optional operation schema version' {
+    param($value)
+    $value.operationSchemaVersion = 0
 }
 Assert-ManifestRejected 'a duplicate case-insensitive path' {
     param($value)

@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.14.0`.
+Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.15.0`.
+
+[Atomic multi-vehicle sale](ATOMIC_VEHICLE_SALE_BATCH_2026-08-09.md)
+records the complete bounded native selection envelope, one canonical schema-4
+transaction, all-target authorization and deterministic scalar replay, aggregate
+finance/postconditions/cleanup, and the honest no-rollback failure boundary.
 
 [Transactional release installation](TRANSACTIONAL_RELEASE_INSTALL_2026-08-09.md)
 records the previously split support/mod/current commit, automatic rollback,

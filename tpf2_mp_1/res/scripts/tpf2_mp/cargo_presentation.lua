@@ -374,6 +374,8 @@ function M.onOperation(value, economyState, transaction, companyCid)
     end
   elseif transaction.kind == "vehicle.sell" then
     retireVehicle(state, data.targetCid)
+  elseif transaction.kind == "vehicle.sell_batch" then
+    for _, targetCid in ipairs(data.targetCids or {}) do retireVehicle(state, targetCid) end
   elseif transaction.kind == "line.delete" then
     local line = state.lines[data.targetCid]
     if line then line.retired = true end

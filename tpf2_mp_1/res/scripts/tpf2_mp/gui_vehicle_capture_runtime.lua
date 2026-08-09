@@ -32,7 +32,11 @@ local function lifecycleCapture(decoded)
     return { kind = "vehicle.send_to_depot", targetLocalId = target,
       sellOnArrival = decoded.value == 1 }, "sendToDepot"
   elseif decoded.tag == 12 then
-    return { kind = "vehicle.sell", targetLocalId = target }, "sales"
+    local targets = decoded.targetLocalIds or { target }
+    if #targets > 1 then
+      return { kind = "vehicle.sell_batch", targetLocalIds = targets }, "sales"
+    end
+    return { kind = "vehicle.sell", targetLocalId = targets[1] }, "sales"
   elseif decoded.tag == 30 then
     return { kind = "vehicle.manual_departure", targetLocalId = target,
       manual = decoded.value == 1 }, "manualDepartures"
@@ -47,8 +51,34 @@ function M.install(gui, deps)
   local maxStops = tonumber(deps.maxStops) or 256
 
   gui.decodeSuppressedNativeVehicleCommand = function(raw)
-    if type(raw) ~= "string" or #raw > 128 then
+    if type(raw) ~= "string" or #raw > 4096 then
       return nil, "invalid native vehicle envelope"
+    end
+    local saleCountText, saleTargetsText = raw:match("^V3|12|(%d+)|(.+)$")
+    if saleCountText then
+      local saleCount = boundedInteger(saleCountText, 1, 256)
+      if not saleCount or saleTargetsText:find("[^%d,]")
+        or saleTargetsText:sub(1, 1) == "," or saleTargetsText:sub(-1) == ","
+        or saleTargetsText:find(",,", 1, true) then
+        return nil, "native SellVehicle batch envelope is malformed"
+      end
+      local targets, seen = {}, {}
+      for targetText in saleTargetsText:gmatch("[^,]+") do
+        local target = boundedInteger(targetText, 0, 2147483647)
+        if not target or seen[target] then
+          return nil, "native SellVehicle batch contains an invalid or duplicate target"
+        end
+        targets[#targets + 1] = target
+        seen[target] = true
+      end
+      if #targets ~= saleCount then
+        return nil, "native SellVehicle batch count does not match its targets"
+      end
+      return {
+        version = "V3", tag = 12,
+        targetLocalId = targets[1], targetLocalIds = targets,
+        secondaryLocalId = saleCount, value = 0,
+      }
     end
     local version, tagText, targetText, secondaryText, valueText =
       raw:match("^(V[12])|(-?%d+)|(-?%d+)|(-?%d+)|(-?%d+)$")
@@ -65,7 +95,7 @@ function M.install(gui, deps)
       return nil, "native BuyVehicle envelope has an unexpected value"
     elseif tag == 6 and (value < -1 or value >= maxStops) then
       return nil, "native SetLine envelope has an invalid stop index"
-    elseif tag == 12 and (secondary < 1 or secondary > 256 or value ~= 0) then
+    elseif tag == 12 and (secondary ~= 1 or value ~= 0) then
       return nil, "native SellVehicle envelope has invalid selection metadata"
     elseif tag ~= 6 and tag ~= 12 and tag ~= 13 and secondary ~= 0 then
       return nil, "native lifecycle envelope has an unexpected secondary value"
@@ -126,13 +156,7 @@ function M.install(gui, deps)
     while index <= #gui.pendingNativeVehicleCommands do
       local pending = gui.pendingNativeVehicleCommands[index]
       local decoded = pending.decoded
-      if decoded.tag == 12 and decoded.secondaryLocalId ~= 1 then
-        gui.nativeVehicleCapture.invalid = (gui.nativeVehicleCapture.invalid or 0) + 1
-        gui.nativeVehicleCapture.unsupportedSaleBatches =
-          (gui.nativeVehicleCapture.unsupportedSaleBatches or 0) + 1
-        gui.lastError = "multi-vehicle stock sale is blocked until atomic batch sale is supported"
-        table.remove(gui.pendingNativeVehicleCommands, index)
-      elseif decoded.tag ~= 13 and decoded.tag ~= 14 then
+      if decoded.tag ~= 13 and decoded.tag ~= 14 then
         local capture, counter = lifecycleCapture(decoded)
         if not capture then
           gui.nativeVehicleCapture.invalid = (gui.nativeVehicleCapture.invalid or 0) + 1
@@ -144,7 +168,12 @@ function M.install(gui, deps)
             companyCid = snapshot.activeCompanyCid,
             capture = capture,
           })
-          gui.nativeVehicleCapture[counter] = (gui.nativeVehicleCapture[counter] or 0) + 1
+          local count = decoded.tag == 12 and decoded.secondaryLocalId or 1
+          gui.nativeVehicleCapture[counter] = (gui.nativeVehicleCapture[counter] or 0) + count
+          if decoded.tag == 12 and count > 1 then
+            gui.nativeVehicleCapture.saleBatches =
+              (gui.nativeVehicleCapture.saleBatches or 0) + 1
+          end
           table.remove(gui.pendingNativeVehicleCommands, index)
           queued = queued + 1
         end

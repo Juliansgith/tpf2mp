@@ -133,7 +133,9 @@ Domain modules under `res/scripts/tpf2_mp`:
 - `edge_ownership.lua` owns private/public edge custody rules.
 - `proposal_codec.lua` validates and materializes portable construction/edge
   transactions.
-- `operation_codec.lua` validates and materializes line and vehicle operations.
+- `operation_codec.lua` validates and materializes line and vehicle operation
+  schema 4. A bounded stock multi-selection sale is one sorted canonical
+  transaction even though the public engine replay primitive remains scalar.
 - `vehicle_sync_state.lua` owns which native stops are synchronization anchors:
   every stop for conservative passenger carriers, route endpoints for urban
   road/tram services, and exact contract endpoints for freight.

@@ -46,13 +46,14 @@ struct SuppressedLineCommand {
 // uses vehicle/line/stop-index; BuyVehicle uses native-player/depot/zero and
 // ReplaceVehicle uses vehicle/zero/zero and also correlates with the stock GUI.
 // Lifecycle commands use vehicle/zero/scalar, where booleans are 0/1 and
-// maintenance is basis points. SellVehicle uses first-target/selection-count/0;
-// Lua accepts only count one until the canonical model has atomic batch sale.
+// maintenance is basis points. SellVehicle retains the complete bounded target
+// vector so a stock multi-selection can become one canonical batch operation.
 struct SuppressedVehicleCommand {
   int tag{-1};
   std::int32_t target{-1};
   std::int32_t secondary{-1};
   std::int32_t value{};
+  std::vector<std::int32_t> targets;
 };
 
 using TagCounts = std::array<std::uint64_t, kCommandTypeCount>;

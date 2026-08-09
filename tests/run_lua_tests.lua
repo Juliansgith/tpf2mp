@@ -1312,6 +1312,38 @@ test("vehicle lifecycle scalar operations share the strict canonical contract", 
   equal(operationCodec.make("vehicle.manual_departure", "company:2", {
     targetCid = targetCid, manual = "yes",
   }), nil)
+
+  local batch = assert(operationCodec.make("vehicle.sell_batch", "company:2", {
+    targetCids = { "vehicle:pre:z", "vehicle:pre:a" },
+  }))
+  equal(batch.schemaVersion, 4)
+  equal(batch.data.targetCids[1], "vehicle:pre:a")
+  equal(batch.data.targetCids[2], "vehicle:pre:z")
+  truthy(operationCodec.validate(batch), "canonical vehicle sale batch did not validate")
+  local materialised = assert(operationCodec.materialise(batch, {
+    api = {},
+    resolveLocal = function(cid)
+      return ({ ["vehicle:pre:a"] = 71, ["vehicle:pre:z"] = 72 })[cid]
+    end,
+    factory = function(name)
+      equal(name, "sellVehicle")
+      return function(localId) return { kind = "sell", target = localId } end
+    end,
+  }))
+  equal(materialised.tag, 12)
+  equal(#materialised.batchArgs, 2)
+  equal(materialised.batchArgs[1][1], 71)
+  equal(materialised.batchArgs[2][1], 72)
+  equal(materialised.factory(materialised.batchArgs[2][1]).target, 72)
+  equal(operationCodec.make("vehicle.sell_batch", "company:2", {
+    targetCids = { "vehicle:pre:a" },
+  }), nil)
+  equal(operationCodec.make("vehicle.sell_batch", "company:2", {
+    targetCids = { "vehicle:pre:a", "vehicle:pre:a" },
+  }), nil)
+  local legacyBatch = util.deepCopy(batch)
+  legacyBatch.schemaVersion = 3
+  equal(operationCodec.validate(legacyBatch), false)
 end)
 
 test("railway vehicle materialisation uses the documented nested consist shape", function()
@@ -3720,6 +3752,43 @@ test("passenger presentation carries backlog, invalidates edited routes, and exc
   truthy(passengerPresentation.beginEpoch(disabledState, disabledEconomy))
   equal(next(disabledState.lines), nil,
     "a quarantined disabled service retained a passenger queue")
+end)
+
+test("atomic vehicle sale batches retire every authored presentation entry", function()
+  local transaction = {
+    kind = "vehicle.sell_batch",
+    data = { targetCids = { "vehicle:batch:a", "vehicle:batch:b" } },
+  }
+  local passengerState = passengerPresentation.newState()
+  passengerState.vehicles = {
+    ["vehicle:batch:a"] = { vehicleCid = "vehicle:batch:a" },
+    ["vehicle:batch:b"] = { vehicleCid = "vehicle:batch:b" },
+    ["vehicle:batch:keep"] = { vehicleCid = "vehicle:batch:keep" },
+  }
+  local passengerOk, passengerResult = passengerPresentation.onOperation(
+    passengerState, economy.newState(), transaction, "company:1")
+  truthy(passengerOk, passengerResult)
+  equal(passengerResult.vehicles["vehicle:batch:a"], nil)
+  equal(passengerResult.vehicles["vehicle:batch:b"], nil)
+  truthy(passengerResult.vehicles["vehicle:batch:keep"],
+    "batch sale retired an unselected passenger vehicle")
+
+  local cargoState = cargoPresentation.newState()
+  cargoState.lines["line:batch"] = { discardedTotal = 4 }
+  cargoState.vehicles = {
+    ["vehicle:batch:a"] = { lineCid = "line:batch", aboard = 3 },
+    ["vehicle:batch:b"] = { lineCid = "line:batch", aboard = 5 },
+    ["vehicle:batch:keep"] = { lineCid = "line:batch", aboard = 7 },
+  }
+  local cargoOk, cargoResult = cargoPresentation.onOperation(
+    cargoState, economy.newState(), transaction, "company:1")
+  truthy(cargoOk, cargoResult)
+  equal(cargoResult.vehicles["vehicle:batch:a"], nil)
+  equal(cargoResult.vehicles["vehicle:batch:b"], nil)
+  truthy(cargoResult.vehicles["vehicle:batch:keep"],
+    "batch sale retired an unselected cargo vehicle")
+  equal(cargoResult.lines["line:batch"].discardedTotal, 12,
+    "batch sale did not account every retired onboard cargo unit")
 end)
 
 test("passenger presentation aligns pre-ledger saves but rejects real-state drift", function()

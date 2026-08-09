@@ -139,14 +139,26 @@ function Test-Tpf2mpReleaseManifest {
     if ([string]$manifest.version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') {
         throw 'Release manifest contains an unsafe version.'
     }
-    foreach ($field in @(
+    $schemaFields = @(
             'modMinorVersion', 'stateSchemaVersion', 'checkpointSchemaVersion',
             'proposalSchemaVersion', 'passengerPresentationSchemaVersion',
             'cargoPresentationSchemaVersion', 'deliverySchemaVersion',
-            'freightIndustrySchemaVersion')) {
+            'freightIndustrySchemaVersion')
+    foreach ($field in $schemaFields) {
         $parsed = 0
         if (-not [int]::TryParse([string]$manifest.$field, [ref]$parsed) -or $parsed -lt 1) {
             throw "Release manifest field $field is missing or invalid."
+        }
+    }
+    # This field was added after format 2 shipped. New packages always write
+    # it, but its absence must not invalidate already published format-2
+    # archives. If present in any format, it remains strictly positive.
+    $operationProperty = $manifest.PSObject.Properties['operationSchemaVersion']
+    if ($null -ne $operationProperty) {
+        $parsedOperation = 0
+        if (-not [int]::TryParse([string]$operationProperty.Value, [ref]$parsedOperation) `
+                -or $parsedOperation -lt 1) {
+            throw 'Release manifest field operationSchemaVersion is invalid.'
         }
     }
     if ([string]$manifest.companionVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {

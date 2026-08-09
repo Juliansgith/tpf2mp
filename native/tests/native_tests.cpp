@@ -286,7 +286,7 @@ int main(int argc, char** argv) {
   std::memcpy(sale_command.data() + tpf2mp::profile::kSellVehicleTargetsOffset,
               &sale_layout, sizeof(sale_layout));
   if (!vehicle_codec_matches(12, sale_command.data(), expected_vehicle, 1, 0,
-                             "V2|12|71|1|0")) {
+                             "V3|12|1|71")) {
     std::cerr << "single SellVehicle vector codec is invalid\n";
     return 1;
   }
@@ -299,7 +299,7 @@ int main(int argc, char** argv) {
   std::memcpy(sale_command.data() + tpf2mp::profile::kSellVehicleTargetsOffset,
               &sale_layout, sizeof(sale_layout));
   if (!vehicle_codec_matches(12, sale_command.data(), expected_vehicle, 2, 0,
-                             "V2|12|71|2|0")) {
+                             "V3|12|2|71,72")) {
     std::cerr << "multi SellVehicle vector metadata codec is invalid\n";
     return 1;
   }
@@ -307,6 +307,12 @@ int main(int argc, char** argv) {
   if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
           12, sale_command.data(), invalid_vehicle)) {
     std::cerr << "SellVehicle codec admitted a negative entity in its vector\n";
+    return 1;
+  }
+  sale_batch[1] = expected_vehicle;
+  if (tpf2mp::native_command::DecodeSuppressedVehicleCommand(
+          12, sale_command.data(), invalid_vehicle)) {
+    std::cerr << "SellVehicle codec admitted a duplicate entity in its vector\n";
     return 1;
   }
   sale_layout.end = sale_layout.begin;

@@ -1258,7 +1258,7 @@ try {
                 throw "Native status is missing for PID $($gameProcess.Id)"
             }
             $native = Get-Content -LiteralPath $nativePath -Raw | ConvertFrom-Json
-            if ($native.hookVersion -ne '0.14.0' `
+            if ($native.hookVersion -ne '0.15.0' `
                 -or $native.active -ne $true -or $native.hooks.enabled -ne $true `
                 -or $native.gates.buildProposal.enabled -ne $true `
                 -or $native.gates.commandVisitors.enabled -ne $true `

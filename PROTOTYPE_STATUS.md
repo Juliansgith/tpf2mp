@@ -1,9 +1,9 @@
 # TPF2MP prototype status
 
 Last updated: 2026-08-09 for prototype `0.37.0-alpha`, state schema `29`,
-checkpoint format `5`, passenger-presentation schema `2`, cargo-presentation
-schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction
-proposal schema `7`, and native hook `0.14.0`.
+checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`,
+cargo-presentation schema `1`, freight-industry schema `2`, edge proposal
+schema `5`, construction proposal schema `7`, and native hook `0.15.0`.
 
 ## Executive status
 
@@ -346,7 +346,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   also pass ordinary-UI two-process capture and checkpoint consensus.
 - Canonical line and portable vehicle operation codecs with strict validation,
   peer/company authorization, materialization, result validation, finance
-  routing, physical consensus, and checkpoint sequencing. Hook 0.14 decodes the
+  routing, physical consensus, and checkpoint sequencing. Hook 0.15 decodes the
   exact Build 35924 CreateLine/DeleteLine/UpdateLine native payloads after the
   ordinary command is suppressed, including the full ordered station-group,
   station, and terminal tuple. Vanilla zero-stop creation and one-stop editor
@@ -356,7 +356,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   matching physical results, and checkpoints. Follow-up stock-widget sessions
   prove New Line, rename, color, Delete Line, Add Station, and per-stop removal
   visually on two independent processes. Reorder and alternate-terminal visual
-  proof remain. Hook 0.14 also captures BuyVehicle's pinned native
+  proof remain. Hook 0.15 also captures BuyVehicle's pinned native
   player/depot scalars and correlates them with the stock GUI's ordered,
   carrier-neutral `vehicle/*.mdl` list; bounded capture fails closed instead
   of truncating oversized or deeply nested payloads. SetLine carries canonical
@@ -367,12 +367,17 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   canonical train and observed it moving in both worlds. Its small phase lead,
   amplified by a one-sided Escape pause, is the direct motivation for the new
   station barrier. Reverse, start/stop, maintenance, immediate departure,
-  send-to-depot/sell-on-arrival, direct single sale, replacement, and manual-departure stock
-  adapters now pass exact-layout and integration tests but remain live-unproven.
+  send-to-depot/sell-on-arrival, direct and bounded multi-selection sale,
+  replacement, and manual-departure stock adapters now pass exact-layout and
+  integration tests but remain live-unproven. Operation schema 4 represents a
+  2-256 vehicle selection as one sorted canonical transaction. Every target is
+  company/access preflighted before deterministic scalar native replay; the
+  aggregate result verifies every deletion before one finance, physical-
+  consensus, and checkpoint boundary. A native failure after an earlier scalar
+  deletion faults closed because the public API has no physical rollback.
   Replacement also refreshes canonical consist metadata and schedules an
   owning-peer line registration, so new speed/capacity/upkeep facts cannot stay
   hidden behind the old service record.
-  Stock multi-vehicle sale remains deliberately fail-closed.
 - Later commits remain blocked until both peers agree on physical output and
   then on core/model/canonical-structure/canonical-finance checkpoint state.
 - Canonical accounts are authoritative. Native wallets are reconciled
@@ -382,7 +387,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   rejected, mismatched, or timed-out result after build commit faults the
   session closed.
 - Pause and speeds 1-4 are host-ordered through native tag-0 authorization on
-  both peers. Hook 0.14 captures suppressed normal controls as `clock.request`.
+  both peers. Hook 0.15 captures suppressed normal controls as `clock.request`.
   A running request now becomes a future-time `clock.rendezvous`; the host
   projects staggered heartbeats to one instant, both peers pause at the target,
   and bounded overshoot receives a speed-1 catch-up round before release.
@@ -413,7 +418,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Native authority layer
 
-- Hook `0.14.0` accepts only the exact Build 35924 executable SHA-256 and PE
+- Hook `0.15.0` accepts only the exact Build 35924 executable SHA-256 and PE
   profile.
 - It validates 17 unique code signatures/RVAs and 23 selected entries in the
   complete 37-tag command visitor table before enabling hooks.
@@ -433,11 +438,14 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   sentinel; read/decode loss, GUI dispatch failure, authority/finance rejection,
   FIFO overflow, and bridge failure now retry or fault the session instead of
   continuing with a one-sided mutation.
-- The pinned tags 6-14 and 30 supply a separate pre-mutation `V2`
-  vehicle queue. SetLine carries vehicle/line/stop index. Reverse, start/stop,
+- The pinned tags 6-14 and 30 supply a separate pre-mutation vehicle queue.
+  Scalar commands use `V2`; tag 12 uses `V3` to retain the complete bounded,
+  duplicate-free SellVehicle selection.
+  SetLine carries vehicle/line/stop index. Reverse, start/stop,
   maintenance, immediate departure, send-to-depot, and manual departure carry
-  only bounded scalars. SellVehicle carries its first target and bounded native
-  selection count; only a single selection is admitted. BuyVehicle carries native player/depot; ReplaceVehicle
+  only bounded scalars. SellVehicle carries every selected target; Lua maps one
+  target to the legacy sale and 2-256 targets to one schema-4 batch. BuyVehicle
+  carries native player/depot; ReplaceVehicle
   carries the target. Both are FIFO-correlated with the stock GUI's bounded
   consist. Native config pointers and repository IDs never cross the boundary.
   V1 remains decode-only compatibility for tags 6 and 13. Queue overflow or
@@ -543,7 +551,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v7 behavior remains available for
-  archived replay. The offline gate now includes 122 Lua tests and 108
+  archived replay. The offline gate now includes 123 Lua tests and 108
   cross-language v2-v8 scenarios, including feeder access, completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
