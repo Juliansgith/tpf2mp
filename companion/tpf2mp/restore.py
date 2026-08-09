@@ -38,7 +38,30 @@ from .protocol import (
     PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_action, verify,
 )
 
-RESTORE_PLAN_VERSION = 2
+RESTORE_PLAN_VERSION = 3
+LEGACY_RESTORE_PLAN_VERSION = 2
+MATCH_PROFILE_AGENT_MODES = {"skeleton", "vanilla", "empty"}
+
+
+def _validate_match_profile(value: Mapping[str, Any]) -> dict[str, Any]:
+    if not isinstance(value, Mapping) or set(value) != {
+        "schemaVersion", "agentMode", "townDevelopment",
+    }:
+        raise ProtocolError("restore plan match-content profile is malformed")
+    profile_version = value.get("schemaVersion")
+    if not isinstance(profile_version, int) or isinstance(profile_version, bool) \
+            or profile_version != 1:
+        raise ProtocolError("restore plan match-content profile version is invalid")
+    agent_mode = value.get("agentMode")
+    if agent_mode not in MATCH_PROFILE_AGENT_MODES:
+        raise ProtocolError("restore plan match-content agent mode is invalid")
+    if not isinstance(value.get("townDevelopment"), bool):
+        raise ProtocolError("restore plan match-content town-development flag is invalid")
+    return {
+        "schemaVersion": 1,
+        "agentMode": agent_mode,
+        "townDevelopment": value["townDevelopment"],
+    }
 
 
 def _messages(audit_path: Path, session: str | None) -> list[dict[str, Any]]:
@@ -218,6 +241,7 @@ def build_restore_plan(
     session: str | None = None,
     boundary_seq: int | None = None,
     required_peers: tuple[str, ...] | None = None,
+    match_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Signed instruction for returning both peers to one agreed boundary."""
 
@@ -239,9 +263,11 @@ def build_restore_plan(
             )
 
     boundary = int(point["boundarySeq"])
+    plan_version = RESTORE_PLAN_VERSION if match_profile is not None \
+        else LEGACY_RESTORE_PLAN_VERSION
     plan = {
         "format": "tpf2mp-restore-plan",
-        "version": RESTORE_PLAN_VERSION,
+        "version": plan_version,
         "protocol": PROTOCOL_VERSION,
         "session": analysis["session"],
         "resumeSession": f"{analysis['session']}-r{boundary}",
@@ -268,12 +294,17 @@ def build_restore_plan(
             "Refuse to continue if any save hash or the first checkpoint digest differs.",
         ],
     }
+    if match_profile is not None:
+        plan["matchContentProfile"] = _validate_match_profile(match_profile)
     return sign(plan)
 
 
 def verify_restore_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     plan = verify(value)
-    if plan.get("format") != "tpf2mp-restore-plan" or plan.get("version") != RESTORE_PLAN_VERSION:
+    version = plan.get("version")
+    if not isinstance(version, int) or isinstance(version, bool) \
+            or plan.get("format") != "tpf2mp-restore-plan" \
+            or version not in {LEGACY_RESTORE_PLAN_VERSION, RESTORE_PLAN_VERSION}:
         raise ProtocolError("unsupported restore plan format")
     if int(plan.get("protocol", -1)) != PROTOCOL_VERSION:
         raise ProtocolError("restore plan protocol mismatch")
@@ -282,8 +313,14 @@ def verify_restore_plan(value: Mapping[str, Any]) -> dict[str, Any]:
         "generatedAtUtc", "boundarySeq", "convergenceKey", "coreDigest",
         "requiredPeers", "peerSaves", "steps", "checksum",
     }
+    if version == RESTORE_PLAN_VERSION:
+        allowed.add("matchContentProfile")
     if set(plan) != allowed:
         raise ProtocolError("restore plan has unknown or missing fields")
+    if version == RESTORE_PLAN_VERSION:
+        plan["matchContentProfile"] = _validate_match_profile(
+            plan.get("matchContentProfile")
+        )
     session = plan.get("session")
     boundary = plan.get("boundarySeq")
     if not isinstance(session, str) or not session or len(session) > 160:
@@ -391,8 +428,11 @@ def write_restore_plan(
     output_path: Path | str,
     session: str | None = None,
     boundary_seq: int | None = None,
+    match_profile: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    plan = build_restore_plan(audit_path, session, boundary_seq)
+    plan = build_restore_plan(
+        audit_path, session, boundary_seq, match_profile=match_profile,
+    )
     output = Path(output_path).expanduser().resolve()
     atomic_write(output, (canonical_json(plan) + "\n").encode("utf-8"))
     return plan

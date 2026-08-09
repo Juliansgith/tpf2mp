@@ -98,7 +98,7 @@ $hostBox = Add-LauncherTextBox 490 39 190 '127.0.0.1'
 Add-LauncherLabel 'TCP port' 690 16 80 | Out-Null
 $portBox = Add-LauncherTextBox 690 39 92 '29742'
 
-Add-LauncherLabel 'Identical starting save (required for Host / Join)' 18 84 370 | Out-Null
+$saveLabel = Add-LauncherLabel 'Identical starting save (required for Host / Join)' 18 84 500
 $saveBox = Add-LauncherTextBox 18 107 660 ''
 $browseButton = New-Object Windows.Forms.Button
 $browseButton.Text = 'Browse...'
@@ -187,17 +187,24 @@ Style-LauncherButton $operationalButton
 $form.Controls.Add($operationalButton)
 
 $archiveButton = New-Object Windows.Forms.Button
-$archiveButton.Text = 'ARCHIVE CURRENT RECOVERY SAVE'
+$archiveButton.Text = 'ARCHIVE RECOVERY SAVE'
 $archiveButton.Location = New-Object Drawing.Point(24, 464)
-$archiveButton.Size = New-Object Drawing.Size(325, 34)
+$archiveButton.Size = New-Object Drawing.Size(210, 34)
 Style-LauncherButton $archiveButton
 $form.Controls.Add($archiveButton)
 
+$restoreButton = New-Object Windows.Forms.Button
+$restoreButton.Text = 'SELECT RESTORE PLAN...'
+$restoreButton.Location = New-Object Drawing.Point(244, 464)
+$restoreButton.Size = New-Object Drawing.Size(210, 34)
+Style-LauncherButton $restoreButton
+$form.Controls.Add($restoreButton)
+
 $recoveryHint = New-Object Windows.Forms.Label
-$recoveryHint.Text = 'Use after a native save/autosave. The complete triplet is hashed and linked to the latest agreed checkpoint when available.'
+$recoveryHint.Text = 'Archive a current save, or select a verified restore plan and then this peer''s attested save.'
 $recoveryHint.ForeColor = $muted
-$recoveryHint.Location = New-Object Drawing.Point(363, 466)
-$recoveryHint.Size = New-Object Drawing.Size(463, 34)
+$recoveryHint.Location = New-Object Drawing.Point(468, 466)
+$recoveryHint.Size = New-Object Drawing.Size(358, 34)
 $form.Controls.Add($recoveryHint)
 
 $statusLabel = New-Object Windows.Forms.Label
@@ -227,12 +234,50 @@ $script:workerStderr = $null
 $script:workerStdoutLength = 0
 $script:workerStderrLength = 0
 $script:lastPeer = 'player1'
+$script:restorePlanPath = $null
+$script:restorePlanData = $null
 
 function Append-LauncherLog([string]$Text) {
     if (-not $Text) { return }
     $logBox.AppendText(($Text.TrimEnd() + "`r`n"))
     $logBox.SelectionStart = $logBox.TextLength
     $logBox.ScrollToCaret()
+}
+
+function Clear-RestorePlanSelection([bool]$ClearSave = $true) {
+    $script:restorePlanPath = $null
+    $script:restorePlanData = $null
+    $sessionBox.ReadOnly = $false
+    $saveLabel.Text = 'Identical starting save (required for Host / Join)'
+    if ($ClearSave) { $saveBox.Text = '' }
+    $recoveryHint.Text = 'Archive a current save, or select a verified restore plan and then this peer''s attested save.'
+}
+
+function Set-VerifiedRestorePlan([string]$Path) {
+    $resolved = Resolve-Tpf2mpFullPath $Path
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Restore plan does not exist: $resolved"
+    }
+    $companion = Get-Tpf2mpCompanionCommand $bundle
+    $output = @(& $companion.FilePath @($companion.Prefix + @(
+        'verify-restore-plan', $resolved, '--metadata-only'
+    )) 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Restore plan signature/structure verification failed: $($output -join ' ')"
+    }
+    $plan = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
+    $resumeSession = Assert-Tpf2mpSessionId ([string]$plan.resumeSession)
+    $script:restorePlanPath = $resolved
+    $script:restorePlanData = $plan
+    $sessionBox.Text = $resumeSession
+    $sessionBox.ReadOnly = $true
+    $saveBox.Text = ''
+    $saveLabel.Text = 'This peer''s attested restore save (Host=player1 / Join=player2)'
+    $policy = if ([int]$plan.version -ge 3) {
+        "$($plan.matchContentProfile.agentMode), town growth $($plan.matchContentProfile.townDevelopment)"
+    } else { 'legacy v2: policy is not plan-bound' }
+    $recoveryHint.Text = "Restore boundary $($plan.boundarySeq); $policy. Select this peer's .sav."
+    Append-LauncherLog "Verified restore plan $resolved -> $resumeSession (boundary $($plan.boundarySeq), $policy)."
 }
 
 function Flush-LauncherWorkerLogs {
@@ -285,6 +330,7 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
     $manualLabCheck.Enabled = $false
     $evidenceButton.Enabled = $false
     $archiveButton.Enabled = $false
+    $restoreButton.Enabled = $false
     $statusLabel.Text = "$Name running..."
     Append-LauncherLog "Started $Name (PID $($script:worker.Id))."
 }
@@ -298,17 +344,35 @@ function Get-ValidatedInputs([bool]$RequireSave = $false) {
     $save = $saveBox.Text.Trim()
     if ($save -and -not (Test-Path -LiteralPath $save -PathType Leaf)) { throw "Starting save does not exist: $save" }
     if ($RequireSave -and -not $save) {
+        if ($script:restorePlanPath) {
+            throw 'Select this peer''s attested restore .sav first (Host=player1, Join=player2).'
+        }
         throw 'Select the identical starting .sav first. Both players must use byte-identical save triplets.'
     }
     return [pscustomobject]@{ Session = $session; Port = $port; Save = $save }
 }
 
-$newSessionButton.Add_Click({ $sessionBox.Text = 'match-' + (Get-Date -Format 'yyyyMMdd-HHmmss') })
+$newSessionButton.Add_Click({
+    Clear-RestorePlanSelection
+    $sessionBox.Text = 'match-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+})
 $browseButton.Add_Click({
     $dialog = New-Object Windows.Forms.OpenFileDialog
-    $dialog.Title = 'Select the identical TPF2 starting save'
+    $dialog.Title = if ($script:restorePlanPath) {
+        'Select this peer''s attested TPF2 restore save'
+    } else { 'Select the identical TPF2 starting save' }
     $dialog.Filter = 'Transport Fever 2 saves (*.sav)|*.sav|All files (*.*)|*.*'
     if ($dialog.ShowDialog() -eq 'OK') { $saveBox.Text = $dialog.FileName }
+})
+
+$restoreButton.Add_Click({
+    try {
+        $dialog = New-Object Windows.Forms.OpenFileDialog
+        $dialog.Title = 'Select a signed TPF2MP restore plan'
+        $dialog.Filter = 'TPF2MP restore plans (*.json)|*.json|All files (*.*)|*.*'
+        if ($dialog.ShowDialog() -eq 'OK') { Set-VerifiedRestorePlan $dialog.FileName }
+    }
+    catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot select restore plan') | Out-Null }
 })
 
 $hostButton.Add_Click({
@@ -318,6 +382,7 @@ $hostButton.Add_Click({
         $args = @('-Role', 'Host', '-Session', $input.Session, '-Port', $input.Port,
             '-BindAddress', '0.0.0.0', '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
+        if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
         Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session.ps1') $args 'host-launch'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot host') | Out-Null }
@@ -332,6 +397,7 @@ $joinButton.Add_Click({
         $args = @('-Role', 'Join', '-Session', $input.Session, '-HostAddress', $hostAddress,
             '-Port', $input.Port, '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
+        if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
         Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session.ps1') $args 'join-launch'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot join') | Out-Null }
@@ -339,6 +405,7 @@ $joinButton.Add_Click({
 
 $localhostButton.Add_Click({
     try {
+        if ($script:restorePlanPath) { throw 'Restore mode supports Host / Join only. Click New name to leave restore mode.' }
         $input = Get-ValidatedInputs
         if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'run_localhost_live_validation.ps1'))) {
             throw 'The automated two-instance harness is included only in the development laboratory build.'
@@ -364,6 +431,7 @@ $localhostButton.Add_Click({
 
 $operationalButton.Add_Click({
     try {
+        if ($script:restorePlanPath) { throw 'Restore mode supports Host / Join only. Click New name to leave restore mode.' }
         $input = Get-ValidatedInputs
         $scriptPath = Join-Path $PSScriptRoot 'start_operational_capture_lab.ps1'
         if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
@@ -476,6 +544,7 @@ $timer.Add_Tick({
             $manualLabCheck.Enabled = $true
             $evidenceButton.Enabled = $true
             $archiveButton.Enabled = $true
+            $restoreButton.Enabled = $true
         }
     }
     try {

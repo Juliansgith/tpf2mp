@@ -634,7 +634,9 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   convergence key. Formats 1/2/3/4 remain readable, and digest-chained events
   can be independently replayed in Python. Four-event and deterministic
   randomized 1,024-event cross-language traces pass.
-- Recovery plans identify and hash the latest all-peer agreed boundary.
+- Recovery plans identify and hash the latest all-peer agreed boundary. New
+  version-3 plans also bind the exact source match-content profile; version-2
+  plans remain readable but are explicitly policy-unbound.
 - **Prepare & Save Restore Point** orders shared pause, quiescence, and checkpoint
   convergence. Only while the companion and local runtime expose the same READY
   boundary and core does each game issue Build 35924's native `SaveGame` command
@@ -656,12 +658,15 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   restore authority by itself. Distinct ordered receipts remain mandatory. The
   runtime and watcher's exact-name READY-poll
   race are offline-proven; the two-live-process capture is not yet proved.
-  Automatic coordinated rollback/relaunch remains open.
+  The launcher can verify/select a restore plan, locks its resume session, and
+  passes each peer's selected attested save through hash verification. Startup
+  adopts a v3 plan's agent/town-development policy and rejects explicit
+  conflicts. Automatic no-dialog rollback/relaunch and live proof remain open.
 - Normal Host/Join now installs a real `MULTIPLAYER` title-screen entry. The
   game remains idle until the player selects it; selection is receipted, then
   the byte-pinned save is loaded and the session proceeds. Disposable production
   session `menu-production3-20260803` proved that entire path.
-- The launcher provides Host, Join, automated Localhost Test, local-only
+- The launcher provides Host, Join, verified restore selection, automated Localhost Test, local-only
   Populated Capture Lab, fingerprints, status/logs, evidence collection, and
   exact-session stop controls.
 - `start_freight_live_acceptance.ps1` now starts a clean 50M-per-company manual

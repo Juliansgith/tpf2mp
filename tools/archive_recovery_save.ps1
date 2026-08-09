@@ -44,7 +44,17 @@ elseif ($state -and $state.bridgePath) {
     if (Test-Path -LiteralPath $audit -PathType Leaf) {
         $candidatePlan = Join-Path $recoveryRoot "restore-plan-$stamp.json"
         try {
-            Invoke-RecoveryCompanion -Arguments @('restore-plan', $audit, '--session', $safeSession, '--output', $candidatePlan)
+            $planArguments = @('restore-plan', $audit, '--session', $safeSession)
+            if ($state.PSObject.Properties['matchContentProfile'] -and $state.matchContentProfile `
+                -and (Test-Path -LiteralPath ([string]$state.matchContentProfile) -PathType Leaf)) {
+                $planArguments += @('--match-profile', [string]$state.matchContentProfile)
+            }
+            else {
+                Write-Warning 'Session has no readable match-content profile; generated restore plan will use legacy v2 policy semantics.'
+                $planArguments += '--allow-legacy-unbound'
+            }
+            $planArguments += @('--output', $candidatePlan)
+            Invoke-RecoveryCompanion -Arguments $planArguments
             $resolvedPlan = $candidatePlan
         }
         catch {

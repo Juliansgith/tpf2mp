@@ -105,6 +105,15 @@ def parser() -> argparse.ArgumentParser:
     restore.add_argument("audit", type=Path)
     restore.add_argument("--session")
     restore.add_argument("--boundary", type=int)
+    restore_policy = restore.add_mutually_exclusive_group(required=True)
+    restore_policy.add_argument(
+        "--match-profile", type=Path,
+        help="bind the exact match-content profile used by the source session",
+    )
+    restore_policy.add_argument(
+        "--allow-legacy-unbound", action="store_true",
+        help="explicitly generate a policy-unbound v2 plan for an old session",
+    )
     restore.add_argument("--output", type=Path, required=True)
 
     verify_restore = commands.add_parser(
@@ -114,6 +123,10 @@ def parser() -> argparse.ArgumentParser:
     verify_restore.add_argument(
         "--save", action="append", default=[], metavar="PEER=PATH",
         help="peer save to verify; repeat once for every required peer",
+    )
+    verify_restore.add_argument(
+        "--metadata-only", action="store_true",
+        help="verify the signed plan without claiming its save files are present",
     )
     verify_restore_save = commands.add_parser(
         "verify-restore-save", help="verify this peer's save against a receipt-bound plan"
@@ -210,13 +223,27 @@ def main(argv: list[str] | None = None) -> int:
             print(f"checkpoint_boundary={plan['anchor']['boundarySeq']}")
             print(f"convergence_key={plan['anchor']['convergenceKey']}")
         elif args.command == "restore-plan":
-            plan = write_restore_plan(args.audit, args.output, args.session, args.boundary)
+            match_profile = json.loads(
+                args.match_profile.read_text(encoding="utf-8-sig")
+            ) if args.match_profile else None
+            plan = write_restore_plan(
+                args.audit, args.output, args.session, args.boundary, match_profile,
+            )
             print(f"restore_plan={args.output.resolve()}")
+            print(f"restore_plan_version={plan['version']}")
             print(f"resume_session={plan['resumeSession']}")
             print(f"checkpoint_boundary={plan['boundarySeq']}")
             print(f"convergence_key={plan['convergenceKey']}")
         elif args.command == "verify-restore-plan":
             plan = verify_restore_plan(json.loads(args.plan.read_text(encoding="utf-8-sig")))
+            if args.metadata_only:
+                if args.save:
+                    raise ProtocolError("--metadata-only cannot be combined with --save")
+                print(f"restore_plan_valid={args.plan.resolve()}")
+                print(f"restore_plan_version={plan['version']}")
+                print(f"resume_session={plan['resumeSession']}")
+                print(f"checkpoint_boundary={plan['boundarySeq']}")
+                return 0
             peer_saves: dict[str, Path] = {}
             for item in args.save:
                 peer, separator, value = item.partition("=")

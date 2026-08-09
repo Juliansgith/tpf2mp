@@ -21,6 +21,9 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
 
+$agentModeExplicit = $PSBoundParameters.ContainsKey('AgentMode')
+$townDevelopmentExplicit = $PSBoundParameters.ContainsKey('TownDevelopment')
+$townDevelopmentEnabled = $TownDevelopment.IsPresent
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 $restorePlanPath = $null
@@ -132,6 +135,14 @@ if ($StartingSave) {
         if ($LASTEXITCODE -ne 0) {
             throw "Restore save verification failed with exit code $LASTEXITCODE"
         }
+        $resolvedProfile = Resolve-Tpf2mpRestoreMatchProfile -RestorePlan $restorePlanData `
+            -AgentMode $AgentMode -TownDevelopment $townDevelopmentEnabled `
+            -AgentModeExplicit $agentModeExplicit -TownDevelopmentExplicit $townDevelopmentExplicit
+        $AgentMode = $resolvedProfile.agentMode
+        $townDevelopmentEnabled = $resolvedProfile.townDevelopment
+        if ($resolvedProfile.legacyUnbound) {
+            Write-Warning 'Legacy restore plan v2 does not bind agent/town policy; retaining explicit launcher policy.'
+        }
     }
     $pinnedSave = Copy-Tpf2mpPinnedStartingSave $startingSaveOriginal (Join-Path $sessionRoot 'starting-save')
     $StartingSave = $pinnedSave.savePath
@@ -149,7 +160,7 @@ if (-not $ManifestPath) { $ManifestPath = Join-Path $sessionRoot 'match-manifest
 $manifest = Resolve-Tpf2mpFullPath $ManifestPath
 $matchContentProfile = Write-Tpf2mpMatchContentProfile `
     -Path (Join-Path $sessionRoot 'match-content-profile.json') `
-    -AgentMode $AgentMode -TownDevelopment $TownDevelopment.IsPresent
+    -AgentMode $AgentMode -TownDevelopment $townDevelopmentEnabled
 $fingerprintArgs = @(
     'fingerprint', '--game-exe', $game, '--mod-dir', $installedMod,
     '--companion-dir', $companionSource, '--extra', $native.Root,
@@ -163,7 +174,7 @@ if ($LASTEXITCODE -ne 0) { throw "Match fingerprint generation failed with exit 
 $fingerprint = [string](Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).fingerprint
 
 $launcherConfig = Write-Tpf2mpLauncherConfig -Session $safeSession -Peer $peer -BridgePath $bridge `
-    -AgentMode $AgentMode -TownDevelopment $TownDevelopment.IsPresent
+    -AgentMode $AgentMode -TownDevelopment $townDevelopmentEnabled
 $stdout = Join-Path $sessionRoot 'companion.stdout.log'
 $stderr = Join-Path $sessionRoot 'companion.stderr.log'
 $companionArgs = if ($Role -eq 'Host') {
@@ -197,7 +208,7 @@ $state = [ordered]@{
     manifestPath = $manifest
     matchContentProfile = $matchContentProfile
     agentMode = $AgentMode
-    townDevelopment = $TownDevelopment.IsPresent
+    townDevelopment = $townDevelopmentEnabled
     restorePlan = $restorePlanPath
     restoreBoundarySeq = if ($restorePlanData) { $restorePlanData.boundarySeq } else { $null }
     startingCompanyPlayerIds = $startingCompanyPlayerIds

@@ -121,6 +121,43 @@ function Write-Tpf2mpMatchContentProfile {
     return $resolved
 }
 
+function Resolve-Tpf2mpRestoreMatchProfile {
+    param(
+        [Parameter(Mandatory = $true)][object]$RestorePlan,
+        [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
+        [bool]$TownDevelopment = $false,
+        [bool]$AgentModeExplicit = $false,
+        [bool]$TownDevelopmentExplicit = $false
+    )
+    $version = [int]$RestorePlan.version
+    if ($version -lt 3) {
+        return [pscustomobject]@{
+            agentMode = $AgentMode
+            townDevelopment = $TownDevelopment
+            legacyUnbound = $true
+        }
+    }
+    if (-not $RestorePlan.PSObject.Properties['matchContentProfile']) {
+        throw 'Verified restore plan v3 omitted its match-content profile.'
+    }
+    $profile = $RestorePlan.matchContentProfile
+    if ([int]$profile.schemaVersion -ne 1 -or $profile.agentMode -notin @('skeleton', 'vanilla', 'empty') `
+        -or $profile.townDevelopment -isnot [bool]) {
+        throw 'Verified restore plan carries an invalid match-content profile.'
+    }
+    if ($AgentModeExplicit -and $AgentMode -ne [string]$profile.agentMode) {
+        throw "AgentMode conflicts with signed restore plan policy '$($profile.agentMode)'."
+    }
+    if ($TownDevelopmentExplicit -and $TownDevelopment -ne [bool]$profile.townDevelopment) {
+        throw "TownDevelopment conflicts with signed restore plan policy '$($profile.townDevelopment)'."
+    }
+    return [pscustomobject]@{
+        agentMode = [string]$profile.agentMode
+        townDevelopment = [bool]$profile.townDevelopment
+        legacyUnbound = $false
+    }
+}
+
 function Read-Tpf2mpSessionState {
     param(
         [Parameter(Mandatory = $true)][string]$Session,

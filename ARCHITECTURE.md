@@ -294,13 +294,14 @@ captured table reference would therefore mutate stale state after loading.
   Clock skew may drive authority only when all fresh health samples describe
   the same current clock generation; mixed-generation projection is diagnostic.
 - `bridge.py`, `checkpoint.py`, `restore.py`, and `recovery.py` own durable local
-  transport, independent replay, all-peer restore plans, and native-save
-  archives respectively. `audit_replay.py` owns whole-audit ordering, physical
+  transport, independent replay, versioned all-peer restore plans (including
+  v3 match-profile binding), and native-save archives respectively. `audit_replay.py` owns whole-audit ordering, physical
   consensus, checkpoint, and digest-chain verification; `cli.py` is only the
   command dispatcher.
 - The long-running `watch_recovery_saves.ps1` process waits for the stable
   automatically named native save (or a correctly prefixed manual fallback),
-  hands its hash to the ordered receipt path, and also owns a strictly local
+  hands its hash to the ordered receipt path, passes the session's exact
+  match-content profile into host plan generation, and also owns a strictly local
   one-shot first-fault trigger. `collect_live_evidence.ps1` owns immutable
   bridge copying, copied-audit replay, bounded session-log tails, native status,
   and source/install fingerprints; neither tool mutates authority or performs

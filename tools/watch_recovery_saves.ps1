@@ -41,6 +41,7 @@ $companionStatusPath = Join-Path $bridge 'companion_state\companion_status.json'
 $requestRoot = Join-Path $bridge 'companion_state\anchor_requests'
 $resultRoot = Join-Path $bridge 'companion_state\anchor_results'
 $auditPath = Join-Path $bridge "audit\$safeSession.ndjson"
+$matchProfilePath = Join-Path $sessionRoot 'match-content-profile.json'
 $companion = Get-Tpf2mpCompanionCommand $bundle
 $deadline = (Get-Date).AddHours($LifetimeHours)
 $expectedSavePrefix = "tpf2mp_${safeSession}_${Peer}"
@@ -221,6 +222,9 @@ function Submit-AnchorRequest([object]$CompanionStatus, [IO.FileInfo]$Save) {
 function New-VerifiedRestorePlan([int]$Boundary) {
     if ($Peer -ne 'player1') { throw 'Only the host audit can produce a restore plan.' }
     if (-not (Test-Path -LiteralPath $auditPath -PathType Leaf)) { throw 'Host audit is not available yet.' }
+    if (-not (Test-Path -LiteralPath $matchProfilePath -PathType Leaf)) {
+        throw 'Match-content profile is missing; refusing to create an under-bound restore plan.'
+    }
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss-fff')
     $planPath = Join-Path $recoveryRoot "auto-restore-plan-$Boundary-$stamp.json"
     $previousPythonPath = $env:PYTHONPATH
@@ -228,7 +232,8 @@ function New-VerifiedRestorePlan([int]$Boundary) {
     try {
         $arguments = @(
             'restore-plan', $auditPath, '--session', $safeSession,
-            '--boundary', [string]$Boundary, '--output', $planPath
+            '--boundary', [string]$Boundary, '--match-profile', $matchProfilePath,
+            '--output', $planPath
         )
         $output = @(& $companion.FilePath @($companion.Prefix + $arguments) 2>&1)
         foreach ($line in $output) { Write-Host $line }

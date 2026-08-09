@@ -43,7 +43,7 @@ from tpf2mp.freight import (
 from tpf2mp.freight_live_report import analyse_freight_audit
 from tpf2mp.aboard_witness import verify_aboard_witness
 from tpf2mp.passenger_feeder_live_report import analyse_passenger_feeder_audit
-from tpf2mp.cli import replay
+from tpf2mp.cli import main as companion_main, replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
 from tpf2mp.industry_content import (
     IndustryContentCoordinator,
@@ -4010,6 +4010,8 @@ class RestorePointTests(unittest.TestCase):
 
             plan = build_restore_plan(audit, self.SESSION, required_peers=("player1", "player2"))
             verified = verify_restore_plan(plan)
+            self.assertEqual(verified["version"], 2)
+            self.assertNotIn("matchContentProfile", verified)
             self.assertEqual(verified["boundarySeq"], 4)
             self.assertEqual(verified["resumeSession"], f"{self.SESSION}-r4")
             self.assertEqual(verified["peerSaves"]["player1"]["saveSha256"], sha1)
@@ -4046,6 +4048,56 @@ class RestorePointTests(unittest.TestCase):
             mixed_boundary = sign(core)
             with self.assertRaisesRegex(ProtocolError, "names a different boundary"):
                 verify_restore_plan(mixed_boundary)
+
+            profile = {
+                "schemaVersion": 1, "agentMode": "skeleton", "townDevelopment": True,
+            }
+            bound = build_restore_plan(
+                audit, self.SESSION, required_peers=("player1", "player2"),
+                match_profile=profile,
+            )
+            bound_verified = verify_restore_plan(bound)
+            self.assertEqual(bound_verified["version"], 3)
+            self.assertEqual(bound_verified["matchContentProfile"], profile)
+
+            profile_path = root / "match-content-profile.json"
+            profile_path.write_text(json.dumps(profile), encoding="utf-8")
+            cli_plan_path = root / "restore-plan-v3.json"
+            self.assertEqual(companion_main([
+                "restore-plan", str(audit), "--session", self.SESSION,
+                "--match-profile", str(profile_path), "--output", str(cli_plan_path),
+            ]), 0)
+            self.assertEqual(companion_main([
+                "verify-restore-plan", str(cli_plan_path), "--metadata-only",
+            ]), 0)
+            self.assertEqual(companion_main([
+                "verify-restore-plan", str(cli_plan_path), "--metadata-only",
+                "--save", f"player1={player1}",
+            ]), 2)
+
+            for bad_profile in (
+                {**profile, "schemaVersion": True},
+                {**profile, "agentMode": "unsupported"},
+                {**profile, "townDevelopment": 1},
+                {**profile, "extra": False},
+            ):
+                bad_core = dict(bound)
+                bad_core.pop("checksum")
+                bad_core["matchContentProfile"] = bad_profile
+                with self.assertRaisesRegex(ProtocolError, "match-content"):
+                    verify_restore_plan(sign(bad_core))
+
+            missing_profile = dict(bound)
+            missing_profile.pop("checksum")
+            missing_profile.pop("matchContentProfile")
+            with self.assertRaisesRegex(ProtocolError, "unknown or missing"):
+                verify_restore_plan(sign(missing_profile))
+
+            float_version = dict(bound)
+            float_version.pop("checksum")
+            float_version["version"] = 3.0
+            with self.assertRaisesRegex(ProtocolError, "unsupported"):
+                verify_restore_plan(sign(float_version))
 
     def test_game_event_copies_of_receipts_do_not_invalidate_the_ordered_receipts(self) -> None:
         first = self._receipt(2, "player1", 4, "a" * 64)

@@ -174,6 +174,43 @@ try {
     }
     Write-Host 'PASS match-content profile binds agent and town-development policy'
 
+    $restoreProfile = Resolve-Tpf2mpRestoreMatchProfile -RestorePlan ([pscustomobject]@{
+        version = 3
+        matchContentProfile = [pscustomobject]@{
+            schemaVersion = 1
+            agentMode = 'vanilla'
+            townDevelopment = $true
+        }
+    })
+    if ($restoreProfile.agentMode -ne 'vanilla' -or -not $restoreProfile.townDevelopment `
+        -or $restoreProfile.legacyUnbound) {
+        throw 'Restore-plan match-content policy was not adopted.'
+    }
+    foreach ($conflict in @(
+        @{ AgentMode = 'empty'; AgentModeExplicit = $true },
+        @{ TownDevelopment = $false; TownDevelopmentExplicit = $true }
+    )) {
+        $refused = $false
+        try {
+            [void](Resolve-Tpf2mpRestoreMatchProfile -RestorePlan ([pscustomobject]@{
+                version = 3
+                matchContentProfile = [pscustomobject]@{
+                    schemaVersion = 1
+                    agentMode = 'vanilla'
+                    townDevelopment = $true
+                }
+            }) @conflict)
+        }
+        catch { $refused = $_.Exception.Message -match 'conflicts with signed restore plan' }
+        if (-not $refused) { throw 'Explicit restore-policy conflict did not fail closed.' }
+    }
+    $legacyProfile = Resolve-Tpf2mpRestoreMatchProfile `
+        -RestorePlan ([pscustomobject]@{ version = 2 }) -AgentMode empty -TownDevelopment $false
+    if (-not $legacyProfile.legacyUnbound -or $legacyProfile.agentMode -ne 'empty') {
+        throw 'Legacy restore-plan policy compatibility failed.'
+    }
+    Write-Host 'PASS signed restore policy adoption, conflict refusal, and v2 compatibility'
+
     . (Join-Path $projectRoot 'tools\native_load_common.ps1')
 
     $identitySaveRoot = Join-Path $temporary 'restore-player-identities'
