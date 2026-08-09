@@ -40,6 +40,7 @@ local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
+local researchReportModule = require "tpf2_mp/research_report"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local authoredFollowupRuntime = require "tpf2_mp/authored_followup_runtime"
 local operationalCaptureRuntimeModule = require "tpf2_mp/operational_capture_runtime"
@@ -247,6 +248,18 @@ end
 balanceOf = function(playerId)
   return accountOf(playerId).balance
 end
+
+local researchReport = researchReportModule.new({
+  getState = function() return state end,
+  nativeHookStatus = nativeHookStatus,
+  authoredDigest = authoredDigest,
+  coreDigest = coreDigest,
+  publicSnapshot = publicSnapshot,
+  accountOf = accountOf,
+  emit = function(report, tick)
+    return bridge.emit(state.bridge, "research", report, tick)
+  end,
+})
 
 local function ensureCompanyStartingCash(target, reason)
   target = math.max(0, util.integer(target, config().startingCash))
@@ -1902,87 +1915,7 @@ handlers["probe.passenger_cosmetics"] = function()
 end
 
 handlers["probe.export_research"] = function()
-  local report = world.researchSnapshot(state.world, state.canonical, state.companies)
-  report.tick = state.tick
-  report.sessionId = state.bridge.sessionId
-  report.peerId = state.bridge.peerId
-  report.networkMode = state.networkMode
-  report.capture = util.deepCopy(state.probes.capture)
-  report.guiCapabilities = util.deepCopy(state.probes.guiCapabilities)
-  report.nativeHook = nativeHookStatus()
-  report.networkAuthority = util.deepCopy(state.probes.networkAuthority)
-  report.networkCalendar = util.deepCopy(state.probes.networkCalendar)
-  report.mobility = util.deepCopy(state.probes.mobility)
-  report.mobilityHistory = util.deepCopy(state.probes.mobilityHistory)
-  report.operational = util.deepCopy(state.probes.operational)
-  report.financeTransfers = util.deepCopy(state.finance.transfers)
-  report.startingCash = util.deepCopy(state.finance.startingCash)
-  report.networkAccounts = util.deepCopy(state.finance.networkAccounts)
-  report.validation = util.deepCopy(state.validation)
-  report.checkpoint = util.deepCopy(state.checkpoint)
-  report.match = util.deepCopy(state.match); report.agentPolicy = util.deepCopy(state.probes.agentPolicy)
-  report.modelDigest = authoredDigest(); report.townDevelopment = util.deepCopy(state.probes.townDevelopment)
-  report.coreDigest = coreDigest(); report.townDevelopmentQueue = util.deepCopy(state.probes.townDevelopmentQueue)
-  report.passengerPresentation = passengerPresentation.digestView(
-    state.world.passengerPresentation)
-  report.passengerPresentationDigest = hash.value(report.passengerPresentation); report.passengerCosmetics = util.deepCopy(state.probes.passengerCosmetics)
-  report.economyPresentation = util.deepCopy(publicSnapshot().economyPresentation); report.serviceRegistration = util.deepCopy(state.probes.serviceRegistration)
-  report.freightMilestone = util.deepCopy(state.probes.freightMilestone); report.passengerMilestone = util.deepCopy(state.probes.passengerMilestone)
-  report.proposals = {
-    queued = state.world.proposals.queued or 0,
-    applied = state.world.proposals.applied or 0,
-    failed = state.world.proposals.failed or 0,
-    retained = util.tableCount(state.world.proposals.byId),
-  }
-  report.operations = {
-    schemaVersion = operationCodec.SCHEMA_VERSION,
-    queued = state.world.operations.queued or 0,
-    applied = state.world.operations.applied or 0,
-    failed = state.world.operations.failed or 0,
-    retained = util.tableCount(state.world.operations.byId),
-    records = util.deepCopy(state.world.operations.byId),
-  }
-  report.proposalConsensus = util.deepCopy(state.world.proposalConsensus)
-  report.operationConsensus = util.deepCopy(state.world.operationConsensus)
-  report.checkpointConsensus = util.deepCopy(state.world.checkpointConsensus)
-  report.worldManifest = util.deepCopy(state.probes.worldManifest)
-  report.recovery = util.deepCopy(state.recovery)
-  report.accounts = {
-    source = state.networkMode == "network" and "native-cache-plus-canonical-ledger" or "native",
-    canonical = finance.networkDigestView(state.finance),
-    control = state.world.controlPlayerId and accountOf(state.world.controlPlayerId) or nil,
-    companies = {},
-  }
-  for _, companyCid in ipairs(state.companyOrder) do
-    report.accounts.companies[companyCid] = accountOf(state.companies[companyCid].playerId)
-  end
-  report.knownLimits = {
-    "BuildProposal has a payload-aware pre-mutation gate. Of the twenty-three additional exact visitor gates, fifteen line/portable-vehicle/name/color tags have strict canonical operation codecs. Native SetGameSpeed is now host-ordered; calendar/logo/field/terrain/date/cheat/person-debug categories stay fail-closed for player input.",
-    "Proposal schema 5 canonically serializes road/track changes plus named signal/waypoint edge objects, including retained objects across edge replacement, with quoted cost and no machine-local IDs. Schema 7 adds stock rail-station placement and bounded generic named .con/.module payloads for depots, ordinary constructions, ASSET_DEFAULT roots, upgrades, modular station edits, and removal. Both paths use repository names, strict ownership, preflight and physical consensus. Opaque/script callbacks and ambiguous dependency migration fail closed; every peer still requires an identical pinned mod pack.",
-    "Construction uses all-peer prepare before native mutation, then two-peer physical completion consensus, ordered success/fault controls, a bounded timeout, and fail-closed dependency gating. A readiness rejection is non-fatal because neither world changed. Match start and each successful physical result are followed by a host-verified checkpoint barrier; in-place native geometry rollback is deliberately not claimed.",
-    "Shared-clock v2 projects staggered peer heartbeats to one host time, orders future-time pause/speed rendezvous, corrects bounded overshoot, emits paused heartbeats, and adaptively caps the effective speed from engine/backlog health. Populated localhost is live-proven; two-computer long-pause and slowdown/recovery proof remains.",
-    "Assigned canonical trains are held at every native terminal until both peers report the same vehicle, line, stop and sequential leg round, then receive one ordered future-time release. Format-4 checkpoints digest that authority state together with exact model passenger queues/loads. Four populated localhost rounds are live-proven. This does not teleport trains; a different stop index faults closed.",
-    "Line/vehicle creation IDs are discovered from the native callback result or an exact before/after component-set delta, then bound to event-derived canonical IDs.",
-    "The GUI rejects known mutating actions against rival logical entities. Native visitors now stop selected unsupported line, vehicle, naming, speed, terrain, date, and cheat commands in network mode; unlisted/autonomous categories still require dedicated authority analysis.",
-    "Populated local hot-seat validation covers stations, depots, lines, two running trains and real passenger/cargo trips. Canonical network sale/replacement/maintenance and long-running income/expense still require live destructive tests.",
-    "Native loan principal is not mirrored; borrowing/repayment is disabled on the turn desk and requires a dedicated competitive credit model.",
-    "The desk retains the base game's loan, so unpaused month-boundary interest can contaminate a long proxy turn; pause-on-switch is the supported local-test configuration.",
-    "Company starting cash is an explicit, idempotent match-setup grant; it is audited separately and is not a money-conserving operational transfer.",
-    "Build 35924 asserts when legacy setPlayer is used directly on BASE_EDGE. Tracked edges therefore use logical ownership and normally stay on the desk; a depot/station transfer may cascade attached edges to their rightful company. Either native holder is valid, rival holders fail closed, and rival builder proposals are vetoed before commit.",
-    "Autonomous town/industry evolution is not yet a complete host-driven replicated event system; unsupported subsystems must remain frozen for network experiments.",
-    "Native person and cargo entity IDs are intentionally local scenery. Direct SIM_* component telemetry is retained, while the synchronized passenger ledger and authored stock-UI projection—not native agents—are authoritative for station queues, train loads, revenue, and score.",
-    "Debug_SetSimPersonState carries only an eight-byte person-id/boolean payload and cannot address a train or station. Native cosmetic writes therefore fail closed with zero commands issued; misleading stock load, station-board, finance-history, and transported widgets are hidden or relabelled while exact authored replacements are inserted into their standard windows. Cargo presentation remains telemetry-only and its stock total is suppressed.",
-  }
-  local ok, outbound = bridge.emit(state.bridge, "research", report, state.tick)
-  local researchError
-  if not ok then researchError = tostring(outbound) end
-  state.probes.lastResearch = {
-    ok = ok,
-    localSeq = ok and outbound.local_seq or nil,
-    error = researchError,
-    structuralDigest = report.structural and report.structural.digest or nil,
-  }
-  return ok, util.deepCopy(state.probes.lastResearch)
+  return researchReport.export()
 end
 
 handlers["finance.toggle_neutralizer"] = function(action)

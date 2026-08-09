@@ -25,6 +25,7 @@ local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local operationVehiclePostcondition = require "tpf2_mp/operation_vehicle_postcondition"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
+local researchReportModule = require "tpf2_mp/research_report"
 local economyModule = require "tpf2_mp/economy"
 local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
 local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
@@ -358,6 +359,90 @@ do
   assert(snapshot.probes.freightMilestone.aboard == 7
       and snapshot.probes.passengerMilestone.stale == true,
     "public snapshot omitted automatic aboard-receipt progress")
+end
+
+do
+  local current = stateSchema.new(baseConfig(), {
+    stateVersion = 29,
+    checkpointVersion = 5,
+  })
+  current.tick = 73
+  current.networkMode = "network"
+  current.bridge.sessionId = "research-report-test"
+  current.bridge.peerId = "player2"
+  current.companyOrder = { "company:1" }
+  current.companies = {
+    ["company:1"] = { cid = "company:1", playerId = 25, name = "Company 1" },
+  }
+  current.world.controlPlayerId = 99
+  current.world.proposals.queued = 2
+  current.world.operations.applied = 3
+  current.probes.capture = { observed = 4 }
+  current.probes.freightMilestone = {
+    aboardCheckpointed = true, lineCid = "line:event:freight",
+    vehicleCid = "vehicle:event:freight", observedRound = 2, aboard = 11,
+  }
+  current.probes.passengerMilestone = { stale = true }
+  local emitted, fail = nil, false
+  local runtime = researchReportModule.new({
+    getState = function() return current end,
+    nativeHookStatus = function() return { loaded = true, active = true } end,
+    authoredDigest = function() return "model-digest" end,
+    coreDigest = function() return "core-digest" end,
+    publicSnapshot = function()
+      return { economyPresentation = { activeCompanyCid = "company:1" } }
+    end,
+    accountOf = function(playerId)
+      return { balance = playerId * 100, loan = playerId }
+    end,
+    researchSnapshot = function(worldState, registry, companies)
+      assert(worldState == current.world and registry == current.canonical
+          and companies == current.companies,
+        "research report did not receive the active state domains")
+      return { schemaVersion = 1, structural = { digest = "structure-digest" } }
+    end,
+    emit = function(report, tick)
+      emitted = { report = report, tick = tick }
+      if fail then return false, "test bridge unavailable" end
+      return true, { local_seq = 91 }
+    end,
+  })
+  local built = runtime.build()
+  assert(built.tick == 73 and built.sessionId == "research-report-test"
+      and built.peerId == "player2" and built.modelDigest == "model-digest"
+      and built.coreDigest == "core-digest",
+    "research report lost its ordered identity or digest fields")
+  assert(built.proposals.queued == 2 and built.operations.applied == 3
+      and built.operations.schemaVersion ~= nil,
+    "research report lost proposal/operation diagnostics")
+  assert(built.freightMilestone.aboard == 11
+      and built.passengerMilestone.stale == true,
+    "research report lost automatic load-receipt diagnostics")
+  assert(built.accounts.control.balance == 9900
+      and built.accounts.companies["company:1"].balance == 2500,
+    "research report lost native account diagnostics")
+  assert(type(built.knownLimits) == "table"
+      and table.concat(built.knownLimits, "\n"):find("Format%-5 checkpoints"),
+    "research report retained stale checkpoint-limit documentation")
+
+  local ok, result = runtime.export()
+  assert(ok == true and result.localSeq == 91 and result.error == nil
+      and result.structuralDigest == "structure-digest"
+      and emitted.tick == 73 and emitted.report.coreDigest == "core-digest",
+    string.format(
+      "research report export did not retain bridge receipt metadata: ok=%s seq=%s error=%s structure=%s tick=%s core=%s",
+      tostring(ok), tostring(result and result.localSeq),
+      tostring(result and result.error), tostring(result and result.structuralDigest),
+      tostring(emitted and emitted.tick),
+      tostring(emitted and emitted.report and emitted.report.coreDigest)))
+  emitted.report.capture.observed = 99
+  assert(current.probes.capture.observed == 4,
+    "research report leaked mutable diagnostic state")
+  fail = true
+  ok, result = runtime.export()
+  assert(ok == false and result.localSeq == nil
+      and result.error == "test bridge unavailable",
+    "research report did not surface a bridge export failure")
 end
 
 do

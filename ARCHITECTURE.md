@@ -150,6 +150,8 @@ Runtime-controller modules:
 - `recovery_prepare_runtime.lua` owns game-side preparation/checkpoint handlers
   and the persisted, non-digested preparation status shown after save/load.
 - `public_snapshot.lua` produces the read-only engine-to-GUI state projection.
+- `research_report.lua` owns the full diagnostic export projection, current
+  limitation inventory, bridge receipt, and failure status.
 - `match_runtime.lua` owns deterministic ranking, match completion, bankruptcy
   precedence, and running-match authorization.
 - `operation_runtime.lua` owns canonical operation authorization, native result

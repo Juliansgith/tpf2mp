@@ -79,6 +79,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
     'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua' = 280
+    'tpf2_mp_1\res\scripts\tpf2_mp\research_report.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\world_identity.lua' = 200
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
@@ -147,6 +148,7 @@ $requiredModules = @(
     'tpf2_mp/match_runtime',
     'tpf2_mp/checkpoint_runtime',
     'tpf2_mp/public_snapshot',
+    'tpf2_mp/research_report',
     'tpf2_mp/proposal_runtime',
     'tpf2_mp/operation_runtime',
     'tpf2_mp/network_intent_runtime',
