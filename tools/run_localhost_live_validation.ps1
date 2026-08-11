@@ -18,6 +18,8 @@ param(
     [switch]$SkipNativeBuild,
     [switch]$InteractiveAfterValidation,
     [switch]$ManualOnly,
+    [switch]$AutoPrepareRestorePoint,
+    [ValidateRange(300, 3600)][int]$RestoreCaptureTimeoutSeconds = 3000,
     [ValidateRange(5, 240)][int]$InteractiveMinutes = 120,
     [switch]$OperationalCaptureLab,
     [ValidateRange(30, 3600)][int]$OperationalSampleTicks = 120,
@@ -29,12 +31,20 @@ param(
     [string]$IndustryArtifactSourceRoot,
     [switch]$RequireIndustryContentConsensus,
     [switch]$RequireFreightIndustryBootstrap,
-    [switch]$KeepGamesOpen
+    [switch]$KeepGamesOpen,
+    [ValidateSet('Balanced', 'Native')][string]$LocalhostPerformanceProfile = 'Balanced',
+    [string]$EvidenceTag
 )
 
 $ErrorActionPreference = 'Stop'
 if ($ManualOnly -and $OperationalCaptureLab) {
     throw 'ManualOnly and OperationalCaptureLab are mutually exclusive.'
+}
+if ($AutoPrepareRestorePoint -and -not $ManualOnly) {
+    throw 'AutoPrepareRestorePoint requires ManualOnly.'
+}
+if ($AutoPrepareRestorePoint -and ($InteractiveAfterValidation -or $KeepGamesOpen)) {
+    throw 'AutoPrepareRestorePoint is an unattended capture; it cannot keep an interactive game open.'
 }
 if ($NativeFreshWorld -and -not $OperationalCaptureLab) {
     throw 'NativeFreshWorld is an observer-only capture mode; use it with OperationalCaptureLab.'
@@ -47,6 +57,8 @@ if ($RequireFreightIndustryBootstrap -and -not $RequireIndustryContentConsensus)
 }
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
+. (Join-Path $PSScriptRoot 'localhost_process_policy.ps1')
+. (Join-Path $PSScriptRoot 'automatic_restore_capture.ps1')
 $restorePlanPath = $null
 $restorePlanData = $null
 if ($RestorePlan) {
@@ -59,6 +71,7 @@ if ($RestorePlan) {
         throw "Restore plan is missing: $restorePlanPath"
     }
     $restorePlanData = Get-Content -LiteralPath $restorePlanPath -Raw | ConvertFrom-Json
+    [void](Assert-Tpf2mpCurrentRestorePlan $restorePlanData)
     if (-not $restorePlanData.resumeSession) { throw 'Restore plan has no resumeSession.' }
     if ($Session -and $Session -ne [string]$restorePlanData.resumeSession) {
         throw 'Session must equal the restore plan resumeSession.'
@@ -70,6 +83,9 @@ elseif ($Player1StartingSave -or $Player2StartingSave) {
 }
 if (-not $Session) { $Session = 'localhost-' + (Get-Date -Format 'yyyyMMdd-HHmmss') }
 if ($Session -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw "Unsafe session name: $Session" }
+if ($EvidenceTag -and $EvidenceTag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
+    throw "Unsafe evidence tag: $EvidenceTag"
+}
 
 $game = Find-Tpf2mpGameExecutable $GameExecutable
 if (-not $game) { throw 'Transport Fever 2 executable was not discovered.' }
@@ -88,7 +104,8 @@ $userData = Split-Path -Parent $mods
 $settingsPath = Join-Path $userData 'settings.lua'
 $saveDirectory = [IO.Path]::GetFullPath((Join-Path $userData 'save'))
 if (-not (Test-Path -LiteralPath $settingsPath -PathType Leaf)) { throw "Settings file is missing: $settingsPath" }
-$runRoot = Join-Path $projectRoot ("runtime\localhost-live\$Session")
+$runName = $Session + $(if ($EvidenceTag) { '--' + $EvidenceTag } else { '' })
+$runRoot = Join-Path $projectRoot ("runtime\localhost-live\$runName")
 $bridgeBase = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "tpf2mp_bridge\$Session"))
 $tempBridgeRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) 'tpf2mp_bridge'))
 $bridgePrefix = $tempBridgeRoot.TrimEnd('\') + '\'
@@ -141,6 +158,7 @@ $hostProcess = $null
 $clientProcess = $null
 $peer1Game = $null
 $peer2Game = $null
+$loadedWorldHandoffPauseMenus = @{ player1 = $false; player2 = $false }
 $peer1RecoveryWatcher = $null
 $peer2RecoveryWatcher = $null
 $createdSteamMarker = $false
@@ -171,6 +189,9 @@ $peerStagedStartingSaves = @{}
 $peerStartingCompanyPlayerIds = @{}
 $stagedStartingFiles = @()
 $startingCompanyPlayerIds = ''
+$processPolicies = @{}
+$windowLayout = $null
+$automaticRestoreCapture = $null
 
 function Set-LocalhostValidationSettings([string]$Path) {
     $content = [IO.File]::ReadAllText($Path)
@@ -193,6 +214,14 @@ function Set-LocalhostValidationSettings([string]$Path) {
         '(?m)^(?<prefix>[ \t]*autosaveIntervalMinutes[ \t]*=[ \t]*)\d+(?<suffix>[ \t]*,)',
         '${prefix}120${suffix}'
     )
+    if ($LocalhostPerformanceProfile -eq 'Balanced') {
+        $updated = [regex]::Replace($updated,
+            '(?m)^(?<prefix>[ \t]*vsync[ \t]*=[ \t]*)(true|false)(?<suffix>[ \t]*,)',
+            '${prefix}true${suffix}')
+        $updated = [regex]::Replace($updated,
+            '(?m)^(?<prefix>[ \t]*windowSize[ \t]*=[ \t]*)\{[^\r\n]*\}(?<suffix>[ \t]*,)',
+            '${prefix}{ 1920, 1040, }${suffix}')
+    }
     [IO.File]::WriteAllText($Path, $updated, [Text.UTF8Encoding]::new($false))
 }
 
@@ -284,11 +313,25 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
     $env:TPF2MP_RESTORE_PLAN_CHECKSUM = if ($script:restorePlanData) {
         [string]$script:restorePlanData.checksum
     } else { '' }
+    $env:TPF2MP_RESTORE_VEHICLE_PHASE_DIGEST = if ($script:restorePlanData) {
+        [string]$script:restorePlanData.vehiclePhaseProof.vehiclePhaseDigest
+    } else { '' }
     # Build 35924's Vulkan/UI startup can enter its Internal error path when
     # created minimized, while a hidden window has no targetable main handle.
     # Use an ordinary window; the exact-PID helper may foreground it briefly.
-    return Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle Normal -PassThru `
+    $started = Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle Normal -PassThru `
         -ArgumentList @('--script', $bootstrapRelative)
+    $policy = Set-Tpf2mpLocalhostProcessPolicy $started $Peer $LocalhostPerformanceProfile
+    if ($policy) { $script:processPolicies[$Peer] = $policy }
+    return $started
+}
+
+function Set-LocalhostLabWindowLayout {
+    $script:windowLayout = Set-Tpf2mpLocalhostWindowLayout `
+        $script:peer1Game $script:peer2Game $LocalhostPerformanceProfile
+    if ($script:windowLayout) {
+        Write-Host "Applied side-by-side localhost render layout $($script:windowLayout.width)x$($script:windowLayout.height) per peer."
+    }
 }
 
 function Start-RecoveryWatcher([string]$Peer, [string]$BridgePath, [Diagnostics.Process]$GameProcess) {
@@ -300,6 +343,7 @@ function Start-RecoveryWatcher([string]$Peer, [string]$BridgePath, [Diagnostics.
         '-SaveDirectory', $saveDirectory, '-GameProcessId', [string]$GameProcess.Id,
         '-GameExecutable', $game,
         '-GameStartedAtUtc', $GameProcess.StartTime.ToUniversalTime().ToString('o'),
+        '-MatchContentProfilePath', $matchContentProfilePath,
         '-BundleRoot', $projectRoot
     )
     $watcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
@@ -314,6 +358,69 @@ function Start-RecoveryWatcher([string]$Peer, [string]$BridgePath, [Diagnostics.
         throw "$Peer recovery watcher exited during startup: $errorText"
     }
     return $watcher
+}
+
+function Assert-CompanionProcessHealthy(
+    [Diagnostics.Process]$Process,
+    [string]$Label,
+    [string]$StdErrPath
+) {
+    if (-not $Process) { throw "$Label was not started." }
+    $Process.Refresh()
+    if (-not $Process.HasExited) { return }
+    $tail = if (Test-Path -LiteralPath $StdErrPath -PathType Leaf) {
+        @(Get-Content -LiteralPath $StdErrPath -Tail 12) -join "`n"
+    } else { '' }
+    $detail = if ($tail) { ":`n$tail" } else { '.' }
+    throw "$Label exited unexpectedly with code $($Process.ExitCode)$detail"
+}
+
+function Assert-LiveCompanionStatus([object]$HostStatus, [object]$ClientStatus) {
+    if (-not $HostStatus) { throw 'Host companion status disappeared during the live lab.' }
+    if (-not $ClientStatus) { throw 'Client companion status disappeared during the live lab.' }
+    if ($HostStatus.status -eq 'faulted' -or $HostStatus.auditFaulted -eq $true) {
+        throw "Host authority faulted: $($HostStatus.lastError)"
+    }
+    if ([string]$HostStatus.sessionFault) {
+        throw "Live consensus fault: $($HostStatus.sessionFault)"
+    }
+}
+
+function Wait-ManualVehicleSyncRound(
+    [Diagnostics.Process]$OriginGame,
+    [int]$WaitSeconds = 300
+) {
+    $before = Read-CompanionStatus $peer1Bridge
+    $baselineReleases = if ($before -and $before.vehicleSync) {
+        [int]$before.vehicleSync.releases
+    } else { 0 }
+    # Exercise the same native pause/speed widget path a player uses.  The
+    # visitor suppresses this local request, converts it to host ordering, and
+    # both peers then run until the next station rendezvous is released.
+    Invoke-GameInput $OriginGame 'resume'
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    do {
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+            -Context 'while proving the restored player1 vehicle round')
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+            -Context 'while proving the restored player2 vehicle round')
+        $hostState = Read-CompanionStatus $peer1Bridge
+        $clientState = Read-CompanionStatus $peer2Bridge
+        Assert-LiveCompanionStatus $hostState $clientState
+        $sync = $hostState.vehicleSync
+        $complete = $sync -and [int]$sync.trackedVehicles -ge 1 `
+            -and [int]$sync.releases -gt $baselineReleases `
+            -and [int]$sync.pendingRounds -eq 0 -and [int]$sync.faults -eq 0
+        if (-not $complete) { Start-Sleep -Milliseconds 250 }
+    } while (-not $complete -and (Get-Date) -lt $deadline)
+    if (-not $complete) {
+        throw ("Restored vehicle did not complete a fresh synchronized station round: " +
+            "tracked=$($sync.trackedVehicles), releases=$($sync.releases), " +
+            "pending=$($sync.pendingRounds), faults=$($sync.faults)")
+    }
+    Write-Host ("PASS restored active vehicle round: releases {0}->{1}, tracked={2}" -f `
+        $baselineReleases, $sync.releases, $sync.trackedVehicles)
+    return $hostState
 }
 
 function Wait-GameWindow([Diagnostics.Process]$GameProcess, [int]$WaitSeconds = 120) {
@@ -413,6 +520,41 @@ function Invoke-GameInput(
         }
         else { '' }
         throw "The $Action input helper exited $childExitCode for game PID $($GameProcess.Id): $helperError"
+    }
+}
+
+function Suspend-LoadedWorldForPeerHandoff(
+    [Diagnostics.Process]$GameProcess,
+    [ValidateSet('player1', 'player2')][string]$Peer
+) {
+    if (-not $ManualOnly) { return }
+    [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+        -Context "before freezing the loaded $Peer world for peer handoff")
+    # Build 35924 starts simulating a running save as soon as its world reaches
+    # the native boundary.  The two renderers must be launched and loaded
+    # sequentially because they share Steam/profile files, so leaving the first
+    # world running here advances its vehicles while the second process loads.
+    # Escape is the only pinned, process-local hard pause available before the
+    # shared Lua clock may safely bootstrap.  Keep its menu open until both
+    # worlds have accepted the ordered initial pause.
+    Invoke-GameInput $GameProcess 'escape'
+    $loadedWorldHandoffPauseMenus[$Peer] = $true
+    Write-Host "$Peer loaded world is frozen at its process-local handoff boundary."
+}
+
+function Release-LoadedWorldHandoffPauses {
+    param([Parameter(Mandatory = $true)][array]$Peers)
+    $released = 0
+    foreach ($entry in $Peers) {
+        if ($loadedWorldHandoffPauseMenus[$entry.Peer] -ne $true) { continue }
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $entry.Game `
+            -Context "before releasing the $($entry.Peer) load-handoff pause menu")
+        Invoke-GameInput $entry.Game 'escape'
+        $loadedWorldHandoffPauseMenus[$entry.Peer] = $false
+        $released += 1
+    }
+    if ($released -gt 0) {
+        Write-Host "Released $released process-local load-handoff pause menu(s) after both persistent pumps were armed."
     }
 }
 
@@ -526,6 +668,13 @@ function Start-GameWorldViaConsole(
             } else { $peer2Bridge }) -Session $Session -Peer $Peer -ExpectedSaveBaseName $baseName `
             -EvidenceDirectory (Join-Path $runRoot "native-save-load-$Peer") -TimeoutSeconds 180)
         $nativePath = Join-Path $nativeStatusRoot "status-$($GameProcess.Id).json"
+        # Freeze at the first native world boundary, before waiting for the
+        # slower game-script observer/authority diagnostics. Waiting for all
+        # diagnostics while a running save advances can put identical train
+        # saves on different sides of their next station before peer handoff.
+        [void](Wait-Tpf2mpNativeWorld -GameProcess $GameProcess `
+            -NativeStatusPath $nativePath -TimeoutSeconds 240)
+        Suspend-LoadedWorldForPeerHandoff $GameProcess $Peer
         if ($OperationalCaptureLab) {
             [void](Wait-Tpf2mpNativeWorld -GameProcess $GameProcess -NativeStatusPath $nativePath `
                 -RequireGameScriptObserver -TimeoutSeconds 240)
@@ -660,6 +809,22 @@ function Get-StagedStartingSave([string]$Peer) {
         return [string]$script:peerStagedStartingSaves[$Peer]
     }
     return $script:stagedStartingSave
+}
+
+function Set-StagedStartingSaveNewest([string]$Peer) {
+    $save = Get-StagedStartingSave $Peer
+    if (-not $save) { return }
+    $resolved = [IO.Path]::GetFullPath($save)
+    $savePrefix = [IO.Path]::GetFullPath($saveDirectory).TrimEnd('\') + '\'
+    if (-not $resolved.StartsWith($savePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to retimestamp a staged save outside $saveDirectory"
+    }
+    $stamp = [DateTime]::UtcNow.AddSeconds(2)
+    foreach ($path in @($resolved, $resolved + '.lua', [IO.Path]::ChangeExtension($resolved, '.jpg'))) {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            [IO.File]::SetLastWriteTimeUtc($path, $stamp)
+        }
+    }
 }
 
 function Request-GameQuit([Diagnostics.Process]$GameProcess, [string]$Peer) {
@@ -1052,8 +1217,11 @@ try {
         foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
             [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\start'), 'start', [Text.UTF8Encoding]::new($false))
         }
+        Set-StagedStartingSaveNewest 'player1'
         Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+        Set-StagedStartingSaveNewest 'player2'
         Start-GameWorldViaConsole $peer2Game 'player2' (Get-StagedStartingSave 'player2')
+        Set-LocalhostLabWindowLayout
 
         $captureDeadline = (Get-Date).AddSeconds(240)
         do {
@@ -1188,22 +1356,36 @@ try {
     # Build 35924 shares its profile cache, shader cache, stdout, and lockfile.
     # Starting both renderers simultaneously can race those shared files, so
     # establish and hook each stable menu process before creating the next.
+    Set-StagedStartingSaveNewest 'player1'
     $peer1Game = Start-GamePeer 'player1' $peer1Bridge
     Wait-MenuBootstrap $peer1Game 'player1' $peer1Bridge
     & $injector --pid $peer1Game.Id --dll $hook --wait-ms 60000
     if ($LASTEXITCODE -ne 0) { throw "Native hook injection failed for PID $($peer1Game.Id)" }
 
+    Set-StagedStartingSaveNewest 'player2'
     $peer2Game = Start-GamePeer 'player2' $peer2Bridge
     Wait-MenuBootstrap $peer2Game 'player2' $peer2Bridge
     & $injector --pid $peer2Game.Id --dll $hook --wait-ms 60000
     if ($LASTEXITCODE -ne 0) { throw "Native hook injection failed for PID $($peer2Game.Id)" }
     Write-Host "Started and staged exact game PIDs $($peer1Game.Id) (host) and $($peer2Game.Id) (client)."
-    foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
-        [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\start'), 'start', [Text.UTF8Encoding]::new($false))
+    if ($ManualOnly) {
+        [IO.File]::WriteAllText((Join-Path $peer1Bridge 'launcher\start'),
+            'start', [Text.UTF8Encoding]::new($false))
+        Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+        [IO.File]::WriteAllText((Join-Path $peer2Bridge 'launcher\start'),
+            'start', [Text.UTF8Encoding]::new($false))
+        Start-GameWorldViaConsole $peer2Game 'player2' (Get-StagedStartingSave 'player2')
+    }
+    else {
+        foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
+            [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\start'),
+                'start', [Text.UTF8Encoding]::new($false))
+        }
+        Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+        Start-GameWorldViaConsole $peer2Game 'player2' (Get-StagedStartingSave 'player2')
     }
     Write-Host 'Both hooks are active; both menu bootstraps received their peer-specific launcher marker.'
-    Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
-    Start-GameWorldViaConsole $peer2Game 'player2' (Get-StagedStartingSave 'player2')
+    Set-LocalhostLabWindowLayout
     if ($restorePlanData) {
         Write-Host 'Both exact processes loaded their own plan-attested save; awaiting restore checkpoint consensus.'
     }
@@ -1220,6 +1402,39 @@ try {
         foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
             [IO.File]::WriteAllText((Join-Path $peerBridge 'launcher\manual-bootstrap-ready'),
                 'ready', [Text.UTF8Encoding]::new($false))
+        }
+        foreach ($entry in @(
+            @{ Peer = 'player1'; Bridge = $peer1Bridge; Game = $peer1Game },
+            @{ Peer = 'player2'; Bridge = $peer2Bridge; Game = $peer2Game }
+        )) {
+            & (Join-Path $PSScriptRoot 'ensure_paused_network_wake.ps1') `
+                -GameProcessId $entry.Game.Id -GameExecutable $game `
+                -GameStartedAtUtc $entry.Game.StartTime.ToUniversalTime().ToString('o') `
+                -BridgePath $entry.Bridge `
+                -Session $Session -Peer $entry.Peer `
+                -EvidenceDirectory (Join-Path $runRoot "paused-network-wake-$($entry.Peer)") `
+                -RequirePersistentMenuPump
+        }
+        # A hard Escape pause prevents Build 35924 from consuming even the
+        # harmless queued launcher heartbeat.  Release both menus only after
+        # both persistent pumps are proven ready; the paired sub-second handoff
+        # then lets the host order and acknowledge the canonical shared pause.
+        Release-LoadedWorldHandoffPauses @(
+            @{ Peer = 'player1'; Game = $peer1Game },
+            @{ Peer = 'player2'; Game = $peer2Game }
+        )
+        if ($restorePlanData) {
+            foreach ($entry in @(
+                @{ Peer = 'player1'; Bridge = $peer1Bridge; Game = $peer1Game },
+                @{ Peer = 'player2'; Bridge = $peer2Bridge; Game = $peer2Game }
+            )) {
+                & (Join-Path $PSScriptRoot 'ensure_paused_network_wake.ps1') `
+                    -GameProcessId $entry.Game.Id -GameExecutable $game `
+                    -GameStartedAtUtc $entry.Game.StartTime.ToUniversalTime().ToString('o') `
+                    -BridgePath $entry.Bridge -Session $Session -Peer $entry.Peer `
+                    -EvidenceDirectory (Join-Path $runRoot "restore-bootstrap-$($entry.Peer)") `
+                    -RequirePersistentMenuPump -RequireRestoreValidated
+            }
         }
         # The native hook reads this barrier outside Build 35924's stale Lua
         # file cache. Its persistent menu state then issues one authorized
@@ -1258,7 +1473,7 @@ try {
                 throw "Native status is missing for PID $($gameProcess.Id)"
             }
             $native = Get-Content -LiteralPath $nativePath -Raw | ConvertFrom-Json
-            if ($native.hookVersion -ne '0.16.0' `
+            if ($native.hookVersion -ne '0.17.0' `
                 -or $native.active -ne $true -or $native.hooks.enabled -ne $true `
                 -or $native.gates.buildProposal.enabled -ne $true `
                 -or $native.gates.commandVisitors.enabled -ne $true `
@@ -1270,8 +1485,56 @@ try {
             Copy-Item -LiteralPath $nativePath `
                 -Destination (Join-Path $runRoot "native-$($gameProcess.Id).json") -Force
         }
+        if ($RequireVehicleSyncRound) {
+            $hostStatus = Wait-ManualVehicleSyncRound $peer1Game `
+                ([Math]::Min($TimeoutSeconds, 300))
+        }
         $peer1RecoveryWatcher = Start-RecoveryWatcher 'player1' $peer1Bridge $peer1Game
         $peer2RecoveryWatcher = Start-RecoveryWatcher 'player2' $peer2Bridge $peer2Game
+        if ($AutoPrepareRestorePoint) {
+            $automaticRestoreCapture = [ordered]@{
+                schemaVersion = 1
+                requested = $true
+                status = 'waiting'
+                session = $Session
+                sourceBoundarySeq = if ($restorePlanData) {
+                    [int]$restorePlanData.boundarySeq
+                } else { 0 }
+                error = $null
+            }
+            $healthCheck = {
+                [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+                    -Context 'during automatic player1 recovery capture')
+                [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+                    -Context 'during automatic player2 recovery capture')
+                Assert-CompanionProcessHealthy $hostProcess 'host companion' `
+                    (Join-Path $runRoot 'host-companion.stderr.txt')
+                Assert-CompanionProcessHealthy $clientProcess 'client companion' `
+                    (Join-Path $runRoot 'client-companion.stderr.txt')
+                Assert-CompanionProcessHealthy $peer1RecoveryWatcher 'player1 recovery watcher' `
+                    (Join-Path $runRoot 'player1-recovery-watcher.stderr.log')
+                Assert-CompanionProcessHealthy $peer2RecoveryWatcher 'player2 recovery watcher' `
+                    (Join-Path $runRoot 'player2-recovery-watcher.stderr.log')
+                Assert-LiveCompanionStatus `
+                    (Read-CompanionStatus $peer1Bridge) (Read-CompanionStatus $peer2Bridge)
+            }
+            try {
+                $automaticRestoreCapture = Wait-Tpf2mpAutomaticRestoreCapture `
+                    -Session $Session -HostBridgePath $peer1Bridge `
+                    -TimeoutSeconds $RestoreCaptureTimeoutSeconds `
+                    -SourceBoundarySeq ([int]$automaticRestoreCapture.sourceBoundarySeq) `
+                    -ExpectedHostGameProcessId $peer1Game.Id `
+                    -ExpectedClientGameProcessId $peer2Game.Id `
+                    -HealthCheck $healthCheck
+                Write-Host ("PASS automatic paired recovery capture: boundary={0}, plan={1}" -f `
+                    $automaticRestoreCapture.boundarySeq, $automaticRestoreCapture.planChecksum)
+            }
+            catch {
+                $automaticRestoreCapture.status = 'failed'
+                $automaticRestoreCapture.error = $_.Exception.Message
+                throw
+            }
+        }
         $finalPassed = $true
         if ($restorePlanData) {
             Write-Host 'PASS coordinated restore: both attested saves accepted recovery.resume and a fresh checkpoint.'
@@ -1530,6 +1793,10 @@ try {
             $peer1Game.Refresh()
             $peer2Game.Refresh()
             if ($peer1Game.HasExited -or $peer2Game.HasExited) { break }
+            Assert-CompanionProcessHealthy $hostProcess 'host companion' `
+                (Join-Path $runRoot 'host-companion.stderr.txt')
+            Assert-CompanionProcessHealthy $clientProcess 'client companion' `
+                (Join-Path $runRoot 'client-companion.stderr.txt')
             [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
                 -Context 'during the player1 post-validation lab')
             [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
@@ -1537,6 +1804,8 @@ try {
             if ((Test-Path -LiteralPath (Join-Path $peer1Bridge 'launcher\stop')) `
                 -or (Test-Path -LiteralPath (Join-Path $peer2Bridge 'launcher\stop'))) { break }
             $liveHostStatus = Read-CompanionStatus $peer1Bridge
+            $liveClientStatus = Read-CompanionStatus $peer2Bridge
+            Assert-LiveCompanionStatus $liveHostStatus $liveClientStatus
             if ($liveHostStatus) {
                 $pendingBoundary = if ($liveHostStatus.PSObject.Properties['pendingCheckpointSeq']) {
                     $liveHostStatus.pendingCheckpointSeq
@@ -1573,6 +1842,13 @@ try {
         $labStatus.endedAt = (Get-Date).ToString('o')
         $labStatus | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $labStatusPath -Encoding UTF8
         $collectInteractiveEvidence = $true
+        Assert-CompanionProcessHealthy $hostProcess 'host companion' `
+            (Join-Path $runRoot 'host-companion.stderr.txt')
+        Assert-CompanionProcessHealthy $clientProcess 'client companion' `
+            (Join-Path $runRoot 'client-companion.stderr.txt')
+        $finalHostStatus = Read-CompanionStatus $peer1Bridge
+        $finalClientStatus = Read-CompanionStatus $peer2Bridge
+        Assert-LiveCompanionStatus $finalHostStatus $finalClientStatus
         Write-Host 'Manual localhost lab ending; exact disposable processes will be cleaned up.'
     }
     }
@@ -1583,12 +1859,24 @@ catch {
     Write-Warning $failure
 }
 finally {
-    if (-not $KeepGamesOpen) {
+    # Capture the last observable authority state before stopping any exact
+    # process. Manual-only runs previously left these fields null and could
+    # report PASS even after a companion had died during the interactive soak.
+    $capturedHostStatus = Read-CompanionStatus $peer1Bridge
+    $capturedClientStatus = Read-CompanionStatus $peer2Bridge
+    if ($capturedHostStatus) { $finalHostStatus = $capturedHostStatus }
+    if ($capturedClientStatus) { $finalClientStatus = $capturedClientStatus }
+    foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
+        Remove-Item -LiteralPath (Join-Path $peerBridge 'launcher\prepare-restore') `
+            -Force -ErrorAction SilentlyContinue
+    }
+    if (-not $KeepGamesOpen -or $failure) {
         # These worlds are explicitly disposable. Neither app.quit() through
         # the console nor the bootstrap's launcher/stop -> app.stopGame() path
         # is safe from a UI update callback on Build 35924; both can re-enter
-        # UI::CCore::InvokeStoredFunctions and create a crash dump. Terminate
-        # only the two exact recorded PIDs; there is no save boundary here.
+        # UI::CCore::InvokeStoredFunctions and create a crash dump. A failed
+        # launch must never honor KeepGamesOpen: terminate only the two exact
+        # recorded PIDs because no usable interactive handoff exists.
         foreach ($entry in @(
             @{ Process = $peer2Game; Label = 'player2 game' },
             @{ Process = $peer1Game; Label = 'player1 game' }
@@ -1608,7 +1896,8 @@ finally {
         'TPF2MP_STAGED_SAVE_NAME', 'TPF2MP_STARTING_COMPANY_PLAYER_IDS',
         'TPF2MP_RESTORE_RESUME', 'TPF2MP_RESTORE_FROM_SESSION',
         'TPF2MP_RESTORE_BOUNDARY', 'TPF2MP_RESTORE_CORE_DIGEST',
-        'TPF2MP_RESTORE_CONVERGENCE_KEY', 'TPF2MP_RESTORE_PLAN_CHECKSUM')) {
+        'TPF2MP_RESTORE_CONVERGENCE_KEY', 'TPF2MP_RESTORE_PLAN_CHECKSUM',
+        'TPF2MP_RESTORE_VEHICLE_PHASE_DIGEST')) {
         Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     }
     if ($injectedBootstrap -and (Test-Path -LiteralPath $bootstrapTarget)) {
@@ -1678,7 +1967,9 @@ try {
         $oldPythonPath = $env:PYTHONPATH
         if ($companionCommand.IsPython) { $env:PYTHONPATH = Join-Path $projectRoot 'companion' }
         try {
-            & $companionCommand.File @($companionCommand.Prefix + @('replay', $audit, '--session', $Session)) *>&1 |
+            $replayArguments = @('replay', $audit, '--session', $Session)
+            if ($collectInteractiveEvidence) { $replayArguments += '--require-settled' }
+            & $companionCommand.File @($companionCommand.Prefix + $replayArguments) *>&1 |
                 Tee-Object -FilePath $replayLog
             if ($LASTEXITCODE -ne 0 -and -not $failure) { $failure = 'Audit replay validation failed.' }
         }
@@ -1702,6 +1993,7 @@ $steamMarkerClean = if ($createdSteamMarker) {
 $runStatus = [ordered]@{
     schemaVersion = 1
     session = $Session
+    evidenceTag = $EvidenceTag
     completedAt = (Get-Date).ToString('o')
     passed = $finalPassed -and -not $failure -and $settingsRestored
     failure = $failure
@@ -1713,7 +2005,13 @@ $runStatus = [ordered]@{
     requireVehicleSyncRound = $RequireVehicleSyncRound.IsPresent
     interactiveAfterValidation = $InteractiveAfterValidation.IsPresent
     manualOnly = $ManualOnly.IsPresent
+    autoPrepareRestorePoint = $AutoPrepareRestorePoint.IsPresent
+    restoreCaptureTimeoutSeconds = $RestoreCaptureTimeoutSeconds
+    automaticRestoreCapture = $automaticRestoreCapture
     interactiveMinutes = $InteractiveMinutes
+    localhostPerformanceProfile = $LocalhostPerformanceProfile
+    processPolicies = $processPolicies
+    windowLayout = $windowLayout
     operationalCaptureLab = $OperationalCaptureLab.IsPresent
     townDevelopment = $TownDevelopment.IsPresent
     agentMode = $AgentMode

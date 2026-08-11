@@ -1,12 +1,120 @@
 #include "tpf2mp/native_common.hpp"
+#include "tpf2mp/native_async_bridge.hpp"
 #include "tpf2mp/native_command_codec.hpp"
 #include "tpf2mp/native_hook_status.hpp"
+#include "tpf2mp/native_launcher_barrier.hpp"
 
 #include <array>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
+#include <map>
+#include <string>
+#include <vector>
+
+struct FakeLuaValue {
+  enum class Kind { Nil, Text, Function, Table } kind{Kind::Nil};
+  std::string text;
+  tpf2mp::launcher::LuaCFunction function{};
+};
+
+struct lua_State {
+  std::vector<FakeLuaValue> stack;
+  std::map<int, FakeLuaValue> registry;
+  std::map<std::string, tpf2mp::launcher::LuaCFunction> globals;
+  bool event_called{};
+  bool send_called{};
+  bool invalid_call{};
+};
+
+namespace {
+
+const char* FakePushString(lua_State* state, const char* value, const std::size_t length) {
+  state->stack.push_back({FakeLuaValue::Kind::Text, std::string(value, length), nullptr});
+  return state->stack.back().text.c_str();
+}
+
+void FakePushClosure(lua_State* state, tpf2mp::launcher::LuaCFunction function, int) {
+  state->stack.push_back({FakeLuaValue::Kind::Function, {}, function});
+}
+
+void FakeRawSet(lua_State* state, int) {
+  if (state->stack.size() < 3) { state->invalid_call = true; return; }
+  const auto function = state->stack.back();
+  state->stack.pop_back();
+  const auto name = state->stack.back();
+  state->stack.pop_back();
+  if (name.kind != FakeLuaValue::Kind::Text ||
+      function.kind != FakeLuaValue::Kind::Function) {
+    state->invalid_call = true;
+    return;
+  }
+  state->globals[name.text] = function.function;
+}
+
+void FakeRawGetI(lua_State* state, int, const int slot) {
+  const auto found = state->registry.find(slot);
+  state->stack.push_back(found == state->registry.end() ? FakeLuaValue{} : found->second);
+}
+
+void FakeInsert(lua_State* state, const int index) {
+  if (index != -2 || state->stack.size() < 2) { state->invalid_call = true; return; }
+  std::iter_swap(state->stack.end() - 2, state->stack.end() - 1);
+}
+
+void FakeCall(lua_State* state, const int arguments, const int results, int,
+              tpf2mp::launcher::LuaCFunction) {
+  if (state->stack.size() < static_cast<std::size_t>(arguments + 1)) {
+    state->invalid_call = true;
+    return;
+  }
+  const auto function_position = state->stack.size() - static_cast<std::size_t>(arguments) - 1;
+  const auto function = state->stack[function_position];
+  if (function.kind != FakeLuaValue::Kind::Function) { state->invalid_call = true; return; }
+  if (function.text == "event") {
+    state->event_called = arguments == 4 && results == 1
+        && state->stack[function_position + 1].text == "tpf2_mp.lua"
+        && state->stack[function_position + 2].text == "tpf2mp"
+        && state->stack[function_position + 3].text == "launcher.heartbeat"
+        && state->stack[function_position + 4].kind == FakeLuaValue::Kind::Nil;
+  } else if (function.text == "send") {
+    state->send_called = arguments == 1 && results == 0
+        && state->stack[function_position + 1].text == "command";
+  } else {
+    state->invalid_call = true;
+  }
+  state->stack.resize(function_position);
+  if (results == 1) {
+    state->stack.push_back({FakeLuaValue::Kind::Text, "command", nullptr});
+  }
+}
+
+int FakeGetTop(lua_State* state) { return static_cast<int>(state->stack.size()); }
+void FakeSetTop(lua_State* state, const int top) { state->stack.resize(static_cast<std::size_t>(top)); }
+
+bool TestLauncherPump() {
+  constexpr int event_slot = 101;
+  constexpr int send_slot = 102;
+  lua_State target;
+  target.registry[event_slot] = {FakeLuaValue::Kind::Function, "event", nullptr};
+  target.registry[send_slot] = {FakeLuaValue::Kind::Function, "send", nullptr};
+  lua_State caller;
+  caller.stack.push_back({FakeLuaValue::Kind::Table, {}, nullptr});
+  tpf2mp::launcher::RegisterBootstrapApi(
+      &caller, FakePushString, FakePushClosure, FakeRawSet, FakeRawGetI,
+      FakeInsert, FakeCall, FakeGetTop, FakeSetTop);
+  tpf2mp::launcher::ObserveContext(&target, "gui", event_slot, send_slot);
+  const auto pump = caller.globals["tpf2mp_native_launcher_pump"];
+  const int results = pump == nullptr ? 0 : pump(&caller);
+  return results == 1 && target.event_called && target.send_called && !target.invalid_call
+      && !caller.invalid_call && !caller.stack.empty()
+      && caller.stack.back().text == "A1|script-event";
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   static_assert(sizeof(void*) == 8, "native probe must be built for x64");
@@ -51,6 +159,10 @@ int main(int argc, char** argv) {
   static_assert(tpf2mp::profile::kBuyVehicleDepotOffset == 0x04);
   static_assert(tpf2mp::profile::kBuyVehicleConfigOffset == 0x08);
   static_assert(tpf2mp::profile::kBuyVehicleResultOffset == 0x38);
+  if (!TestLauncherPump()) {
+    std::cerr << "fixed native launcher heartbeat pump is invalid\n";
+    return 1;
+  }
   if (tpf2mp::profile::kSha256.size() != 64 || tpf2mp::profile::kImageSize == 0 ||
       tpf2mp::profile::kPeTimestamp == 0 ||
       tpf2mp::profile::kCommandVisitorTableRva == 0) {
@@ -388,6 +500,49 @@ int main(int argc, char** argv) {
     std::cerr << "native hook status serializer is invalid\n";
     return 1;
   }
+  const auto bridge_root = std::filesystem::temp_directory_path() / "tpf2mp_bridge" /
+      ("native-test-" + std::to_string(GetCurrentProcessId()) + "-" +
+       std::to_string(GetTickCount64()));
+  tpf2mp::async_bridge::AsyncFileBridge async_bridge({2, 1024, 512});
+  std::uint64_t effective_out = 0;
+  std::string bridge_error;
+  if (!async_bridge.Configure(bridge_root, 1, 1, effective_out, bridge_error) ||
+      effective_out != 1 || !async_bridge.Enqueue(1, "one", bridge_error) ||
+      !async_bridge.Enqueue(2, "two", bridge_error) ||
+      async_bridge.Enqueue(3, "three", bridge_error)) {
+    std::cerr << "native async bridge FIFO bounds are invalid: " << bridge_error << "\n";
+    return 1;
+  }
+  async_bridge.Pump();
+  std::ifstream first_out(bridge_root / "game_outbox" / "000000000001.json", std::ios::binary);
+  std::string first_value((std::istreambuf_iterator<char>(first_out)),
+                          std::istreambuf_iterator<char>());
+  if (first_value != "one") {
+    std::cerr << "native async bridge did not publish its FIFO head\n";
+    return 1;
+  }
+  std::string ignored;
+  if (!tpf2mp::AtomicWriteUtf8(bridge_root / "game_inbox" / "000000000001.json",
+                               "inbound", ignored)) {
+    std::cerr << "could not stage native async bridge inbox fixture\n";
+    return 1;
+  }
+  Sleep(12);
+  async_bridge.Pump();
+  const auto inbound_item = async_bridge.TakeInbound();
+  if (!inbound_item || inbound_item->first != 1 || inbound_item->second != "inbound" ||
+      async_bridge.StatusJson().find("\"taken\":1") == std::string::npos) {
+    std::cerr << "native async bridge did not preserve inbound sequence identity\n";
+    return 1;
+  }
+  std::uint64_t rejected_effective = 0;
+  if (async_bridge.Configure(std::filesystem::temp_directory_path() / "outside-tpf2mp", 1, 1,
+                             rejected_effective, bridge_error)) {
+    std::cerr << "native async bridge admitted a root outside its TEMP scope\n";
+    return 1;
+  }
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(bridge_root, cleanup_error);
   std::array<bool, tpf2mp::profile::kCommandVisitorCount> visitor_tags{};
   for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
     if (visitor.tag >= visitor_tags.size() || visitor.tag == 15 || visitor.rva == 0 ||

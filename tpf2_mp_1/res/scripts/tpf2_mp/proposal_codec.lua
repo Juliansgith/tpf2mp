@@ -904,24 +904,42 @@ local function constructionSourceCid(entry, options, preferredKind)
   end
   rootKind = rootKind or "construction"
   local reference, referenceError = canonicalReference(rootKind, localId, {}, options)
-  return reference and reference.cid or nil, referenceError, rootKind
+  local proposalKind = rootKind
+  if rootKind == "construction" and type(options.constructionKind) == "function" then
+    local ok, observed = pcall(options.constructionKind, localId)
+    if ok and (observed == "rail_station" or observed == "station"
+      or observed == "depot" or observed == "construction") then
+      proposalKind = observed
+    end
+  end
+  return reference and reference.cid or nil, referenceError, rootKind, proposalKind
 end
 
-local function normaliseConstructionCollateral(removals, options)
+local function normaliseConstructionSources(removals, options)
   local result, seen = {}, {}
   for _, removal in ipairs(removals) do
-    local cid, removalError, rootKind = constructionSourceCid(removal, options, nil)
+    local cid, removalError, rootKind, proposalKind = constructionSourceCid(removal, options, nil)
     if not cid then return nil, removalError end
     local kind = rootKind == "asset" and "asset" or "construction"
     local key = kind .. ":" .. cid
     if seen[key] then return nil, "construction collateral contains a duplicate source" end
     seen[key] = true
-    result[#result + 1] = { kind = kind, cid = cid }
+    result[#result + 1] = { kind = kind, cid = cid, proposalKind = proposalKind }
   end
   table.sort(result, function(a, b)
     if a.kind ~= b.kind then return a.kind < b.kind end
     return a.cid < b.cid
   end)
+  return result
+end
+
+local function normaliseConstructionCollateral(removals, options)
+  local sources, sourceError = normaliseConstructionSources(removals, options)
+  if not sources then return nil, sourceError end
+  local result = {}
+  for _, source in ipairs(sources) do
+    result[#result + 1] = { kind = source.kind, cid = source.cid }
+  end
   return result
 end
 
@@ -943,6 +961,7 @@ local function normaliseConstructionChange(additions, removals, options)
   local mode = value == nil and "remove" or (explicitUpgrade and "upgrade" or "build")
   local sourceCid = ""
   local sourceRootKind
+  local sourceProposalKind
   local collateral = {}
   if mode == "build" then
     local collateralError
@@ -954,12 +973,15 @@ local function normaliseConstructionChange(additions, removals, options)
     -- so choose it from the canonically sorted removal set and retain the rest
     -- as collateral.  The distinction is representational only: materialise()
     -- writes every entry back to constructionsToRemove in one native command.
-    local removalsCanonical, removalError = normaliseConstructionCollateral(removals, options)
+    local removalsCanonical, removalError = normaliseConstructionSources(removals, options)
     if not removalsCanonical then return nil, removalError end
     local primary = table.remove(removalsCanonical, 1)
     sourceCid = primary.cid
     sourceRootKind = primary.kind
-    collateral = removalsCanonical
+    sourceProposalKind = primary.proposalKind
+    for _, removal in ipairs(removalsCanonical) do
+      collateral[#collateral + 1] = { kind = removal.kind, cid = removal.cid }
+    end
   elseif #removals == 1 then
     local sourceError
     sourceCid, sourceError, sourceRootKind = constructionSourceCid(
@@ -969,7 +991,7 @@ local function normaliseConstructionChange(additions, removals, options)
   if mode == "remove" then
     return {
       slot = "construction:1", mode = mode, adapter = "portable-construction",
-      kind = sourceRootKind == "asset" and "asset" or "construction",
+      kind = sourceRootKind == "asset" and "asset" or sourceProposalKind or "construction",
       sourceCid = sourceCid, fileName = "",
       transform = {}, params = {}, modules = {}, collateral = collateral,
     }
@@ -1735,9 +1757,11 @@ function M.validate(transaction)
 end
 
 -- True only for the native atomic shape used when a street/track edit also
--- bulldozes obstructing buildings.  Standalone construction bulldozes remain
--- on the engine-thread helper path; compound topology removals are replayed as
--- one GUI BuildProposal so neither half can commit independently.
+-- bulldozes obstructing buildings. Standalone station/depot bulldozes remain
+-- on the engine-thread helper path because their generated topology retires
+-- asynchronously. A removal-only public road edit can nevertheless carry
+-- explicit edge/node removals plus autonomous buildings; that is still one
+-- native GUI BuildProposal and must never be split into helper calls.
 function M.isTopologyConstructionRemoval(transaction)
   if type(transaction) ~= "table"
     or transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION then return false end
@@ -1745,12 +1769,20 @@ function M.isTopologyConstructionRemoval(transaction)
     and transaction.constructions[1] or nil
   if type(construction) ~= "table" or construction.mode ~= "remove" then return false end
   local edgeObjects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
-  -- Explicit removals alone describe an ordinary construction/station
-  -- bulldoze and stay on the engine-thread construction helper. The compound
-  -- GUI path is only for a topology edit that creates/replaces something in
-  -- the same native click while demolishing collateral buildings.
-  return #(transaction.nodes or {}) > 0 or #(transaction.edges or {}) > 0
+  local addsTopology = #(transaction.nodes or {}) > 0 or #(transaction.edges or {}) > 0
     or #(edgeObjects.add or {}) > 0 or #(edgeObjects.retain or {}) > 0
+  if addsTopology then return true end
+  local remove = type(transaction.remove) == "table" and transaction.remove or {}
+  local removesTopology = #(remove.edges or {}) > 0 or #(remove.nodes or {}) > 0
+    or #(edgeObjects.remove or {}) > 0
+  if not removesTopology then return false end
+  -- Stock station/depot removals include their generated graph in the captured
+  -- snapshot, but the supported engine helper owns that graph's delayed
+  -- retirement. Generic constructions are autonomous obstacles (for example
+  -- town houses attached to a road) and their topology removals belong to the
+  -- original atomic GUI command.
+  return construction.kind ~= "rail_station" and construction.kind ~= "station"
+    and construction.kind ~= "depot"
 end
 
 -- Removal-only street proposals are a normal Build 35924 bulldozer shape:

@@ -1,4 +1,5 @@
 #include "tpf2mp/native_common.hpp"
+#include "tpf2mp/native_async_bridge.hpp"
 #include "tpf2mp/native_command_codec.hpp"
 #include "tpf2mp/native_hook_status.hpp"
 #include "tpf2mp/native_launcher_barrier.hpp"
@@ -173,8 +174,7 @@ std::uint64_t g_suppressed_vehicle_command_invalid = 0, g_suppressed_vehicle_com
               g_suppressed_vehicle_command_drops_reported = 0;
 int g_suppressed_vehicle_command_last_tag = -1;
 std::int32_t g_suppressed_vehicle_command_last_target = -1, g_suppressed_vehicle_command_last_secondary = -1;
-LuaPrint g_original_print = nullptr;
-LuaSetField g_original_setfield = nullptr;
+LuaPrint g_original_print = nullptr; LuaSetField g_original_setfield = nullptr;
 SetupCommandInterface g_original_setup_command = nullptr;
 CommandListSwap g_original_command_list_swap = nullptr;
 ApplyCommand g_original_apply_command = nullptr;
@@ -375,6 +375,7 @@ int NativeMarkContext(lua_State* state) {
   if (raw != nullptr && length <= 64) {
     StateLock lock;
     ObserveStateLocked(state).context.assign(raw, length);
+    tpf2mp::launcher::ObserveContext(state, std::string_view(raw, length), NativeBindingRegistrySlot(static_cast<std::size_t>(InterestingBindingIndex("sendScriptEvent"))), kPendingSendCommandFunction);
   }
   RequestStatusWrite();
   return 0;
@@ -560,7 +561,8 @@ void RegisterNativeApi(lua_State* state) {
   g_native_registration = true;
   g_lua_rawgeti(state, kLuaRegistryIndex, kLuaGlobalsRegistryIndex);
   RegisterNativeFunction(state, "tpf2mp_native_status", NativeStatus);
-  tpf2mp::launcher::RegisterBootstrapApi(state, g_lua_pushlstring, g_lua_pushcclosure, g_lua_rawset);
+  tpf2mp::async_bridge::RegisterLuaApi(state, g_lua_pushlstring, g_lua_tolstring, g_lua_gettop, g_lua_pushcclosure, g_lua_rawset);
+  tpf2mp::launcher::RegisterBootstrapApi(state, g_lua_pushlstring, g_lua_pushcclosure, g_lua_rawset, g_lua_rawgeti, g_lua_insert, g_lua_callk, g_lua_gettop, g_lua_settop);
   RegisterNativeFunction(state, "tpf2mp_native_mark_context", NativeMarkContext);
   RegisterNativeFunction(state, "tpf2mp_native_enable_build_gate", NativeEnableBuildGate);
   RegisterNativeFunction(state, "tpf2mp_native_disable_build_gate", NativeDisableBuildGate);
@@ -1274,8 +1276,14 @@ DWORD WINAPI Worker(void*) {
   BootTrace("worker-active");
 
   while (!g_stop.load(std::memory_order_acquire)) {
-    WaitForSingleObject(g_status_event, 1000);
-    if (g_status_dirty.exchange(false, std::memory_order_acq_rel)) WriteStatusFiles();
+    WaitForSingleObject(g_status_event, 10);
+    tpf2mp::async_bridge::Global().Pump();
+    static ULONGLONG last_status_write = 0;
+    const auto now = GetTickCount64();
+    if (g_status_dirty.load(std::memory_order_acquire) && now - last_status_write >= 250) {
+      g_status_dirty.store(false, std::memory_order_release); WriteStatusFiles();
+      last_status_write = now;
+    }
   }
   return 0;
 }
@@ -1283,7 +1291,7 @@ DWORD WINAPI Worker(void*) {
 } // namespace
 
 extern "C" __declspec(dllexport) const char* TPF2MP_HookProfile() {
-  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.16.0";
+  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.17.0";
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

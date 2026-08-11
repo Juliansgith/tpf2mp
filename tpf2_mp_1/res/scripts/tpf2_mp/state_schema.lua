@@ -11,6 +11,8 @@ local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 local stateSuccessNormalization = require "tpf2_mp/state_success_normalization"
 local restoreSessionIdentity = require "tpf2_mp/restore_session_identity"
+local stateRetention = require "tpf2_mp/state_retention"
+local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
 
 local M = {}
 
@@ -99,6 +101,10 @@ local function restoreResumeValidation(saved, cfg)
   if tostring(priorBridge.sessionId or "") ~= tostring(request.fromSession)
     or tostring(priorBridge.peerId or "") ~= tostring(cfg.peerId) then
     return false, "restore source session or peer does not match the attested save"
+      .. " (savedSession=" .. tostring(priorBridge.sessionId or "")
+      .. ", requestedSession=" .. tostring(request.fromSession or "")
+      .. ", savedPeer=" .. tostring(priorBridge.peerId or "")
+      .. ", localPeer=" .. tostring(cfg.peerId or "") .. ")"
   end
   local expectedResume = restoreSessionIdentity.derive(
     request.fromSession, request.boundarySeq)
@@ -109,6 +115,8 @@ local function restoreResumeValidation(saved, cfg)
   local anchor = consensus and consensus.byBoundary
     and consensus.byBoundary[tostring(request.boundarySeq)] or nil
   local preparation = saved.recovery and saved.recovery.anchorPreparation or nil
+  local phaseProof, phaseError = recoveryPhaseProof.normalise(
+    preparation and preparation.vehiclePhaseProof)
   if type(anchor) ~= "table" or anchor.status ~= "complete" or anchor.success ~= true
     or tostring(anchor.coreDigest or "") ~= tostring(request.coreDigest)
     or tostring(anchor.convergenceKey or "") ~= tostring(request.convergenceKey) then
@@ -117,6 +125,10 @@ local function restoreResumeValidation(saved, cfg)
   if type(preparation) ~= "table" or preparation.status ~= "ready"
     or util.integer(preparation.boundarySeq, 0) ~= request.boundarySeq then
     return false, "saved world was not at a prepared restore boundary"
+  end
+  if not phaseProof
+    or phaseProof.vehiclePhaseDigest ~= tostring(request.vehiclePhaseDigest or "") then
+    return false, phaseError or "saved native vehicle phase proof does not match the restore plan"
   end
   for _, records in ipairs({
     savedWorld.proposalConsensus and savedWorld.proposalConsensus.byId or {},
@@ -309,6 +321,7 @@ function M.new(cfg, versions)
       passengerCosmetics = passengerCosmetics.newProbe(),
       industryContent = industryContentRuntime.newProbe(),
       freightIndustry = freightIndustryModel.newProbe(),
+      performance = { schemaVersion = 1, tasks = {}, scheduler = {} },
       capture = {
         preCommitCount = 0,
         nativePreCommitCount = 0,
@@ -442,6 +455,7 @@ function M.migrate(saved, context)
       coreDigest = cfg.restoreResume.coreDigest,
       convergenceKey = cfg.restoreResume.convergenceKey,
       planChecksum = cfg.restoreResume.planChecksum,
+      vehiclePhaseDigest = cfg.restoreResume.vehiclePhaseDigest,
       sourceAnchor = anchorOrError,
     }
     saved.recovery.anchorPreparation = nil
@@ -605,8 +619,20 @@ function M.migrate(saved, context)
   saved.world.vehicleSync.vehicles = saved.world.vehicleSync.vehicles or {}
   saved.world.vehicleSync.scheduleReservations = saved.world.vehicleSync.scheduleReservations or {}
   for _, item in pairs(saved.world.vehicleSync.vehicles) do
-    if type(item) == "table" and type(item.schedule) ~= "table" then
-      item.schedule = { schemaVersion = 1, enabled = false }
+    if type(item) == "table" then
+      if type(item.schedule) ~= "table" then
+        item.schedule = { schemaVersion = 1, enabled = false }
+      end
+      -- Manifest-bound vehicles predate operation-authored owner metadata. The
+      -- registered economy service is already canonical and is also the source
+      -- used by the passenger ledger, so backfill only an absent sync owner.
+      if item.companyCid == nil and type(item.lineCid) == "string" then
+        local service = saved.economy and saved.economy.services
+          and saved.economy.services[item.lineCid] or nil
+        if service and type(service.companyCid) == "string" then
+          item.companyCid = service.companyCid
+        end
+      end
     end
   end
   local hadPassengerPresentation = type(saved.world.passengerPresentation) == "table"
@@ -683,6 +709,11 @@ function M.migrate(saved, context)
       saved.probes.freightIndustry[key] = util.deepCopy(value)
     end
   end
+  saved.probes.performance = saved.probes.performance
+    or util.deepCopy(defaults.probes.performance)
+  saved.probes.performance.schemaVersion = 1
+  saved.probes.performance.tasks = saved.probes.performance.tasks or {}
+  saved.probes.performance.scheduler = saved.probes.performance.scheduler or {}
   saved.probes.networkAuthority = saved.probes.networkAuthority
     or util.deepCopy(defaults.probes.networkAuthority)
   saved.probes.networkCalendar = saved.probes.networkCalendar
@@ -788,6 +819,10 @@ function M.migrate(saved, context)
   -- This is a peer-local in-process command diagnostic. A loaded save must
   -- wait for a fresh companion READY request instead of reusing it.
   saved.recovery.nativeSave = nil
+  -- Launcher automation is also process/session-local. Persisting this latch
+  -- made a restore created by an automatic capture ignore the next session's
+  -- equally valid preparation request.
+  saved.probes.launcherRecoveryPrepare = nil
   saved.recovery.bridgeRebinds = math.max(0, util.integer(saved.recovery.bridgeRebinds, 0))
   saved.bridge = saved.bridge or bridge.newState(cfg)
   local priorBridge = {
@@ -823,6 +858,7 @@ function M.migrate(saved, context)
     status = "not-running",
   }
   stateSuccessNormalization.apply(saved)
+  stateRetention.compact(saved, cfg.maxEvents)
   saved.version = STATE_VERSION
   return saved
 end

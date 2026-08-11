@@ -74,6 +74,16 @@ class VehicleStationBarrier:
     def on_clock_pause_protection_changed(self, now: float) -> None:
         self.deadlines.synchronize(self.host.vehicle_sync_rounds.values(), now)
 
+    def restore_round_cursors(self, cursors: list[Mapping[str, Any]]) -> None:
+        """Seed receipt-bound station rounds before the restore fence opens."""
+
+        if self.host.vehicle_sync_rounds or self.host.vehicle_sync_last_round:
+            raise ProtocolError("vehicle station rounds were already initialized")
+        self.host.vehicle_sync_last_round = {
+            str(item["vehicleCid"]): int(item["lastAuthorizedRound"])
+            for item in cursors
+        }
+
     @staticmethod
     def _round_key(vehicle_cid: str, round_number: int) -> str:
         return f"{vehicle_cid}#{round_number}"
@@ -239,8 +249,8 @@ class VehicleStationBarrier:
         if self.host.clock_rendezvous:
             tracker["status"] = "waiting-clock"
             return
-        if float(self.host.clock_game_time_skew or 0.0) > self.clock.CLOCK_SKEW_LIMIT \
-                and self.host.clock_effective_speed > 0:
+        if self.host.clock_effective_speed > 0 \
+                and self.clock.skew_requires_rendezvous(now):
             tracker["status"] = "waiting-clock"
             self.clock.begin_rendezvous(
                 self.host.clock_requested_speed, self.host.clock_effective_speed,

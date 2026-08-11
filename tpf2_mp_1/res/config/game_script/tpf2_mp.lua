@@ -18,6 +18,7 @@ local edgeOwnership = require "tpf2_mp/edge_ownership"
 local runtimeConfig = require "tpf2_mp/runtime_config"
 local stateSchema = require "tpf2_mp/state_schema"
 local nativeHook = require "tpf2_mp/native_hook"
+local nativeObservationTelemetry = require "tpf2_mp/native_observation_telemetry"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
@@ -27,7 +28,9 @@ local guiCaptureModule = require "tpf2_mp/gui_capture"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
+local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local performanceRuntimeModule = require "tpf2_mp/performance_runtime"
 local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
 local economyActionRuntime = require "tpf2_mp/economy_action_runtime"
 local economyLineRegistration = require "tpf2_mp/economy_line_registration"
@@ -40,6 +43,7 @@ local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
+local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local researchReportModule = require "tpf2_mp/research_report"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
@@ -50,9 +54,10 @@ local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 local freightIndustryRuntime = require "tpf2_mp/freight_industry_runtime"
 local aboardMilestoneIntegration = require "tpf2_mp/aboard_milestone_integration"
 local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registration_integration"
+local stateRetention = require "tpf2_mp/state_retention"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 29
+local STATE_VERSION = 30
 local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
 local function config() return runtimeConfig.read() end
@@ -65,6 +70,7 @@ local function newState()
   })
 end
 local state = newState()
+local performanceRuntime = performanceRuntimeModule.new({ getState = function() return state end })
 local economyAssetCosts = economyAssetCostRuntimeModule.new({ getState = function() return state end })
 local recordProposalInfrastructure = economyAssetCosts.recordProposal
 local recordVehiclePurchaseCost = economyAssetCosts.recordVehicle
@@ -1876,7 +1882,10 @@ end
 
 handlers["probe.mobility"] = function(_, eventId)
   state.probes.nativeHook = nativeHookStatus()
-  state.probes.mobility = world.mobilitySnapshot(state.canonical, state.world)
+  local localVehiclePhases = vehicleSync and vehicleSync.localState
+    and vehicleSync.localState() or nil
+  state.probes.mobility = world.mobilitySnapshot(
+    state.canonical, state.world, localVehiclePhases)
   local payload = util.deepCopy(state.probes.mobility)
   payload.type = "mobility"
   payload.sampleKey = tostring(eventId)
@@ -1890,6 +1899,7 @@ handlers["probe.mobility"] = function(_, eventId)
       mobilityDigest = payload.digest,
       vehicleLifecycleDigest = payload.vehicleLifecycleDigest,
       vehiclePhaseDigest = payload.vehiclePhaseDigest,
+      vehicleRestoreSafe = payload.vehicleRestoreSafe,
       totalPersons = payload.totalPersons,
       lineCount = #(payload.lines or {}),
       totals = util.deepCopy(payload.totals),
@@ -1903,6 +1913,7 @@ handlers["probe.mobility"] = function(_, eventId)
     mobilityDigest = payload.digest,
     vehicleLifecycleDigest = payload.vehicleLifecycleDigest,
     vehiclePhaseDigest = payload.vehiclePhaseDigest,
+    vehicleRestoreSafe = payload.vehicleRestoreSafe,
     totalPersons = payload.totalPersons,
     lineCount = #(payload.lines or {}),
     totals = util.deepCopy(payload.totals),
@@ -2067,6 +2078,7 @@ handlers["network.set_mode"] = function(action)
   local ready, authorityError = configureNativeAuthority(mode)
   if not ready then return false, authorityError end
   state.networkMode = mode
+  state.bridge.coalesceEphemeral = mode == "network"
   state.probes.nativeHook = nativeHookStatus()
   local commandGate = state.probes.nativeHook.gates
     and state.probes.nativeHook.gates.commandVisitors or {}
@@ -2118,7 +2130,9 @@ handlers["native.observed"] = function(action, eventId)
     }
     capture.nativeCommandHistory = capture.nativeCommandHistory or {}
     capture.nativeCommandHistory[#capture.nativeCommandHistory + 1] = util.deepCopy(commandRecord)
-    while #capture.nativeCommandHistory > 64 do table.remove(capture.nativeCommandHistory, 1) end
+    while #capture.nativeCommandHistory > stateRetention.CAPTURE_LIMITS.nativeCommandHistory do
+      table.remove(capture.nativeCommandHistory, 1)
+    end
     if config().operationalCapture then
       bridge.emit(state.bridge, "operational-command", commandRecord, state.tick)
     end
@@ -2137,7 +2151,9 @@ handlers["native.observed"] = function(action, eventId)
     capture.operationalGuiCount = record.sequence
     capture.operationalGuiHistory = capture.operationalGuiHistory or {}
     capture.operationalGuiHistory[#capture.operationalGuiHistory + 1] = util.deepCopy(record)
-    while #capture.operationalGuiHistory > 64 do table.remove(capture.operationalGuiHistory, 1) end
+    while #capture.operationalGuiHistory > stateRetention.CAPTURE_LIMITS.operationalGuiHistory do
+      table.remove(capture.operationalGuiHistory, 1)
+    end
     if config().operationalCapture then
       bridge.emit(state.bridge, "operational-gui", record, state.tick)
     end
@@ -2160,7 +2176,9 @@ handlers["native.observed"] = function(action, eventId)
     capture.lastProposalSnapshot = snapshotRecord
     capture.proposalSnapshots = capture.proposalSnapshots or {}
     capture.proposalSnapshots[#capture.proposalSnapshots + 1] = util.deepCopy(snapshotRecord)
-    while #capture.proposalSnapshots > 8 do table.remove(capture.proposalSnapshots, 1) end
+    while #capture.proposalSnapshots > stateRetention.CAPTURE_LIMITS.proposalSnapshots do
+      table.remove(capture.proposalSnapshots, 1)
+    end
   end
   capture.lastNativeEvent = util.deepCopy(action)
   if action.observation == "builder.proposalCreate" then capture.preCommitCount = (capture.preCommitCount or 0) + 1 end
@@ -2190,7 +2208,9 @@ handlers["native.observed"] = function(action, eventId)
       sourceId = action.sourceId,
       shape = util.deepCopy(action.eventShape),
     }
-    while #capture.eventShapes > 24 do table.remove(capture.eventShapes, 1) end
+    while #capture.eventShapes > stateRetention.CAPTURE_LIMITS.eventShapes do
+      table.remove(capture.eventShapes, 1)
+    end
   end
 
   local replacementMigration = nil
@@ -2216,7 +2236,9 @@ handlers["native.observed"] = function(action, eventId)
       capture.lastReplacement = record
       capture.replacementHistory = capture.replacementHistory or {}
       capture.replacementHistory[#capture.replacementHistory + 1] = util.deepCopy(record)
-      while #capture.replacementHistory > 8 do table.remove(capture.replacementHistory, 1) end
+      while #capture.replacementHistory > stateRetention.CAPTURE_LIMITS.replacementHistory do
+        table.remove(capture.replacementHistory, 1)
+      end
     end
     if #(replacementMigration.failed or {}) > 0 then
       state.world.edgeReplacementFailure = {
@@ -2287,14 +2309,8 @@ handlers["native.observed"] = function(action, eventId)
       }
     end
   end
-  bridge.emit(state.bridge, "telemetry", {
-    type = "native-observation",
-    observation = action.observation,
-    ids = action.ids or {},
-    captureId = action.captureId,
-    eventShape = action.eventShape,
-    note = "local GUI observation only; not serialized or safe command replication",
-  }, state.tick)
+  bridge.emit(state.bridge, "telemetry",
+    nativeObservationTelemetry.compact(action), state.tick)
   return true, { observed = action.observation, claimed = false, networkGate = state.networkMode == "network" }
 end
 
@@ -2554,6 +2570,7 @@ local function normaliseForNetwork(action)
       resourceName = proposalResourceName,
       entityPosition = proposalEntityPosition,
       entityKind = world.kindOf,
+      constructionKind = world.constructionKindOf,
       requireResourceName = true,
     })
     if not transaction then
@@ -2624,8 +2641,11 @@ local function normaliseForNetwork(action)
     if preparationSeq < 1 or tostring(copy.reason or "") ~= "recovery-prepare:" .. tostring(preparationSeq) then
       return nil, "network checkpoint request is malformed"
     end
+    local phaseProof, phaseError = recoveryPhaseProof.normalise(copy.vehiclePhaseProof)
+    if not phaseProof then return nil, phaseError end
     copy = { type = "network.checkpoint_request", preparationSeq = preparationSeq,
-      reason = "recovery-prepare:" .. tostring(preparationSeq) }
+      reason = "recovery-prepare:" .. tostring(preparationSeq),
+      vehiclePhaseProof = phaseProof }
   elseif copy.type == "operation.execute" then
     local valid, operationError = operationCodec.validate(copy.transaction)
     if not valid then return nil, operationError end
@@ -2750,13 +2770,13 @@ applyCommitted = function(action, actor, commitSeq)
     success = success and true or false,
     result = util.deepCopy(result),
   }
-  state.eventLog.items[#state.eventLog.items + 1] = event
   state.eventLog.nextSeq = logSeq + 1
-  trimEvents()
   local recorded, recordError = emitEventRecord(event)
   if not recorded then
     diagnosticLog("event-record-error", { type = action.type, tick = state.tick, error = tostring(recordError) })
   end
+  state.eventLog.items[#state.eventLog.items + 1] = stateRetention.compactEvent(event)
+  trimEvents()
   if success and (action.type == "match.initialise" or action.type == "recovery.resume") then
     local checkpointed, checkpointError =
       checkpointRuntime.initialActionCheckpoint(action, authoritySeq)
@@ -2913,42 +2933,16 @@ vehicleSync = vehicleSyncRuntimeModule.new({
 -- simulation update.  Without this boundary a launcher-managed paused save
 -- deadlocks: the launcher arms match bootstrap after load, then no engine tick
 -- remains on which to emit or consume the first ordered action.
-local function pumpNetworkBridge(includeHealth)
-  if state.networkMode ~= "network" then return true end
-  local consumeOk, consumeError = pcall(consumeBridge)
-  if not consumeOk then state.bridge.lastError = tostring(consumeError) end
-  local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
-  if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
-  local economyClockOk, economyClockError = xpcall(economyClock.update, debug.traceback)
-  if not economyClockOk then state.probes.lastError = tostring(economyClockError) end
-  local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
-  if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
-  local deferredOk, deferredError = xpcall(processDeferredNetworkIntent, debug.traceback)
-  if not deferredOk then
-    state.lastError = "deferred multiplayer physical-action processing failed: "
-      .. tostring(deferredError)
-  end
-  local contentOk, contentError = xpcall(industryContentRuntime.maintain,
-    debug.traceback, state, { readFacts = world.industryResourceProbe,
-      localWorkState = networkIntentController.localWorkState, submitIntent = submitIntent })
-  if not contentOk then
-    state.probes.industryContent.lastError = tostring(contentError)
-  end
-  local freightOk = freightIndustryRuntime.pump(state, {
-    readFacts = world.industryBootstrapFacts,
-    localWorkState = networkIntentController.localWorkState, submitIntent = submitIntent })
-  local healthOk = true
-  if includeHealth ~= false then
-    local healthError
-    healthOk, healthError = xpcall(networkClock.emitHealth, debug.traceback)
-    if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
-  else
-    local healthError
-    healthOk, healthError = xpcall(networkClock.emitPausedHealth, debug.traceback)
-    if not healthOk then state.world.networkClock.lastError = tostring(healthError) end
-  end
-  return consumeOk and deferredOk and contentOk and freightOk and healthOk
-end
+local networkPump = networkPumpRuntimeModule.new({
+  getState = function() return state end, config = config, bridge = bridge,
+  consumeBridge = consumeBridge, networkClock = networkClock,
+  economyClock = economyClock, vehicleSync = vehicleSync,
+  processDeferred = processDeferredNetworkIntent,
+  industryContent = industryContentRuntime, freightIndustry = freightIndustryRuntime,
+  world = world, localWorkState = networkIntentController.localWorkState,
+  submitIntent = submitIntent, performance = performanceRuntime,
+})
+local pumpNetworkBridge = networkPump.pump
 
 local validationRuntime = validationRuntimeModule.new({
   getState = function() return state end,
@@ -3211,6 +3205,7 @@ local maintainOperationalCapture = operationalCaptureRuntime.maintain
 -- for both peers and the usual checkpoint barrier proves that they agreed.
 
 local function resetTransientRuntime()
+  performanceRuntime.reset()
   networkIntentController.reset()
   networkClock.reset()
   economyClock.reset()
@@ -3270,12 +3265,18 @@ local script = {
   update = function()
     if not isEngineThread() then return end
     state.tick = (state.tick or 0) + 1
-    local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
-    if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
-    local economyClockOk, economyClockError = xpcall(economyClock.update, debug.traceback)
-    if not economyClockOk then state.probes.lastError = tostring(economyClockError) end
-    local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
-    if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
+    -- Network ingress owns these runtimes so committed releases and clock
+    -- orders are consumed before their local projections run. They used to run
+    -- here as well as inside pumpNetworkBridge, doubling vehicle scans and
+    -- clock work on every multiplayer update.
+    if state.networkMode ~= "network" then
+      local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
+      if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
+      local economyClockOk, economyClockError = xpcall(economyClock.update, debug.traceback)
+      if not economyClockOk then state.probes.lastError = tostring(economyClockError) end
+      local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
+      if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
+    end
     if state.tick % 300 == 0 then
       local cosmeticOk, cosmeticError = xpcall(refreshPassengerCosmetics, debug.traceback)
       if not cosmeticOk then state.probes.passengerCosmetics.lastError = tostring(cosmeticError) end
@@ -3423,21 +3424,31 @@ local script = {
         tick = state.tick,
       })
       publishSnapshot()
-    elseif name == "snapshot.request" then
+    elseif name == "snapshot.request" or name == "launcher.heartbeat" then
       -- GUI snapshot requests continue while the simulation is paused.  They
       -- are therefore the wake-up path for post-load manual bootstrap and for
       -- ordered controls/checkpoints that arrive while both players are at
       -- speed zero.
+      local nativeLauncherHeartbeat = name == "launcher.heartbeat"
+      local launcherHeartbeat = nativeLauncherHeartbeat or (type(param) == "table"
+        and param.launcherHeartbeat == true)
       if state.networkMode == "network" then
         -- The persistent launcher/UI Lua state can observe files created after
         -- load even when the engine sandbox cannot. Its explicit readiness bit
         -- is only a wake signal; native authority, host ordering, and the
         -- two-peer checkpoint remain mandatory.
-        local launcherReady = type(param) == "table" and param.launcherReady == true
+        local launcherReady = nativeLauncherHeartbeat
+          or (type(param) == "table" and param.launcherReady == true)
+        local bootstrapDiagnosticPending = launcherReady
+          and not networkClock.manualBootstrap.launcherDiagnosticEmitted
         if launcherReady and not networkClock.manualBootstrap.launcherDiagnosticEmitted then
           networkClock.manualBootstrap.launcherDiagnosticEmitted = true
           local proposalFault = state.world.proposalConsensus.sessionFault
           local operationFault = state.world.operationConsensus.sessionFault
+          local runtime = config()
+          local restoreConfig = type(runtime.restoreResume) == "table"
+            and runtime.restoreResume or nil
+          local restoreState = state.recovery and state.recovery.restoreResume or nil
           local diagnostic = {
             event = "launcher-bootstrap-state",
             initialized = state.initialized == true,
@@ -3449,26 +3460,41 @@ local script = {
               and state.recovery.freshNetworkBootstrap.reason or nil,
             proposalFault = proposalFault and proposalFault.errorCode or nil,
             operationFault = operationFault and operationFault.errorCode or nil,
+            restoreRequested = restoreConfig and restoreConfig.requested == true or false,
+            restoreConfigValid = restoreConfig and restoreConfig.valid == true or false,
+            restoreStatus = restoreState and restoreState.status or nil,
+            restoreError = restoreState and restoreState.error or nil,
+            restoreBoundarySeq = restoreState and restoreState.boundarySeq or nil,
+            restoreFromSession = restoreState and restoreState.fromSession or nil,
           }
           diagnosticLog("launcher-bootstrap-state", diagnostic)
           pcall(bridge.emit, state.bridge, "telemetry", diagnostic, state.tick)
         end
-        local bootstrapOk, bootstrapError = xpcall(
-          function() return networkClock.maintainManualBootstrap(launcherReady) end,
-          debug.traceback)
-        if not bootstrapOk then state.probes.lastError = tostring(bootstrapError) end
-        -- Paused GUI frames repeat one engine tick. The wall-throttled health
-        -- path keeps samples fresh without flooding the telemetry outbox.
-        local pumpOk, pumpError = xpcall(function()
-          return pumpNetworkBridge(false)
-        end, debug.traceback)
-        if not pumpOk then state.bridge.lastError = tostring(pumpError) end
-        if config().networkAutoValidate then
-          local validationOk, validationError = xpcall(runAutomatedNetworkValidation, debug.traceback)
-          if not validationOk then validationFail(validationError) end
+        local observed = world.clockSnapshot()
+        local launcherPumpNeeded = not launcherHeartbeat
+          or tonumber(observed.gameSpeed) == 0
+          or bootstrapDiagnosticPending
+          or state.initialized ~= true
+        if launcherPumpNeeded then
+          local bootstrapOk, bootstrapError = xpcall(
+            function() return networkClock.maintainManualBootstrap(launcherReady) end,
+            debug.traceback)
+          if not bootstrapOk then state.probes.lastError = tostring(bootstrapError) end
+          -- Paused GUI frames repeat one engine tick. The wall-throttled health
+          -- path keeps samples fresh without flooding the telemetry outbox.
+          local pumpOk, pumpError = xpcall(function()
+            return pumpNetworkBridge(false)
+          end, debug.traceback)
+          if not pumpOk then state.bridge.lastError = tostring(pumpError) end
+          if config().networkAutoValidate then
+            local validationOk, validationError = xpcall(runAutomatedNetworkValidation, debug.traceback)
+            if not validationOk then validationFail(validationError) end
+          end
         end
       end
-      publishSnapshot()
+      -- The launcher heartbeat is transport housekeeping, not a GUI refresh.
+      -- Avoid rebuilding and scaling every authoritative panel while running.
+      if not launcherHeartbeat then publishSnapshot() end
     end
   end,
 

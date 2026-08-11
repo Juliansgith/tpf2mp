@@ -76,11 +76,12 @@ function M.stations(snapshot, limit)
     if owned(snapshot, passenger) or owned(snapshot, freight) then
       if #lines < (limit or 10) then
         lines[#lines + 1] = string.format(
-          "%s | %d pax + %d cargo waiting | %d cargo delivered | %d passengers/5m",
+          "%s | %d pax + %d cargo waiting | %d cargo delivered | %d requested/%d throughput per 5m",
           tostring((passenger and passenger.name) or (freight and freight.name) or cid),
           tonumber(passenger and passenger.waiting) or 0,
           tonumber(freight and freight.waiting) or 0,
           tonumber(freight and freight.delivered) or 0,
+          tonumber(passenger and passenger.requested) or 0,
           tonumber(passenger and passenger.throughput) or 0)
       else omitted = omitted + 1 end
     end

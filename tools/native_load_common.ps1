@@ -447,10 +447,16 @@ function Initialize-Tpf2mpMenuBridge {
     $launcher = Resolve-Tpf2mpFullPath (Join-Path $BridgePath 'launcher')
     New-Item -ItemType Directory -Force -Path $launcher | Out-Null
     foreach ($name in @('menu_status.json', 'menu_tree.txt', 'load_menu_tree.txt', 'load-request',
-        'menu-entry-selected', 'save-selected', 'start-clicked')) {
+        'menu-entry-selected', 'save-selected', 'start-clicked', 'paused-network-pump',
+        'network-pump-generation')) {
         $path = Join-Path $launcher $name
         if (Test-Path -LiteralPath $path -PathType Leaf) { Remove-Item -LiteralPath $path -Force }
     }
+    # Seed this path before Transport Fever starts. Build 35924's sandbox can
+    # reliably observe content changes to an existing file after world load,
+    # while a path first created in the loaded world is not consistently seen.
+    [IO.File]::WriteAllText((Join-Path $launcher 'network-pump-generation'),
+        '0', [Text.UTF8Encoding]::new($false))
     return $launcher
 }
 
@@ -507,6 +513,7 @@ function Start-Tpf2mpDirectGame {
     $game = Resolve-Tpf2mpFullPath $GameExecutable
     $gameRoot = Split-Path -Parent $game
     $safeSession = Assert-Tpf2mpSessionId $Session
+    if ($RestorePlan) { [void](Assert-Tpf2mpCurrentRestorePlan $RestorePlan) }
     $launcher = Initialize-Tpf2mpMenuBridge $BridgePath
     if ($StagedSaveBaseName -and -not $RequireMenuEntry) {
         [IO.File]::WriteAllText((Join-Path $launcher 'load-request'), 'load', [Text.UTF8Encoding]::new($false))
@@ -534,6 +541,9 @@ function Start-Tpf2mpDirectGame {
         TPF2MP_RESTORE_CORE_DIGEST = if ($RestorePlan) { [string]$RestorePlan.coreDigest } else { '' }
         TPF2MP_RESTORE_CONVERGENCE_KEY = if ($RestorePlan) { [string]$RestorePlan.convergenceKey } else { '' }
         TPF2MP_RESTORE_PLAN_CHECKSUM = if ($RestorePlan) { [string]$RestorePlan.checksum } else { '' }
+        TPF2MP_RESTORE_VEHICLE_PHASE_DIGEST = if ($RestorePlan) {
+            [string]$RestorePlan.vehiclePhaseProof.vehiclePhaseDigest
+        } else { '' }
     }
     $previous = @{}
     try {
@@ -685,13 +695,112 @@ function Invoke-Tpf2mpPinnedSaveLoad {
     New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
     $load = Wait-Tpf2mpMenuStage $GameProcess $BridgePath $Session $Peer `
         -Stage @('ready-to-click-load-game') -TimeoutSeconds $TimeoutSeconds
-    Invoke-Tpf2mpUiRectangleClick $GameProcess $load.components.loadGameRect $load.components.menuRect `
-        (Join-Path $EvidenceDirectory 'click-load-game.json')
+    # Build 35924 can expose an enabled Load Game button before its asynchronous
+    # save index is usable.  A click in that window only prints "Savegame not
+    # ready" and leaves the title menu unchanged.  Retry only after the menu
+    # script has advanced at least 30 frames and still reports the exact same
+    # control/stage; once the page changes, no further physical input is sent.
+    $loadDeadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $loadAttempt = 0
+    while ($true) {
+        $loadAttempt += 1
+        $receiptName = if ($loadAttempt -eq 1) {
+            'click-load-game.json'
+        }
+        else {
+            'click-load-game-retry-{0:D2}.json' -f $loadAttempt
+        }
+        Invoke-Tpf2mpUiRectangleClick $GameProcess $load.components.loadGameRect $load.components.menuRect `
+            (Join-Path $EvidenceDirectory $receiptName)
 
+        # Establish the retry baseline after the input helper returns. Menu
+        # frames can advance hundreds of times while foregrounding/clicking;
+        # using the pre-click frame made a frozen transition look healthy and
+        # allowed a destructive second click into an unresponsive page.
+        $postClick = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
+        $clickedFrame = [Math]::Max([int64]$load.frames,
+            $(if ($postClick) { [int64]$postClick.frames } else { 0 }))
+        $menuStatusPath = Join-Path $BridgePath 'launcher\menu_status.json'
+        $clickedStatusWrite = if (Test-Path -LiteralPath $menuStatusPath -PathType Leaf) {
+            (Get-Item -LiteralPath $menuStatusPath).LastWriteTimeUtc
+        }
+        else { [DateTime]::MinValue }
+        $clickedAt = Get-Date
+        $retryEligible = $false
+        while ((Get-Date) -lt $loadDeadline) {
+            [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+                -Context 'while opening the native Load Game page')
+            $status = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
+            if ($status -and $status.error) { throw "Menu bootstrap failed: $($status.error)" }
+            if ($status -and [string]$status.stage -ne 'ready-to-click-load-game') {
+                break
+            }
+            $statusAdvanced = (Test-Path -LiteralPath $menuStatusPath -PathType Leaf) `
+                -and (Get-Item -LiteralPath $menuStatusPath).LastWriteTimeUtc -gt $clickedStatusWrite
+            if ($status -and $statusAdvanced `
+                -and ((Get-Date) - $clickedAt).TotalSeconds -ge 2 `
+                -and [int64]$status.frames -ge ($clickedFrame + 30) `
+                -and $status.components -and $status.components.loadGameRect) {
+                $load = $status
+                $retryEligible = $true
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not $retryEligible) { break }
+    }
+    if ((Get-Date) -ge $loadDeadline) {
+        throw "Game PID $($GameProcess.Id) did not open the native Load Game page within $TimeoutSeconds seconds after $loadAttempt click attempt(s)."
+    }
+
+    $remainingLoadSeconds = [Math]::Max(1, [Math]::Ceiling(($loadDeadline - (Get-Date)).TotalSeconds))
     $save = Wait-Tpf2mpMenuStage $GameProcess $BridgePath $Session $Peer `
-        -Stage @('ready-to-click-pinned-save') -TimeoutSeconds $TimeoutSeconds
+        -Stage @('ready-to-click-pinned-save') -TimeoutSeconds $remainingLoadSeconds
+    # Save metadata completion can reorder the native list for several frames.
+    # Require the exact target rectangle to remain unchanged before posting a
+    # physical click, otherwise a correct coordinate can name a different row
+    # by the time Build 35924 consumes the mouse transition.
+    $stableSince = Get-Date
+    $stableFrame = [int64]$save.frames
+    $saveStable = $false
+    $stableRect = '{0},{1},{2},{3}' -f $save.components.expectedSaveRect.x,
+        $save.components.expectedSaveRect.y, $save.components.expectedSaveRect.w,
+        $save.components.expectedSaveRect.h
+    while ((Get-Date) -lt $loadDeadline) {
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
+            -Context 'while stabilizing the pinned native save row')
+        $candidate = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
+        if ($candidate -and $candidate.error) { throw "Menu bootstrap failed: $($candidate.error)" }
+        $candidateRect = if ($candidate -and $candidate.components.expectedSaveRect) {
+            '{0},{1},{2},{3}' -f $candidate.components.expectedSaveRect.x,
+                $candidate.components.expectedSaveRect.y, $candidate.components.expectedSaveRect.w,
+                $candidate.components.expectedSaveRect.h
+        }
+        else { '' }
+        $sameTarget = $candidate -and $candidate.stage -eq 'ready-to-click-pinned-save' `
+            -and $candidate.components.saveIndexReady -eq $true `
+            -and $candidate.components.expectedSaveVisible -eq $true `
+            -and [string]$candidate.components.expectedSave -eq $ExpectedSaveBaseName `
+            -and $candidateRect -eq $stableRect
+        if (-not $sameTarget) {
+            $stableSince = Get-Date
+            $stableFrame = if ($candidate) { [int64]$candidate.frames } else { 0 }
+            $stableRect = $candidateRect
+        }
+        elseif (((Get-Date) - $stableSince).TotalSeconds -ge 2 `
+                -and [int64]$candidate.frames -ge ($stableFrame + 30)) {
+            $save = $candidate
+            $saveStable = $true
+            break
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    if (-not $saveStable) {
+        throw "Pinned save '$ExpectedSaveBaseName' did not retain one stable native row for two seconds."
+    }
     if ([string]$save.components.expectedSave -ne $ExpectedSaveBaseName `
-        -or $save.components.expectedSaveVisible -ne $true) {
+        -or $save.components.expectedSaveVisible -ne $true `
+        -or $save.components.saveIndexReady -ne $true) {
         throw "Pinned save '$ExpectedSaveBaseName' is not visible in the native Load Game page."
     }
     Invoke-Tpf2mpUiRectangleClick $GameProcess $save.components.expectedSaveRect $save.components.menuRect `
@@ -701,7 +810,7 @@ function Invoke-Tpf2mpPinnedSaveLoad {
     # low menu FPS, immediately clicking Start can therefore launch the row
     # that was selected on entering the page (often the previous lab save).
     # Give the native page at least one slow frame before arming Start.
-    Start-Sleep -Milliseconds 750
+    Start-Sleep -Milliseconds 1500
     [IO.File]::WriteAllText((Join-Path $BridgePath 'launcher\save-selected'), $ExpectedSaveBaseName, [Text.UTF8Encoding]::new($false))
 
     $start = Wait-Tpf2mpMenuStage $GameProcess $BridgePath $Session $Peer `

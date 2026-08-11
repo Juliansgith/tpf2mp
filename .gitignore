@@ -11,6 +11,7 @@ __pycache__/
 dist/
 *.zip
 native/build/
+native/build-*/
 native/out/
 
 # Runtime session data, live-validation evidence, and save archives

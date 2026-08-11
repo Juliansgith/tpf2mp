@@ -11,6 +11,7 @@ local industryReadingModule = require "tpf2_mp/world_industry_reading"
 local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
 local identityModule = require "tpf2_mp/world_identity"
 local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
+local vehicleRestorePhase = require "tpf2_mp/world_vehicle_restore_phase"
 
 local M = {}
 
@@ -543,6 +544,19 @@ function M.kindOf(id)
   end
   local entity = safeEntity(id)
   return entity and string.lower(tostring(entity.type or "entity")) or "entity"
+end
+
+-- A CONSTRUCTION root does not itself carry the generated STATION or
+-- VEHICLE_DEPOT component on Build 35924. Preserve that semantic distinction
+-- from its stable resource filename so proposal replay can keep station/depot
+-- bulldozes on their asynchronous helper while atomically replaying a town
+-- road removal with attached autonomous buildings.
+function M.constructionKindOf(id)
+  local construction = component(id, api.type.ComponentType.CONSTRUCTION)
+  local lower = string.lower(tostring(construction and construction.fileName or ""))
+  if lower:find("depot", 1, true) then return "depot" end
+  if lower:find("station", 1, true) then return "station" end
+  return "construction"
 end
 
 local function lineStopGroups(lineId)
@@ -1673,7 +1687,7 @@ end
 -- this function: counts and vehicle state are keyed by canonical identity. A
 -- person, cargo item, line, or vehicle changing local entity ID therefore
 -- cannot by itself create a false network mismatch.
-function M.mobilitySnapshot(registry, worldState)
+function M.mobilitySnapshot(registry, worldState, vehicleRuntimeState)
   local systems = api and api.engine and api.engine.system or {}
   local types = api and api.type and api.type.ComponentType or {}
   local personSystem = systems.simPersonSystem
@@ -1820,9 +1834,11 @@ function M.mobilitySnapshot(registry, worldState)
   -- wall-clock instants. Manual stop intent is already canonical binding
   -- metadata written by the ordered vehicle.stop operation, so digest that
   -- intent and expose the native actuator bit only as non-digested diagnostics.
-  -- stopIndex is still important: a persistent mismatch means the trains are
-  -- serving different stations, not merely rendering at different metres.
+  -- Recovery needs a stricter one-shot view than ordinary drift telemetry:
+  -- native terminal/stop state and the machine-local barrier phase must both
+  -- be stable and equal. Exact coordinates remain non-authoritative.
   local vehicleLifecycle, vehiclePhases, vehicleStopDiagnostics = {}, {}, {}
+  local vehicleRestoreSafe, vehicleRestoreUnsafeVehicles = true, {}
   for _, vehicleId in ipairs(M.listVehicles()) do
     local vehicleCid = M.bindExisting(registry, vehicleId, "vehicle", { name = nameOf(vehicleId) })
     local transportVehicle = component(vehicleId, types.TRANSPORT_VEHICLE)
@@ -1853,12 +1869,21 @@ function M.mobilitySnapshot(registry, worldState)
       nativeUserStopped = nativeUserStopped,
       barrierManaged = syncEntry ~= nil,
     }
-    local stopIndex = tonumber(safeComponentField(transportVehicle, "stopIndex"))
-    vehiclePhases[#vehiclePhases + 1] = {
-      vehicleCid = vehicleCid,
-      lineCid = lineCid,
-      stopIndex = stopIndex and math.floor(stopIndex) or nil,
-    }
+    local localRecord = type(vehicleRuntimeState) == "table"
+      and vehicleRuntimeState[vehicleCid] or nil
+    local phase, safeForRestore, unsafeReason = vehicleRestorePhase.project({
+      vehicleCid = vehicleCid, lineCid = lineCid, native = transportVehicle,
+      nativeLineAssigned = lineId ~= nil and lineId >= 0,
+      entry = syncEntry, record = localRecord, metadata = metadata,
+      safeField = safeComponentField,
+    })
+    vehiclePhases[#vehiclePhases + 1] = phase
+    if not safeForRestore then
+      vehicleRestoreSafe = false
+      vehicleRestoreUnsafeVehicles[#vehicleRestoreUnsafeVehicles + 1] = {
+        vehicleCid = vehicleCid, reason = unsafeReason,
+      }
+    end
   end
   table.sort(vehicleLifecycle,
     function(a, b) return tostring(a.vehicleCid) < tostring(b.vehicleCid) end)
@@ -1867,7 +1892,7 @@ function M.mobilitySnapshot(registry, worldState)
   table.sort(vehicleStopDiagnostics,
     function(a, b) return tostring(a.vehicleCid) < tostring(b.vehicleCid) end)
   local vehicleLifecycleView = { schemaVersion = 2, vehicles = vehicleLifecycle }
-  local vehiclePhaseView = { schemaVersion = 1, vehicles = vehiclePhases }
+  local vehiclePhaseView = { schemaVersion = 2, vehicles = vehiclePhases }
 
   -- TerminalInfo is intentionally opaque in the published API. We count its
   -- entries and use the documented getNumFreePlaces accessor, without relying
@@ -1894,7 +1919,7 @@ function M.mobilitySnapshot(registry, worldState)
   end
 
   local digestView = {
-    schemaVersion = 4,
+    schemaVersion = 5,
     availability = availability,
     totalPersons = totalPersons,
     terminalEdges = terminalEdges,
@@ -1902,6 +1927,7 @@ function M.mobilitySnapshot(registry, worldState)
     lines = lines,
     vehicleLifecycle = vehicleLifecycle,
     vehiclePhases = vehiclePhases,
+    vehicleRestoreSafe = vehicleRestoreSafe,
     totals = {
       passengerLineUses = passengerLineUses,
       cargoLineUses = cargoLineUses,
@@ -1920,6 +1946,7 @@ function M.mobilitySnapshot(registry, worldState)
   snapshot.scope = "native-read-only-aggregate"
   snapshot.errors = errors
   snapshot.vehicleStopDiagnostics = vehicleStopDiagnostics
+  snapshot.vehicleRestoreUnsafeVehicles = vehicleRestoreUnsafeVehicles
   snapshot.vehicleLifecycleDigest = hash.value(vehicleLifecycleView)
   snapshot.vehiclePhaseDigest = hash.value(vehiclePhaseView)
   snapshot.digest = hash.value(digestView)

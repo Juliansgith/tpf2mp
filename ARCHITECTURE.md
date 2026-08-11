@@ -15,13 +15,19 @@ Each Transport Fever 2 process contains two isolated Lua states:
 The companion process orders intents, coordinates all-peer prepare/physical/
 checkpoint barriers, and distributes commits. The native DLL observes or gates
 exact Build 35924 command visitors before an unsupported local mutation can
-escape host authority.
+escape host authority. Hook `0.17.0` also owns the bounded bridge worker: the
+game Lua thread signs and validates protocol envelopes but performs no numbered
+bridge file I/O when the exact hook is active. The native worker transports
+opaque bytes only; it never reads engine entities or applies commands.
 
 `companion/tpf2mp/bridge.py` owns the durable numbered file cursor. Outbound
 polling may inspect only the exact successor sequence, never enumerate session
 history or skip a gap. Durable protocol/evidence records remain available;
-only acknowledged clock-health traffic older than the 4,096-message tail is
-pruned. The host audit remains the primary replay authority.
+only acknowledged replaceable clock-health and vehicle-sync source files older
+than the 4,096-message tail are pruned. Every health report still updates live
+authority, while the host audit retains one forensic clock-health sample per
+peer per ten seconds instead of fsyncing every heartbeat. The host audit remains
+the primary replay authority for durable actions, barriers, and checkpoints.
 
 No machine-local entity ID is portable. Every peer binds its own native IDs to
 stable canonical identities and reports portable physical postconditions.
@@ -40,8 +46,10 @@ Domain modules under `res/scripts/tpf2_mp`:
 - `economy.lua` owns deterministic demand, five-minute accounting state,
   delivery cursors, operating-cost stocks/residuals, signed wallet-cent carry,
   and scoring. `economy_flow.lua` owns generalized cost, pinned-logit share
-  movement, exact hourly-rate proration, capacity allocation, and per-market
-  evaluation. `economy_feeder_access.lua` derives company-owned local
+  movement, exact hourly-rate proration, and per-market evaluation.
+  `economy_allocation.lua` owns canonical largest-remainder choice, capacity
+  admission, and the explicit waiting-demand remainder.
+  `economy_feeder_access.lua` derives company-owned local
   road/tram access at exact intercity station groups; its frequency/capacity
   score is recomputed at settlement and never becomes a stale authored cache.
   `economy_revenue.lua` owns passenger cohorts, distance fares,
@@ -96,6 +104,8 @@ Domain modules under `res/scripts/tpf2_mp`:
   and the fail-closed optional-write boundary.
 - `finance.lua` owns canonical network accounts and native-wallet reconciliation.
 - `world.lua` owns native-world inventory, ownership, and autonomy;
+  `world_vehicle_restore_phase.lua` owns the local-ID-free discrete vehicle
+  phase projection and its fail-closed native-save safety predicate;
   `native_command_authority.lua` is the single Lua seam that grants exact
   one-shot native visitor tokens to mod-authored commands and revokes an unused
   token when command submission fails before the visitor;
@@ -130,7 +140,9 @@ Domain modules under `res/scripts/tpf2_mp`:
   `freight_service_binding.lua` derives a portable source/sink/cargo contract
   from exact live stops, recipes, and every assigned consist's named capacity.
   `freight_transport_settlement.lua` reserves boarded and delivered stock as
-  one aggregate boundary transaction; `freight_transport_validation.lua`
+  one aggregate boundary transaction and retires a line's contract cursor at
+  ordered line-deletion consensus without erasing lifetime transport totals;
+  `freight_transport_validation.lua`
   enforces saved-contract and cursor integrity; `freight_industry_public.lua`
   builds the stock/production/transport view without exposing local IDs.
 - `edge_ownership.lua` owns private/public edge custody rules.
@@ -150,17 +162,26 @@ Runtime-controller modules:
   World-creation choices are inputs only until `match.initialise`; the ordered
   match rules and saved economy state are authoritative after that boundary.
 - `state_schema.lua` exclusively creates and migrates persisted game state.
+- `state_retention.lua` is the save-boundary compactor. It retains a 64-event
+  scalar/hash tail and independently bounded diagnostic capture tails, removing
+  nested native/proposal graphs that are neither authored truth nor replay
+  authority. Compaction is idempotent and never changes canonical/model digest
+  inputs.
 - `state_success_normalization.lua` removes the narrowly identified historical
   false-error residue from records whose explicit success proof is retained.
 - `checkpoint_runtime.lua` owns authored/core digests, event records, checkpoint
   payloads, and checkpoint export barriers.
 - `recovery_prepare_runtime.lua` owns game-side preparation/checkpoint handlers
   and the persisted, non-digested preparation status shown after save/load.
-- `recovery_native_save_runtime.lua` issues one peer-specific native `SaveGame`
-  command only while the companion and local checkpoint state identify the
-  same READY boundary and current core. Its bounded retry/command diagnostic is
-  machine-local and deliberately excluded from the authored digest.
+- `recovery_native_save_runtime.lua` derives the bounded peer-specific save
+  name and attempts a native `SaveGame` command only while the companion and
+  local checkpoint state identify the same READY boundary and current core.
+  Build 35924 exposes no public factory, so failure is diagnostic and the
+  exact-process watcher owns the guarded stock-UI fallback. This machine-local
+  state is deliberately excluded from the authored digest.
 - `public_snapshot.lua` produces the read-only engine-to-GUI state projection.
+  `capture_public_view.lua` reduces high-volume local capture histories to
+  counters, maps, and retained-tail metadata before they cross into GUI state.
 - `research_report.lua` owns the full diagnostic export projection, current
   limitation inventory, bridge receipt, and failure status.
 - `match_runtime.lua` owns deterministic ranking, match completion, bankruptcy
@@ -169,9 +190,15 @@ Runtime-controller modules:
   binding, postconditions, completion reports, and finance deltas.
 - `proposal_runtime.lua` owns proposal prepare/build/finalize, construction
   stabilization, canonical output binding, physical completion, and finance
-  normalization.
+  normalization. `network_finance_housekeeping.lua` owns the adaptive cadence
+  for the native wallet presentation cache and its barrier-safe deferral.
 - `network_intent_runtime.lua` owns the local intent FIFO, host-order wait state,
   barrier back-pressure, bridge ingress, acknowledgement, and reset lifecycle.
+- `network_pump_runtime.lua` owns the authority-preserving engine cadence for
+  bridge ingress, clocks, deferred work, vehicle synchronization, and stable
+  content/freight maintenance. `performance_runtime.lua` supplies bounded
+  native-monotonic task timings plus explicit scheduler run/skip counters; its
+  output is diagnostic and never enters an authored digest.
 - `network_followup_queue.lua` owns non-reentrant, coalesced authored work
   derived from commits; `service_registration_runtime.lua` owns its bounded
   submitted/quarantined/recovered diagnostic and permanent-failure policy;
@@ -200,6 +227,7 @@ Runtime-controller modules:
 - `vehicle_sync_runtime.lua` owns local canonical train arrival detection,
   native station holds, ordered release application/retry, and the digested
   station-round projection. `vehicle_sync_state.lua` owns its checkpoint view;
+  `vehicle_sync_release_runtime.lua` validates and applies ordered releases;
   `vehicle_sync_passengers.lua` atomically couples both passenger and cargo
   state to releases and vehicle operations. None writes a native vehicle
   position or treats native agents as authoritative.
@@ -226,6 +254,9 @@ GUI/native-adapter modules:
 - `gui_network_bootstrap.lua` re-arms native game/calendar pause authority in
   the GUI Lua state after a saved world replaces the pre-load engine state.
 - `gui_view.lua` formats the prototype overlay from a public snapshot.
+  `native_observation_telemetry.lua` emits only a digest and bounded shape
+  summary for routine native observations; complete bounded shapes remain in
+  research evidence rather than crossing the durable bridge every update.
 - `gui_authoritative_text.lua` formats canonical company, service, vehicle,
   station, fleet, and toolbar projections without retaining native GUI objects.
 - `gui_stock_presentation.lua` is the standard-UI adapter. It overwrites the
@@ -279,10 +310,26 @@ captured table reference would therefore mutate stale state after loading.
 - `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;
   `anchor_io.py` owns peer-local native-save requests, hashes, persistent
   negative identities, and transient READY transport.
-- `anchor_prepare.py` owns the one-action pause/quiescence/checkpoint state
-  machine and fences new ordered work while it manufactures a save boundary.
+- `anchor_prepare.py` owns the one-action drain/pause/checkpoint state machine
+  and fences new ordered work while it manufactures a save boundary;
+  `anchor_prepare_checkpoint.py` owns the host-generated checkpoint control;
+  `anchor_prepare_drain.py` owns fresh-health drain proofs and the internal
+  resume/re-pause transitions needed when station rounds cross that boundary;
+  `anchor_prepare_phase.py` orders two consecutive paused mobility samples and
+  refuses a boundary unless every peer's canonical vehicle/next-stop phase
+  agrees and each game reports a stable native/barrier restore phase;
+  `anchor_prepare_phase_recovery.py` advances an unbound vehicle to one shared
+  station boundary before resampling. The final proof also carries identical,
+  sorted canonical line/station-round cursors for every active vehicle.
+  Exact native coordinates remain deliberately non-authoritative.
 - `restore_session.py` owns receipt-bound resume admission and the mandatory
-  fresh-checkpoint fence; `host_status.py` owns the public companion projection.
+  fresh-checkpoint fence. The plan core authenticates the pre-migration source;
+  identical fresh convergence keys authenticate the peers' current migrated
+  state. A schema migration is therefore allowed to change core digest but not
+  to bypass source validation or all-peer convergence. Before opening that
+  fence, it seeds the otherwise-empty station barrier from the signed vehicle
+  cursors so the first post-restart report is exactly round N+1. `host_status.py` owns the
+  public companion projection.
 - `restore_plan_exchange.py` owns fail-closed host publication, pinned-link
   delivery, late-client replay, and durable client receipt of a verified plan.
 - `network.py` owns host ordering, prepare/physical/checkpoint consensus, and
@@ -290,24 +337,46 @@ captured table reference would therefore mutate stale state after loading.
 - `consensus.py` owns tracker construction, deadlines, pending selection, and
   strict proposal/operation/clock/vehicle-sync payload validation. `network.py` retains
   outcome policy and durable broadcast ordering.
-- `synchronization.py` owns the host's projected shared-clock policy,
-  rendezvous/correction lifecycle, adaptive slowest-peer governor, canonical
-  train station-round barrier, synchronization faults, and audit restoration.
-  Clock skew may drive authority only when all fresh health samples describe
-  the same current clock generation; mixed-generation projection is diagnostic.
+- `synchronization.py` owns shared-clock actions, rendezvous/correction and
+  native-pause fencing, synchronization faults, and audit restoration.
+  `clock_governor.py` owns the adaptive slowest-peer policy and hysteresis; it
+  compares measured game-time progress, never render/update frame rate.
+  `vehicle_barrier.py` owns canonical train station rounds and uses the same
+  debounced skew predicate before release. Clock skew may drive authority only
+  when all fresh health samples describe the same current clock generation;
+  mixed-generation projection is diagnostic.
 - `bridge.py`, `checkpoint.py`, `restore.py`, and `recovery.py` own durable local
   transport, independent replay, coordinated restore analysis, and native-save
-  archives respectively. `restore_plan.py` owns strict v2/v3/v4 plan schemas;
-  `native_save.py` owns stable `.sav`/`.sav.lua` hashing; v4 binds both plus the
-  source match profile. `session_identity.py` and the matching Lua
+  archives respectively. `restore_plan.py` owns strict legacy v2/v3 and current
+  v6 plan schemas; v4 lacks native route phase and v5 lacks the companion
+  station-round cursor, so both are deliberately retired for network resume.
+  plan construction requires exactly one policy choice: a bound match-content
+  profile or an explicit opt-in to the weaker policy-unbound legacy plan.
+  `native_save.py` owns stable `.sav`/`.sav.lua` hashing; v6 binds both, the
+  source match profile, and the paused vehicle phase/cursor proof.
+  `vehicle_phase_proof.py` and the matching Lua normalizer own that proof's
+  exact cross-runtime schema. `session_identity.py` and the matching Lua
   `restore_session_identity.lua` keep derived resume identities portable and
-  within the launcher's 64-character boundary. `local_restore.py` admits only a
-  contained, receipt-bound, peer-specific plan/archive/save set for launcher
-  discovery. `audit_replay.py` owns whole-audit ordering, physical
-  consensus, checkpoint, and digest-chain verification; `cli.py` is only the
-  command dispatcher.
+  within the launcher's 64-character boundary. `local_restore.py` admits only
+  contained, receipt-bound, peer-specific plan/archive/save sets and constructs
+  a pair only when both roles bind the same verified plan and boundary.
+  `audit_log.py` owns Windows-sharing-safe journal persistence and
+  closed-handle snapshots; `host_runtime.py` owns listener/poll liveness and the
+  observable fail-closed audit-fault state. `audit_replay.py` owns whole-audit
+  ordering, physical consensus, checkpoint, and digest-chain verification; its
+  strict settled mode additionally rejects incomplete terminal lanes and
+  commits awaiting peer digests. `cli.py` is only the command dispatcher.
 - The long-running `watch_recovery_saves.ps1` process waits for the stable
-  automatically named native save (or a correctly prefixed manual fallback),
+  automatically named native save (or a correctly prefixed manual fallback).
+  If the public save factory is absent, it serializes same-machine peers through
+  `save_recovery_via_ui.ps1`, which operates the stock Save dialog only at the
+  READY boundary explicitly created by `recovery.prepare`; an incidental
+  quiescent checkpoint may permit a manual save but never focus-stealing UI
+  automation. `recovery_save_common.ps1` shares the <=50-character naming
+  contract and resolves the exact receipt-bound bytes across retries. Native UI
+  acquisition and native file completion have separate deadlines; the latter is
+  bounded at 1,200 seconds and keeps the same-machine save lock until the stable
+  `.sav`/`.sav.lua` pair exists. The watcher
   hands its hash to the ordered receipt path, passes the session's exact
   match-content profile into host plan generation, atomically publishes the
   host plan, and re-binds player2's retained local archive after verified
@@ -320,6 +389,13 @@ captured table reference would therefore mutate stale state after loading.
   verification, byte-exact atomic publication, durable peer-plan copying, and
   receipt-bound re-archiving. The watcher owns retry/state policy but must not
   duplicate those file/verification operations.
+- `automatic_restore_capture.ps1` owns the fail-closed wait for two current-PID
+  watcher records naming one boundary and one plan checksum. The launcher
+  marker it writes can only request the ordinary host-authored
+  `recovery.prepare`; it grants no native-save or restore authority.
+  `run_fresh_local_restore_cycle.ps1` composes the existing paired discovery,
+  capture runner, process cleanup, and paired reload acceptance into the
+  unattended localhost recovery gate.
 
 ## Native modules
 

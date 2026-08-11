@@ -43,7 +43,7 @@ mod prefers `api.cmd.make.*` and uses the mirror only as a same-state fallback.
 
 The native command observers decode the `Command`/variant discriminator,
 classify all 37 tags, pair queued commands with their `ApplyCommand` result, and
-record direct applies which bypass `CommandList::Swap`. Hook 0.16.0 retains this
+record direct applies which bypass `CommandList::Swap`. Hook 0.17.0 retains this
 accounting path and adds pinned scalar capture for suppressed SetLine,
 BuyVehicle, lifecycle controls, and ReplaceVehicle plus a complete bounded
 SellVehicle vector before mutation. Reference run
@@ -58,6 +58,17 @@ global table, bypassing Transport Fever 2's guard against ordinary creation of
 globals:
 
 - `tpf2mp_native_status()` returns the current JSON status string;
+- `tpf2mp_native_bridge_configure(root, outSeq, inSeq)` binds a process-owned
+  bounded transport to a child of `%TEMP%\tpf2mp_bridge` and returns the first
+  immutable output sequence available;
+- `tpf2mp_native_bridge_emit(seq, bytes)` enqueues one already-signed envelope
+  without performing file I/O on the Lua/simulation thread;
+- `tpf2mp_native_bridge_take()` returns the next inbound envelope already read
+  by the native worker, preserving exact sequence order;
+- `tpf2mp_native_bridge_status()` reports bounded queue depth, bytes,
+  accepted/written/read/taken/rejected counters, and the last transport error;
+- `tpf2mp_native_monotonic_us()` exposes the process monotonic performance clock
+  used only for local task timings;
 - `tpf2mp_native_launcher_bootstrap_ready()` returns `ready` only when the
   process-specific launcher barrier contains that exact value, using native
   filesystem I/O so Build 35924's Lua file cache cannot stale the handoff;
@@ -95,6 +106,11 @@ globals:
 The same status is atomically written to
 `%TEMP%\tpf2mp_native\status-<pid>.json`. `latest.json` is only a convenience;
 the PID-specific file is authoritative when multiple game instances exist.
+Status publication is coalesced to at most four writes per second. The bridge
+worker wakes every 10 ms, processes at most 32 outputs and 32 inputs per pass,
+and is bounded to 4,096 messages, 64 MiB queued, and 8 MiB per message. It
+transports opaque UTF-8 only and never touches engine entities, GUI objects,
+Lua state, or commands from the worker thread.
 The exact visitor set, disassembly boundary, and live suppress/authorize proof
 are documented in
 `investigation/CONSEQUENTIAL_COMMAND_GATES_BUILD35924_2026-08-02.md`.

@@ -1,5 +1,11 @@
 # Town size must not depend on the crowd policy
 
+> Current-policy note (2026-08-10): the independence conclusions remain valid,
+> but the default skeleton implementation now caps each otherwise populated
+> building at exactly one native capacity slot instead of divide-by-64. The
+> authored model still derives town size from buildings, not native capacity.
+> See [the current performance policy](NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md).
+
 Date: 2026-08-07 (Europe/Amsterdam)
 Scope: the competitive economy stops reading presentation-scaled native
 capacity. Found by static reading while answering "what else drives town

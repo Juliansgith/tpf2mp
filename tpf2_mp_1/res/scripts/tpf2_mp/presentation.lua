@@ -38,6 +38,7 @@ M.MODES = {
     capacityNumerator = 1,
     capacityDenominator = 64,
     capacityFloor = 1,
+    capacityCeiling = 1,
     pinLoadSpeed = true,
     simulateCargoWeight = false,
     destinationRecomputationPermille = 250,
@@ -51,6 +52,7 @@ M.MODES = {
     capacityNumerator = 1,
     capacityDenominator = 1000000000,
     capacityFloor = 1,
+    capacityCeiling = 1,
     pinLoadSpeed = true,
     simulateCargoWeight = false,
     destinationRecomputationPermille = 0,
@@ -77,6 +79,7 @@ function M.scaledCapacity(capacity, policy)
   if policy.capacityDenominator <= 1 and policy.capacityNumerator == 1 then return base end
   local scaled = math.floor(base * policy.capacityNumerator / policy.capacityDenominator)
   if base > 0 and scaled < policy.capacityFloor then scaled = policy.capacityFloor end
+  if policy.capacityCeiling then scaled = math.min(scaled, policy.capacityCeiling) end
   return math.max(0, scaled)
 end
 
@@ -195,7 +198,7 @@ function M.fingerprint(policy)
   return table.concat({
     "agents", policy.label,
     tostring(policy.capacityNumerator), tostring(policy.capacityDenominator),
-    tostring(policy.capacityFloor),
+    tostring(policy.capacityFloor), tostring(policy.capacityCeiling or 0),
     policy.pinLoadSpeed and "pinned" or "native",
     tostring(policy.simulateCargoWeight and 1 or 0),
     tostring(policy.destinationRecomputationPermille),

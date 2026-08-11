@@ -41,7 +41,12 @@ local function describeRect(component)
   return table.concat(values, ",")
 end
 
-local seed = assert(api.gui.util.getById(rootId), "stock GUI component is unavailable: " .. rootId)
+local seed = nil
+if rootId == "__gameUI__" then
+  seed = assert(api.gui.util.getGameUI(), "stock game GUI root is unavailable")
+else
+  seed = assert(api.gui.util.getById(rootId), "stock GUI component is unavailable: " .. rootId)
+end
 local root = seed
 local climbed = 0
 local ancestors = {}

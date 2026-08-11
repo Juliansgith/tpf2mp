@@ -75,6 +75,31 @@ function Get-Tpf2mpLatestLocalRestore {
     return $candidate
 }
 
+function Get-Tpf2mpLatestLocalRestorePair {
+    param([Parameter(Mandatory = $true)][string]$BundleRoot)
+    $sessionsRoot = Join-Path (Get-Tpf2mpSupportRoot) 'sessions'
+    $companion = Get-Tpf2mpCompanionCommand $BundleRoot
+    $previousPythonPath = $env:PYTHONPATH
+    if ($companion.Mode -eq 'source') {
+        $env:PYTHONPATH = Join-Path (Resolve-Tpf2mpFullPath $BundleRoot) 'companion'
+    }
+    try {
+        $output = @(& $companion.FilePath @($companion.Prefix + @(
+            'latest-local-restore-pair', '--sessions-root', $sessionsRoot
+        )) 2>&1)
+        if ($LASTEXITCODE -ne 0) {
+            throw "No verified two-peer local restore is ready: $($output -join ' ')"
+        }
+    }
+    finally { $env:PYTHONPATH = $previousPythonPath }
+    $pair = ($output -join "`n") | ConvertFrom-Json
+    if (-not $pair.planPath -or -not $pair.peers.player1.savePath `
+            -or -not $pair.peers.player2.savePath) {
+        throw 'Local restore-pair discovery returned incomplete metadata.'
+    }
+    return $pair
+}
+
 function Get-Tpf2mpNativePaths {
     param([Parameter(Mandatory = $true)][string]$BundleRoot)
     $bundle = Resolve-Tpf2mpFullPath $BundleRoot
@@ -148,6 +173,26 @@ function Write-Tpf2mpMatchContentProfile {
     return $resolved
 }
 
+function Assert-Tpf2mpCurrentRestorePlan {
+    param([Parameter(Mandatory = $true)][object]$RestorePlan)
+
+    if ([int]$RestorePlan.version -ne 6) {
+        throw 'Network resume requires current restore plan v6; older plans do not bind native vehicle route phase and station-round cursors.'
+    }
+    $proofProperty = $RestorePlan.PSObject.Properties['vehiclePhaseProof']
+    $proof = if ($proofProperty) { $proofProperty.Value } else { $null }
+    $digestProperty = if ($proof) {
+        $proof.PSObject.Properties['vehiclePhaseDigest']
+    } else { $null }
+    $digest = if ($digestProperty) { [string]$digestProperty.Value } else { '' }
+    $roundsProperty = if ($proof) { $proof.PSObject.Properties['vehicleRounds'] } else { $null }
+    if (-not $proof -or -not $roundsProperty -or [int]$proof.schemaVersion -ne 1 `
+        -or $digest -notmatch '^[0-9a-f]{8}$') {
+        throw 'Current restore plan is missing a valid native vehicle phase/cursor proof.'
+    }
+    return $RestorePlan
+}
+
 function Resolve-Tpf2mpRestoreMatchProfile {
     param(
         [Parameter(Mandatory = $true)][object]$RestorePlan,
@@ -194,6 +239,63 @@ function Read-Tpf2mpSessionState {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
     try { return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) }
     catch { return $null }
+}
+
+function Find-Tpf2mpPausedWakeEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$OutboxPath,
+        [string]$Session,
+        [ValidateSet('', 'player1', 'player2')][string]$Peer = '',
+        [string[]]$ExcludeNames = @()
+    )
+    if (-not (Test-Path -LiteralPath $OutboxPath -PathType Container)) { return $null }
+    foreach ($file in Get-ChildItem -LiteralPath $OutboxPath -File -Filter '*.json' `
+            -ErrorAction SilentlyContinue | Sort-Object Name -Descending) {
+        if ($ExcludeNames -contains $file.Name) { continue }
+        try {
+            $message = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
+            if (($Session -and [string]$message.session -ne $Session) `
+                    -or ($Peer -and [string]$message.peer -ne $Peer)) { continue }
+            $eventProperty = $message.payload.PSObject.Properties['event']
+            $eventName = if ($eventProperty) { [string]$eventProperty.Value } else { '' }
+            if ($message.kind -eq 'clock_health' -or $eventName -eq 'launcher-bootstrap-state') {
+                return $file.FullName
+            }
+            $actionProperty = $message.payload.PSObject.Properties['action']
+            $actionType = if ($actionProperty) { [string]$actionProperty.Value.type } else { '' }
+            if ($actionType -in @('recovery.resume', 'match.initialise')) { return $file.FullName }
+        }
+        catch { }
+    }
+    return $null
+}
+
+function Request-Tpf2mpPersistentPausedPump {
+    param(
+        [Parameter(Mandatory = $true)]$GameProcess,
+        [Parameter(Mandatory = $true)][string]$BridgePath,
+        [ValidateRange(1, 30)][int]$WaitSeconds = 8
+    )
+    $receiptPath = Join-Path $BridgePath 'launcher\paused-network-pump'
+    $generationPath = Join-Path $BridgePath 'launcher\network-pump-generation'
+    $generation = 'wake-' + [DateTime]::UtcNow.Ticks.ToString('x')
+    if (Test-Path -LiteralPath $receiptPath -PathType Leaf) { [IO.File]::Delete($receiptPath) }
+    [IO.File]::WriteAllText($generationPath, $generation, [Text.UTF8Encoding]::new($false))
+    $receipt = $null
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    while ((Get-Date) -lt $deadline -and -not $receipt) {
+        $GameProcess.Refresh()
+        if ($GameProcess.HasExited) { throw 'Game exited while waiting for its persistent paused-world pump.' }
+        if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+            try {
+                $candidate = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
+                if ([string]$candidate.generation -eq $generation) { $receipt = $candidate }
+            }
+            catch { }
+        }
+        if (-not $receipt) { Start-Sleep -Milliseconds 100 }
+    }
+    return [pscustomobject]@{ generation = $generation; receipt = $receipt; path = $receiptPath }
 }
 
 function Test-Tpf2mpCompanionCommandLine {

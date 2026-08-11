@@ -13,7 +13,7 @@ from .freight_live_report import configure_cli as configure_freight_live_cli
 from .freight_live_report import run_cli as run_freight_live_cli
 from .manifest import build_manifest, load_manifest, write_manifest
 from .network import CommitClient, CommitHost
-from .local_restore import latest_local_restore
+from .local_restore import latest_local_restore, latest_local_restore_pair
 from .passenger_feeder_live_report import (
     configure_cli as configure_passenger_feeder_live_cli,
 )
@@ -61,6 +61,11 @@ def parser() -> argparse.ArgumentParser:
     replay = commands.add_parser("replay", help="verify and summarize an audit log")
     replay.add_argument("audit", type=Path)
     replay.add_argument("--session")
+    replay.add_argument(
+        "--require-settled",
+        action="store_true",
+        help="also reject any missing peer digest or faulted/pending consensus lane",
+    )
 
     configure_freight_live_cli(commands)
     configure_passenger_feeder_live_cli(commands)
@@ -156,6 +161,11 @@ def parser() -> argparse.ArgumentParser:
     )
     latest_restore.add_argument("--sessions-root", type=Path, required=True)
     latest_restore.add_argument("--peer", choices=("player1", "player2"), required=True)
+    latest_pair = commands.add_parser(
+        "latest-local-restore-pair",
+        help="find the newest verified matching pair of local restore archives",
+    )
+    latest_pair.add_argument("--sessions-root", type=Path, required=True)
     return result
 
 
@@ -185,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             fingerprint = load_manifest(args.manifest)["fingerprint"] if args.manifest else None
             CommitClient(GameBridge(bridge_path, args.session, args.peer), args.host, args.port, fingerprint).run()
         elif args.command == "replay":
-            return replay(args.audit, args.session)
+            return replay(args.audit, args.session, require_settled=args.require_settled)
         elif args.command == "freight-live-report":
             return run_freight_live_cli(args, replay)
         elif args.command == "passenger-feeder-live-report":
@@ -235,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             ) if args.match_profile else None
             plan = write_restore_plan(
                 args.audit, args.output, args.session, args.boundary, match_profile,
+                allow_legacy_unbound=args.allow_legacy_unbound,
             )
             print(f"restore_plan={args.output.resolve()}")
             print(f"restore_plan_version={plan['version']}")
@@ -293,6 +304,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "latest-local-restore":
             print(json.dumps(
                 latest_local_restore(args.sessions_root, args.peer),
+                sort_keys=True, separators=(",", ":"),
+            ))
+        elif args.command == "latest-local-restore-pair":
+            print(json.dumps(
+                latest_local_restore_pair(args.sessions_root),
                 sort_keys=True, separators=(",", ":"),
             ))
         return 0

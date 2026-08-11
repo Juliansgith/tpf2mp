@@ -245,7 +245,7 @@ def main() -> None:
         _same(f"{label} final state", _digest_view(economy), scenario["final"])
         model = {"economy": economy, "companies": scenario["companies"]}
         _same(f"{label} scoreboard", checkpoint._scoreboard(model), scenario["scoreboard"])
-    print(f"PASS {len(vectors['scenarios'])} cross-language v2-v8 economy parity scenarios")
+    print(f"PASS {len(vectors['scenarios'])} cross-language v2-v9 economy parity scenarios")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ local canonical = require "tpf2_mp/canonical"
 local world = require "tpf2_mp/world"
 local vehicleSyncState = require "tpf2_mp/vehicle_sync_state"
 local vehicleSyncPassengers = require "tpf2_mp/vehicle_sync_passengers"
+local vehicleSyncReleaseRuntime = require "tpf2_mp/vehicle_sync_release_runtime"
 local M, disabledSchedule = {}, vehicleSyncState.disabledSchedule
 
 M.digestView = vehicleSyncState.digestView
@@ -35,6 +36,7 @@ function M.new(deps)
     __newindex = function(_, key, value) getState()[key] = value end,
   })
   local localVehicles = {}
+  local canonicalVehicleCids = nil
 
   local function safeField(value, key)
     if value == nil then return nil end
@@ -47,6 +49,24 @@ function M.new(deps)
       managed = 0, held = 0, released = 0, faults = 0, reports = 0,
     }
     return state.probes.vehicleSync
+  end
+
+  local function vehicleCids()
+    if canonicalVehicleCids ~= nil then return canonicalVehicleCids end
+    canonicalVehicleCids = {}
+    local telemetry = probe()
+    telemetry.canonicalScans = math.max(0, util.integer(telemetry.canonicalScans, 0)) + 1
+    local keys = util.sortedKeys(state.canonical.byCanonical or {})
+    telemetry.canonicalEntriesScanned = math.max(
+      0, util.integer(telemetry.canonicalEntriesScanned, 0)) + #keys
+    for _, cid in ipairs(keys) do
+      local binding = state.canonical.byCanonical[cid]
+      if binding and binding.kind == "vehicle" then
+        canonicalVehicleCids[#canonicalVehicleCids + 1] = cid
+      end
+    end
+    telemetry.cachedVehicleCount = #canonicalVehicleCids
+    return canonicalVehicleCids
   end
 
   local function now()
@@ -280,81 +300,17 @@ function M.new(deps)
   local runtime = {}
 
   function runtime.applyRelease(action)
-    if state.networkMode ~= "network" then return false, "vehicle synchronization is network-only" end
-    local vehicleCid = type(action) == "table" and tostring(action.vehicleCid or "") or ""
-    local lineCid = type(action) == "table" and tostring(action.lineCid or "") or ""
-    local round = util.integer(action and action.round, 0)
-    local stopIndex = util.integer(action and action.stopIndex, -1)
-    local releaseAt = tonumber(action and action.releaseAtGameTime)
-    if not vehicleCid:match("^vehicle:") or not lineCid:match("^line:")
-      or round < 1 or stopIndex < 0 or stopIndex > 255 or not releaseAt or releaseAt < 0
-      or type(action.releaseWhilePaused) ~= "boolean" then
-      return false, "invalid canonical vehicle release"
-    end
-    local releaseSchedule, scheduleError = vehicleSyncState.normalizeReleaseSchedule(
-      action.schedule, releaseAt, action.releaseWhilePaused)
-    if not releaseSchedule then return false, scheduleError end
-    local binding = state.canonical.byCanonical[vehicleCid]
-    if not binding or binding.kind ~= "vehicle" then
-      return false, "canonical vehicle release target is not mapped"
-    end
-    local sync = state.world.vehicleSync
-    local entry = sync.vehicles[vehicleCid]
-    local priorRound = entry and math.max(0, util.integer(entry.lastAuthorizedRound, 0)) or 0
-    if round < priorRound or round > priorRound + 1 then return false, "vehicle release round is not sequential" end
-    if round == priorRound then
-      local same = entry.lineCid == lineCid and entry.stopIndex == stopIndex
-        and tonumber(entry.releaseAtGameTime) == releaseAt
-        and entry.releaseWhilePaused == action.releaseWhilePaused
-        and vehicleSyncState.equalSchedules(entry.schedule, releaseSchedule)
-      if not same then return false, "conflicting duplicate vehicle release" end
-      local aligned, alignmentError = vehicleSyncPassengers.applyRelease(
-        state.world, state.economy, sync, action, binding.metadata)
-      if not aligned then return false, alignmentError end
-      return true, util.deepCopy(entry)
-    end
-    local presented, presentationResult = vehicleSyncPassengers.applyRelease(
-      state.world, state.economy, sync, action, binding.metadata)
-    if not presented then
-      return false, presentationResult
-    end
-    sync.vehicles[vehicleCid] = {
-      vehicleCid = vehicleCid,
-      lineCid = lineCid,
-      companyCid = binding.metadata and binding.metadata.owner or nil,
-      lastAuthorizedRound = round,
-      stopIndex = stopIndex,
-      releaseAtGameTime = releaseAt,
-      releaseWhilePaused = action.releaseWhilePaused == true,
-      schedule = util.deepCopy(releaseSchedule),
-    }
-    sync.scheduleReservations = sync.scheduleReservations or {}
-    if releaseSchedule.enabled == true then
-      local reservationKey = lineCid .. "#" .. tostring(stopIndex)
-      sync.scheduleReservations[reservationKey] = {
-        lineCid = lineCid,
-        stopIndex = stopIndex,
-        periodSeconds = releaseSchedule.periodSeconds,
-        phaseSeconds = releaseSchedule.phaseSeconds,
-        lastSlotIndex = releaseSchedule.slotIndex,
-        lastScheduledDepartureAt = releaseSchedule.scheduledDepartureAt,
-      }
-    else sync.scheduleReservations[lineCid .. "#" .. tostring(stopIndex)] = nil end
-    local record = localVehicles[vehicleCid]
-    if record then
-      record.lineCid = lineCid
-      record.round = round
-      record.stopIndex = stopIndex
-      record.schedule = util.deepCopy(releaseSchedule)
-      record.phase = "release-armed"
-    end
-    return true, util.deepCopy(sync.vehicles[vehicleCid])
+    return vehicleSyncReleaseRuntime.apply(state, localVehicles, action)
   end
 
   function runtime.onOperationConsensus(record)
     local transaction = record and record.transaction or nil
     local data = transaction and transaction.data or nil
     if type(transaction) ~= "table" or type(data) ~= "table" then return false end
+    if transaction.kind == "vehicle.buy" or transaction.kind == "vehicle.sell"
+      or transaction.kind == "vehicle.sell_batch" then
+      canonicalVehicleCids = nil
+    end
     local sync = state.world.vehicleSync
     local function applyPassengerOperation()
       return vehicleSyncPassengers.applyOperation(state.world, state.economy, transaction, record.companyCid)
@@ -397,10 +353,12 @@ function M.new(deps)
   function runtime.update()
     if state.networkMode ~= "network" or not state.initialized
       or state.world.vehicleSync.enabled == false then return false end
+    local telemetry = probe()
+    telemetry.updateCalls = math.max(0, util.integer(telemetry.updateCalls, 0)) + 1
     local managed = 0
-    for _, vehicleCid in ipairs(util.sortedKeys(state.canonical.byCanonical or {})) do
+    for _, vehicleCid in ipairs(vehicleCids()) do
       local binding = state.canonical.byCanonical[vehicleCid]
-      if binding.kind == "vehicle" then
+      if binding and binding.kind == "vehicle" then
         local ok, result = pcall(processVehicle, binding)
         if not ok then
           local lineCid = binding.metadata and binding.metadata.lineCid
@@ -426,6 +384,7 @@ function M.new(deps)
 
   function runtime.reset()
     localVehicles = {}
+    canonicalVehicleCids = nil
   end
 
   function runtime.localState()

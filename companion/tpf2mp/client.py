@@ -27,6 +27,8 @@ class CommitClient:
         self.status = "starting"
         self.connected = False
         self.last_error: str | None = None
+        self.retry_attempts, self.retry_delay_seconds = 0, 0.0
+        self._next_connection_error_log_at = 0.0
         self.next_host_seq: int | None = None
         self.anchor_state: dict[str, object] | None = None
         self.anchor_requests = AnchorRequestStore(self.bridge)
@@ -50,8 +52,11 @@ class CommitClient:
                 "outboxEphemeralRetention": self.bridge.outbox_ephemeral_retention,
                 "lastCommitSeq": self._last_commit(),
                 "lastError": self.last_error,
-                "matchFingerprint": self.match_fingerprint,
+                "retryAttempts": self.retry_attempts,
+                "retryDelaySeconds": self.retry_delay_seconds,
+                "matchFingerprint": self.match_fingerprint, "pausedHeartbeatRequired": anchor.get("pausedHeartbeatRequired", True) is True,
                 "anchorReady": anchor.get("ready") is True,
+                "anchorReceiptReady": anchor.get("receiptReady", anchor.get("ready")) is True,
                 "anchorBoundarySeq": anchor.get("boundarySeq"),
                 "anchorReasons": anchor.get("reasons", ["host readiness has not arrived"]),
                 "anchorCoreDigest": anchor.get("coreDigest"),
@@ -93,6 +98,8 @@ class CommitClient:
         self.connected = True
         self.status = "connected"
         self.last_error = None
+        self.retry_attempts = 0
+        self.retry_delay_seconds = 0.0
         self.next_host_seq = int(acknowledgement.get("next_seq", 0))
         self._write_status()
         print(f"connected to {self.host}:{self.port}; next host sequence {acknowledgement.get('next_seq')}")
@@ -173,10 +180,27 @@ class CommitClient:
                     if self.stop.is_set():
                         break
                     self.connected = False
+                    previous_error = self.last_error
                     self.last_error = str(exc)
+                    self.retry_attempts += 1
+                    self.retry_delay_seconds = min(
+                        10.0,
+                        max(0.01, float(retry_seconds))
+                        * (2 ** min(self.retry_attempts - 1, 4)),
+                    )
                     self._write_status("retrying")
-                    print(f"connection unavailable: {exc}; retrying in {retry_seconds:.1f}s")
-                    self.stop.wait(retry_seconds)
+                    now = time.monotonic()
+                    error_text = str(exc)
+                    if self.retry_attempts == 1 \
+                            or error_text != previous_error \
+                            or now >= self._next_connection_error_log_at:
+                        print(
+                            f"connection unavailable: {exc}; retrying in "
+                            f"{self.retry_delay_seconds:.1f}s "
+                            f"(attempt {self.retry_attempts})"
+                        )
+                        self._next_connection_error_log_at = now + 30.0
+                    self.stop.wait(self.retry_delay_seconds)
         except KeyboardInterrupt:
             pass
         finally:

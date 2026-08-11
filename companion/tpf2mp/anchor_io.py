@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
+from .anchor_state import anchor_state_message, validate_anchor_state
 from .bridge import GameBridge, atomic_write
 from .native_save import hash_load_bearing_save
 from .protocol import (
@@ -22,79 +23,6 @@ from .protocol import (
     sign,
     validate_action,
 )
-
-
-def anchor_state_message(
-    session: str, peer: str, readiness: Mapping[str, Any],
-    preparation: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Build transient host readiness sent to every client companion."""
-
-    preparation = preparation or {}
-    return sign({
-        "protocol": PROTOCOL_VERSION,
-        "session": session,
-        "kind": "anchor_state",
-        "peer": peer,
-        "payload": {
-            "schemaVersion": 2,
-            "ready": readiness.get("ready") is True,
-            "boundarySeq": max(0, int(readiness.get("boundarySeq", 0))),
-            "coreDigest": str(readiness.get("coreDigest") or ""),
-            "convergenceKey": str(readiness.get("convergenceKey") or ""),
-            "reasons": [str(item)[:512] for item in readiness.get("reasons", [])],
-            "preparationStatus": str(preparation.get("anchorPreparationStatus") or "idle"),
-            "preparationSeq": preparation.get("anchorPreparationSeq"),
-            "preparationCheckpointSeq": preparation.get("anchorPreparationCheckpointSeq"),
-            "preparationDetail": preparation.get("anchorPreparationDetail"),
-            "publishedAtUnixMs": int(time.time() * 1000),
-        },
-    })
-
-
-def validate_anchor_state(message: Mapping[str, Any]) -> dict[str, Any]:
-    payload = message.get("payload")
-    base = {
-        "schemaVersion", "ready", "boundarySeq", "coreDigest",
-        "convergenceKey", "reasons", "publishedAtUnixMs",
-    }
-    preparation = {
-        "preparationStatus", "preparationSeq", "preparationCheckpointSeq", "preparationDetail",
-    }
-    schema = payload.get("schemaVersion") if isinstance(payload, dict) else None
-    expected = base | preparation if schema == 2 else base
-    if message.get("kind") != "anchor_state" or not isinstance(payload, dict) \
-            or set(payload) != expected or schema not in {1, 2}:
-        raise ProtocolError("anchor readiness message is malformed")
-    boundary = payload.get("boundarySeq")
-    published = payload.get("publishedAtUnixMs")
-    if not isinstance(payload.get("ready"), bool) \
-            or not isinstance(boundary, int) or isinstance(boundary, bool) or boundary < 0 \
-            or not isinstance(published, int) or isinstance(published, bool) or published < 0:
-        raise ProtocolError("anchor readiness values are invalid")
-    for field in ("coreDigest", "convergenceKey"):
-        if not isinstance(payload.get(field), str) or len(payload[field]) > 128:
-            raise ProtocolError(f"anchor readiness {field} is invalid")
-    reasons = payload.get("reasons")
-    if not isinstance(reasons, list) or len(reasons) > 32 \
-            or any(not isinstance(item, str) or len(item) > 512 for item in reasons):
-        raise ProtocolError("anchor readiness reasons are invalid")
-    if schema == 2:
-        if payload.get("preparationStatus") not in {
-            "idle", "pause-requested", "pausing", "checkpointing", "converged",
-            "ready", "failed", "superseded",
-        }:
-            raise ProtocolError("anchor preparation status is invalid")
-        for field in ("preparationSeq", "preparationCheckpointSeq"):
-            value = payload.get(field)
-            if value is not None and (
-                not isinstance(value, int) or isinstance(value, bool) or value < 1
-            ):
-                raise ProtocolError(f"anchor {field} is invalid")
-        detail = payload.get("preparationDetail")
-        if detail is not None and (not isinstance(detail, str) or len(detail) > 512):
-            raise ProtocolError("anchor preparation detail is invalid")
-    return dict(payload)
 
 
 class AnchorRequestStore:
@@ -166,14 +94,37 @@ class AnchorRequestStore:
 
     def pending(self) -> Iterator[dict[str, Any]]:
         for path in sorted(self.requests.glob("*.json")):
-            request = self._read(path)
+            request_id = path.stem
+            valid_id = len(request_id) == 32 and all(
+                character in "0123456789abcdef" for character in request_id
+            )
+            result = self._result(request_id) if valid_id else None
+            if result and result.get("status") in {"accepted", "rejected"}:
+                continue
+            try:
+                request = self._read(path)
+            except ProtocolError as exc:
+                # A watcher may move, replace, or lose a just-written save
+                # before the companion's next poll. Reject that durable queue
+                # item in isolation; never terminate the authenticated host or
+                # client process and strand the whole session.
+                if valid_id:
+                    self._write_result(request_id, {
+                        "status": "rejected",
+                        "boundarySeq": None,
+                        "saveSha256": None,
+                        "metadataSha256": None,
+                        "localSeq": None,
+                        "error": str(exc)[:1024],
+                    })
+                continue
             result = self._result(request["requestId"])
             if not result or result.get("status") not in {"accepted", "rejected"}:
                 yield request
 
     @staticmethod
     def _matches_state(request: Mapping[str, Any], state: Mapping[str, Any]) -> bool:
-        return state.get("ready") is True \
+        return state.get("receiptReady", state.get("ready")) is True \
             and int(state.get("boundarySeq", 0)) == int(request["boundarySeq"]) \
             and state.get("coreDigest") == request["coreDigest"] \
             and state.get("convergenceKey") == request["convergenceKey"]
@@ -182,7 +133,7 @@ class AnchorRequestStore:
         changed = False
         for request in self.pending():
             try:
-                readiness = anchor.readiness()
+                readiness = anchor.readiness(receipt=True)
                 if not self._matches_state(request, readiness):
                     raise ProtocolError("anchor request no longer matches a READY boundary")
                 result = anchor.anchor_save(request["savePath"], request["savedAtUnix"])

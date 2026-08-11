@@ -9,15 +9,19 @@ $root = [IO.Path]::GetFullPath($ProjectRoot)
 
 $budgets = [ordered]@{
     'tools\recovery_plan_common.ps1' = 120
+    'tools\recovery_save_common.ps1' = 120
+    'tools\save_recovery_via_ui.ps1' = 240
     'tpf2_mp_1\res\config\game_script\tpf2_mp.lua' = 3400
     'tpf2_mp_1\res\scripts\tpf2_mp\economy.lua' = 880
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_costs.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_flow.lua' = 260
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_allocation.lua' = 110
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_feeder_access.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_revenue.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_difficulty.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_town_demand.lua' = 210
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_action_runtime.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\state_retention.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_line_registration.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_settlement_transaction.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_service_quarantine.lua' = 70
@@ -31,6 +35,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_demo.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_collateral_runtime.lua' = 40
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_finance_housekeeping.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
     'tpf2_mp_1\res\scripts\tpf2_mp\service_registration_runtime.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\network_followup_queue.lua' = 170
@@ -39,12 +44,13 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_health.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\network_speed_indicator.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_runtime.lua' = 420
+    'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_release_runtime.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_sync_state.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\native_ownership_projection.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\match_runtime.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\authored_followup_runtime.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\recovery_prepare_runtime.lua' = 100
-    'tpf2_mp_1\res\scripts\tpf2_mp\recovery_native_save_runtime.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\recovery_native_save_runtime.lua' = 170
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_clock.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_content_gate.lua' = 70
@@ -61,7 +67,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_text.lua' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_lists.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
-    'companion\tpf2mp\network.py' = 1450
+    'companion\tpf2mp\network.py' = 1460
     'companion\tpf2mp\cli.py' = 430
     'companion\tpf2mp\audit_consensus.py' = 180
     'companion\tpf2mp\completion_validation.py' = 150
@@ -69,25 +75,39 @@ $budgets = [ordered]@{
     'companion\tpf2mp\bridge.py' = 200
     'companion\tpf2mp\anchor.py' = 300
     'companion\tpf2mp\anchor_prepare.py' = 260
-    'companion\tpf2mp\anchor_io.py' = 300
+    'companion\tpf2mp\anchor_prepare_checkpoint.py' = 80
+    'companion\tpf2mp\anchor_prepare_phase.py' = 180
+    'companion\tpf2mp\anchor_prepare_phase_recovery.py' = 140
+    'companion\tpf2mp\anchor_io.py' = 320
     'companion\tpf2mp\restore.py' = 400
     'companion\tpf2mp\restore_plan.py' = 180
     'companion\tpf2mp\native_save.py' = 70
     'companion\tpf2mp\session_identity.py' = 80
     'companion\tpf2mp\restore_plan_exchange.py' = 120
-    'companion\tpf2mp\local_restore.py' = 140
+    'companion\tpf2mp\local_restore.py' = 150
+    'tools\run_latest_local_restore_acceptance.ps1' = 120
+    'tools\ensure_paused_network_wake.ps1' = 120
+    'tools\automatic_restore_capture.ps1' = 150
+    'tools\run_fresh_local_restore_cycle.ps1' = 150
     'companion\tpf2mp\recovery_receipt_protocol.py' = 70
     'companion\tpf2mp\consensus.py' = 300
     'companion\tpf2mp\synchronization.py' = 700
     'companion\tpf2mp\vehicle_barrier.py' = 390
     'companion\tpf2mp\paused_deadline.py' = 210
     'native\src\hook_dll.cpp' = 1250
+    'native\src\native_async_bridge.cpp' = 450
     'native\src\native_command_codec.cpp' = 350
     'native\src\native_vehicle_command_codec.cpp' = 180
     'native\src\native_hook_status.cpp' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_vehicle_restore_phase.lua' = 110
     'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua' = 280
+    'tpf2_mp_1\res\scripts\tpf2_mp\capture_public_view.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\performance_runtime.lua' = 130
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_pump_runtime.lua' = 130
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_heartbeat.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\native_observation_telemetry.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\research_report.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\state_success_normalization.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\world_identity.lua' = 200
@@ -117,6 +137,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\diagnostic_log.lua' = 30
     'tpf2_mp_1\res\scripts\tpf2_mp\service_registration_integration.lua' = 60
     'companion\tpf2mp\host_intents.py' = 60
+    'companion\tpf2mp\anchor_state.py' = 120
     'companion\tpf2mp\industry_content.py' = 500
     'companion\tpf2mp\freight.py' = 260
     'companion\tpf2mp\freight_protocol.py' = 180
@@ -129,6 +150,8 @@ $budgets = [ordered]@{
     'companion\tpf2mp\freight_live_report.py' = 260
     'companion\tpf2mp\passenger_feeder_live_report.py' = 500
     'companion\tpf2mp\protocol.py' = 1650
+    'companion\tpf2mp\vehicle_phase_proof.py' = 60
+    'companion\tpf2mp\mobility_telemetry.py' = 110
     'companion\tpf2mp\line_registration_protocol.py' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua' = 680
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_facts.lua' = 480
@@ -167,6 +190,48 @@ foreach ($file in $luaSources) {
 
 $entryPoint = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\config\game_script\tpf2_mp.lua') -Raw
+$menuBootstrap = Get-Content -LiteralPath `
+    (Join-Path $root 'tools\multiplayer_menu_bootstrap.lua') -Raw
+if ($menuBootstrap.Contains('networkPumpCount >= 30')) {
+    throw 'Paused launcher heartbeat regressed to a finite startup burst.'
+}
+foreach ($pausedHeartbeatBoundary in @(
+    'launcherHeartbeat = true',
+    'if startClicked then pumpPausedNetwork() end',
+    'local ready = nativeIsReady or markerReady',
+    'exists(root .. "/launcher/start-clicked")',
+    'network-pump-generation'
+)) {
+    if (-not $menuBootstrap.Contains($pausedHeartbeatBoundary)) {
+        throw "Persistent paused launcher heartbeat boundary is missing: $pausedHeartbeatBoundary"
+    }
+}
+$pausedWakeScript = Get-Content -LiteralPath `
+    (Join-Path $root 'tools\ensure_paused_network_wake.ps1') -Raw
+if (-not $pausedWakeScript.Contains('Request-Tpf2mpPersistentPausedPump')) {
+    throw 'Paused-network startup no longer rearms and verifies its persistent menu pump.'
+}
+foreach ($launcherPath in @('tools\run_localhost_live_validation.ps1', 'tools\start_network_session.ps1')) {
+    $launcherSource = Get-Content -LiteralPath (Join-Path $root $launcherPath) -Raw
+    if (-not $launcherSource.Contains('-RequirePersistentMenuPump')) {
+        throw "$launcherPath no longer fails closed when its persistent paused-world pump is unavailable."
+    }
+}
+$liveLauncher = Get-Content -LiteralPath `
+    (Join-Path $root 'tools\run_localhost_live_validation.ps1') -Raw
+foreach ($loadedSaveHandoffBoundary in @(
+    'function Suspend-LoadedWorldForPeerHandoff',
+    'Suspend-LoadedWorldForPeerHandoff $GameProcess $Peer',
+    'function Release-LoadedWorldHandoffPauses',
+    'after both persistent pumps were armed'
+)) {
+    if (-not $liveLauncher.Contains($loadedSaveHandoffBoundary)) {
+        throw "Loaded-save sequential handoff boundary is missing: $loadedSaveHandoffBoundary"
+    }
+}
+if (-not $entryPoint.Contains('if not launcherHeartbeat then publishSnapshot() end')) {
+    throw 'Launcher heartbeat no longer bypasses expensive GUI snapshot publication.'
+}
 $requiredModules = @(
     'tpf2_mp/runtime_config',
     'tpf2_mp/state_schema',
@@ -177,6 +242,8 @@ $requiredModules = @(
     'tpf2_mp/proposal_runtime',
     'tpf2_mp/operation_runtime',
     'tpf2_mp/network_intent_runtime',
+    'tpf2_mp/network_pump_runtime',
+    'tpf2_mp/performance_runtime',
     'tpf2_mp/network_clock_runtime',
     'tpf2_mp/authored_followup_runtime',
     'tpf2_mp/recovery_prepare_runtime',
@@ -201,7 +268,8 @@ $requiredModules = @(
     'tpf2_mp/gui_load_runtime',
     'tpf2_mp/gui_stock_presentation',
     'tpf2_mp/gui_event_runtime',
-    'tpf2_mp/native_hook'
+    'tpf2_mp/native_hook',
+    'tpf2_mp/native_observation_telemetry'
 )
 foreach ($module in $requiredModules) {
     if (-not $entryPoint.Contains($module)) {
@@ -382,6 +450,11 @@ $cliSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\cli.py'
 if (-not $cliSource.Contains('from .local_restore import latest_local_restore')) {
     throw 'Companion CLI no longer composes verified local restore discovery.'
 }
+$launcherSource = Get-Content -LiteralPath (Join-Path $root 'tools\multiplayer_launcher.ps1') -Raw
+if (-not $launcherSource.Contains(
+        'Get-Tpf2mpLatestLocalRestore -BundleRoot $bundle -Peer $peer')) {
+    throw 'Two-computer launcher no longer discovers its role-specific restore archive.'
+}
 $watcherSource = Get-Content -LiteralPath (Join-Path $root 'tools\watch_recovery_saves.ps1') -Raw
 if (-not $watcherSource.Contains(". (Join-Path `$PSScriptRoot 'recovery_plan_common.ps1')")) {
     throw 'Recovery watcher no longer composes its verified plan handoff boundary.'
@@ -417,16 +490,23 @@ foreach ($movedDefinition in @(
 }
 
 $nativeHookSource = Get-Content -LiteralPath (Join-Path $root 'native\src\hook_dll.cpp') -Raw
-foreach ($requiredHeader in @('native_command_codec.hpp', 'native_hook_status.hpp')) {
+foreach ($requiredHeader in @('native_command_codec.hpp', 'native_hook_status.hpp',
+    'native_async_bridge.hpp')) {
     if (-not $nativeHookSource.Contains($requiredHeader)) {
         throw "Native hook no longer composes required support header $requiredHeader"
     }
 }
 $nativeCmakeSource = Get-Content -LiteralPath (Join-Path $root 'native\CMakeLists.txt') -Raw
-foreach ($requiredSource in @('src/native_command_codec.cpp', 'src/native_vehicle_command_codec.cpp')) {
+foreach ($requiredSource in @('src/native_command_codec.cpp', 'src/native_vehicle_command_codec.cpp',
+    'src/native_async_bridge.cpp')) {
     if (-not $nativeCmakeSource.Contains($requiredSource)) {
         throw "Native hook support library no longer composes required source $requiredSource"
     }
+}
+$publicSnapshotSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua') -Raw
+if (-not $publicSnapshotSource.Contains('require "tpf2_mp/capture_public_view"')) {
+    throw 'Public snapshot no longer composes its bounded capture projection.'
 }
 foreach ($movedDefinition in @(
     'struct SuppressedLineCommand {',

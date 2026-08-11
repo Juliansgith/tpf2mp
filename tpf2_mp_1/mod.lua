@@ -109,7 +109,7 @@ function data()
           values = { "Standard", "Tight", "Generous" }, defaultIndex = 0 },
         { key = "agentMode", name = "Native crowd simulation",
           values = {
-            "Skeleton crew (recommended)",
+            "Skeleton crew: 1 native person/building (recommended)",
             "Full vanilla population",
             "Minimum safe crowd (fastest)",
           }, defaultIndex = 0 },
@@ -139,7 +139,12 @@ function data()
       -- commit, proposal-outcome, and checkpoint-outcome barriers.
       cfg.networkBridgeStride = math.max(1, math.floor(
         tonumber(env("TPF2MP_NETWORK_BRIDGE_STRIDE", "1")) or 1))
-      cfg.maxEvents = 512
+      -- Old/no-hook compatibility keeps its exact one-tick semantics. A lab
+      -- may opt into a slower fallback; hook 0.17 instead drains an in-memory
+      -- native FIFO every tick with no simulation-thread disk open.
+      cfg.networkBridgeFallbackStride = math.max(1, math.floor(
+        tonumber(env("TPF2MP_NETWORK_FALLBACK_STRIDE", "1")) or 1))
+      cfg.maxEvents = 64
       cfg.startNetwork = envEnabled("TPF2MP_START_NETWORK") or launched.startNetwork == true
         or tonumber(selected.startupMode) == 1
       cfg.launcherManaged = launched.startNetwork == true

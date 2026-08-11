@@ -7,13 +7,26 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $ProjectRoot 'tools\network_common.ps1')
+. (Join-Path $ProjectRoot 'tools\recovery_save_common.ps1')
 
 $session = 'fault-watch-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 $sessionRoot = Get-Tpf2mpSessionRoot $session 'player1'
 $automaticSession = 'auto-save-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
 $automaticSessionRoot = Get-Tpf2mpSessionRoot $automaticSession 'player1'
+$latchedSession = 'latched-save-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+$latchedSessionRoot = Get-Tpf2mpSessionRoot $latchedSession 'player1'
+$incidentalSession = 'incidental-ready-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+$incidentalSessionRoot = Get-Tpf2mpSessionRoot $incidentalSession 'player1'
+$uiSession = 'ui-save-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+$uiSessionRoot = Get-Tpf2mpSessionRoot $uiSession 'player2'
 $supportRoot = Get-Tpf2mpSupportRoot
 $supportPrefix = $supportRoot.TrimEnd('\') + '\'
+
+function Read-TestJsonStatus([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    try { return Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json }
+    catch { return $null }
+}
 if (-not $sessionRoot.StartsWith($supportPrefix, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Fault-watcher test resolved a session outside the TPF2MP support root.'
 }
@@ -68,7 +81,7 @@ try {
 
     $watcherStatusPath = Join-Path $sessionRoot 'recovery-watcher-status.json'
     $watcher = Get-Content -LiteralPath $watcherStatusPath -Raw | ConvertFrom-Json
-    if ($watcher.schemaVersion -ne 6 -or $watcher.status -ne 'stopped-game-exited') {
+    if ($watcher.schemaVersion -ne 7 -or $watcher.status -ne 'stopped-game-exited') {
         throw 'Fault watcher did not preserve its terminal status after capturing evidence.'
     }
     if ($watcher.lifetimeHours -ne 720 -or -not $watcher.expiresAtUtc) {
@@ -111,9 +124,16 @@ try {
             anchorBoundarySeq = 8
             anchorCoreDigest = 'deadbeef'
             anchorConvergenceKey = '1234abcd'
+            anchorPreparationStatus = 'ready'
+            anchorPreparationCheckpointSeq = 8
             sessionFault = $null
         } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-    $automaticSave = Join-Path $automaticSaveRoot "tpf2mp_${automaticSession}_player1_b8.sav"
+    $automaticBaseName = Get-Tpf2mpRecoverySaveBaseName `
+        -Session $automaticSession -Peer player1 -BoundarySeq 8
+    if ($automaticBaseName.Length -gt 50) {
+        throw 'Automatic recovery save name exceeds the native dialog limit.'
+    }
+    $automaticSave = Join-Path $automaticSaveRoot ($automaticBaseName + '.sav')
     [IO.File]::WriteAllBytes($automaticSave, [byte[]](1, 2, 3))
     [IO.File]::WriteAllText($automaticSave + '.lua', 'function data() return {} end',
         [Text.UTF8Encoding]::new($false))
@@ -128,11 +148,226 @@ try {
     $automaticWatcher = Get-Content -LiteralPath `
         (Join-Path $automaticSessionRoot 'recovery-watcher-status.json') -Raw | ConvertFrom-Json
     if ($automaticWatcher.status -ne 'waiting-for-save-stability' `
-        -or $automaticWatcher.automaticSaveName -ne "tpf2mp_${automaticSession}_player1_b8" `
+        -or $automaticWatcher.automaticSaveName -ne $automaticBaseName `
         -or $automaticWatcher.candidateSave -ne $automaticSave) {
         throw 'Watcher missed the exact automatic save completed just before its READY poll.'
     }
     Write-Host 'PASS automatic native save survives the watcher READY-poll race'
+
+    $latchedBridge = Join-Path $TemporaryRoot 'latched-save-watcher-bridge'
+    $latchedStatusRoot = Join-Path $latchedBridge 'companion_state'
+    $latchedSaveRoot = Join-Path $TemporaryRoot 'latched-save-watcher\1066780\local\save'
+    New-Item -ItemType Directory -Force -Path $latchedStatusRoot, $latchedSaveRoot | Out-Null
+    $latchedStatusPath = Join-Path $latchedStatusRoot 'companion_status.json'
+    $latchedStatus = [ordered]@{
+        schemaVersion = 1
+        session = $latchedSession
+        peer = 'player1'
+        anchorReady = $true
+        anchorReceiptReady = $true
+        anchorBoundarySeq = 12
+        anchorCoreDigest = 'deadbeef'
+        anchorConvergenceKey = '1234abcd'
+        anchorPreparationStatus = 'ready'
+        anchorPreparationCheckpointSeq = 12
+        sessionFault = $null
+    }
+    [IO.File]::WriteAllText($latchedStatusPath,
+        ($latchedStatus | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    $latchedStdout = Join-Path $TemporaryRoot 'latched-save-watcher.stdout.log'
+    $latchedStderr = Join-Path $TemporaryRoot 'latched-save-watcher.stderr.log'
+    $latchedArgs = @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+        (Join-Path $ProjectRoot 'tools\watch_recovery_saves.ps1'),
+        '-Session', $latchedSession, '-Peer', 'player1', '-BridgePath', $latchedBridge,
+        '-SaveDirectory', $latchedSaveRoot, '-GameProcessId', [string]$PID,
+        '-GameExecutable', $currentProcess.Path,
+        '-GameStartedAtUtc', $currentProcess.StartTime.ToUniversalTime().ToString('o'),
+        '-BundleRoot', $ProjectRoot, '-EvidenceCollectorPath', $fakeCollector,
+        '-PollSeconds', '1', '-StableSeconds', '2', '-DisableUiSaveFallback'
+    )
+    $latchedWatcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+        -ArgumentList (ConvertTo-Tpf2mpCommandLine $latchedArgs) -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $latchedStdout -RedirectStandardError $latchedStderr
+    try {
+        $latchedWatcherStatus = Join-Path $latchedSessionRoot 'recovery-watcher-status.json'
+        $deadline = (Get-Date).AddSeconds(12)
+        do {
+            Start-Sleep -Milliseconds 100
+            $observed = Read-TestJsonStatus $latchedWatcherStatus
+        } while ((-not $observed -or $observed.status -ne 'ready-save-now') `
+            -and (Get-Date) -lt $deadline)
+        if (-not $observed -or $observed.status -ne 'ready-save-now') {
+            throw 'Latched-readiness watcher never observed the strict READY boundary.'
+        }
+        $latchedBaseName = Get-Tpf2mpRecoverySaveBaseName `
+            -Session $latchedSession -Peer player1 -BoundarySeq 12
+        $latchedSave = Join-Path $latchedSaveRoot ($latchedBaseName + '.sav')
+        [IO.File]::WriteAllBytes($latchedSave, [byte[]](7, 7, 7))
+        [IO.File]::WriteAllText($latchedSave + '.lua', 'return { delayed = true }',
+            [Text.UTF8Encoding]::new($false))
+        $deadline = (Get-Date).AddSeconds(12)
+        do {
+            Start-Sleep -Milliseconds 100
+            $observed = Read-TestJsonStatus $latchedWatcherStatus
+        } while ((-not $observed -or $observed.status -ne 'waiting-for-save-stability') `
+            -and (Get-Date) -lt $deadline)
+        if (-not $observed -or $observed.status -ne 'waiting-for-save-stability') {
+            throw 'Latched-readiness watcher never began save stability checking.'
+        }
+        $latchedStatus.anchorReady = $false
+        [IO.File]::WriteAllText($latchedStatusPath,
+            ($latchedStatus | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        $deadline = (Get-Date).AddSeconds(12)
+        do {
+            Start-Sleep -Milliseconds 100
+            $observed = Read-TestJsonStatus $latchedWatcherStatus
+        } while ((-not $observed -or $observed.status -ne 'filing-ordered-receipt') `
+            -and (Get-Date) -lt $deadline)
+        if (-not $observed -or $observed.status -ne 'filing-ordered-receipt' `
+                -or -not $observed.requestId) {
+            throw 'Strict readiness staleness discarded a latched prepared-boundary save.'
+        }
+        Write-Host 'PASS prepared boundary remains receipt-valid while native metadata finalizes'
+    }
+    finally {
+        $latchedWatcher.Refresh()
+        if (-not $latchedWatcher.HasExited) {
+            Stop-Process -Id $latchedWatcher.Id -Force -ErrorAction SilentlyContinue
+            $latchedWatcher.WaitForExit(10000) | Out-Null
+        }
+    }
+
+    $incidentalBridge = Join-Path $TemporaryRoot 'incidental-ready-watcher-bridge'
+    $incidentalStatusRoot = Join-Path $incidentalBridge 'companion_state'
+    $incidentalSaveRoot = Join-Path $TemporaryRoot 'incidental-ready-watcher\1066780\local\save'
+    New-Item -ItemType Directory -Force `
+        -Path $incidentalStatusRoot, $incidentalSaveRoot | Out-Null
+    [IO.File]::WriteAllText((Join-Path $incidentalStatusRoot 'companion_status.json'),
+        ([ordered]@{
+            schemaVersion = 1
+            session = $incidentalSession
+            peer = 'player1'
+            anchorReady = $true
+            anchorBoundarySeq = 9
+            anchorCoreDigest = 'deadbeef'
+            anchorConvergenceKey = '1234abcd'
+            anchorPreparationStatus = 'idle'
+            anchorPreparationCheckpointSeq = $null
+            sessionFault = $null
+        } | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+    & (Join-Path $ProjectRoot 'tools\watch_recovery_saves.ps1') `
+        -Session $incidentalSession -Peer player1 -BridgePath $incidentalBridge `
+        -SaveDirectory $incidentalSaveRoot -GameProcessId $PID `
+        -GameExecutable $currentProcess.Path `
+        -GameStartedAtUtc ($currentProcess.StartTime.ToUniversalTime().ToString('o')) `
+        -BundleRoot $ProjectRoot -EvidenceCollectorPath $fakeCollector -OneShot
+    if (-not $?) { throw 'Incidental READY watcher fixture returned failure.' }
+    $incidentalWatcher = Get-Content -LiteralPath `
+        (Join-Path $incidentalSessionRoot 'recovery-watcher-status.json') -Raw | ConvertFrom-Json
+    if ($incidentalWatcher.uiSaveFallbackStatus -ne 'manual-save-available' `
+        -or $incidentalWatcher.uiSaveFallbackAttempts -ne 0) {
+        throw 'Incidental READY checkpoint armed the focus-stealing stock-UI fallback.'
+    }
+    Write-Host 'PASS incidental READY checkpoints never launch stock-UI save automation'
+
+    $receiptPrefix = "tpf2mp_${automaticSession}_player1"
+    $receiptOriginal = Join-Path $automaticSaveRoot ($receiptPrefix + '_original.sav')
+    $receiptOverwritten = Join-Path $automaticSaveRoot ($receiptPrefix + '_retry.sav')
+    [IO.File]::WriteAllBytes($receiptOriginal, [byte[]](9, 8, 7))
+    [IO.File]::WriteAllText($receiptOriginal + '.lua', 'return { original = true }',
+        [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllBytes($receiptOverwritten, [byte[]](3, 2, 1))
+    [IO.File]::WriteAllText($receiptOverwritten + '.lua', 'return { retry = true }',
+        [Text.UTF8Encoding]::new($false))
+    $receipt = [pscustomobject]@{
+        saveSha256 = (Get-FileHash -LiteralPath $receiptOriginal -Algorithm SHA256).Hash.ToLowerInvariant()
+        metadataSha256 = (Get-FileHash -LiteralPath ($receiptOriginal + '.lua') `
+            -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $bound = Get-Tpf2mpReceiptBoundSave -SaveDirectory $automaticSaveRoot `
+        -ExpectedSavePrefix $receiptPrefix -AutomaticSaveName $automaticBaseName `
+        -Receipt $receipt -PreferredSavePath $receiptOverwritten
+    if ($bound.FullName -ne $receiptOriginal) {
+        throw 'Duplicate accepted receipt selected later, unattested save bytes.'
+    }
+    Write-Host 'PASS duplicate receipt retries retain the originally attested native save'
+
+    $uiBridge = Join-Path $TemporaryRoot 'stock-ui-save-bridge'
+    $uiSaveRoot = Join-Path $TemporaryRoot 'stock-ui-save\1066780\local\save'
+    $uiEvidence = Join-Path $TemporaryRoot 'stock-ui-save-evidence'
+    $fakeInput = Join-Path $TemporaryRoot 'fake-game-input.ps1'
+    $delayedWriter = Join-Path $TemporaryRoot 'delayed-metadata-writer.ps1'
+    New-Item -ItemType Directory -Force -Path $uiBridge, $uiSaveRoot | Out-Null
+    $fakeInputSource = @'
+[CmdletBinding()]
+param(
+    [int]$GameProcessId, [string]$Action, [string]$Command,
+    [int]$DelayMilliseconds, [string]$ResultPath,
+    [int]$ClientX, [int]$ClientY, [int]$UiWidth, [int]$UiHeight,
+    [switch]$PhysicalPixels
+)
+$entry = "$Action|$ClientX|$ClientY|$Command"
+[IO.File]::AppendAllText($env:TPF2MP_UI_TEST_LOG, $entry + [Environment]::NewLine)
+if ($Action -eq 'click-ui' -and $ClientX -eq 1443 -and $ClientY -eq 858) {
+    [IO.File]::WriteAllBytes($env:TPF2MP_UI_TEST_SAVE, [byte[]](4, 5, 6))
+    if ($env:TPF2MP_UI_TEST_DELAYED_WRITER) {
+        Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -WindowStyle Hidden `
+            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                $env:TPF2MP_UI_TEST_DELAYED_WRITER, '-MetadataPath',
+                ($env:TPF2MP_UI_TEST_SAVE + '.lua'), '-DelayMilliseconds', '11000') | Out-Null
+    }
+    else {
+        [IO.File]::WriteAllText($env:TPF2MP_UI_TEST_SAVE + '.lua', 'return { ui = true }')
+    }
+}
+if ($ResultPath) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ResultPath) | Out-Null
+    @{ action = $Action; processId = $GameProcessId } | ConvertTo-Json |
+        Set-Content -LiteralPath $ResultPath -Encoding UTF8
+}
+'@
+    [IO.File]::WriteAllText($fakeInput, $fakeInputSource, [Text.UTF8Encoding]::new($false))
+    $delayedWriterSource = @'
+[CmdletBinding()]
+param([Parameter(Mandatory = $true)][string]$MetadataPath,
+    [Parameter(Mandatory = $true)][int]$DelayMilliseconds)
+Start-Sleep -Milliseconds $DelayMilliseconds
+[IO.File]::WriteAllText($MetadataPath, 'return { ui = true }')
+'@
+    [IO.File]::WriteAllText(
+        $delayedWriter, $delayedWriterSource, [Text.UTF8Encoding]::new($false))
+    $uiBaseName = Get-Tpf2mpRecoverySaveBaseName `
+        -Session $uiSession -Peer player2 -BoundarySeq 9
+    $env:TPF2MP_UI_TEST_SAVE = Join-Path $uiSaveRoot ($uiBaseName + '.sav')
+    $env:TPF2MP_UI_TEST_LOG = Join-Path $TemporaryRoot 'stock-ui-input.log'
+    $env:TPF2MP_UI_TEST_DELAYED_WRITER = $delayedWriter
+    $currentProcess = Get-Process -Id $PID
+    & (Join-Path $PSHOME 'powershell.exe') -NoProfile -ExecutionPolicy Bypass `
+        -File (Join-Path $ProjectRoot 'tools\save_recovery_via_ui.ps1') `
+        -Session $uiSession -Peer player2 -BoundarySeq 9 -BridgePath $uiBridge `
+        -SaveDirectory $uiSaveRoot -SaveBaseName $uiBaseName -GameProcessId $PID `
+        -GameExecutable $currentProcess.Path `
+        -GameStartedAtUtc $currentProcess.StartTime.ToUniversalTime().ToString('o') `
+        -EvidenceDirectory $uiEvidence -InputHelperPath $fakeInput `
+        -PublishedUiWaitSeconds 0 -TimeoutSeconds 10 -SaveCompletionTimeoutSeconds 20
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $env:TPF2MP_UI_TEST_SAVE) `
+        -or -not (Test-Path -LiteralPath ($env:TPF2MP_UI_TEST_SAVE + '.lua'))) {
+        throw 'Stock-UI recovery fallback did not create the exact automatic save fixture.'
+    }
+    $uiResult = Get-Content -LiteralPath (Join-Path $uiEvidence 'stock-ui-save.json') `
+        -Raw | ConvertFrom-Json
+    $uiActions = Get-Content -LiteralPath $env:TPF2MP_UI_TEST_LOG
+    if ($uiResult.status -ne 'completed' -or $uiResult.saveName -ne $uiBaseName `
+        -or $uiResult.nativeActivityObserved -ne $true `
+        -or [double]$uiResult.durationSeconds -lt 10 `
+        -or @($uiActions | Where-Object { $_ -like 'replace-ui-text*' }).Count -ne 1) {
+        throw 'Stock-UI recovery fallback lost its bounded name or input sequence.'
+    }
+    Remove-Item Env:\TPF2MP_UI_TEST_SAVE -ErrorAction SilentlyContinue
+    Remove-Item Env:\TPF2MP_UI_TEST_LOG -ErrorAction SilentlyContinue
+    Remove-Item Env:\TPF2MP_UI_TEST_DELAYED_WRITER -ErrorAction SilentlyContinue
+    Write-Host 'PASS stock-UI fallback creates the bounded recovery save automatically'
 
     $logRoot = Join-Path $TemporaryRoot 'fault-watcher\logs'
     $companionLog = Join-Path $logRoot 'companion.stdout.log'
@@ -179,7 +414,12 @@ try {
     Write-Host 'PASS first-fault bundle contains exact session and game diagnostics'
 }
 finally {
-    foreach ($candidateRoot in @($sessionRoot, $automaticSessionRoot)) {
+    Remove-Item Env:\TPF2MP_UI_TEST_SAVE -ErrorAction SilentlyContinue
+    Remove-Item Env:\TPF2MP_UI_TEST_LOG -ErrorAction SilentlyContinue
+    foreach ($candidateRoot in @(
+        $sessionRoot, $automaticSessionRoot, $latchedSessionRoot,
+        $incidentalSessionRoot, $uiSessionRoot
+    )) {
       if (Test-Path -LiteralPath $candidateRoot -PathType Container) {
         $resolved = [IO.Path]::GetFullPath($candidateRoot)
         if (-not $resolved.StartsWith($supportPrefix, [StringComparison]::OrdinalIgnoreCase)) {

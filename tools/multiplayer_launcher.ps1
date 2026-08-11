@@ -392,26 +392,20 @@ $restoreButton.Add_Click({
 
 $latestRestoreButton.Add_Click({
     try {
-        $candidates = @{}
-        foreach ($peer in @('player1', 'player2')) {
-            try { $candidates[$peer] = Get-Tpf2mpLatestLocalRestore -BundleRoot $bundle -Peer $peer }
-            catch { }
-        }
-        if ($candidates.Count -eq 0) {
-            throw 'No complete receipt-bound local restore was found. Both peers must first save the same READY boundary.'
-        }
-        $peer = @($candidates.Keys)[0]
-        if ($candidates.Count -eq 2) {
-            $choice = [Windows.Forms.MessageBox]::Show(
-                'Load the Host/player1 restore? Choose No for Join/player2.',
-                'Choose restore role',
-                [Windows.Forms.MessageBoxButtons]::YesNoCancel,
-                [Windows.Forms.MessageBoxIcon]::Question
-            )
-            if ($choice -eq [Windows.Forms.DialogResult]::Cancel) { return }
-            $peer = if ($choice -eq [Windows.Forms.DialogResult]::Yes) { 'player1' } else { 'player2' }
-        }
-        $candidate = $candidates[$peer]
+        $choice = [Windows.Forms.MessageBox]::Show(
+            'Load the Host/player1 restore? Choose No for Join/player2.',
+            'Choose restore role',
+            [Windows.Forms.MessageBoxButtons]::YesNoCancel,
+            [Windows.Forms.MessageBoxIcon]::Question
+        )
+        if ($choice -eq [Windows.Forms.DialogResult]::Cancel) { return }
+        $peer = if ($choice -eq [Windows.Forms.DialogResult]::Yes) { 'player1' } else { 'player2' }
+        # A real two-computer match intentionally stores only this machine's
+        # receipt-bound save. The signed plan binds both peer receipts; each
+        # remote game independently verifies its own bytes during bootstrap.
+        # Requiring both large archives locally belongs only to the localhost
+        # paired-restore acceptance harness.
+        $candidate = Get-Tpf2mpLatestLocalRestore -BundleRoot $bundle -Peer $peer
         Set-VerifiedRestorePlan ([string]$candidate.planPath)
         $saveBox.Text = [string]$candidate.savePath
         $script:lastPeer = $peer

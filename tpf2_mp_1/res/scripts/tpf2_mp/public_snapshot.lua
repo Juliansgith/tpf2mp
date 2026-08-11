@@ -6,6 +6,7 @@ local passengerPresentation = require "tpf2_mp/passenger_presentation"
 local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local economyPublicView = require "tpf2_mp/economy_public_view"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
+local capturePublicView = require "tpf2_mp/capture_public_view"
 
 local M = {}
 
@@ -78,12 +79,13 @@ function M.new(env)
       nativeHook = util.deepCopy(currentState().probes.nativeHook),
       networkAuthority = util.deepCopy(currentState().probes.networkAuthority),
       networkCalendar = util.deepCopy(currentState().probes.networkCalendar),
-      capture = util.deepCopy(currentState().probes.capture),
+      capture = capturePublicView.build(currentState().probes.capture),
       operational = util.deepCopy(currentState().probes.operational),
       vehicleSync = util.deepCopy(currentState().probes.vehicleSync),
       passengerCosmetics = util.deepCopy(currentState().probes.passengerCosmetics),
       industryContent = util.deepCopy(currentState().probes.industryContent),
       freightIndustry = util.deepCopy(currentState().probes.freightIndustry),
+      performance = util.deepCopy(currentState().probes.performance),
       serviceRegistration = util.deepCopy(currentState().probes.serviceRegistration),
       freightMilestone = util.deepCopy(currentState().probes.freightMilestone),
       passengerMilestone = util.deepCopy(currentState().probes.passengerMilestone),
@@ -240,10 +242,14 @@ function M.new(env)
         nextOutSeq = currentState().bridge.nextOutSeq,
         nextInSeq = currentState().bridge.nextInSeq,
         emitted = currentState().bridge.emitted,
+        coalesced = currentState().bridge.coalesced,
+        coalescedByKind = util.deepCopy(currentState().bridge.coalescedByKind),
         received = currentState().bridge.received,
         lastError = currentState().bridge.lastError,
         lastInboundKind = currentState().bridge.lastInboundKind,
         companion = util.deepCopy(currentState().bridge.companion),
+        native = util.deepCopy(currentState().probes.performance
+          and currentState().probes.performance.nativeBridge or nil),
       },
       checkpoint = util.deepCopy(currentState().checkpoint),
       recovery = util.deepCopy(currentState().recovery),

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
-from .bridge import AuditLog, GameBridge
+from .bridge import AuditLog, AuditUnavailable, GameBridge
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
 from .completion_validation import (
     operation_completion_payload,
@@ -20,8 +20,10 @@ from .anchor import AnchorCoordinator
 from .anchor_prepare import AnchorPreparationCoordinator
 from .anchor_io import AnchorRequestStore
 from .host_status import write_host_status
+from .host_runtime import run_host
 from .host_intents import HostIntentMixin
 from .industry_content import IndustryContentConsensus, IndustryContentCoordinator
+from .mobility_telemetry import unsafe_vehicle_details, vehicle_phase_details
 from .synchronization import SynchronizationCoordinator
 from .restore_session import RestoreSessionCoordinator
 from .restore_plan_exchange import RestorePlanExchange
@@ -84,12 +86,18 @@ class CommitHost(HostIntentMixin):
         self.vehicle_lifecycle_outcomes: dict[str, str] = {}
         self.vehicle_phase_digests: dict[str, dict[str, str]] = {}
         self.vehicle_phase_outcomes: dict[str, str] = {}
+        self.vehicle_restore_safety: dict[str, dict[str, bool]] = {}
+        self.vehicle_restore_unsafe_details: dict[str, dict[str, dict[str, str]]] = {}
+        self.vehicle_phase_details: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
         self.vehicle_phase_divergence_streak = 0
         self.vehicle_phase_state = "unknown"
         self.clock_requested_speed = 0
         self.clock_effective_speed = 0
         self.clock_generation = 0
         self.clock_health: dict[str, dict[str, Any]] = {}
+        self.clock_health_last_audit_at: dict[str, float] = {}
+        self.clock_health_audited = 0
+        self.clock_health_not_audited = 0
         self.clock_last_adjustment = 0.0
         self.clock_healthy_since: float | None = None
         configured_peers = set(required_peers or ("player1", "player2"))
@@ -120,6 +128,8 @@ class CommitHost(HostIntentMixin):
         self._next_local_seq = -1
         self.last_agreed_checkpoint: dict[str, Any] | None = None
         self.session_fault: str | None = None
+        self.audit_failure = threading.Event()
+        self.audit_failure_error: AuditUnavailable | None = None
         self.status = "starting"
         self.last_error: str | None = None
         self.next_seq = 1
@@ -128,6 +138,16 @@ class CommitHost(HostIntentMixin):
         for tracker in list(self.proposal_prepares.values()):
             if tracker.get("status") == "pending":
                 self._resolve_prepare_locked(tracker)
+
+    def _enter_audit_fault(self, exc: AuditUnavailable) -> None:
+        """Fence authority without pretending an unjournalled action committed."""
+
+        if self.audit_failure.is_set():
+            return
+        self.audit_failure_error = exc
+        self.last_error = f"authority audit unavailable: {exc}"
+        self.session_fault = self.session_fault or "audit-persistence-failure"
+        self.audit_failure.set()
 
     def _write_status(self, status: str | None = None) -> None:
         write_host_status(self, status)
@@ -1062,10 +1082,11 @@ class CommitHost(HostIntentMixin):
         if not required <= set(checkpoints):
             return
         selected = [checkpoints[peer] for peer in tracker["requiredPeers"]]
-        restore_error = self.restore_session.checkpoint_error(tracker, selected)
-        if restore_error:
-            self._emit_checkpoint_outcome_locked(tracker, False, restore_error)
-            return
+        # A restore plan binds the source save's pre-migration core digest.
+        # Each game revalidates that source anchor before applying a committed
+        # recovery.resume.  The fresh checkpoint below is allowed to carry a
+        # newer schema digest; consensus on its convergence key proves both
+        # peers migrated to the same authored state.
         if len({item["convergenceKey"] for item in selected}) != 1:
             self._emit_checkpoint_outcome_locked(
                 tracker, False, "checkpoint-convergence-key-mismatch"
@@ -1186,6 +1207,23 @@ class CommitHost(HostIntentMixin):
             if message.get("kind") == "checkpoint":
                 self._record_checkpoint_locked(message)
                 return
+            if message.get("kind") == "clock_health":
+                # Health drives live clock policy but is not recovery state.
+                # Persist one forensic sample per peer every ten seconds
+                # instead of fsyncing every heartbeat; the old stream was
+                # 7.7 MiB of a single populated soak and amplified Windows
+                # audit-reader contention without improving replay.
+                self._record_clock_health_locked(message)
+                now = time.monotonic()
+                peer = str(message.get("peer", "unknown"))
+                last = self.clock_health_last_audit_at.get(peer)
+                if last is None or now - last >= 10.0:
+                    self.audit.append(self._record_message(message))
+                    self.clock_health_last_audit_at[peer] = now
+                    self.clock_health_audited += 1
+                else:
+                    self.clock_health_not_audited += 1
+                return
             record = self._record_message(message)
             self.audit.append(record)
             if message.get("kind") == "ack":
@@ -1257,8 +1295,6 @@ class CommitHost(HostIntentMixin):
                     self.synchronization.fault_session(
                         "authored", f"ordered-action-rejected:{commit_seq}:{peer}:{detail}"
                     )
-            elif message.get("kind") == "clock_health":
-                self._record_clock_health_locked(message)
             elif message.get("kind") == "clock_reached":
                 self.synchronization.record_clock_reached(message)
             elif message.get("kind") == "vehicle_sync":
@@ -1269,6 +1305,14 @@ class CommitHost(HostIntentMixin):
                 digest = payload.get("digest")
                 peer = str(message.get("peer", "unknown"))
                 if isinstance(sample_key, str) and sample_key and isinstance(digest, str) and digest:
+                    self.vehicle_phase_details.setdefault(sample_key, {})[peer] = vehicle_phase_details(payload)
+                    restore_safe = payload.get("vehicleRestoreSafe")
+                    if isinstance(restore_safe, bool):
+                        self.vehicle_restore_safety.setdefault(sample_key, {})[peer] = restore_safe
+                        if restore_safe is False:
+                            self.vehicle_restore_unsafe_details.setdefault(
+                                sample_key, {}
+                            )[peer] = unsafe_vehicle_details(payload)
                     peer_digests = self.mobility_digests.setdefault(sample_key, {})
                     peer_digests[peer] = digest
                     unique = set(peer_digests.values())
@@ -1417,6 +1461,10 @@ class CommitHost(HostIntentMixin):
                     }
                 )
                 _send(conn, receipt, connected.send_lock)
+        except AuditUnavailable as exc:
+            self._enter_audit_fault(exc)
+            if not self.stop.is_set():
+                print(f"AUTHORITY AUDIT FAULT while serving {peer_name or address}: {exc}")
         except (ConnectionError, OSError, ProtocolError) as exc:
             if not self.stop.is_set():
                 print(f"client {peer_name or address} disconnected: {exc}")
@@ -1439,54 +1487,9 @@ class CommitHost(HostIntentMixin):
             except socket.timeout:
                 continue
             except OSError:
-                if not self.stop.is_set():
+                if not self.stop.is_set() and not self.audit_failure.is_set():
                     raise
+                break
 
     def run(self, poll_seconds: float = 0.1) -> None:
-        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        listener.bind((self.bind, self.port))
-        listener.listen(8)
-        listener.settimeout(0.5)
-        threading.Thread(target=self._accept_loop, args=(listener,), daemon=True).start()
-        print(f"TPF2MP host listening on {self.bind}:{self.port}")
-        print(f"session={self.bridge.session} peer={self.bridge.peer} bridge={self.bridge.root}")
-        print(f"match fingerprint={self.match_fingerprint or 'UNVERIFIED'}")
-        self._write_status("running")
-        next_status = time.monotonic()
-        try:
-            while not self.stop.is_set():
-                had_work = False
-                for local_seq, message in self.bridge.pending_outbound():
-                    try:
-                        if message.get("kind") == "intent":
-                            self._commit(message)
-                        else:
-                            self._record_non_intent(message)
-                    except ProtocolError as exc:
-                        self.last_error = str(exc)
-                        self._reject_intent(message, str(exc))
-                        print(f"rejected local game sequence {local_seq}: {exc}")
-                    self.bridge.acknowledge_outbound(local_seq)
-                    had_work = True
-                if self.anchor_requests.process_host(self.anchor):
-                    had_work = True
-                self._expire_proposals()
-                if self.anchor_preparation.maintain():
-                    had_work = True
-                if self.industry_content.refresh():
-                    had_work = True
-                if time.monotonic() >= next_status:
-                    self._write_status()
-                    next_status = time.monotonic() + 0.5
-                if not had_work:
-                    time.sleep(poll_seconds)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            self.stop.set()
-            listener.close()
-            with self.peers_lock:
-                for peer in self.peers.values():
-                    peer.sock.close()
-            self._write_status("stopped")
+        run_host(self, poll_seconds)

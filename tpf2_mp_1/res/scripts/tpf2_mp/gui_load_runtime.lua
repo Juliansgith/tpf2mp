@@ -35,8 +35,12 @@ function M.new(deps)
       or current.networkMode ~= nextState.networkMode
       or current.sessionId ~= nextState.bridge.sessionId
       or current.lastError ~= nextState.lastError
+    -- Public projection walks the authored economy and presentation maps.
+    -- Rebuilding it twice per second also rerendered a hidden Multiplayer
+    -- window while a stock vehicle window was animating. Priority state still
+    -- projects immediately; ordinary presentation data is three-second UI.
     if priorityChange
-      or frame - (gui.lastSnapshotProjectionFrame or -1000) >= 30 then
+      or frame - (gui.lastSnapshotProjectionFrame or -1000) >= 180 then
       gui.snapshot = publicSnapshot({ allowNativeAccounts = false })
       gui.lastSnapshotProjectionFrame = frame
       gui.snapshotProjections = (gui.snapshotProjections or 0) + 1

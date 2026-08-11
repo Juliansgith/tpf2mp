@@ -11,7 +11,7 @@ from .native_save import sha256_file
 from .protocol import ProtocolError
 from .recovery import verify_recovery_archive
 from .restore import confirm_restore_readiness
-from .restore_plan import verify_restore_plan
+from .restore_plan import RESTORE_PLAN_VERSION, verify_restore_plan
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -52,6 +52,10 @@ def _candidate(session_root: Path, peer: str) -> dict[str, Any]:
         raise ProtocolError("local restore pointer manifest hash changed")
 
     plan = verify_restore_plan(_read_json(plan_path))
+    if plan.get("version") != RESTORE_PLAN_VERSION:
+        raise ProtocolError(
+            "local network resume requires a current native-phase-bound restore plan"
+        )
     manifest = verify_recovery_archive(_read_json(manifest_path), archive_root)
     if plan.get("session") != session_root.name or peer not in plan["requiredPeers"]:
         raise ProtocolError("local restore plan identity differs from its session directory")
@@ -107,5 +111,50 @@ def latest_local_restore(sessions_root: Path | str, peer: str) -> dict[str, Any]
     if not candidates:
         raise ProtocolError(f"no verified receipt-bound local restore exists for {peer}")
     latest = max(candidates, key=lambda item: (item["_sortTime"], item["session"]))
+    latest.pop("_sortTime")
+    return latest
+
+
+def latest_local_restore_pair(sessions_root: Path | str) -> dict[str, Any]:
+    """Return the newest session whose two latest archives form one plan."""
+
+    root = Path(sessions_root).expanduser().resolve()
+    if not root.is_dir():
+        raise ProtocolError(f"local session directory is missing: {root}")
+    pairs: list[dict[str, Any]] = []
+    for session_root in sorted(path for path in root.iterdir() if path.is_dir()):
+        try:
+            peers = {
+                peer: _candidate(session_root, peer)
+                for peer in ("player1", "player2")
+            }
+            identity = {
+                (
+                    value["session"], value["resumeSession"],
+                    value["boundarySeq"], value["planChecksum"],
+                )
+                for value in peers.values()
+            }
+            if len(identity) != 1:
+                raise ProtocolError("local restore peers do not name one boundary and plan")
+            completed = max(value["_sortTime"] for value in peers.values())
+            for value in peers.values():
+                value.pop("_sortTime")
+            player1 = peers["player1"]
+            pairs.append({
+                "schemaVersion": 1,
+                "session": player1["session"],
+                "resumeSession": player1["resumeSession"],
+                "boundarySeq": player1["boundarySeq"],
+                "planChecksum": player1["planChecksum"],
+                "planPath": player1["planPath"],
+                "peers": peers,
+                "_sortTime": completed,
+            })
+        except (OSError, ValueError, json.JSONDecodeError, ProtocolError):
+            continue
+    if not pairs:
+        raise ProtocolError("no verified two-peer local restore pair exists")
+    latest = max(pairs, key=lambda item: (item["_sortTime"], item["session"]))
     latest.pop("_sortTime")
     return latest

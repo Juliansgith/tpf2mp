@@ -76,3 +76,15 @@ That is safer than guessing split/join lineage after mutation. The next human
 run should first prove a final connected spur segment and a public road segment,
 then preserve evidence for any junction deletion that produces a different
 native shape.
+
+## 2026-08-10 collateral extension
+
+The next live run exposed a second removal-only shape: one town-road edge, one
+node, and two attached autonomous constructions in schema 7, with no replacement
+topology. It was incorrectly sent through the standalone construction helper
+and faulted the session after both native calls rejected. Generic construction
+collateral accompanying explicit edge/node removal now stays in one atomic
+topology proposal, while station/depot graph retirement remains asynchronous.
+Verified unchanged rejection also rolls back command-local lazy bindings so a
+failed bulldoze cannot block the following station. Full evidence is in
+[the follow-up investigation](REMOVAL_ONLY_TOWN_ROAD_COLLATERAL_2026-08-10.md).

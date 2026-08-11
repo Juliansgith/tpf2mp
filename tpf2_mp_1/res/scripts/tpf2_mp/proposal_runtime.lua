@@ -6,7 +6,9 @@ local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalCollateralRuntime = require "tpf2_mp/proposal_collateral_runtime"
+local proposalBindingRuntime = require "tpf2_mp/proposal_binding_runtime"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
+local networkFinanceHousekeepingModule = require "tpf2_mp/network_finance_housekeeping"
 
 local M = {}
 
@@ -33,6 +35,7 @@ function M.new(deps)
   local inspectCreatedEdges = assert(deps.inspectCreatedEdges, "inspectCreatedEdges dependency is required")
   local nodePosition = assert(deps.nodePosition, "nodePosition dependency is required")
   local applyCommitted = assert(deps.applyCommitted, "applyCommitted dependency is required")
+  local networkFinanceHousekeeping = networkFinanceHousekeepingModule.new({ getState = getState })
 
   -- Transport Fever replaces the persisted table during script.load. This
   -- proxy keeps every read/write aimed at the current table without forcing
@@ -286,8 +289,10 @@ function M.new(deps)
     record.completion = util.deepCopy(payload)
     return true, payload
   end
-  
-  local function proposalFailure(record, message)
+
+  local function proposalFailure(record, message, options)
+    options = type(options) == "table" and options or {}
+    if options.rollbackLazyBindings == true then proposalBindingRuntime.rollback(state, record) end
     local errorValue = type(message) == "table" and message or { error = tostring(message) }
     if errorValue.error == nil then errorValue.error = "canonical proposal failed" end
     record.status = "failed"
@@ -442,32 +447,7 @@ function M.new(deps)
   end
   
   function proposalPreparation.bind(inspected, eventId)
-    local localInputs = {}
-    for _, cid in ipairs(util.sortedKeys(inspected.localRefs)) do
-      local localId = inspected.localRefs[cid]
-      local kind = inspected.referenceKinds[cid]
-      if canonical.resolveLocal(state.canonical, cid) == nil then
-        local ownerCid = state.world.logicalOwners
-          and state.world.logicalOwners[tostring(localId)] or nil
-        local resolved, resolveError = world.resolvePreExisting(state.canonical, cid, kind, {
-          owner = ownerCid,
-          resolvedForProposal = eventId,
-        })
-        if resolved == nil then return nil, nil, resolveError end
-        localId = resolved
-        inspected.localRefs[cid] = localId
-      end
-      if inspected.removal[cid] then
-        local binding = state.canonical.byCanonical[cid]
-        local capitalCostCents = binding and binding.metadata
-          and math.max(0, util.integer(binding.metadata.capitalCostCents, 0)) or 0
-        localInputs[#localInputs + 1] = {
-          kind = kind, cid = cid, localId = localId,
-          capitalCostCents = capitalCostCents,
-        }
-      end
-    end
-    return inspected.localRefs, localInputs
+    return proposalBindingRuntime.bind(state, inspected, eventId)
   end
   
   function proposalPreparation.prepare(transaction, eventId, commitSeq)
@@ -508,7 +488,8 @@ function M.new(deps)
     if util.tableCount(state.world.proposals.byId) >= 32 then return false, "too many in-flight proposal transactions" end
     if state.world.proposals.byId[eventId] then return false, "duplicate canonical proposal event" end
   
-    local localRefs, localInputs, bindError = proposalPreparation.bind(inspected, eventId)
+    local localRefs, localInputs, bindError, newlyBoundCids, canonicalRevisionBefore =
+      proposalPreparation.bind(inspected, eventId)
     if not localRefs then return false, bindError end
     proposalPreparation.pending[transaction.digest] = nil
   
@@ -525,6 +506,8 @@ function M.new(deps)
       transaction = util.deepCopy(transaction),
       localInputs = localInputs,
       localRefs = localRefs,
+      newlyBoundCids = newlyBoundCids,
+      canonicalRevisionBefore = canonicalRevisionBefore,
       issuerPlayerId = issuerPlayerId,
       nativeOwnerPlayerId = nativeOwnerPlayerId,
       -- Compatibility alias for version <= 9 saves/research readers.
@@ -534,7 +517,10 @@ function M.new(deps)
       status = "queued",
       queuedTick = state.tick,
     }
-    if record.balanceBefore == nil then return false, "proposal issuer balance is unavailable" end
+    if record.balanceBefore == nil then
+      proposalBindingRuntime.rollback(state, record)
+      return false, "proposal issuer balance is unavailable"
+    end
     state.world.proposals.byId[eventId] = record
     if state.networkMode == "network" then
       state.world.proposalConsensus.byId[eventId] = {
@@ -565,6 +551,8 @@ function M.new(deps)
     record.completedTick = state.tick
     record.result = util.deepCopy(result)
     record.pendingFinance = nil
+    record.newlyBoundCids = nil
+    record.canonicalRevisionBefore = nil
     state.world.proposals.applied = (state.world.proposals.applied or 0) + 1
     state.probes.capture.proposalReplayCount = (state.probes.capture.proposalReplayCount or 0) + 1
     state.probes.capture.lastProposalReplay = {
@@ -637,44 +625,6 @@ function M.new(deps)
     return false
   end
   
-  local function networkFinanceHousekeeping()
-    if state.networkMode ~= "network" or state.initialized ~= true then return true end
-    local ledger = finance.ensureNetworkAccounts(state.finance)
-    if ledger.initialized ~= true then return false, "canonical network accounts are not initialised" end
-    local reconciliation = ledger.reconciliation or {}
-    if reconciliation.nextHousekeepingTick == nil then
-      reconciliation.nextHousekeepingTick = state.tick + 1
-      return true
-    end
-    local nextTick = util.integer(reconciliation.nextHousekeepingTick, state.tick + 1)
-    if state.tick < nextTick then return true end
-    -- Never erase a native construction debit while it is still being sampled,
-    -- and never alter wallet presentation inside a physical/checkpoint barrier.
-    for _, record in pairs(state.world.proposals.byId or {}) do
-      if record.status == "queued" or record.status == "awaiting-finance"
-        or record.status == "building-construction" then return true end
-    end
-    for _, record in pairs(state.world.operations.byId or {}) do
-      if record.status == "queued" or record.status == "awaiting-result" then return true end
-    end
-    for _, record in pairs(state.world.proposalConsensus.byId or {}) do
-      if record.status == "pending" then return true end
-    end
-    for _, record in pairs(state.world.operationConsensus.byId or {}) do
-      if record.status == "pending" then return true end
-    end
-    for _, record in pairs(state.world.checkpointConsensus.byBoundary or {}) do
-      if record.status == "pending" then return true end
-    end
-    reconciliation.nextHousekeepingTick = state.tick + 1
-    local ok, result = finance.reconcileNetworkAccounts(state.finance, state.companies, {
-      reason = "periodic-native-wallet-cache",
-      tick = state.tick,
-    })
-    if not ok then return false, type(result) == "table" and result.error or result end
-    return true, result
-  end
-  
   local function finaliseCanonicalProposal(payload)
     payload = type(payload) == "table" and payload or {}
     local proposalId = tostring(payload.proposalId or "")
@@ -683,7 +633,16 @@ function M.new(deps)
     if record.status == "applied" then return true, util.deepCopy(record.result) end
     if record.status == "failed" then return false, util.deepCopy(record.result) end
     if payload.success ~= true then
-      return proposalFailure(record, { error = tostring(payload.error or "GUI-state BuildProposal was rejected") })
+      return proposalFailure(record, {
+        error = tostring(payload.error or "GUI-state BuildProposal was rejected"),
+      }, {
+        -- Only the GUI replay layer can attest this: it snapshots every
+        -- relevant native component set and both wallets around the rejected
+        -- command. Restoring commit-time lazy bindings then returns the core
+        -- digest to the all-peer PREPARE boundary, allowing a strict
+        -- recoverable rejection instead of poisoning the whole session.
+        rollbackLazyBindings = payload.worldUnchanged == true,
+      })
     end
     local createdEdgeIds = type(payload.createdEdgeIds) == "table" and payload.createdEdgeIds or {}
     local createdNodeIds = type(payload.createdNodeIds) == "table" and payload.createdNodeIds or {}
@@ -708,11 +667,22 @@ function M.new(deps)
       or #matched.unmatchedEdgeObjects > 0 then
       return proposalFailure(record, tostring(matchError or "proposal created unexpected topology"))
     end
-    local removalVerifier = proposalCodec.isTopologyConstructionRemoval(transaction)
-      and M.verifyTopologyCollateralRemoved
-      or (proposalCodec.isRemovalOnly(transaction) and M.verifyRemovalOnlyInputsRemoved or nil)
-    if removalVerifier then
-      local removed, removalError = removalVerifier(record.localInputs, world)
+    local topologyConstructionRemoval = proposalCodec.isTopologyConstructionRemoval(transaction)
+    if topologyConstructionRemoval then
+      local removed, removalError = M.verifyTopologyCollateralRemoved(record.localInputs, world)
+      if not removed then return proposalFailure(record, removalError) end
+      local edgeObjects = transaction.edgeObjects or {}
+      local hasTopologyOutputs = #(transaction.nodes or {}) > 0 or #(transaction.edges or {}) > 0
+        or #(edgeObjects.add or {}) > 0 or #(edgeObjects.retain or {}) > 0
+      if not hasTopologyOutputs then
+        -- A public-road bulldoze with attached houses has no replacement graph.
+        -- Native success must prove both the constructions and every explicit
+        -- topology input disappeared before canonical identities are retired.
+        removed, removalError = M.verifyRemovalOnlyInputsRemoved(record.localInputs, world)
+        if not removed then return proposalFailure(record, removalError) end
+      end
+    elseif proposalCodec.isRemovalOnly(transaction) then
+      local removed, removalError = M.verifyRemovalOnlyInputsRemoved(record.localInputs, world)
       if not removed then return proposalFailure(record, removalError) end
     end
     for _, edge in ipairs(transaction.edges) do

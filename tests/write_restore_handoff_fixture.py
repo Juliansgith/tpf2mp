@@ -35,7 +35,7 @@ def main() -> None:
     }
     plan = sign({
         "format": "tpf2mp-restore-plan",
-        "version": 4,
+        "version": 6,
         "protocol": 1,
         "session": args.session,
         "resumeSession": derive_resume_session(args.session, boundary),
@@ -57,6 +57,14 @@ def main() -> None:
             "schemaVersion": 1,
             "agentMode": "skeleton",
             "townDevelopment": False,
+        },
+        "vehiclePhaseProof": {
+            "schemaVersion": 1,
+            "sampleKeys": [
+                f"{args.session}:player1:7", f"{args.session}:player1:8",
+            ],
+            "vehiclePhaseDigest": "4567def0",
+            "vehicleRounds": [],
         },
         "steps": ["restore both peer-local saves"],
     })

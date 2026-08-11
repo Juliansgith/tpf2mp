@@ -27,6 +27,7 @@ function Read-Tpf2mpVerifiedRestorePlan {
     }
     finally { $env:PYTHONPATH = $previousPythonPath }
     $plan = Get-Content -LiteralPath $resolved -Raw | ConvertFrom-Json
+    [void](Assert-Tpf2mpCurrentRestorePlan $plan)
     if ([string]$plan.session -ne $safeSession) {
         throw 'Restore plan names a different source session.'
     }

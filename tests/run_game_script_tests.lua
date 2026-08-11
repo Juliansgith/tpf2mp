@@ -179,13 +179,25 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 29,
-  "state schema was not migrated to the cargo-presentation authority version")
+assert(initialized.version == 30,
+  "state schema was not migrated to the departure-timed passenger queue version")
 assert(initialized.checkpoint.exports == 1 and initialized.checkpoint.lastError == nil,
   "match initialisation did not export a clean baseline checkpoint")
 assert(initialized.probes.networkAuthority.ready == true
     and initialized.probes.networkAuthority.error == nil,
   "successful native authority bootstrap retained a false error")
+
+-- The persistent launcher keeps sending these pulses for the lifetime of the
+-- loaded process. A running world already has its simulation pump, so the
+-- pulse must neither rebuild the GUI snapshot nor duplicate native work.
+nativeGameSpeed = 1
+local commandsBeforeRunningLauncherHeartbeat = #commands
+script.handleEvent("test", "tpf2mp", "snapshot.request", {
+  launcherReady = true, launcherHeartbeat = true,
+})
+assert(#commands == commandsBeforeRunningLauncherHeartbeat,
+  "running launcher heartbeat rebuilt the GUI or issued duplicate native work")
+nativeGameSpeed = 0
 
 local checkpointMessage
 for localSeq = 1, initialized.bridge.nextOutSeq - 1 do

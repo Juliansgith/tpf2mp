@@ -4,6 +4,7 @@ from typing import Any, Mapping
 
 from .protocol import ProtocolError
 from .restore import verify_restore_plan
+from .restore_plan import RESTORE_PLAN_VERSION
 
 
 class RestoreSessionCoordinator:
@@ -17,10 +18,17 @@ class RestoreSessionCoordinator:
         self.error: str | None = None
         if self.plan is None:
             return
+        if self.plan["version"] != RESTORE_PLAN_VERSION:
+            raise ProtocolError(
+                "network resume requires a current native-phase-bound restore plan"
+            )
         if self.plan["resumeSession"] != host.bridge.session:
             raise ProtocolError("restore plan resume session differs from the sequencer session")
         if tuple(sorted(self.plan["requiredPeers"])) != tuple(sorted(host.required_peers)):
             raise ProtocolError("restore plan peer roster differs from the sequencer roster")
+        host.synchronization.vehicle.restore_round_cursors(
+            self.plan["vehiclePhaseProof"]["vehicleRounds"]
+        )
 
     def expected_action(self) -> dict[str, Any] | None:
         if self.plan is None:
@@ -32,6 +40,9 @@ class RestoreSessionCoordinator:
             "coreDigest": self.plan["coreDigest"],
             "convergenceKey": self.plan["convergenceKey"],
             "planChecksum": self.plan["checksum"],
+            "vehiclePhaseDigest": self.plan["vehiclePhaseProof"][
+                "vehiclePhaseDigest"
+            ],
         }
 
     def before_commit(self, action: Mapping[str, Any], origin: str) -> None:
@@ -60,22 +71,17 @@ class RestoreSessionCoordinator:
             raise ProtocolError("audit recovery.resume does not match the restore plan")
         self.commit_seq = int(commit["seq"])
         self.state = "awaiting-checkpoint"
-        tracker = self.host._track_checkpoint_boundary(
+        return self.host._track_checkpoint_boundary(
             self.commit_seq, f"restore-resume:{self.plan['checksum']}"
         )
-        tracker["restoreExpectedCoreDigest"] = self.plan["coreDigest"]
-        return tracker
-
-    def checkpoint_error(self, tracker: Mapping[str, Any], selected: list[Mapping[str, Any]]) -> str | None:
-        expected = tracker.get("restoreExpectedCoreDigest")
-        if expected is None:
-            return None
-        if any(item.get("coreDigest") != expected for item in selected):
-            return "restore-checkpoint-core-mismatch"
-        return None
 
     def observe_checkpoint_outcome(self, action: Mapping[str, Any]) -> None:
-        if self.commit_seq is None or int(action.get("boundarySeq", -1)) != self.commit_seq:
+        if self.commit_seq is None:
+            return
+        boundary = action.get("boundarySeq")
+        if not isinstance(boundary, int) or isinstance(boundary, bool):
+            raise ProtocolError("restore checkpoint outcome boundary is invalid")
+        if boundary != self.commit_seq:
             return
         if action.get("success") is True:
             self.state, self.error = "complete", None

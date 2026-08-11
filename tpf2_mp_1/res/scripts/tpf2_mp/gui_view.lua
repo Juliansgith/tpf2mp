@@ -107,7 +107,10 @@ function M.render(gui, snapshot, options)
       .. " | deferred scenery "
       .. tostring(snapshot.probes and snapshot.probes.worldManifest
         and snapshot.probes.worldManifest.deferredUnique or 0),
-    "Bridge out/in: " .. tostring(snapshot.bridge and snapshot.bridge.emitted or 0) .. "/" .. tostring(snapshot.bridge and snapshot.bridge.received or 0),
+    "Bridge out/in: " .. tostring(snapshot.bridge and snapshot.bridge.emitted or 0)
+      .. "/" .. tostring(snapshot.bridge and snapshot.bridge.received or 0)
+      .. " | replaceable coalesced "
+      .. tostring(snapshot.bridge and snapshot.bridge.coalesced or 0),
     "Last result: " .. compactResult(snapshot.lastResult),
     "Route draft: " .. tostring(#(gui.routeDraft or {}))
       .. " stops | retained line " .. tostring(gui.selectedLineId or "-")
@@ -128,6 +131,20 @@ function M.render(gui, snapshot, options)
       companion.connected == true and "connected" or "waiting",
       peers
     )
+    local runtimePerformance = snapshot.probes and snapshot.probes.performance or {}
+    local runtimeTasks, nativeTransport = runtimePerformance.tasks or {},
+      runtimePerformance.nativeBridge or {}
+    local bridgeTiming, vehicleTiming = runtimeTasks["bridge.consume"] or {}, runtimeTasks["vehicle-sync.update"] or {}
+    lines[#lines + 1] = string.format(
+      "Runtime: bridge %s | queue %d out / %d in (%d bytes) | p95 bridge %.3f ms / vehicles %.3f ms%s",
+      nativeTransport.active == true and "native-async" or "Lua-compat",
+      tonumber(nativeTransport.outboundQueued) or 0,
+      tonumber(nativeTransport.inboundQueued) or 0,
+      tonumber(nativeTransport.queuedBytes) or 0,
+      (tonumber(bridgeTiming.p95Us) or 0) / 1000,
+      (tonumber(vehicleTiming.p95Us) or 0) / 1000,
+      (tonumber(nativeTransport.rejected) or 0) > 0
+        and (" | REJECTED " .. tostring(nativeTransport.rejected)) or "")
     local content = snapshot.industryContent or {}
     local localContent = snapshot.probes and snapshot.probes.industryContent or {}
     lines[#lines + 1] = string.format(
@@ -197,14 +214,14 @@ function M.render(gui, snapshot, options)
           return tostring(nativeSave.status) .. (nativeSave.saveName
             and " (" .. tostring(nativeSave.saveName) .. ")" or "")
         end
-        return companion.anchorReady == true and "READY - automatic save pending"
-          or (companion.anchorBoundarySeq and "not yet" or "waiting for a checkpoint")
+        if companion.anchorReady == true then return "READY - automatic save pending" end
+        if companion.anchorReceiptReady == true then return "native save finalizing - prepared boundary retained" end
+        return companion.anchorBoundarySeq and "not yet" or "waiting for a checkpoint"
       end)(),
       (function()
-        local reasons = companion.anchorReasons
-        if companion.anchorReady == true or type(reasons) ~= "table" or #reasons == 0 then
-          return ""
-        end
+        local reasons = companion.anchorReceiptReady == true and companion.anchorReceiptReasons or companion.anchorReasons
+        if companion.anchorReady == true or companion.anchorReceiptReady == true
+          or type(reasons) ~= "table" or #reasons == 0 then return "" end
         return " | " .. tostring(reasons[1])
       end)())
     lines[#lines + 1] = string.format(
@@ -227,10 +244,14 @@ function M.render(gui, snapshot, options)
     local passengerTotals = passenger.totals or {}
     local cosmetics = snapshot.probes and snapshot.probes.passengerCosmetics or {}
     lines[#lines + 1] = string.format(
-      "Passenger presentation: %d aboard / %d seats | %d waiting | native scenery %d aboard, %d waiting | target writes %s",
+      "Passenger presentation: %d aboard / %d seats | %d waiting | 5m requested/throughput/overflow %d/%d/%d | abandoned %d | native scenery %d aboard, %d waiting | target writes %s",
       tonumber(passengerTotals.aboard) or 0,
       tonumber(passengerTotals.capacity) or 0,
       tonumber(passengerTotals.waiting) or 0,
+      tonumber(passengerTotals.requested) or 0,
+      tonumber(passengerTotals.allocated) or 0,
+      tonumber(passengerTotals.capacityOverflow) or 0,
+      tonumber(passengerTotals.abandoned) or 0,
       tonumber(cosmetics.nativeAboard) or 0,
       tonumber(cosmetics.nativeWaiting) or 0,
       cosmetics.targetWritesEnabled == true and "enabled" or "fail-closed")
@@ -334,8 +355,9 @@ function M.render(gui, snapshot, options)
       if target > share + 2000 then trend = "GAINING"
       elseif target + 2000 < share then trend = "LOSING" end
       lines[#lines + 1] = string.format(
-        "  %s: %d carried, %d.%d%% share -> %d.%d%% %s | gross $%.2f - train $%.2f = line net $%.2f",
+        "  %s: %d requested / %d admitted this 5m, %d.%d%% share -> %d.%d%% %s | gross $%.2f - train $%.2f = line net $%.2f",
         service.name or lineCid,
+        service.requested or service.allocated or 0,
         service.allocated or 0,
         math.floor(share / 10000), math.floor(share % 10000 / 1000),
         math.floor(target / 10000), math.floor(target % 10000 / 1000),
@@ -369,10 +391,11 @@ function M.render(gui, snapshot, options)
     if shownBoards >= 8 then break end
     shownBoards = shownBoards + 1
     local board = boards[groupCid]
-    lines[#lines + 1] = string.format("Station %s: waiting %d %s | %d pax/5m over %d line(s)",
+    lines[#lines + 1] = string.format("Station %s: waiting %d %s | %d requested/%d throughput per 5m over %d line(s)",
       board.name or groupCid,
       board.waiting or 0,
       M.crowdIcons(board.waiting or 0),
+      board.requested or 0,
       board.throughput or 0,
       #(board.lines or {}))
   end

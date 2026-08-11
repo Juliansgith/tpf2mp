@@ -154,6 +154,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary -Python $python
     if (-not $?) { throw 'Automatic restore-plan handoff test failed' }
 
+    & (Join-Path $projectRoot 'tests\run_automatic_restore_capture_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Automatic paired restore capture test failed' }
+
     . (Join-Path $projectRoot 'tools\network_common.ps1')
     $identityCases = @(
         @('tpf2mp.exe host --session match-1 --peer player1 --port 29742', 'match-1', 'player1', $true),
@@ -227,6 +231,28 @@ try {
         throw 'Legacy restore-plan policy compatibility failed.'
     }
     Write-Host 'PASS bound restore policy adoption, conflict refusal, and v2 compatibility'
+
+    $currentRestorePlan = [pscustomobject]@{
+        version = 6
+        vehiclePhaseProof = [pscustomobject]@{
+            schemaVersion = 1
+            vehiclePhaseDigest = '4567def0'
+            vehicleRounds = @()
+        }
+    }
+    [void](Assert-Tpf2mpCurrentRestorePlan $currentRestorePlan)
+    $retiredPlanRefused = $false
+    try {
+        [void](Assert-Tpf2mpCurrentRestorePlan ([pscustomobject]@{
+            version = 4
+            vehiclePhaseProof = $currentRestorePlan.vehiclePhaseProof
+        }))
+    }
+    catch { $retiredPlanRefused = $_.Exception.Message -match 'requires current restore plan v6' }
+    if (-not $retiredPlanRefused) {
+        throw 'Launcher accepted a restore plan that does not bind native vehicle route phase.'
+    }
+    Write-Host 'PASS launcher accepts only current native-phase-bound restore plans'
 
     . (Join-Path $projectRoot 'tools\native_load_common.ps1')
 

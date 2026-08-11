@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
 
 local M = {}
 
@@ -32,13 +33,16 @@ function M.new(env)
     local state = getState()
     local preparationSeq = util.integer(action and action.preparationSeq, 0)
     local reason = tostring(action and action.reason or "")
+    local phaseProof, phaseError = recoveryPhaseProof.normalise(
+      action and action.vehiclePhaseProof)
     if state.networkMode ~= "network" or not commitSeq or preparationSeq < 1
-      or reason ~= "recovery-prepare:" .. tostring(preparationSeq) then
-      return false, "invalid host restore-point checkpoint request"
+      or reason ~= "recovery-prepare:" .. tostring(preparationSeq) or not phaseProof then
+      return false, phaseError or "invalid host restore-point checkpoint request"
     end
     state.recovery.anchorPreparation = {
       status = "checkpointing", preparationSeq = preparationSeq,
       boundarySeq = commitSeq, tick = state.tick,
+      vehiclePhaseProof = phaseProof,
     }
     return exportCheckpointBarrier(commitSeq, reason)
   end

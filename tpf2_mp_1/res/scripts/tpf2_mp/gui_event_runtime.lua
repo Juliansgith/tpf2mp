@@ -638,6 +638,23 @@ function M.new(deps)
     local take = rawget(_G, "tpf2mp_native_take_line_command")
       or rawget(_G, "tpf2mp_native_take_suppressed_line_command")
     if type(take) ~= "function" then return false end
+    local firstCalled, firstRaw = pcall(take)
+    if not firstCalled then
+      gui.lastError = "cannot read suppressed native line command: " .. tostring(firstRaw)
+      queueAction({
+        type = "network.origin_residue",
+        errorCode = "origin-applied-native-line-capture-read-failed",
+        detail = { error = tostring(firstRaw) },
+      })
+      return true
+    end
+    -- Seed the baseline once. Afterwards an empty native queue and no pending
+    -- CreateLine correlation cannot produce work, so do not enumerate every
+    -- LINE entity on every render frame.
+    local hasPendingCreate = #(gui.pendingNativeLinePassThroughCaptures or {}) > 0
+    if firstRaw == nil and not hasPendingCreate and gui.nativeLineKnownIds ~= nil then
+      return false
+    end
     local types = api.type and api.type.ComponentType or {}
     local currentLines, lineSetError = componentEntitySet(types.LINE)
     if not currentLines then
@@ -759,8 +776,13 @@ function M.new(deps)
         table.remove(gui.pendingNativeLinePassThroughCaptures, pendingIndex)
       else pendingIndex = pendingIndex + 1 end
     end
-    for _ = 1, 8 do
-      local called, raw = pcall(take)
+    for index = 1, 8 do
+      local called, raw
+      if index == 1 then
+        called, raw = true, firstRaw
+      else
+        called, raw = pcall(take)
+      end
       if not called then
         gui.lastError = "cannot read suppressed native line command: " .. tostring(raw)
         queueAction({
@@ -994,11 +1016,12 @@ function M.new(deps)
       markNativeContext("gui")
       gui.networkAuthorityBootstrap = config().startNetwork
         and attemptGuiNetworkAuthorityBootstrap() or nil
-      local ok, err = pcall(ensureWindow)
+      -- Manual-network worlds expose the HUD entry point; constructing the
+      -- large diagnostics window only to hide it kept its TextViews alive and
+      -- rerendering behind stock vehicle panels for the rest of the session.
+      local ok, err = true, nil
+      if not config().manualNetwork then ok, err = pcall(ensureWindow) end
       if not ok then gui.lastError = tostring(err) end
-      if ok and config().manualNetwork and gui.window then
-        pcall(gui.window.setVisible, gui.window, false, false)
-      end
       pcall(installMultiplayerEntryPoints)
       diagnosticLog("gui-init", { success = ok and true or false, error = not ok and tostring(err) or nil })
       queueAction({
@@ -1132,7 +1155,7 @@ function M.new(deps)
         -- ordinary UI intents until the operation result is returned.
       elseif #gui.queue > 0 then
         dispatchQueuedAction()
-      elseif gui.frames % ((gui.selectedEntityId and 30) or 120) == 0 then
+      elseif gui.frames % ((gui.selectedEntityId and 180) or 600) == 0 then
         queueAction({ type = "snapshot.request", localOnly = true })
       end
   end

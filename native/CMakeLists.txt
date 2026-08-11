@@ -21,6 +21,7 @@ target_compile_definitions(tpf2mp_native_common PUBLIC UNICODE _UNICODE WIN32_LE
 target_link_libraries(tpf2mp_native_common PUBLIC bcrypt)
 
 add_library(tpf2mp_hook_support STATIC
+  src/native_async_bridge.cpp
   src/native_command_codec.cpp
   src/native_vehicle_command_codec.cpp
   src/native_hook_status.cpp

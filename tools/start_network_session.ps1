@@ -35,6 +35,7 @@ if ($RestorePlan) {
         throw "Restore plan is missing: $restorePlanPath"
     }
     $restorePlanData = Get-Content -LiteralPath $restorePlanPath -Raw | ConvertFrom-Json
+    [void](Assert-Tpf2mpCurrentRestorePlan $restorePlanData)
     if ([string]$restorePlanData.resumeSession -ne $Session) {
         throw 'Session must equal the restore plan resumeSession.'
     }
@@ -234,6 +235,7 @@ $state = [ordered]@{
     recoveryWatcherStderr = $null
     nativeStatusPath = $null
     nativeSaveLoadReceipt = $null
+    pausedNetworkWake = $null
     runtimeOverlay = $null
     menuBootstrap = $null
     directLaunchMarker = $null
@@ -334,6 +336,15 @@ try {
                 -RequireGameScriptObserver -RequireAuthorityGates)
             [IO.File]::WriteAllText((Join-Path $bridge 'launcher\manual-bootstrap-ready'),
                 'ready', [Text.UTF8Encoding]::new($false))
+            $wakeEvidence = Join-Path $sessionRoot 'paused-network-wake'
+            & (Join-Path $PSScriptRoot 'ensure_paused_network_wake.ps1') `
+                -GameProcessId $gameProcess.Id -GameExecutable $game `
+                -GameStartedAtUtc $state.gameStartedAtUtc -BridgePath $bridge `
+                -Session $safeSession -Peer $peer `
+                -EvidenceDirectory $wakeEvidence `
+                -RequirePersistentMenuPump `
+                -RequireRestoreValidated:($null -ne $restorePlanData)
+            $state.pausedNetworkWake = Join-Path $wakeEvidence 'paused-network-wake.json'
             Remove-Tpf2mpStagedStartingSave $stagedSave
             $state.stagedStartingSave = $null
             $state.status = if ($Role -eq 'Host') { 'hosting-world-ready' } else { 'joined-world-ready' }
@@ -376,6 +387,7 @@ try {
             '-GameProcessId', $gameProcess.Id,
             '-GameExecutable', $game,
             '-GameStartedAtUtc', $state.gameStartedAtUtc,
+            '-MatchContentProfilePath', $matchContentProfile,
             '-BundleRoot', $bundle
         )
         $recoveryWatcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `

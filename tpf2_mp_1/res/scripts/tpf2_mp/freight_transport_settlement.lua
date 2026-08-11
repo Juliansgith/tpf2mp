@@ -148,4 +148,16 @@ function M.apply(state, cargoLines)
   return true, summary
 end
 
+function M.retireLine(state, lineCid)
+  if type(state) ~= "table" or type(state.transportCursors) ~= "table" then
+    return false, "freight transport state is malformed"
+  end
+  if type(lineCid) ~= "string" or not lineCid:match("^line:") then
+    return false, "freight transport line id is invalid"
+  end
+  local retired = state.transportCursors[lineCid] ~= nil
+  state.transportCursors[lineCid] = nil
+  return true, { lineCid = lineCid, retired = retired }
+end
+
 return M

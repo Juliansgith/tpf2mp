@@ -2,27 +2,30 @@
 
 The companion makes both worlds safe to save: it fences new work, rendezvouses
 both simulations at pause, orders one checkpoint request at a shared sequence,
-and waits for checkpoint consensus.  Once the exact boundary is READY, each
-game issues Build 35924's native ``SaveGame`` command under a peer-specific
-name; the independent watcher then hashes the stable file and files its ordered
-receipt.
+and waits for checkpoint consensus.  At READY, each game issues Build 35924's
+native ``SaveGame`` command; the watcher hashes it and files its ordered receipt.
 """
 
 from __future__ import annotations
 
 import time
 from typing import Any, Mapping
-
-from .protocol import PROTOCOL_VERSION, ProtocolError, sign, validate_action
+from .anchor_prepare_checkpoint import AnchorPreparationCheckpoint
+from .anchor_prepare_drain import AnchorPreparationDrain
+from .anchor_prepare_phase import AnchorPreparationPhase
+from .protocol import ProtocolError
 
 
 class AnchorPreparationCoordinator:
     """Host-side state machine behind ``Prepare & Save Restore Point``."""
 
-    PENDING = {"pause-requested", "pausing", "checkpointing"}
+    PENDING = {"draining", "pause-requested", "pausing", "checkpointing"}
 
     def __init__(self, host: Any) -> None:
         self.host = host
+        self.checkpoint = AnchorPreparationCheckpoint(host)
+        self.drain = AnchorPreparationDrain(host)
+        self.phase = AnchorPreparationPhase(host)
         self.current: dict[str, Any] | None = None
         self.last: dict[str, Any] | None = None
 
@@ -38,10 +41,24 @@ class AnchorPreparationCoordinator:
         if not active:
             return
         status = str(active.get("status", ""))
-        synthetic_pause = action_type == "clock.request" \
-            and int(action.get("requestedSpeed", -1)) == 0 \
+        internal_clock = action_type == "clock.request" \
             and origin == self.host.bridge.peer and local_seq < 0
-        if status in self.PENDING and not synthetic_pause:
+        requested_speed = int(action.get("requestedSpeed", -1)) if internal_clock else -1
+        synthetic_pause = internal_clock and requested_speed == 0
+        synthetic_drain_resume = internal_clock and status == "draining" \
+            and requested_speed == int(active.get("resumeSpeed", -1))
+        synthetic_phase_probe = self.phase.internal_probe(
+            active, action_type, origin, local_seq
+        )
+        # A save receipt attests the already-prepared boundary; it is not new
+        # authored work and AnchorCoordinator deliberately excludes it from
+        # readiness's commits-since-boundary check.  Superseding here would
+        # leave the same boundary simultaneously READY and "superseded".
+        if action_type == "recovery.save_receipt":
+            return
+        if status in self.PENDING and not (
+            synthetic_pause or synthetic_drain_resume or synthetic_phase_probe
+        ):
             raise ProtocolError(
                 f"restore point preparation {active['preparationSeq']} is {status}"
             )
@@ -63,12 +80,27 @@ class AnchorPreparationCoordinator:
                     return
                 self.current["status"] = "superseded"
                 self.last = dict(self.current)
+            resume_speed = max(
+                0,
+                int(max(
+                    self.host.clock_requested_speed,
+                    self.host.clock_effective_speed,
+                )),
+            )
+            # A user may request a restore point while manually paused even
+            # though a station round was authored just before the pause.  A
+            # short speed-1 drain is the only safe way to let that durable
+            # round finish before manufacturing the save boundary.
+            if resume_speed == 0 and self.host.anchor._pending_work():
+                resume_speed = 1
             self.current = {
                 "preparationSeq": sequence,
                 "originPeer": str(message.get("origin_peer") or self.host.bridge.peer),
-                "status": "pause-requested",
+                "status": "draining",
                 "checkpointBoundarySeq": None,
-                "detail": "waiting for the shared pause",
+                "resumeSpeed": resume_speed,
+                "drainRetries": 0,
+                "detail": "draining ordered work before the shared pause",
                 "startedAt": time.monotonic(),
             }
             return
@@ -87,6 +119,10 @@ class AnchorPreparationCoordinator:
                 "checkpointBoundarySeq": sequence,
                 "detail": "waiting for both checkpoint exports",
             })
+            return
+        if self.drain.observe_clock(self.current, message, action, sequence):
+            return
+        if self.phase.observe_ordered(self.current, message, action):
             return
         if action_type == "network.checkpoint_outcome" and self.current:
             boundary = int(action.get("boundarySeq", 0))
@@ -117,49 +153,6 @@ class AnchorPreparationCoordinator:
             raise ProtocolError("manual checkpoint arrived while ordered work was pending")
         return self.host._track_checkpoint_boundary(boundary, "manual-ui")
 
-    def _quiescence_reasons(self) -> list[str]:
-        reasons: list[str] = []
-        if not self.host.synchronization.shared_pause_acknowledged():
-            reasons.append("waiting for the shared pause")
-        pending = self.host.anchor._pending_work()
-        if pending:
-            reasons.append(f"waiting for {pending} ordered action(s)")
-        reasons.extend(self.host.anchor._health_reasons(0))
-        latest = max(0, self.host.next_seq - 1)
-        for peer in self.host.required_peers:
-            sample = self.host.clock_health.get(peer)
-            if isinstance(sample, Mapping) and int(sample.get("lastCommitSeq", -1)) < latest:
-                reasons.append(f"{peer} has not consumed preparation sequence {latest}")
-        if self.host.session_fault:
-            reasons.append("the session faulted during restore point preparation")
-        return reasons
-
-    def _emit_checkpoint_request(self, preparation_seq: int) -> dict[str, Any]:
-        reason = f"recovery-prepare:{preparation_seq}"
-        action = validate_action({
-            "type": "network.checkpoint_request",
-            "preparationSeq": preparation_seq,
-            "reason": reason,
-        })
-        sequence = self.host.next_seq
-        self.host.next_seq += 1
-        control = sign({
-            "protocol": PROTOCOL_VERSION,
-            "session": self.host.bridge.session,
-            "seq": sequence,
-            "kind": "control",
-            "origin_peer": self.host.bridge.peer,
-            "tick": 0,
-            "payload": {"action": action},
-        })
-        self.host.audit.append(control)
-        self.host.commits[sequence] = control
-        self.observe_ordered(control)
-        self.host.bridge.write_inbound(control)
-        self.host._broadcast(control)
-        print(f"restore point preparation {preparation_seq} requested checkpoint {sequence}")
-        return control
-
     def maintain(self) -> bool:
         """Advance without relying on simulation ticks (the world may be paused)."""
 
@@ -168,26 +161,64 @@ class AnchorPreparationCoordinator:
             if not active:
                 return False
             status = str(active.get("status", ""))
-            if status == "pause-requested":
-                active["status"] = "pausing"
-                active["detail"] = "rendezvousing both games at pause"
-                if not self.host.synchronization.shared_pause_acknowledged():
-                    try:
-                        ordered = self.host.emit_local_intent({
-                            "type": "clock.request", "requestedSpeed": 0,
-                        })
-                        active["pauseCommitSeq"] = ordered and int(ordered.get("seq", 0))
-                    except ProtocolError as exc:
-                        active["status"] = "failed"
-                        active["detail"] = str(exc)
+            if status in self.PENDING and self.host.session_fault:
+                active["status"] = "failed"
+                active["detail"] = "the session faulted during restore point preparation"
+                self.last = dict(active)
+                return True
+            if status == "draining":
+                handled, changed = self.phase.recovery.maintain(active, self.drain)
+                if handled:
+                    if active.get("status") == "failed":
                         self.last = dict(active)
+                    return changed
+                vehicle_pending = self.drain.vehicle_pending()
+                pending = self.host.anchor._pending_work()
+                if self.host.synchronization.shared_pause_acknowledged() \
+                        and vehicle_pending > 0 and pending == vehicle_pending:
+                    return self.drain.resume(active)
+                reasons = self.drain.reasons()
+                active["detail"] = reasons[0] if reasons \
+                    else "ordered work drained; requesting the shared pause"
+                if reasons:
+                    if self.drain.can_pause_after_completed_resume(active, reasons):
+                        active["detail"] = (
+                            "running health became stale after the completed drain; "
+                            "requesting a telemetry-failsafe pause"
+                        )
+                        return self.drain.begin_pause(active)
+                    return False
+                return self.drain.begin_pause(active)
+            if status == "pause-requested":
+                # Backward-compatible recovery of an audit written by the
+                # pre-drain coordinator.
+                active["status"] = "draining"
+                active.setdefault("resumeSpeed", max(
+                    0, int(max(self.host.clock_requested_speed, self.host.clock_effective_speed)),
+                ))
                 return True
             if status == "pausing":
-                reasons = self._quiescence_reasons()
-                active["detail"] = reasons[0] if reasons else "requesting matching checkpoints"
+                vehicle_pending = self.drain.vehicle_pending()
+                pending = self.host.anchor._pending_work()
+                if self.host.synchronization.shared_pause_acknowledged() \
+                        and vehicle_pending > 0 and pending == vehicle_pending:
+                    return self.drain.resume(active)
+                if self.host.synchronization.shared_pause_acknowledged() \
+                        and pending == 0 and self.drain.pause_skew_requires_resync():
+                    return self.drain.resynchronize_pause(active)
+                reasons = self.drain.quiescence_reasons()
+                active["detail"] = reasons[0] if reasons \
+                    else "verifying paused native vehicle route phases"
                 if reasons:
                     return False
-                self._emit_checkpoint_request(int(active["preparationSeq"]))
+                handled, changed = self.phase.maintain(active)
+                if handled:
+                    if active.get("status") == "failed":
+                        self.last = dict(active)
+                    return changed
+                self.checkpoint.emit(
+                    int(active["preparationSeq"]), active.get("vehiclePhaseProof"),
+                )
                 return True
             if status == "checkpointing":
                 boundary = int(active.get("checkpointBoundarySeq") or 0)
@@ -201,11 +232,20 @@ class AnchorPreparationCoordinator:
                     self.last = dict(active)
                     return True
                 return False
-            if status == "converged" and self.host.anchor.readiness().get("ready") is True:
-                active["status"] = "ready"
-                active["detail"] = "restore boundary is READY; make the native saves now"
-                self.last = dict(active)
-                return True
+            if status == "converged":
+                if self.host.anchor.readiness().get("ready") is True:
+                    active["status"] = "ready"
+                    active["detail"] = "restore boundary is READY; make the native saves now"
+                    self.last = dict(active)
+                    return True
+                # A delayed/off-screen native resume can be consumed only
+                # after a checkpoint has already converged. Matching authored
+                # digests do not include engine time, so supersede that
+                # candidate boundary and rendezvous before checkpointing again.
+                if self.host.anchor._pending_work() == 0 \
+                        and self.drain.pause_skew_requires_resync():
+                    active["checkpointBoundarySeq"] = None
+                    return self.drain.resynchronize_pause(active)
             return False
 
     def readiness_reasons(self) -> list[str]:

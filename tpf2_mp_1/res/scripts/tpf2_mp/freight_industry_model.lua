@@ -486,6 +486,7 @@ function M.withdrawOutput(state, cid, cargoType, amount)
 end
 
 M.applyTransportSnapshot = freightTransportSettlement.apply
+M.retireTransportLine = freightTransportSettlement.retireLine
 
 function M.digestView(state)
   state = type(state) == "table" and state or M.newState()

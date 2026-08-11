@@ -1,6 +1,53 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-09 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.16.0`.
+Last updated: 2026-08-11 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `30`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+
+[Live active-train restore phase](LIVE_ACTIVE_TRAIN_RESTORE_PHASE_2026-08-11.md)
+records the early native-world load freeze, strict v6 route-phase/station-round
+proof, paired boundary-15 capture, receipt-bound reload, mandatory fresh
+checkpoint, and the restored train's successful round-2 release with zero
+faults.
+
+[Live recovery-save latency](LIVE_RECOVERY_SAVE_LATENCY_2026-08-11.md)
+records the boundary-416 populated-world save, the observed eleven-minute
+native metadata phase, the false 60-second watcher failure, the separated
+1,200-second completion bound, bounded persistent-state compaction, strict
+paired-save discovery, the successful boundary-11 post-migration restore
+checkpoint, and the later unattended compacted-build fresh capture/relaunch/
+reload chain on two exact processes.
+
+[Live station barrier and GUI performance](LIVE_STATION_BARRIER_AND_GUI_PERFORMANCE_2026-08-10.md)
+records the populated 30-minute control, the 37.488-second mean release delay,
+the speed-ordinal/unit and heartbeat phase-lock defects, the unrelated station-
+preview traversal, the corrected bounded cadences, full offline proof, and the
+fresh-build acceptance gate.
+
+[Removal-only town road with attached-building collateral](REMOVAL_ONLY_TOWN_ROAD_COLLATERAL_2026-08-10.md)
+records the live station-following bulldozer fault, the one-edge/one-node/two-
+building transaction, atomic removal-only replay, semantic station/depot
+boundary, unchanged-world rejection attestation, exact lazy-binding rollback,
+and the fresh two-process acceptance sequence.
+
+[Live soak failure hardening](LIVE_SOAK_FAILURE_HARDENING_2026-08-10.md)
+records the Windows audit-sharing root cause of the apparent station deadlock,
+bounded journal retries and fail-closed liveness, schema-4 passenger
+conservation/migration, disconnected telemetry coalescing, and the next fresh
+two-process acceptance gate.
+
+[Departure-timed passenger queues](DEPARTURE_TIMED_PASSENGER_QUEUES_2026-08-10.md)
+records the physical-seat/route-throughput distinction, model-v9 requested and
+waiting classes, ordered-release arrival integration, crowding feedback,
+checkpoint migration, UI wording, and the remaining two-process visual gate.
+
+[Recovery and freight audit review](RECOVERY_AND_FREIGHT_AUDIT_REVIEW_2026-08-10.md)
+records the partially overstated legacy-plan gate, the now-explicit core API
+opt-in, confirmed freight cursor retirement, empty-roster hardening, clean
+protocol rejection, and the full passing verification envelope.
+
+[Live restore handoff and Build 35924 save fallback](LIVE_RESTORE_HANDOFF_AND_SAVE_FALLBACK_2026-08-09.md)
+records the boundary-11 two-peer receipt/plan/archive proof, the absent public
+save factory, native filename truncation, four production defects exposed by
+the run, and the guarded stock-UI fallback plus remaining fresh-run gate.
 
 [Automatic restore-plan handoff and local discovery](AUTOMATIC_RESTORE_PLAN_HANDOFF_2026-08-09.md)
 records verified host-to-client plan delivery, late-join replay, player2's
@@ -119,6 +166,15 @@ and the remaining ordinary-widget two-process boundary.
 records the real 5,469-file O(history) poll, 972x lookup benchmark, strict
 cursor-direct replacement, schema-2 cursor, and bounded 4,096-message evidence
 tail.
+
+[Live soak failure hardening](LIVE_SOAK_FAILURE_HARDENING_2026-08-10.md)
+records the Windows audit-sharing authority loss, loaded-vehicle passenger
+residue, disconnected telemetry growth, false launcher pass, clock-governor
+oscillation, oversized health audit, reconnect log spam, and incidental
+stock-Save UI trigger. It documents the fail-closed journal, schema-4 passenger
+conservation, source coalescing, game-time/hysteretic clock policy, sampled
+health audit, strict settled replay, bounded reconnect backoff, and
+explicit-prepare-only recovery UI fallback.
 
 [Freight classification and the remaining industry-authority schema](FREIGHT_CLASSIFICATION_AND_INDUSTRY_SCHEMA_2026-08-09.md)
 records exact station/consist mode classification, the ordered stale-service
@@ -461,7 +517,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 29 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, exact passenger/cargo queues, per-vehicle loads, completed revenue/deliveries, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, both peers' loaded-industry content attestations, and canonical freight recipe/stock/production/transport ledgers. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-5 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content/live binding/transport conservation faults closed.
+State schema 30 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, departure-timed passenger queues, exact cargo queues, per-vehicle loads, completed revenue/deliveries, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, both peers' loaded-industry content attestations, and canonical freight recipe/stock/production/transport ledgers. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-5 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content/live binding/transport conservation faults closed.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two
@@ -471,7 +527,7 @@ and passenger/cargo evidence. A parallel bounded GUI-event envelope covers
 actions that bypass the Lua issuing wrapper without intercepting gameplay. It
 is deliberately not a network-convergence test.
 
-The real file-bridge/TCP path, player-2 Lua engine simulation, bidirectional two-live-game replay, and 600-tick finance/structure soak now pass. The audit can generate a checksummed coordinated-restart plan for the latest agreed boundary. READY-gated automatic native-save capture and watcher integration now pass offline; the two-live-process capture/reload and automatic rollback remain open. Full details: [AUTOMATIC_NATIVE_RESTORE_SAVE_2026-08-09.md](AUTOMATIC_NATIVE_RESTORE_SAVE_2026-08-09.md), [BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md](BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md), [LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md](LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md), [NETWORK_COMPLETION_CONSENSUS_2026-08-02.md](NETWORK_COMPLETION_CONSENSUS_2026-08-02.md), and [CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md](CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md).
+The real file-bridge/TCP path, player-2 Lua engine simulation, bidirectional two-live-game replay, and 600-tick finance/structure soak now pass. The audit can generate a checksummed coordinated-restart plan for the latest agreed boundary. Explicit-prepare/READY-gated automatic native-save capture and watcher integration now pass offline; incidental READY checkpoints are manual-only, and the two-live-process capture/reload plus automatic rollback remain open. Full details: [AUTOMATIC_NATIVE_RESTORE_SAVE_2026-08-09.md](AUTOMATIC_NATIVE_RESTORE_SAVE_2026-08-09.md), [BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md](BIDIRECTIONAL_NETWORK_FINANCE_2026-08-02.md), [LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md](LOCALHOST_TWO_INSTANCE_NETWORK_2026-08-02.md), [NETWORK_COMPLETION_CONSENSUS_2026-08-02.md](NETWORK_COMPLETION_CONSENSUS_2026-08-02.md), and [CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md](CHECKPOINT_BARRIERS_AND_RECOVERY_2026-08-02.md).
 
 ### Audit boundary
 
@@ -500,6 +556,8 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md](NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md) - exact-build native asynchronous bridge, measured engine scheduler, compact telemetry/GUI projections, exact one-person-per-building skeleton mode, localhost CCD isolation, complete offline proof, and the next-launch live performance gate.
+- [CHECKPOINT_VEHICLE_OWNER_AND_RUNTIME_PERFORMANCE_2026-08-09.md](CHECKPOINT_VEHICLE_OWNER_AND_RUNTIME_PERFORMANCE_2026-08-09.md) - boundary-29 ownerless pre-existing-train checkpoint fault, strict save migration/producer repair, host hot-loop audit, four runtime optimizations, full regression proof, and the controlled live performance gate.
 - [AUTOMATIC_SETTLEMENT_BARRIER_AND_CARGO_MILESTONE_2026-08-09.md](AUTOMATIC_SETTLEMENT_BARRIER_AND_CARGO_MILESTONE_2026-08-09.md) - disconnect-safe automatic settlements, restart/32-boundary pressure proof, and a one-time host-ordered cargo-aboard evidence checkpoint.
 - [FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md](FREIGHT_LIVE_ACCEPTANCE_AND_PERSISTENCE_2026-08-09.md) - strict staged two-peer freight audit reports, automatic economy-settlement checkpoints, cargo-bearing save migration, tamper rejection, and the exact human gate.
 - [FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md](FREIGHT_TRANSPORT_AND_PRESENTATION_AUTHORITY_2026-08-09.md) - exact freight service contracts, heterogeneous vehicle capacities, queues/loads/deliveries/revenue, atomic stock settlement, standard-UI projection, format-5 validation, cross-language replay, and the remaining live gate.
@@ -550,7 +608,7 @@ Relevant documented behavior used by the implementation:
 
 - Does every vanilla builder route pass through the captured Lua call and tag-15 visitor gate?
 - How long can two independently running Build 35924 worlds remain equivalent after schema-5/7 transactions when autonomous systems and real services are introduced?
-- Do READY-gated automatic peer saves, verified host-to-client plan delivery, and one-click local discovery complete a populated two-computer restore without weakening receipt-bound safety? Coordinated peer-local reload and mandatory post-load convergence already pass live; the complete automatic v4 path remains to be proved together.
+- Does the now-passing fresh compacted-build capture/reload remain sound with an active held/releasing train round, positive freight stock/queues/onboard cargo, and several authored town-growth ticks, then on two physical computers? The unloaded localhost chain now completes both stock saves, receipts, plan discovery, exact-process relaunch, source attestation, migration, and mandatory post-load convergence without human input.
 - What station-barrier latency and signaling interactions appear with two or more real trains on one populated line? Long-pause/speed-3 and deliberate slow-peer recovery now pass with one train.
 - Do two populated stops retain their order and schema-2 alternate-terminal selections through the actual widgets from both origins? Typed capture/replay is implemented and automated; the two-origin visual acceptance remains.
 - Which canonical payload, reference-translation, replay, and postcondition formats are required to turn each gated vehicle category into playable synchronized actions?

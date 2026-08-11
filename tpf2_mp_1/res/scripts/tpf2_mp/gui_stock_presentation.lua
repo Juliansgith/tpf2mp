@@ -4,8 +4,9 @@ local authoredText = require "tpf2_mp/gui_authoritative_text"
 
 local M = {}
 local TOOLBAR_STRIDE = 15
-local WINDOW_SCAN_STRIDE = 240
+local WINDOW_SCAN_STRIDE = 600
 local EVENT_DEFER_FRAMES = 3
+local REPEATED_EVENT_STRIDE = 120
 local MAX_WINDOW_ITEMS = 192
 
 local function member(value, name)
@@ -101,8 +102,18 @@ local function rewriteNativeEntityWindow(window, kind)
   end)
 end
 
-local function projectToolbar(gui, snapshot)
+local function projectToolbar(gui, snapshot, force)
   local projection = authoredText.toolbar(snapshot)
+  gui.stockPresentation = gui.stockPresentation or {}
+  local status = gui.stockPresentation
+  local projectionKey = table.concat({
+    tostring(projection.earningsLabel), tostring(projection.earnings),
+    tostring(projection.transportedPassengers), tostring(projection.transportedCargo),
+    tostring(projection.accountNumber), tostring(projection.passengerTooltip),
+    tostring(projection.cargoTooltip),
+  }, "\31")
+  if force ~= true and status.toolbarProjected == true
+    and status.toolbarProjectionKey == projectionKey then return true end
   local changed = 0
   if setText(byId("gameInfo.earningsComp.earningsText"), projection.earningsLabel) then changed = changed + 1 end
   local earnings = byId("gameInfo.earningsComp.earnings")
@@ -122,9 +133,9 @@ local function projectToolbar(gui, snapshot)
   if setText(byId("menu.financesButton.number"), projection.accountNumber) then changed = changed + 1 end
   setText(byId("menu.financesButton.label"), "TPF2MP account")
   setTooltip(byId("menu.financesButton"), authoredText.company(snapshot).tooltip)
-  gui.stockPresentation = gui.stockPresentation or {}
-  gui.stockPresentation.toolbarProjected = changed >= 3
-  return gui.stockPresentation.toolbarProjected
+  status.toolbarProjected = changed >= 3
+  status.toolbarProjectionKey = projectionKey
+  return status.toolbarProjected
 end
 
 local function selectedStationGroup(gui)
@@ -224,6 +235,11 @@ end
 function M.handleEvent(gui, snapshot, id, name, param)
   local source = string.lower(tostring(id or ""))
   if source:find("tpf2mp.", 1, true) == 1 then return false end
+  local relevant = source == "mainview"
+    or source:find("linemanager", 1, true) or source:find("lineeditor", 1, true)
+    or source:find("vehiclemanager", 1, true) or source:find("finances", 1, true)
+    or source:find("menu.stats", 1, true) or source:find("temp.view.entity", 1, true)
+  if not relevant then return false end
   local values = {}
   if type(param) == "table" then
     for _, key in ipairs({ "entity", "entityId", "vehicle", "vehicleId", "line", "lineId", "selectedEntity" }) do
@@ -241,8 +257,17 @@ function M.handleEvent(gui, snapshot, id, name, param)
   -- mutate the same window tree from that stack: depot-open used to re-enter
   -- the renderer here and hang the game. guiUpdate performs one deferred pass.
   gui.stockPresentation = gui.stockPresentation or { scans = 0 }
-  gui.stockPresentation.dirty = true
-  gui.stockPresentation.refreshAfterFrame = (tonumber(gui.frames) or 0) + EVENT_DEFER_FRAMES
+  local status, frame = gui.stockPresentation, tonumber(gui.frames) or 0
+  local eventKey = table.concat({ source, tostring(name or ""),
+    tostring(gui.selectedEntityKind or ""), tostring(gui.selectedEntityId or ""),
+    tostring(gui.selectedLineId or ""), tostring(gui.selectedVehicleId or "") }, "\31")
+  if status.dirty == true or (status.lastEventKey == eventKey
+      and frame - (status.lastEventFrame or -REPEATED_EVENT_STRIDE) < REPEATED_EVENT_STRIDE) then
+    status.coalescedEvents = (status.coalescedEvents or 0) + 1
+    return false
+  end
+  status.lastEventKey, status.lastEventFrame = eventKey, frame
+  status.dirty, status.refreshAfterFrame = true, frame + EVENT_DEFER_FRAMES
   return false
 end
 
@@ -263,7 +288,7 @@ function M.update(gui, snapshot, force)
   local toolbar = status.toolbarProjected == true
   if force or frame - (status.lastToolbarFrame or -TOOLBAR_STRIDE) >= TOOLBAR_STRIDE then
     status.lastToolbarFrame = frame
-    toolbar = projectToolbar(gui, snapshot)
+    toolbar = projectToolbar(gui, snapshot, force)
   end
   local refreshAfter = tonumber(status.refreshAfterFrame) or -1
   local safeToScan = frame >= refreshAfter

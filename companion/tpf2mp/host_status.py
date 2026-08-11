@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .anchor_io import anchor_state_message
+from .anchor_state import anchor_state_message
 
 
 def write_host_status(host: Any, status: str | None = None) -> None:
@@ -20,6 +20,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         if tracker_status in checkpoint_counts:
             checkpoint_counts[tracker_status] += 1
     restore_plan_message = host.restore_plan_exchange.published_message()
+    receipt_readiness = host.anchor.readiness(receipt=True)
     host.bridge.write_status({
         "role": "host",
         "status": host.status,
@@ -47,10 +48,20 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         "checkpointCounts": checkpoint_counts,
         "sessionFault": host.session_fault,
         "lastError": host.last_error,
+        "auditAppendRetries": host.audit.append_retries,
+        "auditReadRetries": host.audit.read_retries,
+        "auditFaulted": host.audit_failure.is_set(),
+        "clockHealthAuditIntervalSeconds": 10,
+        "clockHealthSamplesAudited": host.clock_health_audited,
+        "clockHealthSamplesNotAudited": host.clock_health_not_audited,
+        "pausedHeartbeatRequired": host.clock_effective_speed == 0,
         "matchFingerprint": host.match_fingerprint,
+        "anchorReceiptReady": receipt_readiness["ready"],
+        "anchorReceiptReasons": receipt_readiness["reasons"],
         "mobilityOutcomes": dict(host.mobility_outcomes),
         "vehicleLifecycleOutcomes": dict(host.vehicle_lifecycle_outcomes),
         "vehiclePhaseOutcomes": dict(host.vehicle_phase_outcomes),
+        "vehicleRestoreSafety": dict(host.vehicle_restore_safety),
         "vehiclePhaseDivergenceStreak": host.vehicle_phase_divergence_streak,
         "vehiclePhaseState": host.vehicle_phase_state,
         **host.synchronization.status(),
@@ -64,7 +75,8 @@ def write_host_status(host: Any, status: str | None = None) -> None:
     })
     host._broadcast(anchor_state_message(
         host.bridge.session, host.bridge.peer, host.anchor.readiness(),
-        host.anchor_preparation.status(),
+        host.anchor_preparation.status(), receipt_readiness,
+        paused_heartbeat_required=host.clock_effective_speed == 0,
     ))
     if restore_plan_message:
         host._broadcast(restore_plan_message)

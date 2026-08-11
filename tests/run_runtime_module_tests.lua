@@ -3,6 +3,7 @@ package.path = project .. "/tpf2_mp_1/res/scripts/?.lua;" .. package.path
 
 local runtimeConfig = require "tpf2_mp/runtime_config"
 local stateSchema = require "tpf2_mp/state_schema"
+local stateRetention = require "tpf2_mp/state_retention"
 local nativeHook = require "tpf2_mp/native_hook"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
@@ -14,6 +15,7 @@ local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local authoredFollowupRuntimeModule = require "tpf2_mp/authored_followup_runtime"
 local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
@@ -22,7 +24,9 @@ local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
+local recoveryPhaseProofModule = require "tpf2_mp/recovery_phase_proof"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
+local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
 local restoreSessionIdentityModule = require "tpf2_mp/restore_session_identity"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
@@ -40,8 +44,118 @@ local cargoPresentationModule = require "tpf2_mp/cargo_presentation"
 local freightIndustryModelModule = require "tpf2_mp/freight_industry_model"
 local freightMilestoneRuntimeModule = require "tpf2_mp/freight_milestone_runtime"
 local passengerMilestoneRuntimeModule = require "tpf2_mp/passenger_milestone_runtime"
+local canonicalModule = require "tpf2_mp/canonical"
+local worldModule = require "tpf2_mp/world"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
+
+do
+  local events = {}
+  for index = 1, 80 do
+    events[index] = {
+      seq = index, commitSeq = index, eventId = "retention:" .. index,
+      tick = index, actor = "player1", success = true,
+      action = {
+        type = "proposal.build", proposalId = "proposal:" .. index,
+        transaction = { edges = { { id = index, localId = 9000 + index } } },
+      },
+      result = { status = "applied", outputs = { { localId = 8000 + index } } },
+      preDigest = "11111111", postDigest = "22222222",
+      preModelDigest = "33333333", postModelDigest = "44444444",
+    }
+  end
+  local capture = {}
+  for field, limit in pairs(stateRetention.CAPTURE_LIMITS) do
+    capture[field] = {}
+    for index = 1, limit + 3 do capture[field][index] = { sequence = index } end
+  end
+  local retained = stateRetention.compact({
+    eventLog = { nextSeq = 81, items = events }, probes = { capture = capture },
+  }, 64)
+  local first = retained.eventLog.items[1]
+  local last = retained.eventLog.items[#retained.eventLog.items]
+  assert(#retained.eventLog.items == 64 and first.seq == 17 and last.seq == 80
+      and first.action.type == "proposal.build"
+      and first.action.proposalId == "proposal:17"
+      and first.action.transaction == nil and first.result.outputs == nil
+      and type(first.actionDigest) == "string" and type(first.resultDigest) == "string",
+    "persistent event retention lost its tail/hash contract or retained a heavy payload")
+  local digest = first.actionDigest
+  stateRetention.compact(retained, 64)
+  assert(retained.eventLog.items[1].actionDigest == digest,
+    "persistent event compaction was not idempotent across reloads")
+  for field, limit in pairs(stateRetention.CAPTURE_LIMITS) do
+    assert(#retained.probes.capture[field] == limit
+        and retained.probes.capture[field][1].sequence == 4,
+      "capture retention did not preserve the bounded newest tail for " .. field)
+  end
+end
+
+do
+  local contentCalls, freightCalls, prepareCalls = 0, 0, 0
+  local automaticRecoveryPrepare = false
+  local state = {
+    networkMode = "network", initialized = true, tick = 9,
+    bridge = { peerId = "player1" }, probes = {},
+    match = { status = "running" },
+    recovery = { restoreResume = { status = "validated" } },
+    world = {
+      networkClock = {}, vehicleSync = { vehicles = {} },
+      industryContent = {}, freightIndustry = {},
+    },
+  }
+  local performance = {
+    due = function() return true end,
+    run = function(_, callable, ...)
+      local ok, result = pcall(callable, ...)
+      return ok, result
+    end,
+    setNativeBridge = function() end,
+  }
+  local pump = networkPumpRuntimeModule.new({
+    getState = function() return state end,
+    performance = performance,
+    config = function()
+      return { networkBridgeFallbackStride = 1,
+        restoreResume = { requested = true },
+        automaticRecoveryPrepare = automaticRecoveryPrepare }
+    end,
+    bridge = { isNative = function() return false end,
+      nativeStatus = function() return {} end },
+    consumeBridge = function() return true end,
+    networkClock = { update = function() return true end,
+      emitHealth = function() return true end,
+      emitPausedHealth = function() return true end },
+    economyClock = { update = function() return true end },
+    vehicleSync = { update = function() return true end },
+    processDeferred = function() return true end,
+    industryContent = { maintain = function()
+      contentCalls = contentCalls + 1; return true
+    end },
+    freightIndustry = { pump = function()
+      freightCalls = freightCalls + 1; return true
+    end },
+    world = {}, localWorkState = function() return {} end,
+    submitIntent = function(action)
+      assert(action.type == "recovery.prepare",
+        "launcher automation submitted the wrong authored action")
+      prepareCalls = prepareCalls + 1
+      return true, { local_seq = 41 }
+    end,
+  })
+  assert(pump.pump(true) == true and contentCalls == 0 and freightCalls == 0,
+    "restore handshake allowed background authored intents to starve recovery.resume")
+  state.recovery.restoreResume.status = "committed"
+  automaticRecoveryPrepare = true
+  assert(pump.pump(true) == true and contentCalls == 1 and freightCalls == 1
+      and prepareCalls == 1
+      and state.probes.launcherRecoveryPrepare.submitted == true
+      and state.probes.launcherRecoveryPrepare.localSeq == 41,
+    "post-resume maintenance did not restart after the restore fence opened")
+  pump.pump(true)
+  assert(prepareCalls == 1,
+    "launcher restore preparation marker submitted more than once")
+end
 
 do
   assert(restoreSessionIdentityModule.derive("saved-network", 7) == "saved-network-r7",
@@ -91,12 +205,12 @@ do
   runtime.load(first)
   assert(current == first and migrated == 0 and projected == 1 and rendered == 1,
     "current GUI state was remigrated or its first snapshot was not projected")
-  gui.frames = 29
+  gui.frames = 179
   runtime.load(first)
-  assert(projected == 1, "GUI snapshot cadence projected before thirty frames")
-  gui.frames = 30
+  assert(projected == 1, "GUI snapshot cadence projected before its bounded interval")
+  gui.frames = 180
   runtime.load(first)
-  assert(projected == 2, "GUI snapshot cadence did not refresh at thirty frames")
+  assert(projected == 2, "GUI snapshot cadence did not refresh at three seconds")
   local errored = saved("new error")
   runtime.load(errored)
   assert(projected == 3, "priority GUI state change waited for the ordinary cadence")
@@ -278,6 +392,68 @@ local function baseConfig(overrides)
 end
 
 do
+  local originalResolvePreExisting = worldModule.resolvePreExisting
+  worldModule.resolvePreExisting = function(registry, cid, kind, metadata)
+    local ok, bindError = canonicalModule.bind(registry, cid, kind, 91, metadata)
+    if not ok then return nil, bindError end
+    return 91
+  end
+  local current = {
+    networkMode = "standalone", tick = 10,
+    bridge = { peerId = "player1" },
+    canonical = canonicalModule.newState(),
+    probes = { capture = {} },
+    world = {
+      logicalOwners = {}, pinnedCustody = {},
+      proposals = { byId = {}, failed = 0 },
+      proposalConsensus = { byId = {} },
+      operations = { byId = {} }, operationConsensus = { byId = {} },
+      checkpointConsensus = { byBoundary = {} },
+    },
+  }
+  local runtime = proposalRuntimeModule.new({
+    getState = function() return current end,
+    requireRunningMatch = function() return true end,
+    balanceOf = function() return 0 end,
+    coreDigest = function()
+      return hashModule.value(canonicalModule.digestView(current.canonical))
+    end,
+    refreshOwnershipProbe = function() return {} end,
+    componentEntitySet = function() return {} end,
+    inspectCreatedNodes = function() return {} end,
+    inspectCreatedEdges = function() return {} end,
+    nodePosition = function() return nil end,
+    applyCommitted = function() return true end,
+  })
+  local cid = "edge:pre:rejected-road"
+  local localRefs, localInputs, bindError, newlyBoundCids, revisionBefore =
+    runtime.preparation.bind({
+      localRefs = { [cid] = 91 },
+      referenceKinds = { [cid] = "edge" },
+      removal = { [cid] = true },
+    }, "rejected-proposal")
+  assert(localRefs and not bindError and canonicalModule.resolveLocal(current.canonical, cid) == 91,
+    "proposal fixture did not create its commit-time lazy binding")
+  local preparedDigest = hashModule.value(canonicalModule.digestView(canonicalModule.newState()))
+  current.world.proposals.byId["rejected-proposal"] = {
+    proposalId = "rejected-proposal", status = "queued",
+    transaction = { digest = "deadbeef" },
+    localRefs = localRefs, localInputs = localInputs,
+    newlyBoundCids = newlyBoundCids, canonicalRevisionBefore = revisionBefore,
+  }
+  local accepted = runtime.finalise({
+    proposalId = "rejected-proposal", success = false,
+    worldUnchanged = true, error = "native BuildProposal rejected",
+  })
+  assert(accepted == false
+      and canonicalModule.resolveLocal(current.canonical, cid) == nil
+      and current.canonical.revisions == 0
+      and hashModule.value(canonicalModule.digestView(current.canonical)) == preparedDigest,
+    "verified native rejection did not restore the exact PREPARE core")
+  worldModule.resolvePreExisting = originalResolvePreExisting
+end
+
+do
   local current = {
     networkMode = "network", initialized = true,
     world = { networkClock = { effectiveSpeed = 4 } },
@@ -324,6 +500,56 @@ do
   assert(indicator.project() == false
       and buttons["menu.speedButton0"].selected == true,
     "network clock projection mutated a standalone speed bar")
+end
+
+do
+  local previousGame = game
+  local balances = { [1] = 5000, [2] = 5000 }
+  game = { interface = {
+    getEntity = function(playerId) return { balance = balances[playerId] } end,
+  } }
+  local financeState = financeModule.newState()
+  financeModule.initialiseNetworkAccounts(
+    financeState, { "company:1", "company:2" }, 5000, { reason = "cadence-test" })
+  local current = {
+    networkMode = "network", initialized = true, tick = 1,
+    finance = financeState,
+    companies = {
+      ["company:1"] = { playerId = 1 }, ["company:2"] = { playerId = 2 },
+    },
+    canonical = { byCanonical = {} },
+    world = {
+      logicalOwners = {}, pinnedCustody = {},
+      proposals = { byId = {} }, operations = { byId = {} },
+      proposalConsensus = { byId = {} }, operationConsensus = { byId = {} },
+      checkpointConsensus = { byBoundary = {} },
+    },
+  }
+  local runtime = proposalRuntimeModule.new({
+    getState = function() return current end,
+    requireRunningMatch = function() return true end,
+    balanceOf = function() return 0 end,
+    coreDigest = function() return "00000000" end,
+    refreshOwnershipProbe = function() return {} end,
+    componentEntitySet = function() return {} end,
+    inspectCreatedNodes = function() return {} end,
+    inspectCreatedEdges = function() return {} end,
+    nodePosition = function() return nil end,
+    applyCommitted = function() return true end,
+  })
+  runtime.financeHousekeeping()
+  for tick = 2, 16 do
+    current.tick = tick
+    runtime.financeHousekeeping()
+  end
+  assert(financeState.networkAccounts.reconciliation.attempts == 1
+      and financeState.networkAccounts.reconciliation.nextHousekeepingTick == 17,
+    "idle native-wallet housekeeping still audited every simulation update")
+  current.tick = 17
+  runtime.financeHousekeeping()
+  assert(financeState.networkAccounts.reconciliation.attempts == 2,
+    "idle native-wallet housekeeping did not resume at its bounded cadence")
+  game = previousGame
 end
 
 do
@@ -733,6 +959,43 @@ do
   proposalRuntime().processConstructions()
   assert(steps.count == 0,
     "compound topology demolition was incorrectly routed to the construction helper")
+
+  current.world.proposals.byId = {
+    ["town-road-with-houses"] = {
+      status = "queued",
+      transaction = {
+        schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+        nodes = {}, edges = {},
+        edgeObjects = { add = {}, retain = {}, remove = {} },
+        remove = { edges = { "edge:pre:town-road" }, nodes = { "node:pre:road-end" } },
+        constructions = { {
+          mode = "remove", kind = "construction",
+          collateral = { { kind = "construction", cid = "construction:pre:house-b" } },
+        } },
+      },
+    },
+  }
+  steps.count = 0
+  proposalRuntime().processConstructions()
+  assert(steps.count == 0,
+    "removal-only town-road collateral was incorrectly split across helper ticks")
+
+  current.world.proposals.byId = {
+    ["station-removal"] = {
+      status = "queued",
+      transaction = {
+        schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+        nodes = {}, edges = {},
+        edgeObjects = { add = {}, retain = {}, remove = {} },
+        remove = { edges = { "edge:event:station" }, nodes = { "node:event:station" } },
+        constructions = { { mode = "remove", kind = "station", collateral = {} } },
+      },
+    },
+  }
+  steps.count = 0
+  proposalRuntime().processConstructions()
+  assert(steps.count == 1,
+    "station generated topology no longer used the asynchronous construction helper")
 end
 
 do
@@ -780,6 +1043,37 @@ do
 end
 
 do
+  local proof = assert(recoveryPhaseProofModule.normalise({
+    schemaVersion = 1,
+    sampleKeys = { "phase-test:player1:2", "phase-test:player1:3" },
+    vehiclePhaseDigest = "4567def0",
+    vehicleRounds = {
+      { vehicleCid = "vehicle:test", lineCid = "line:test", lastAuthorizedRound = 4 },
+    },
+  }))
+  assert(proof.sampleKeys[1] == "phase-test:player1:2"
+      and proof.sampleKeys[2] == "phase-test:player1:3"
+      and proof.vehiclePhaseDigest == "4567def0"
+      and proof.vehicleRounds[1].lastAuthorizedRound == 4,
+    "native vehicle phase proof did not round-trip its exact schema")
+  assert(recoveryPhaseProofModule.normalise({
+    schemaVersion = 1,
+    sampleKeys = { "duplicate", "duplicate" },
+    vehiclePhaseDigest = "4567def0",
+    vehicleRounds = {},
+  }) == nil, "native vehicle phase proof accepted duplicate samples")
+  assert(recoveryPhaseProofModule.normalise({
+    schemaVersion = 1,
+    sampleKeys = { "phase-test:player1:2", "phase-test:player1:3" },
+    vehiclePhaseDigest = "4567def0",
+    vehicleRounds = {
+      { vehicleCid = "vehicle:b", lineCid = "line:test", lastAuthorizedRound = 1 },
+      { vehicleCid = "vehicle:a", lineCid = "line:test", lastAuthorizedRound = 1 },
+    },
+  }) == nil, "native vehicle phase proof accepted unsorted station cursors")
+end
+
+do
   local current = {
     networkMode = "network", tick = 12, bridge = { nextInSeq = 10 }, recovery = {},
   }
@@ -798,6 +1092,12 @@ do
     "ordered recovery preparation did not enter game-side state")
   local requested, checkpoint = runtime.checkpointRequest({
     preparationSeq = 7, reason = "recovery-prepare:7",
+    vehiclePhaseProof = {
+      schemaVersion = 1,
+      sampleKeys = { "save-test:player1:5", "save-test:player1:6" },
+      vehiclePhaseDigest = "4567def0",
+      vehicleRounds = {},
+    },
   }, nil, 8)
   assert(requested and checkpoint.boundary == 8 and checkpoint.reason == "recovery-prepare:7",
     "host checkpoint request did not export its exact ordered boundary")
@@ -806,6 +1106,9 @@ do
   assert(current.recovery.anchorPreparation.status == "ready"
       and current.recovery.anchorPreparation.errorCode == nil,
     "checkpoint consensus did not complete persisted preparation state")
+  assert(current.recovery.anchorPreparation.vehiclePhaseProof.vehiclePhaseDigest
+      == "4567def0",
+    "prepared boundary did not retain its native vehicle phase proof")
   assert(runtime.checkpointRequest({ preparationSeq = 7, reason = "wrong" }, nil, 8) == false,
     "malformed host checkpoint request was accepted")
   local manual, manualResult = runtime.manualCheckpoint({ reason = "manual-ui" })
@@ -845,12 +1148,16 @@ do
     end,
   })
   assert(recoveryNativeSaveRuntimeModule.saveName("save-test", "player2", 8)
-      == "tpf2mp_save-test_player2_b8"
+      == "tpf2mp_r_11ee039d_p2_b8"
       and recoveryNativeSaveRuntimeModule.saveName("../escape", "player2", 8) == nil,
     "automatic recovery save-name validation is unsafe")
+  local maximumName = recoveryNativeSaveRuntimeModule.saveName(
+    string.rep("x", 64), "player1", 2147483647)
+  assert(maximumName == "tpf2mp_r_cf6d1e01_p1_b2147483647" and #maximumName <= 50,
+    "automatic recovery name can be truncated by Build 35924's save dialog")
   local saved, saveResult = runtime.maintain()
   assert(saved and saveResult.status == "save-command-complete"
-      and saveResult.saveName == "tpf2mp_save-test_player2_b8"
+      and saveResult.saveName == "tpf2mp_r_11ee039d_p2_b8"
       and saveResult.attempts == 1 and #issued == 1
       and issued[1].origin == "mod.recovery.save-game",
     "READY boundary did not issue one exact peer-specific native save")
@@ -2056,7 +2363,7 @@ end
 do
   local submitted
   local current = {
-    networkMode = "network", initialized = true, tick = 240,
+    networkMode = "network", initialized = true, tick = 4,
     bridge = { peerId = "player1" },
     recovery = { restoreResume = { status = "validated" } },
     probes = { networkAuthority = { ready = true } },
@@ -2074,12 +2381,46 @@ do
   })
   clock.maintainManualBootstrap()
   assert(submitted and submitted.type == "recovery.resume",
-    "loaded initialized match did not submit its restore handshake")
+    "paused loaded match waited for an impossible simulation-tick restore delay")
   current.recovery.restoreResume.status = "failed"
   submitted = nil
   clock.reset()
   clock.maintainManualBootstrap()
   assert(submitted == nil, "failed restore silently fell back to new-match initialisation")
+end
+
+do
+  local restore = {
+    status = "validated", fromSession = "source-session", boundarySeq = 11,
+    coreDigest = "b308c2a8", convergenceKey = "3de86cf4",
+    planChecksum = "0b009dd3", vehiclePhaseDigest = "4567def0",
+    sourceAnchor = {
+      boundarySeq = 11, coreDigest = "b308c2a8", convergenceKey = "3de86cf4",
+    },
+  }
+  local current = {
+    networkMode = "network", tick = 20, bridge = { peerId = "player1" },
+    recovery = { restoreResume = restore },
+  }
+  local runtime = restoreResumeRuntimeModule.new({
+    getState = function() return current end,
+    -- A newer schema may deterministically migrate the source boundary to a
+    -- different digest. Its following checkpoint, not the old plan digest,
+    -- proves cross-peer equality.
+    coreDigest = function() return "1873f67c" end,
+  })
+  local action = assert(runtime.normalise({ type = "recovery.resume" }))
+  local ok, result = runtime.apply(action, "player1", 1)
+  assert(ok == true and result.status == "committed"
+      and result.migratedCoreDigest == "1873f67c" and result.commitSeq == 1,
+    "schema-compatible restore rejected a deterministic migrated core digest")
+
+  restore.status, restore.commitSeq = "validated", nil
+  restore.sourceAnchor.coreDigest = "ffffffff"
+  local refused, errorText = runtime.apply(action, "player1", 2)
+  assert(refused == false and errorText == "restored source anchor does not match the plan"
+      and restore.status == "failed",
+    "restore resume accepted a source anchor that no longer matched its plan")
 end
 
 do
@@ -2180,13 +2521,23 @@ do
   })
   assert(nativeMismatchPrerequisite and nativeMismatchPrerequisite.requestedSpeed == 0,
     "native running state bypassed the authoritative operation pause")
+  current.tick, gameSpeed = 34, 3
+  local runningHealthBefore = #emitted
+  assert(clock.emitHealth() == true and #emitted == runningHealthBefore + 1
+      and emitted[#emitted].kind == "clock_health",
+    "running clock heartbeat was phase-locked to an unrelated tick modulo")
+  assert(clock.emitHealth() == false and #emitted == runningHealthBefore + 1,
+    "running clock heartbeat ignored its wall-time output throttle")
+  wall = 101
+  assert(clock.emitHealth() == true and #emitted == runningHealthBefore + 2,
+    "running clock heartbeat did not refresh once per wall second")
   local healthBefore = #emitted
   gameSpeed = 0
   assert(clock.emitPausedHealth() == true, "paused clock did not emit its first heartbeat")
-  wall = 101
+  wall = 102
   assert(clock.emitPausedHealth() == false,
     "paused clock heartbeat ignored its wall-time throttle")
-  wall = 102
+  wall = 103
   assert(clock.emitPausedHealth() == true and #emitted == healthBefore + 2,
     "paused clock did not refresh telemetry before the host freshness deadline")
   gameSpeed = 3
@@ -2260,6 +2611,7 @@ do
     TPF2MP_RESTORE_CORE_DIGEST = "1234abcd",
     TPF2MP_RESTORE_CONVERGENCE_KEY = "2345bcde",
     TPF2MP_RESTORE_PLAN_CHECKSUM = "3456cdef",
+    TPF2MP_RESTORE_VEHICLE_PHASE_DIGEST = "4567def0",
   }
   local cfg = runtimeConfig.read({
     source = {
@@ -2272,6 +2624,7 @@ do
     bridgeMarkerValue = function() return "waiting" end,
   })
   assert(cfg.protocol == 3 and cfg.startNetwork == true, "injected network configuration was lost")
+  assert(cfg.maxEvents == 64, "default persistent event retention is not bounded")
   assert(cfg.peerId == "player2" and cfg.sessionId == "injected-session",
     "injected peer/session identity was lost")
   assert(cfg.root == "C:/bridge/injected" and cfg.startingCash == 75000000,
@@ -2291,6 +2644,7 @@ do
   assert(cfg.restoreResume and cfg.restoreResume.valid == true
       and cfg.restoreResume.fromSession == "saved-session"
       and cfg.restoreResume.boundarySeq == 7
+      and cfg.restoreResume.vehiclePhaseDigest == "4567def0"
       and cfg.restoreResume.error == nil,
     "launcher restore attestation was not parsed")
   local armed = runtimeConfig.read({
@@ -2302,6 +2656,15 @@ do
   })
   assert(armed.manualBootstrapReady == true,
     "manual network bootstrap did not arm after the launcher marker")
+  local prepareArmed = runtimeConfig.read({
+    source = {}, environment = function(name) return environment[name] end,
+    bridgeMarkerValue = function(_, name)
+      return (name == "manual-bootstrap-ready" or name == "prepare-restore")
+        and "ready" or nil
+    end,
+  })
+  assert(prepareArmed.automaticRecoveryPrepare == true,
+    "manual network restore preparation marker was not exposed")
 end
 
 do
@@ -2349,6 +2712,7 @@ do
   }
   residue.probes.networkAuthority = { ready = true, error = "authority failed" }
   residue.probes.mobility = { emitted = true, bridgeError = "table: 00FEDCBA" }
+  residue.probes.launcherRecoveryPrepare = { submitted = true, localSeq = 99 }
   residue.finance.startingCash.grants["company:1"] = {
     ok = true, error = "starting-cash postcondition failed",
   }
@@ -2376,7 +2740,8 @@ do
   assert(cleaned.world.proposalConsensus.byId.failure.errorCode == "real-proposal-fault"
       and cleaned.recovery.anchorPreparation.errorCode == nil
       and cleaned.probes.networkAuthority.error == nil
-      and cleaned.probes.mobility.bridgeError == nil,
+      and cleaned.probes.mobility.bridgeError == nil
+      and cleaned.probes.launcherRecoveryPrepare == nil,
     "save migration erased a real fault or retained successful runtime residue")
   local cleanedReconciliation =
     cleaned.finance.networkAccounts.reconciliation.items[1]
@@ -2400,6 +2765,24 @@ do
     "migration did not restore current clock/schema defaults")
   assert(type(migrated.probes.operational.samples) == "table",
     "migration did not restore operational telemetry defaults")
+
+  local ownerlessSync = stateSchema.new(cfg, versions)
+  ownerlessSync.economy.services["line:pre:ownerless"] = {
+    lineCid = "line:pre:ownerless", companyCid = "company:2",
+  }
+  ownerlessSync.world.vehicleSync.vehicles["vehicle:pre:ownerless"] = {
+    vehicleCid = "vehicle:pre:ownerless", lineCid = "line:pre:ownerless",
+    lastAuthorizedRound = 1, stopIndex = 0, releaseAtGameTime = 10,
+    releaseWhilePaused = false, schedule = { schemaVersion = 1, enabled = false },
+  }
+  local ownerBackfilled = stateSchema.migrate(ownerlessSync, {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(ownerBackfilled.world.vehicleSync.vehicles[
+      "vehicle:pre:ownerless"].companyCid == "company:2",
+    "migration did not bind an ownerless synchronized vehicle to its canonical service")
 
   -- A native save can be taken while a synchronized freight train is between
   -- terminals. Preserve that exact authored load, then preserve the delivered
@@ -2661,6 +3044,12 @@ do
       util.deepCopy(source.world.checkpointConsensus.byBoundary["7"])
     source.recovery.anchorPreparation = {
       status = "ready", preparationSeq = 6, boundarySeq = 7,
+      vehiclePhaseProof = {
+        schemaVersion = 1,
+        sampleKeys = { "saved-network:player1:5", "saved-network:player1:6" },
+        vehiclePhaseDigest = "4567def0",
+        vehicleRounds = {},
+      },
     }
     source.bridge.nextInSeq, source.bridge.nextOutSeq = 9, 11
     return source
@@ -2671,6 +3060,7 @@ do
       requested = true, valid = true, fromSession = "saved-network",
       boundarySeq = 7, coreDigest = "1234abcd",
       convergenceKey = "2345bcde", planChecksum = "3456cdef",
+      vehiclePhaseDigest = "4567def0",
     },
   })
   local resumed = stateSchema.migrate(restoreSource(), {
@@ -2828,9 +3218,9 @@ do
     "the market section did not frame itself as the contest")
   assert(details.value:find("600 of 1000 travelling", 1, true),
     "the market line did not report induced travel in player terms")
-  assert(details.value:find("480 carried", 1, true)
+  assert(details.value:find("480 requested / 480 admitted this 5m", 1, true)
       and details.value:find("GAINING", 1, true),
-    "the service line did not report carried passengers and its trend")
+    "the service line did not distinguish requested/admitted flow and its trend")
   assert(details.value:find("costs the passenger $13.12", 1, true),
     "the generalized-cost breakdown lost its legible framing")
   assert(details.value:find("Native agents (scenery, not scored)", 1, true),
@@ -2951,7 +3341,7 @@ do
           canonicalId = "vehicle:event:test:1", kind = "vehicle", localId = 60,
           -- A pinned starting-save vehicle has no operation-authored lineCid;
           -- the runtime must derive its canonical line from the local mapping.
-          metadata = { owner = "company:1" },
+          metadata = { manifestBound = true },
         },
       },
       byLocal = { ["line:50"] = "line:event:test:1" },
@@ -2972,6 +3362,7 @@ do
       services = {
         ["line:event:test:1"] = {
           lineCid = "line:event:test:1",
+          companyCid = "company:1",
           enabled = true,
           headwaySeconds = 60,
           journeySeconds = 120,
@@ -3015,6 +3406,11 @@ do
   })
   runtime.update()
   assert(#commands == 0, "en-route synchronized vehicle was mutated")
+  runtime.update()
+  assert(current.probes.vehicleSync.canonicalScans == 1
+      and current.probes.vehicleSync.canonicalEntriesScanned == 2
+      and current.probes.vehicleSync.updateCalls == 2,
+    "idle vehicle synchronization repeatedly rescanned the full canonical registry")
   transportVehicle.state = 2
   current.tick = 2
   runtime.update()
@@ -3048,10 +3444,11 @@ do
   local digestView = vehicleSyncRuntimeModule.digestView(current.world)
   assert(digestView.schemaVersion == 4
       and digestView.vehicles[1].lastAuthorizedRound == 1
+      and digestView.vehicles[1].companyCid == "company:1"
       and digestView.vehicles[1].stopIndex == 0
       and digestView.vehicles[1].schedule.enabled == false
       and #digestView.scheduleReservations == 0
-      and digestView.passengerPresentation.schemaVersion == 2
+      and digestView.passengerPresentation.schemaVersion == 4
       and digestView.passengerPresentation.vehicles[1].vehicleCid
         == "vehicle:event:test:1"
       and digestView.passengerPresentation.vehicles[1].lastRound == 1

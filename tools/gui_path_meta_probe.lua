@@ -19,13 +19,18 @@ local function layoutOf(value)
   return value
 end
 
-local seed = assert(api.gui.util.getById(rootId), "stock GUI component is unavailable: " .. rootId)
+local seed = nil
+if rootId == "__gameUI__" then
+  seed = assert(api.gui.util.getGameUI(), "stock game GUI root is unavailable")
+else
+  seed = assert(api.gui.util.getById(rootId), "stock GUI component is unavailable: " .. rootId)
+end
 local root = seed
 for _ = 1, 32 do
   local ok, name = pcall(function() return root:getName() end)
   if ok and name == "Window" then break end
-  local parent = assert(root:getParent(), "GUI path root has no parent Window")
-  if parent == root then break end
+  local okParent, parent = pcall(function() return root:getParent() end)
+  if not okParent or not parent or parent == root then break end
   root = parent
 end
 

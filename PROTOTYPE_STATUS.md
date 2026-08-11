@@ -1,9 +1,9 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-09 for prototype `0.37.0-alpha`, state schema `29`,
-checkpoint format `5`, operation schema `4`, passenger-presentation schema `2`,
+Last updated: 2026-08-11 for prototype `0.37.0-alpha`, state schema `30`,
+checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `1`, freight-industry schema `2`, edge proposal
-schema `5`, construction proposal schema `7`, and native hook `0.16.0`.
+schema `5`, construction proposal schema `7`, and native hook `0.17.0`.
 
 ## Executive status
 
@@ -63,8 +63,59 @@ The preserved lab also exposed 5,469/6,048 immutable outbox files. Companion
 polling had sorted the full history at 10 Hz; a real-directory benchmark
 measured 15.460 ms versus 0.015912 ms for the exact cursor successor. Polling
 is now constant-time per message and gaps fail closed. Durable evidence remains;
-only acknowledged clock-health traffic older than a 4,096-message tail is
-pruned.
+acknowledged replaceable clock-health and vehicle-sync source files older than
+a 4,096-message tail are pruned. The live host still consumes every heartbeat,
+but journals one forensic clock-health sample per peer per ten seconds.
+
+The later receipt-bound restore run exposed a second performance class and a
+checkpoint migration defect. Boundary 29 contained matching core/model/
+structure state on both peers, but its manifest-bound train lacked the
+vehicle-sync `companyCid` already present in the canonical service and
+passenger ledger. Strict validation correctly stopped the session. Release
+creation and migration now bind that field from the authored service. The same
+audit removed duplicate network-runtime execution, cached the 518-entry
+canonical vehicle scan, moved idle wallet audits from every update to every 15
+updates, halved idle native balance reads, and removed idle per-frame line
+enumeration. The full suite passes. Fresh session
+`perf-ownerfix-live-20260809-2351` then completed automatic settlement/checkpoint
+14 with matching core/model/structure/convergence and an owned synchronized
+train on both peers. Matching minimized running samples averaged 21.7% of one
+core on both processes; same-camera foreground spot readings were 105 FPS on
+P1 and 128 FPS on P2. The former persistent 4-5x host/client regression is no
+longer present in the reproduced world; dense-network frame-time percentiles
+remain a future scalability benchmark.
+
+Hook `0.17.0` addresses the next measured hot path without weakening the
+durable protocol. Signed envelopes are now queued in memory on the game thread;
+the hook worker performs numbered outbox publication and exact-successor inbox
+reads in bounded batches. Stable content/freight probes, idle vehicle scans,
+clock-health emission, routine native telemetry, public capture projection,
+and unchanged stock-toolbar writes now have explicit cadence or dirty checks.
+Bounded native-monotonic p50/p95 task telemetry is available in snapshots and
+the Multiplayer panel. The default skeleton policy now caps every otherwise
+populated building at exactly one native capacity slot, and the balanced
+localhost profile places the two complete game processes on disjoint CPU sets
+with bounded side-by-side render surfaces. Native build/CTest and the complete
+offline suite pass. This is not yet an FPS claim: the profiled live pair
+predated 0.17, so same-camera running measurements belong to the next
+fresh launch.
+
+The subsequent populated multi-train soak exposed authority loss rather than a
+native pathing deadlock: a concurrent Windows audit read held the journal long
+enough for the host append to fail, after which the games safely retained their
+station holds. The same 2.7-hour audit showed 611 clock generations, including
+220 adaptive step-downs and 224 recoveries, because unequal render/update rates
+were mistaken for unequal simulation progress; most skew corrections were only
+2-3 game seconds. It also contained 16,212 clock-health records (7.7 MiB), one
+unsettled final commit, and a loaded-vehicle retirement residue of 13 riders.
+Journal snapshots now close before parsing and boundedly retry Windows sharing
+denials; permanent persistence loss leaves a visible fail-closed host. The
+clock governor uses game-time progress with debounce/hysteresis, the health
+audit is sampled, passenger schema 4 accounts explicit discard, disconnected
+replaceable telemetry is coalesced, and the interactive harness requires live
+companions plus a strictly settled audit before it can report success. These
+corrections pass the full offline suite; a fresh long live soak is still the
+acceptance gate.
 
 Prototype 0.31 built canonical freight-industry state on the loaded-content
 gate introduced in 0.30. Both exact processes
@@ -86,7 +137,7 @@ canonical source queues into exact per-vehicle loads and record destination
 deliveries. Five-minute settlement atomically validates all transport cursors,
 withdraws aggregate source stock, deposits destination stock, advances
 production, pays unit-kilometre revenue, and advances passenger and cargo
-presentation. State 29/checkpoint 5 and an independent Python replayer validate
+presentation. State 30/checkpoint 5 and an independent Python replayer validate
 the full stock, cursor, load, delivery, and conservation projection. Standard
 line, vehicle, station, manager, statistics, and top-bar surfaces display the
 authored freight values; native cargo agents/history remain cosmetic. This
@@ -346,7 +397,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   also pass ordinary-UI two-process capture and checkpoint consensus.
 - Canonical line and portable vehicle operation codecs with strict validation,
   peer/company authorization, materialization, result validation, finance
-  routing, physical consensus, and checkpoint sequencing. Hook 0.16 decodes the
+  routing, physical consensus, and checkpoint sequencing. Hook 0.17 decodes the
   exact Build 35924 CreateLine/DeleteLine/UpdateLine native payloads after the
   ordinary command is suppressed, including the full ordered station-group,
   station, and terminal tuple. Vanilla zero-stop creation and one-stop editor
@@ -356,7 +407,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   matching physical results, and checkpoints. Follow-up stock-widget sessions
   prove New Line, rename, color, Delete Line, Add Station, and per-stop removal
   visually on two independent processes. Reorder and alternate-terminal visual
-  proof remain. Hook 0.16 also captures BuyVehicle's pinned native
+  proof remain. Hook 0.17 also captures BuyVehicle's pinned native
   player/depot scalars and correlates them with the stock GUI's ordered,
   carrier-neutral `vehicle/*.mdl` list; bounded capture fails closed instead
   of truncating oversized or deeply nested payloads. SetLine carries canonical
@@ -387,13 +438,16 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   rejected, mismatched, or timed-out result after build commit faults the
   session closed.
 - Pause and speeds 1-4 are host-ordered through native tag-0 authorization on
-  both peers. Hook 0.16 captures suppressed normal controls as `clock.request`.
+  both peers. Hook 0.17 captures suppressed normal controls as `clock.request`.
   A running request now becomes a future-time `clock.rendezvous`; the host
   projects staggered heartbeats to one instant, both peers pause at the target,
   and bounded overshoot receives a speed-1 catch-up round before release.
-  Paused GUI heartbeats preserve resume readiness. Engine rate, absolute skew,
-  observed speed, heartbeat age, and backlog drive a slowest-peer cap and
-  hysteretic recovery.
+  Paused GUI heartbeats preserve resume readiness. The governor normalizes each
+  peer's measured game-time progress against its selected speed rather than
+  native update/render `tickRate`: soft skew must
+  persist for four seconds, slow progress for eight seconds, hard eight-second
+  skew corrects immediately, and recovery requires thirty stable seconds.
+  Observed speed, heartbeat age, and backlog remain fail-safe inputs.
 - Every replicated assigned vehicle now observes native terminal state, holds via
   gated tag-8 `setUserStopped`, and reports a canonical vehicle/line/stop/round.
   Both peers must match before one ordered future-time release. State 21 and
@@ -418,7 +472,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Native authority layer
 
-- Hook `0.16.0` accepts only the exact Build 35924 executable SHA-256 and PE
+- Hook `0.17.0` accepts only the exact Build 35924 executable SHA-256 and PE
   profile.
 - It validates 17 unique code signatures/RVAs and 31 selected entries in the
   complete 37-tag command visitor table before enabling hooks.
@@ -486,7 +540,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   queues and loads. Freight infrastructure still replicates physically. Loaded
   industry recipes are authoritative match content: both peers capture and
   strictly attest the same evaluated resource registry before play, and live
-  `SIM_BUILDING` roots resolve to those portable recipes. State 29 additionally
+  `SIM_BUILDING` roots resolve to those portable recipes. State 30 additionally
   owns canonical per-industry input/output stock, exact hourly-capacity
   production residuals, alternative-input consumption, and cumulative totals;
   exact cargo-only lines bind a source output and destination stock slot within
@@ -554,8 +608,8 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   they are the exact consensus cost inputs, not competing estimates.
 - Lua aggregates saturate at `10^15` cents so every authored integer remains
   exact in Lua 5.1 and Python. Model-v2-v7 behavior remains available for
-  archived replay. The offline gate now includes 124 Lua tests and 108
-  cross-language v2-v8 scenarios, including feeder access, completed-trip cursors,
+  archived replay. The offline gate now includes 128 Lua tests and 108
+  cross-language v2-v9 scenarios, including feeder access, completed-trip cursors,
   bidirectional capacity, passenger/cargo balance fixtures, assigned and parked
   vehicle costs, infrastructure costs, losses, exact residual carry,
   scheduled-boundary rejection, four difficulty presets, canonical town
@@ -576,17 +630,22 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   populated probe, but that source save contained zero cargo. The authored
   cargo ledger no longer depends on those native counts; a cargo-positive live
   UI proof remains required.
-- Passenger schema 2 turns each settled model allocation into exact endpoint
-  queues and advances train loads only inside the already ordered
-  `vehicle.sync_release` station-round action. Intermediate stops preserve the
-  load; opposite terminals alight and board deterministically; duplicate
-  releases are idempotent; route edits account discarded/backlogged riders.
+- Passenger schema 4 treats model demand as a deterministic arrival rate and
+  advances both endpoint queues to each host-ordered `vehicle.sync_release`
+  timestamp. A train boards up to its own physical seats instead of receiving a
+  smoothed share of five-minute throughput; excess riders remain visibly
+  waiting, bounded excess arrivals abandon, and requested/throughput/queue facts
+  feed the authoritative UI and lagged crowding. Intermediate stops preserve
+  the load; opposite terminals alight and board deterministically; duplicate
+  releases are idempotent; route edits, reassignment, and vehicle retirement
+  account discarded/backlogged riders. Checkpoints enforce exact generated,
+  boarded, alighted, discarded, aboard, and waiting conservation.
 - Cargo schema 1 mirrors that release boundary with a portable source/sink
   contract, exact per-vehicle capacity, source queue, aboard cargo, destination
   delivery, and explicit discard totals. Idle lines do not invent a transport
   cursor, and retirement accounts any onboard units before removing a vehicle
   record.
-- State 29 persists both ledgers. Checkpoint format 5 validates their full
+- State 30 persists both ledgers. Checkpoint format 5 validates their full
   canonical stop sequence, line/company identity, capacities, trip endpoints,
   release rounds, contract identity, transport cursors, and exact cargo
   conservation against the synchronized vehicle projection and freight stocks.
@@ -643,8 +702,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   form in Python, Lua, and the launcher for long legal source sessions.
 - **Prepare & Save Restore Point** orders shared pause, quiescence, and checkpoint
   convergence. Only while the companion and local runtime expose the same READY
-  boundary and core does each game issue Build 35924's native `SaveGame` command
-  under `tpf2mp_<session>_<peer>_b<boundary>`. The watcher waits for a stable
+  boundary and core may a save start. Build 35924 does not expose a public
+  `SaveGame` factory, so the watcher falls back to the exact process's stock Save
+  dialog only when that explicit preparation owns the READY boundary. Ordinary
+  incidental READY checkpoints expose manual-save availability but never launch
+  focus-stealing automation. Names use
+  `tpf2mp_r_<session-adler32>_<p1|p2>_b<boundary>` and remain
+  under the native 50-character limit. The watcher waits for a stable
   save triplet, links it to the verified boundary, files the ordered peer
   receipt, archives and hashes every file, and exposes its state in the launcher.
 - The watcher verifies exact PID/path/start time and stops on process exit or PID
@@ -660,15 +724,37 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   local preparation or core state, retries at most three times with a 60-update
   cooldown, times out a lost callback after 1,800 updates, and never grants
   restore authority by itself. Distinct ordered receipts remain mandatory. The
-  runtime and watcher's exact-name READY-poll
-  race are offline-proven; the two-live-process capture is not yet proved.
+  runtime and watcher's exact-name READY-poll race are offline-proven. Native
+  completion now has a separate 1,200-second bound because a populated live
+  world took 680/966 seconds to finalize its metadata. Live
+  boundary 11 in `restore-handoff-live-20260809-2127` produced both ordered
+  receipts, verified plan checksum `0b009dd3`, and receipt-bound archives for
+  both peers.
   The host now atomically publishes that verified plan over the pinned companion
   link; a late client receives it on connect, and player2 verifies and durably
   re-archives its retained local save against the exact plan. The launcher can
-  manually select a plan or discover the newest complete peer-local plan/archive,
-  locks its resume session, and passes the attested save through hash verification. Startup
+  manually select a plan or discover this machine's complete role-local
+  plan/archive/save set, locks its resume session, and passes that attested save
+  through hash verification. The localhost acceptance tool additionally
+  requires both local role archives. Two exact Build 35924 processes loaded the
+  distinct boundary-11 saves, independently revalidated source core `b308c2a8`,
+  migrated schema 29 to 30, and converged fresh core `1873f67c`/key `9db26dfe`
+  before the restore fence opened. Startup
   adopts a current plan's agent/town-development policy and rejects explicit
-  conflicts. Automatic no-dialog rollback/relaunch and live proof remain open.
+  conflicts. The compacted build then completed an unattended chained run:
+  new boundary-8 stock saves and both receipts were ready in 55.5 seconds,
+  plan `020ea09f` was discovered, both exact processes were relaunched with
+  their own save, and the mandatory checkpoint converged.
+  Current plan v6 additionally binds two stable paused native route samples
+  and each active vehicle's canonical line/last-authorized station round; v5
+  is retired because it could not seed the restarted companion cursor. The
+  launcher freezes each loaded save at its first native-world boundary before
+  waiting for slower diagnostics. Session
+  `phase-anchor-v6-earlyfreeze-20260811` synchronized round 1, captured paired
+  boundary-15 archives at plan `7da2035d`, restored both peer saves, converged
+  its mandatory checkpoint, and released the active train at round 2/stop 1
+  with zero faults. Production crash
+  relaunch and two-computer proof remain open.
 - Normal Host/Join now installs a real `MULTIPLAYER` title-screen entry. The
   game remains idle until the player selects it; selection is receipted, then
   the byte-pinned save is loaded and the session proceeds. Disposable production
@@ -697,13 +783,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
   installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 124 core Lua tests and 108 cross-language economy scenarios;
+  - 132 core Lua tests and 108 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 117 mod Lua and 8 investigation/tool Lua syntax checks;
-  - 45 PowerShell syntax checks;
+  - 130 mod Lua and 9 investigation/tool Lua syntax checks;
+  - 52 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 143 Python protocol/network/checkpoint/recovery/report tests;
+  - 172 Python protocol/network/checkpoint/recovery/report tests;
   - functional first-fault watcher/real-bundle fixtures, including the
     already-exited-game ordering case and the automatic-save READY-poll race;
   - a synthetic byte-exact host publication -> player2 receipt-bound archive ->
@@ -720,10 +806,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   recover at the next station; automatic disconnect/reconnect recovery remains
   open.
 - Moving populated worlds remaining equivalent over a long unpaused soak.
-- Human two-process proof for removal-only connected road/track segments and
-  immediate rebuild, plus invalid-curve recovery after the live-proven
-  collision-safe road/rail crossing and event-edge extension. The former now
-  has complete capture/replay/retirement/consensus automation.
+- Fresh human two-process proof for removal-only connected road/track segments,
+  including the exact town-road/node plus attached-building bulldoze followed
+  immediately by station placement. The live failure is preserved and its
+  atomic topology route, station/depot helper boundary, disappearance checks,
+  and exact unchanged-rejection binding rollback now have complete automation.
+  Invalid-curve recovery after the live-proven collision-safe road/rail
+  crossing and event-edge extension also remains a live gate.
   Broader complex topology splits/joins, bridges, tunnels, terrain mutation, scripted
   construction callbacks, mod construction variants, and arbitrary command
   families. The bounded stock signals/depot/station/graphless-asset matrix now
@@ -755,10 +844,12 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   growth and canonical industry production are implemented; this open item is
   native physical presentation plus live proof of movement between the already
   authored freight ledgers.
-- Two-live-process proof of READY-gated automatic native save capture, verified
-  plan delivery, receipt-bound player2 re-archive, and one-click reload; automatic
-  process relaunch; host migration; authentication/encryption; or
-  hostile-Internet deployment.
+- Recovery stress beyond the now-passing fresh compacted-build capture,
+  paired stock saves, automatic localhost relaunch/reload, and mandatory
+  post-migration checkpoint plus one active train's next station round:
+  positive freight/growth state and multiple simultaneous trains,
+  two-computer role-local UX, production crash relaunch, host migration,
+  authentication/encryption, and hostile-Internet deployment remain open.
 - Live automatic-economy proof with a freshly purchased consist and newly built
   infrastructure; balance, pre-existing-save cost-basis policy, broader vehicle
   sale/replacement capture, onboarding, and public-release quality. Native

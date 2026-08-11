@@ -13,6 +13,7 @@ local nativeVehicleCommands = {}
 local authorizedCommandTags = {}
 local issuedCanonicalCommands = {}
 local lineEntities = {}
+local lineEnumerations = 0
 
 tpf2mp_native_status = function()
   return {
@@ -209,6 +210,7 @@ api = {
     end,
     forEachEntityWithComponent = function(callback, componentType)
       if componentType == "LINE" then
+        lineEnumerations = lineEnumerations + 1
         for entity in pairs(lineEntities) do callback(entity) end
       end
     end,
@@ -394,7 +396,10 @@ assert(#sentEvents == recoveryEventCount + 1
 -- update before the post-visitor native capture is readable. The correlation
 -- ledger must retain that exact owned result instead of losing the command.
 lineEntities[799] = true
+local idleLineEnumerations = lineEnumerations
 script.guiUpdate()
+assert(lineEnumerations == idleLineEnumerations,
+  "an idle GUI update enumerated every native line with an empty capture queue")
 nativeLineCommands[#nativeLineCommands + 1] =
   "L1|3|-1|100|950|250|100|4c696e652031|0|"
 nativeLineCommands[#nativeLineCommands + 1] =
@@ -1305,6 +1310,48 @@ assert(replayRuntime.processProposalQueue() == true
     and replayGui.proposalReplayQuarantine.proposalId == "gui-topology-collateral",
   "schema-7 topology demolition did not use atomic GUI BuildProposal replay")
 replayGui.proposalReplayQuarantine = nil
+
+replayState.world.proposals.byId["gui-town-road-collateral"] = {
+  proposalId = "gui-town-road-collateral",
+  status = "queued",
+  transaction = {
+    schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+    nodes = {}, edges = {},
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = { "edge:pre:town-road" }, nodes = { "node:pre:road-end" } },
+    constructions = { {
+      mode = "remove", kind = "construction",
+      collateral = { { kind = "construction", cid = "construction:pre:house" } },
+    } },
+  },
+  localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
+}
+assert(replayRuntime.processProposalQueue() == true
+    and replayGui.proposalReplayQuarantine
+    and replayGui.proposalReplayQuarantine.proposalId == "gui-town-road-collateral",
+  "removal-only town road and attached buildings did not use atomic GUI replay")
+replayGui.proposalReplayQuarantine = nil
+
+local successfulSendCommand = api.cmd.sendCommand
+api.cmd.sendCommand = function(command, callback)
+  if callback then callback(command, false) end
+  return true
+end
+replayState.world.proposals.byId["gui-rejected-unchanged"] = {
+  proposalId = "gui-rejected-unchanged", status = "queued",
+  transaction = { schemaVersion = proposalCodec.SCHEMA_VERSION, digest = "rejected" },
+  localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
+}
+assert(replayRuntime.processProposalQueue() == true,
+  "rejected canonical proposal did not enter GUI replay")
+local rejectedResultCount = #sentEvents
+assert(replayRuntime.processProposalQueue() == true
+    and #sentEvents == rejectedResultCount + 1
+    and sentEvents[#sentEvents].name == "proposal.result"
+    and sentEvents[#sentEvents].param.success == false
+    and sentEvents[#sentEvents].param.worldUnchanged == true,
+  "unchanged native rejection was not attested for PREPARE-core rollback")
+api.cmd.sendCommand = successfulSendCommand
 proposalCodec.materialise = originalMaterialise
 api.cmd.make.buildProposal = originalBuildFactory
 rawset(_G, "tpf2mp_native_authorize_build", originalAuthorizeBuild)
@@ -1482,6 +1529,28 @@ assert(stockGui.selectedLineId == 70
     and guiById["lineManager.newLine"].tooltip
     and stockGui.stockPresentation.scans == stockScans + 1,
   "stock line-manager selection did not receive one deferred safe refresh")
+for _ = 1, 20 do
+  stockPresentation.handleEvent(stockGui, stockSnapshot, "lineManager", "select", { line = 70 })
+  stockGui.frames = stockGui.frames + 3
+  stockPresentation.update(stockGui, stockSnapshot)
+end
+assert(stockGui.stockPresentation.scans == stockScans + 1
+    and stockGui.stockPresentation.coalescedEvents == 20,
+  "repeated native selection events still caused stock-window traversal churn")
+stockPresentation.handleEvent(stockGui, stockSnapshot, "lineManager", "tabChange", { line = 70 })
+stockGui.frames = stockGui.frames + 3
+stockPresentation.update(stockGui, stockSnapshot)
+assert(stockGui.stockPresentation.scans == stockScans + 2,
+  "a distinct stock-window event was swallowed by event-storm coalescing")
+stockPresentation.handleEvent(stockGui, stockSnapshot,
+  "streetTerminalBuilder", "builder.proposalCreate", {
+    proposal = { streetProposal = { edgesToAdd = { {}, {}, {} } } },
+  })
+stockGui.frames = stockGui.frames + 3
+stockPresentation.update(stockGui, stockSnapshot)
+assert(stockGui.stockPresentation.scans == stockScans + 2
+    and stockGui.stockPresentation.dirty ~= true,
+  "irrelevant construction previews still entered stock-window traversal")
 
 local lineWindow, lineNative = stockWindow("temp.view.entity_70", "line-extension")
 local nativeTransported = registerText("test.native.line.transported", "Transported")

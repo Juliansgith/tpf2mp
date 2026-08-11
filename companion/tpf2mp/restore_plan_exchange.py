@@ -10,7 +10,7 @@ from .bridge import GameBridge, atomic_write
 from .protocol import (
     PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_envelope,
 )
-from .restore_plan import verify_restore_plan
+from .restore_plan import RESTORE_PLAN_VERSION, verify_restore_plan
 
 
 class RestorePlanExchange:
@@ -30,6 +30,10 @@ class RestorePlanExchange:
         except (OSError, json.JSONDecodeError) as exc:
             raise ProtocolError(f"cannot read restore plan exchange file: {exc}") from exc
         plan = verify_restore_plan(value)
+        if plan["version"] != RESTORE_PLAN_VERSION:
+            raise ProtocolError(
+                "restore plan exchange requires a current native-phase-bound plan"
+            )
         if plan["session"] != self.bridge.session:
             raise ProtocolError("restore plan exchange names a different source session")
         return plan
@@ -64,6 +68,10 @@ class RestorePlanExchange:
                 or payload.get("schemaVersion") != 1:
             raise ProtocolError("restore plan exchange message is malformed")
         plan = verify_restore_plan(payload.get("plan"))
+        if plan["version"] != RESTORE_PLAN_VERSION:
+            raise ProtocolError(
+                "received restore plan is not native-phase-bound"
+            )
         if plan["session"] != self.bridge.session:
             raise ProtocolError("received restore plan names a different source session")
         atomic_write(

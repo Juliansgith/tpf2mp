@@ -4,10 +4,20 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .protocol import PROTOCOL_VERSION, ProtocolError, verify
+from .protocol import (
+    PROTOCOL_VERSION, ProtocolError, validate_vehicle_phase_proof, verify,
+)
 from .session_identity import derive_resume_session, validate_session_id
 
-RESTORE_PLAN_VERSION = 4
+RESTORE_PLAN_VERSION = 6
+# Version 5 bound the native route phase but omitted the companion station
+# round cursor. A resumed active vehicle would therefore report N+1 to a host
+# reset to zero. It is deliberately retired rather than guessed at restore.
+RETIRED_CURSORLESS_RESTORE_PLAN_VERSION = 5
+# Version 4 bound load-bearing save bytes and match policy, but not the
+# machine-local native vehicle phase. It is intentionally not accepted: a
+# structurally identical pair can otherwise resume on opposite route legs.
+RETIRED_UNPHASED_RESTORE_PLAN_VERSION = 4
 PROFILE_RESTORE_PLAN_VERSION = 3
 LEGACY_RESTORE_PLAN_VERSION = 2
 MATCH_PROFILE_AGENT_MODES = {"skeleton", "vanilla", "empty"}
@@ -49,7 +59,9 @@ def verify_restore_plan(value: Mapping[str, Any]) -> dict[str, Any]:
                 RESTORE_PLAN_VERSION,
             }:
         raise ProtocolError("unsupported restore plan format")
-    if int(plan.get("protocol", -1)) != PROTOCOL_VERSION:
+    protocol = plan.get("protocol")
+    if not isinstance(protocol, int) or isinstance(protocol, bool) \
+            or protocol != PROTOCOL_VERSION:
         raise ProtocolError("restore plan protocol mismatch")
     allowed = {
         "format", "version", "protocol", "session", "resumeSession",
@@ -58,11 +70,17 @@ def verify_restore_plan(value: Mapping[str, Any]) -> dict[str, Any]:
     }
     if version in {PROFILE_RESTORE_PLAN_VERSION, RESTORE_PLAN_VERSION}:
         allowed.add("matchContentProfile")
+    if version == RESTORE_PLAN_VERSION:
+        allowed.add("vehiclePhaseProof")
     if set(plan) != allowed:
         raise ProtocolError("restore plan has unknown or missing fields")
     if version in {PROFILE_RESTORE_PLAN_VERSION, RESTORE_PLAN_VERSION}:
         plan["matchContentProfile"] = validate_match_profile(
             plan.get("matchContentProfile")
+        )
+    if version == RESTORE_PLAN_VERSION:
+        plan["vehiclePhaseProof"] = validate_vehicle_phase_proof(
+            plan.get("vehiclePhaseProof")
         )
     session = plan.get("session")
     boundary = plan.get("boundarySeq")

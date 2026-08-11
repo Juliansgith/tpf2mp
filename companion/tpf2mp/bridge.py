@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterator, Mapping
 
 from .protocol import ProtocolError, canonical_json, decode_line, validate_envelope
+from .audit_log import AuditLog, AuditUnavailable
 
 
 _ATOMIC_REPLACE_ATTEMPTS = 50
@@ -15,6 +16,13 @@ _ATOMIC_REPLACE_DELAY_SECONDS = 0.02
 _RETRYABLE_REPLACE_ERRNOS = {errno.EACCES, errno.EBUSY, errno.EPERM}
 _RETRYABLE_REPLACE_WINERRORS = {5, 32, 33}
 _EPHEMERAL_OUTBOX_RETENTION = 4096
+
+
+def _retryable_file_error(exc: OSError) -> bool:
+    return (
+        exc.errno in _RETRYABLE_REPLACE_ERRNOS
+        or getattr(exc, "winerror", None) in _RETRYABLE_REPLACE_WINERRORS
+    )
 
 
 def _sequence(path: Path) -> int:
@@ -41,11 +49,7 @@ def atomic_write(path: Path, data: bytes) -> None:
             os.replace(temporary, path)
             return
         except OSError as exc:
-            retryable = (
-                exc.errno in _RETRYABLE_REPLACE_ERRNOS
-                or getattr(exc, "winerror", None) in _RETRYABLE_REPLACE_WINERRORS
-            )
-            if not retryable or attempt + 1 >= _ATOMIC_REPLACE_ATTEMPTS:
+            if not _retryable_file_error(exc) or attempt + 1 >= _ATOMIC_REPLACE_ATTEMPTS:
                 raise
             time.sleep(_ATOMIC_REPLACE_DELAY_SECONDS)
 
@@ -132,14 +136,15 @@ class GameBridge:
         if target <= self.outbox_pruned_through:
             return
         # Keep every durable checkpoint/event/intent/completion/research record
-        # in the bridge for offline tools. Only clock-health heartbeats are
-        # replaceable telemetry; retain a generous tail of those while bounding
-        # a 30-day session's inode count.
+        # in the bridge for offline tools. Clock health and vehicle state are
+        # replaceable telemetry is reflected in live authority state (with a
+        # sampled clock-health forensic trail); retain a generous local tail
+        # while bounding a long session's inode count.
         for seq in range(self.outbox_pruned_through + 1, target + 1):
             path = self.outbox / f"{seq:012d}.json"
             try:
                 message = decode_line(path.read_bytes())
-                if message.get("kind") == "clock_health":
+                if message.get("kind") in {"clock_health", "vehicle_sync"}:
                     path.unlink(missing_ok=True)
             except (OSError, ProtocolError):
                 # Missing files are already pruned. An unexpected unreadable
@@ -195,28 +200,3 @@ class GameBridge:
             (canonical_json(status) + "\n").encode("utf-8"),
         )
         return self.status_path
-
-
-class AuditLog:
-    def __init__(self, path: Path | str) -> None:
-        self.path = Path(path).expanduser().resolve()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-
-    def append(self, message: Mapping[str, Any]) -> None:
-        line = (canonical_json(message) + "\n").encode("utf-8")
-        with self.path.open("ab") as handle:
-            handle.write(line)
-            handle.flush()
-            os.fsync(handle.fileno())
-
-    def messages(self) -> Iterator[dict[str, Any]]:
-        if not self.path.exists():
-            return
-        with self.path.open("rb") as handle:
-            for number, raw in enumerate(handle, 1):
-                if not raw.strip():
-                    continue
-                try:
-                    yield decode_line(raw)
-                except ProtocolError as exc:
-                    raise ProtocolError(f"invalid audit line {number}: {exc}") from exc

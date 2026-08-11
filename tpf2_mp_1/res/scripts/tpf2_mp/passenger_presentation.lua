@@ -4,11 +4,13 @@ local revenue = require "tpf2_mp/economy_revenue"
 
 local M = {}
 
-M.SCHEMA_VERSION = 2
+M.SCHEMA_VERSION = 4
 M.EPOCH_SECONDS = 300
 M.MAX_COUNT = 1000000000
 M.MAX_CENTS = revenue.ACCUMULATOR_LIMIT
 M.FALLBACK_SEATS = 100
+M.TIME_SCALE = 1000
+M.MAX_TIME_MILLISECONDS = 9000000000000000
 
 local function count(value)
   return math.min(M.MAX_COUNT, math.max(0, util.integer(value, 0)))
@@ -43,12 +45,41 @@ local function passengerService(economyState, lineCid)
   return service, market, stops
 end
 
-local function resultAllocation(economyState, service)
+local function resultDemand(economyState, service)
   local market = economyState and economyState.lastResults
     and economyState.lastResults.markets
     and economyState.lastResults.markets[service.marketCid] or nil
   local row = market and market.services and market.services[service.lineCid] or nil
-  return count(row and row.allocated or 0)
+  local allocated = count(row and row.allocated or 0)
+  local requested = count(row and row.requested or allocated)
+  local capacityOverflow = count(row and row.capacityOverflow
+    or math.max(0, requested - allocated))
+  local intervalSeconds = math.max(60, math.min(86400, util.integer(
+    market and market.intervalSeconds
+      or economyState and economyState.lastResults
+        and economyState.lastResults.intervalSeconds
+      or economyState and economyState.scheduler
+        and economyState.scheduler.epochSeconds,
+    M.EPOCH_SECONDS)))
+  return allocated, requested, capacityOverflow, intervalSeconds
+end
+
+local function milliseconds(value)
+  local numeric = tonumber(value)
+  if not numeric or numeric ~= numeric or numeric < 0 then return nil end
+  if numeric >= M.MAX_TIME_MILLISECONDS / M.TIME_SCALE then
+    return M.MAX_TIME_MILLISECONDS
+  end
+  return math.floor(numeric * M.TIME_SCALE + 0.5)
+end
+
+local function boundaryMilliseconds(economyState)
+  local results = economyState and economyState.lastResults or {}
+  local scheduler = economyState and economyState.scheduler or {}
+  return milliseconds(results.boundaryGameTimeSeconds
+    or scheduler.lastBoundaryGameTimeSeconds
+    or scheduler.startGameTimeSeconds
+    or 0)
 end
 
 local function departuresFor(service)
@@ -82,6 +113,77 @@ local function splitAllocation(allocated, epoch)
   return first, second
 end
 
+local function queueLimit(rate, intervalSeconds, seats, params)
+  local maxWaitSeconds = math.max(60, math.min(86400,
+    util.integer(params and params.maxWaitSeconds, 1800)))
+  local numerator = count(rate) * maxWaitSeconds
+  local demandLimit = math.floor((numerator + intervalSeconds - 1) / intervalSeconds)
+  return math.min(M.MAX_COUNT, math.max(1, count(seats), demandLimit))
+end
+
+-- Exact fixed-point arrival integration without multiplying two unbounded
+-- values. Full accounting intervals contribute whole riders; the remaining
+-- milliseconds use a quotient/remainder decomposition whose largest product
+-- stays below Lua's exact-integer range.
+local function generatedDuring(rate, elapsedMilliseconds, intervalMilliseconds, residual)
+  rate = count(rate)
+  residual = math.max(0, util.integer(residual, 0)) % intervalMilliseconds
+  if rate == 0 or elapsedMilliseconds <= 0 then return 0, residual end
+  local fullIntervals = math.floor(elapsedMilliseconds / intervalMilliseconds)
+  local partialMilliseconds = elapsedMilliseconds % intervalMilliseconds
+  local fullGenerated
+  if fullIntervals > math.floor(M.MAX_COUNT / rate) then fullGenerated = M.MAX_COUNT
+  else fullGenerated = fullIntervals * rate end
+  local ratePerMillisecond = math.floor(rate / intervalMilliseconds)
+  local rateRemainder = rate % intervalMilliseconds
+  local partialNumerator = partialMilliseconds * rateRemainder + residual
+  local partialGenerated = partialMilliseconds * ratePerMillisecond
+    + math.floor(partialNumerator / intervalMilliseconds)
+  return math.min(M.MAX_COUNT, fullGenerated + partialGenerated),
+    partialNumerator % intervalMilliseconds
+end
+
+local function accrueDirection(waiting, residual, rate, elapsedMilliseconds,
+    intervalMilliseconds, seats, params)
+  local generated, nextResidual = generatedDuring(
+    rate, elapsedMilliseconds, intervalMilliseconds, residual)
+  local limit = queueLimit(rate, math.floor(intervalMilliseconds / M.TIME_SCALE),
+    seats, params)
+  -- A falling demand rate must not make an existing queue disappear. The cap
+  -- limits only new arrivals to one maximum-wait demand window; arrivals that
+  -- do not fit deterministically abandon and are counted in overflowTotal.
+  local room = math.max(0, math.max(count(waiting), limit) - count(waiting))
+  local admitted = math.min(generated, room)
+  return add(waiting, admitted), nextResidual, generated, generated - admitted
+end
+
+local function accrueLineTo(line, targetMilliseconds, params)
+  targetMilliseconds = math.max(0, math.min(M.MAX_TIME_MILLISECONDS,
+    util.integer(targetMilliseconds, 0)))
+  local cursor = line.demandCursorMilliseconds
+  if cursor == nil then
+    line.demandCursorMilliseconds = targetMilliseconds
+    return 0, 0, 0
+  end
+  cursor = math.max(0, math.min(M.MAX_TIME_MILLISECONDS, util.integer(cursor, 0)))
+  if targetMilliseconds <= cursor then return 0, 0, 0 end
+  local elapsed = targetMilliseconds - cursor
+  local intervalMilliseconds = math.max(60, math.min(86400,
+    util.integer(line.intervalSeconds, M.EPOCH_SECONDS))) * M.TIME_SCALE
+  local rateA, rateB = splitAllocation(count(line.requested), line.epoch)
+  local generatedA, generatedB, abandonedA, abandonedB
+  line.waitingAToB, line.demandResidAToB, generatedA, abandonedA = accrueDirection(
+    line.waitingAToB, line.demandResidAToB, rateA, elapsed,
+    intervalMilliseconds, line.seatsPerVehicle, params)
+  line.waitingBToA, line.demandResidBToA, generatedB, abandonedB = accrueDirection(
+    line.waitingBToA, line.demandResidBToA, rateB, elapsed,
+    intervalMilliseconds, line.seatsPerVehicle, params)
+  line.generatedTotal = add(line.generatedTotal, add(generatedA, generatedB))
+  line.overflowTotal = add(line.overflowTotal, add(abandonedA, abandonedB))
+  line.demandCursorMilliseconds = targetMilliseconds
+  return generatedA, generatedB, add(abandonedA, abandonedB)
+end
+
 function M.newState()
   return {
     schemaVersion = M.SCHEMA_VERSION,
@@ -93,27 +195,78 @@ end
 
 function M.migrate(value)
   if type(value) ~= "table" then return M.newState() end
+  local previousSchema = math.max(1, util.integer(value.schemaVersion, 1))
   value.schemaVersion = M.SCHEMA_VERSION
   value.epoch = math.max(0, util.integer(value.epoch, 0))
   value.lines = type(value.lines) == "table" and value.lines or {}
   value.vehicles = type(value.vehicles) == "table" and value.vehicles or {}
   for _, line in pairs(value.lines) do
+    line.allocated = count(line.allocated)
+    line.requested = count(line.requested ~= nil and line.requested or line.allocated)
+    line.capacityOverflow = count(line.capacityOverflow ~= nil
+      and line.capacityOverflow or math.max(0, line.requested - line.allocated))
+    line.intervalSeconds = math.max(60, math.min(86400,
+      util.integer(line.intervalSeconds, M.EPOCH_SECONDS)))
+    if line.demandCursorMilliseconds ~= nil then
+      line.demandCursorMilliseconds = math.max(0, math.min(
+        M.MAX_TIME_MILLISECONDS, util.integer(line.demandCursorMilliseconds, 0)))
+    end
+    local intervalMilliseconds = line.intervalSeconds * M.TIME_SCALE
+    line.demandResidAToB = math.max(0,
+      util.integer(line.demandResidAToB, 0)) % intervalMilliseconds
+    line.demandResidBToA = math.max(0,
+      util.integer(line.demandResidBToA, 0)) % intervalMilliseconds
+    if line.generatedTotal == nil and previousSchema < 3 then
+      line.generatedTotal = add(add(line.boardedTotal,
+        add(line.waitingAToB, line.waitingBToA)), line.overflowTotal)
+    end
+    line.generatedTotal = count(line.generatedTotal)
+    line.discardedTotal = count(line.discardedTotal)
     line.earnedRevenueCents = cents(line.earnedRevenueCents)
   end
+  local aboardByLine = {}
   for _, vehicle in pairs(value.vehicles) do
+    vehicle.aboard = count(vehicle.aboard)
+    vehicle.boardedTotal = count(vehicle.boardedTotal)
+    vehicle.alightedTotal = count(vehicle.alightedTotal)
+    vehicle.discardedTotal = count(vehicle.discardedTotal)
+    if previousSchema < 4 then
+      -- Schema 3 carried a prior line's discarded count onto the fresh
+      -- per-line record during reassignment. Schema 4 makes each vehicle
+      -- sub-ledger line-local, so recover only the residue explained by this
+      -- record's own boarded/alighted/aboard counters.
+      vehicle.discardedTotal = math.max(0,
+        vehicle.boardedTotal - vehicle.alightedTotal - vehicle.aboard)
+    end
     vehicle.earnedRevenueCents = cents(vehicle.earnedRevenueCents)
     if vehicle.boardedFareCents ~= nil then
       vehicle.boardedFareCents = math.max(0, util.integer(vehicle.boardedFareCents, 0))
+    end
+    if type(vehicle.lineCid) == "string" then
+      aboardByLine[vehicle.lineCid] = add(aboardByLine[vehicle.lineCid], vehicle.aboard)
+    end
+  end
+  if previousSchema < 4 then
+    -- Schema 1-3 removed sold vehicles without recording their onboard load.
+    -- Recover that exact residue from the monotonic line counters so old
+    -- saves begin schema 4 with a conserved ledger rather than silent riders.
+    for lineCid, line in pairs(value.lines) do
+      local residue = math.max(0, count(line.boardedTotal)
+        - count(line.alightedTotal) - count(aboardByLine[lineCid]))
+      line.discardedTotal = math.max(count(line.discardedTotal), residue)
     end
   end
   return value
 end
 
-local function routeRecord(service, stops, allocated, epoch, previous, carryQueues)
-  local first, second = splitAllocation(allocated, epoch)
+local function routeRecord(service, stops, demand, epoch, previous, carryQueues,
+    boundaryMillisecondsValue)
   local sameRoute = previous and previous.routeDigest == hash.value(stops)
   local carryA = carryQueues and sameRoute and count(previous.waitingAToB) or 0
   local carryB = carryQueues and sameRoute and count(previous.waitingBToA) or 0
+  local sameInterval = sameRoute and previous.intervalSeconds == demand.intervalSeconds
+  local cursor = previous and previous.demandCursorMilliseconds
+    or boundaryMillisecondsValue
   return {
     lineCid = service.lineCid,
     companyCid = service.companyCid,
@@ -124,9 +277,17 @@ local function routeRecord(service, stops, allocated, epoch, previous, carryQueu
     stops = util.deepCopy(stops),
     stopCount = #stops,
     routeDigest = hash.value(stops),
-    allocated = allocated,
-    waitingAToB = add(carryA, first),
-    waitingBToA = add(carryB, second),
+    allocated = demand.allocated,
+    requested = demand.requested,
+    capacityOverflow = demand.capacityOverflow,
+    intervalSeconds = demand.intervalSeconds,
+    waitingAToB = carryA,
+    waitingBToA = carryB,
+    demandCursorMilliseconds = cursor,
+    demandResidAToB = carryQueues and sameInterval
+      and math.max(0, util.integer(previous.demandResidAToB, 0)) or 0,
+    demandResidBToA = carryQueues and sameInterval
+      and math.max(0, util.integer(previous.demandResidBToA, 0)) or 0,
     departuresPlanned = departuresFor(service),
     departuresAToB = 0,
     departuresBToA = 0,
@@ -136,19 +297,42 @@ local function routeRecord(service, stops, allocated, epoch, previous, carryQueu
     -- must never make the next snapshot move backwards.
     boardedTotal = count(previous and previous.boardedTotal),
     alightedTotal = count(previous and previous.alightedTotal),
+    discardedTotal = count(previous and previous.discardedTotal),
     earnedRevenueCents = cents(previous and previous.earnedRevenueCents),
     overflowTotal = count(previous and previous.overflowTotal),
+    generatedTotal = count(previous and previous.generatedTotal),
   }
+end
+
+local function retireVehicle(state, vehicleCid)
+  local vehicle = state.vehicles[vehicleCid]
+  if not vehicle then return end
+  local line = state.lines[vehicle.lineCid]
+  if line then line.discardedTotal = add(line.discardedTotal, vehicle.aboard) end
+  state.vehicles[vehicleCid] = nil
+end
+
+local function retireLine(state, lineCid)
+  for _, vehicleCid in ipairs(util.sortedKeys(state.vehicles)) do
+    local vehicle = state.vehicles[vehicleCid]
+    if vehicle.lineCid == lineCid then retireVehicle(state, vehicleCid) end
+  end
+  state.lines[lineCid] = nil
 end
 
 local function ensureLine(state, economyState, lineCid, carryQueues)
   local service, _, stops = passengerService(economyState, lineCid)
   if not service then
-    state.lines[lineCid] = nil
+    retireLine(state, lineCid)
     return nil
   end
   local epoch = math.max(0, util.integer(economyState.epoch, 0))
-  local allocated = resultAllocation(economyState, service)
+  local allocated, requested, capacityOverflow, intervalSeconds =
+    resultDemand(economyState, service)
+  local demand = {
+    allocated = allocated, requested = requested,
+    capacityOverflow = capacityOverflow, intervalSeconds = intervalSeconds,
+  }
   local previous = state.lines[lineCid]
   local routeDigest = hash.value(stops)
   if previous and previous.epoch == epoch and previous.routeDigest == routeDigest then
@@ -159,9 +343,20 @@ local function ensureLine(state, economyState, lineCid, carryQueues)
     previous.departuresPlanned = departuresFor(service)
     previous.seatsPerVehicle = seatsFor(service)
     previous.allocated = allocated
+    previous.requested = requested
+    previous.capacityOverflow = capacityOverflow
+    previous.intervalSeconds = intervalSeconds
+    if previous.demandCursorMilliseconds == nil then
+      previous.demandCursorMilliseconds = boundaryMilliseconds(economyState)
+    end
     return previous
   end
-  local record = routeRecord(service, stops, allocated, epoch, previous, carryQueues == true)
+  local boundary = boundaryMilliseconds(economyState)
+  if previous and previous.routeDigest == routeDigest and previous.epoch ~= epoch then
+    accrueLineTo(previous, boundary, economyState and economyState.params)
+  end
+  local record = routeRecord(service, stops, demand, epoch, previous,
+    carryQueues == true, boundary)
   state.lines[lineCid] = record
   if previous and previous.routeDigest ~= record.routeDigest then
     -- A route edit invalidates any presentation-only trip that referred to
@@ -170,6 +365,7 @@ local function ensureLine(state, economyState, lineCid, carryQueues)
       add(previous.waitingAToB, previous.waitingBToA))
     for _, vehicle in pairs(state.vehicles) do
       if vehicle.lineCid == lineCid then
+        record.discardedTotal = add(record.discardedTotal, vehicle.aboard)
         vehicle.discardedTotal = add(vehicle.discardedTotal, vehicle.aboard)
         vehicle.aboard = 0
         vehicle.originStationGroupCid = nil
@@ -185,14 +381,15 @@ local function removeInactiveVehicles(state, economyState)
   for _, vehicleCid in ipairs(util.sortedKeys(state.vehicles)) do
     local vehicle = state.vehicles[vehicleCid]
     if not passengerService(economyState, vehicle.lineCid) then
-      state.vehicles[vehicleCid] = nil
+      retireVehicle(state, vehicleCid)
     end
   end
 end
 
--- Advances presentation demand exactly once per authored economy epoch. Old
--- queues carry over as a visible backlog; onboard passengers keep riding to
--- their destination, so a settlement never teleports a train empty.
+-- Installs the authored arrival rate for an economy epoch. Exact arrivals are
+-- accrued later against host-ordered departure times. Old queues carry over as
+-- a visible backlog; onboard passengers keep riding to their destination, so
+-- a settlement never teleports a train empty.
 function M.beginEpoch(value, economyState)
   local state = M.migrate(value)
   local epoch = math.max(0, util.integer(economyState and economyState.epoch, 0))
@@ -212,7 +409,7 @@ function M.beginEpoch(value, economyState)
     end
   end
   for lineCid in pairs(state.lines) do
-    if not retained[lineCid] then state.lines[lineCid] = nil end
+    if not retained[lineCid] then retireLine(state, lineCid) end
   end
   removeInactiveVehicles(state, economyState)
   state.epoch = epoch
@@ -233,9 +430,8 @@ end
 local function vehicleRecord(state, economyState, action, metadata)
   local line = assert(state.lines[action.lineCid])
   local existing = state.vehicles[action.vehicleCid]
-  local discardedFromPriorLine = 0
   if existing and existing.lineCid ~= action.lineCid then
-    discardedFromPriorLine = add(existing.discardedTotal, existing.aboard)
+    retireVehicle(state, action.vehicleCid)
     existing = nil
   end
   local service = economyState.services[action.lineCid]
@@ -249,7 +445,7 @@ local function vehicleRecord(state, economyState, action, metadata)
     boardedTotal = 0,
     alightedTotal = 0,
     earnedRevenueCents = 0,
-    discardedTotal = discardedFromPriorLine,
+    discardedTotal = 0,
   }
   record.lineCid = action.lineCid
   record.companyCid = record.companyCid or service.companyCid
@@ -302,11 +498,8 @@ function M.alignWithVehicleSync(value, economyState, vehicleSync)
   return true, state
 end
 
-local function boardingAmount(waiting, departuresUsed, departuresPlanned, freeSeats)
-  if waiting <= 0 or freeSeats <= 0 then return 0 end
-  local remainingDepartures = math.max(1, departuresPlanned - departuresUsed)
-  local desired = math.floor((waiting + remainingDepartures - 1) / remainingDepartures)
-  return math.min(waiting, freeSeats, math.max(1, desired))
+local function boardingAmount(waiting, freeSeats)
+  return math.min(count(waiting), math.max(0, util.integer(freeSeats, 0)))
 end
 
 -- Runs inside the already ordered vehicle.sync_release action. No new intent,
@@ -324,7 +517,9 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
   local service, _, stops = passengerService(economyState, action.lineCid)
   local stopIndex = util.integer(action.stopIndex, -1)
   local round = util.integer(action.round, 0)
-  if not service or stopIndex < 0 or stopIndex >= #stops or round < 1 then
+  local releaseMilliseconds = milliseconds(action.releaseAtGameTime)
+  if not service or stopIndex < 0 or stopIndex >= #stops or round < 1
+    or releaseMilliseconds == nil then
     return false, "passenger presentation release stop/round is invalid"
   end
   local vehicle = vehicleRecord(state, economyState, action, bindingMetadata)
@@ -340,6 +535,13 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
   if round ~= vehicle.lastRound + 1 then
     return false, "passenger presentation vehicle round is not sequential"
   end
+
+  -- Both terminal queues advance to the same host-ordered departure instant.
+  -- This turns an interval rate into the 19/20-rider loads expected from a
+  -- 20-seat train on a roughly 6.5-minute headway, instead of smoothing every
+  -- five-minute allocation into an artificial 15 riders per departure.
+  local generatedAToB, generatedBToA, abandoned = accrueLineTo(
+    line, releaseMilliseconds, economyState and economyState.params)
 
   local stopCid = stops[stopIndex + 1]
   local alighted = 0
@@ -370,8 +572,7 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
   if direction then
     local used = count(line[departuresField])
     local waiting = count(line[waitingField])
-    boarded = boardingAmount(waiting, used, line.departuresPlanned,
-      math.max(0, vehicle.capacity - vehicle.aboard))
+    boarded = boardingAmount(waiting, math.max(0, vehicle.capacity - vehicle.aboard))
     line[departuresField] = add(used, 1)
     line[waitingField] = waiting - boarded
     if boarded > 0 then
@@ -388,6 +589,7 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
   vehicle.lastRound = round
   vehicle.lastStopIndex = stopIndex
   vehicle.lastStationGroupCid = stopCid
+  vehicle.lastReleaseAtMilliseconds = releaseMilliseconds
   return true, {
     passenger = true,
     direction = direction,
@@ -395,6 +597,11 @@ function M.applyRelease(value, economyState, action, bindingMetadata)
     alighted = alighted,
     aboard = vehicle.aboard,
     capacity = vehicle.capacity,
+    requested = line.requested,
+    allocated = line.allocated,
+    generatedAToB = generatedAToB,
+    generatedBToA = generatedBToA,
+    abandoned = abandoned,
     waitingAToB = line.waitingAToB,
     waitingBToA = line.waitingBToA,
     earnedRevenueCents = line.earnedRevenueCents,
@@ -410,15 +617,12 @@ function M.onOperation(value, economyState, transaction, companyCid)
   if transaction.kind == "vehicle.assign" then
     local prior = state.vehicles[data.targetCid]
     if prior and prior.lineCid ~= data.lineCid then
-      prior.discardedTotal = add(prior.discardedTotal, prior.aboard)
-      prior.aboard = 0
-      prior.originStationGroupCid = nil
-      prior.destinationStationGroupCid = nil
-      prior.boardedFareCents = nil
+      retireVehicle(state, data.targetCid)
+      prior = nil
     end
     local line = ensureLine(state, economyState, data.lineCid, false)
     if not line then
-      state.vehicles[data.targetCid] = nil
+      retireVehicle(state, data.targetCid)
       return true, state
     end
     state.vehicles[data.targetCid] = prior or {
@@ -436,14 +640,11 @@ function M.onOperation(value, economyState, transaction, companyCid)
     state.vehicles[data.targetCid].lineCid = data.lineCid
     state.vehicles[data.targetCid].companyCid = companyCid
   elseif transaction.kind == "vehicle.sell" then
-    state.vehicles[data.targetCid] = nil
+    retireVehicle(state, data.targetCid)
   elseif transaction.kind == "vehicle.sell_batch" then
-    for _, targetCid in ipairs(data.targetCids or {}) do state.vehicles[targetCid] = nil end
+    for _, targetCid in ipairs(data.targetCids or {}) do retireVehicle(state, targetCid) end
   elseif transaction.kind == "line.delete" then
-    state.lines[data.targetCid] = nil
-    for vehicleCid, vehicle in pairs(state.vehicles) do
-      if vehicle.lineCid == data.targetCid then state.vehicles[vehicleCid] = nil end
-    end
+    retireLine(state, data.targetCid)
   end
   return true, state
 end
@@ -468,16 +669,26 @@ function M.digestView(value)
       stopCount = math.max(2, util.integer(item.stopCount, 2)),
       routeDigest = tostring(item.routeDigest or ""),
       allocated = count(item.allocated),
+      requested = count(item.requested),
+      capacityOverflow = count(item.capacityOverflow),
+      intervalSeconds = math.max(60, math.min(86400,
+        util.integer(item.intervalSeconds, M.EPOCH_SECONDS))),
       waitingAToB = count(item.waitingAToB),
       waitingBToA = count(item.waitingBToA),
+      demandCursorMilliseconds = math.max(0, math.min(
+        M.MAX_TIME_MILLISECONDS, util.integer(item.demandCursorMilliseconds, 0))),
+      demandResidAToB = math.max(0, util.integer(item.demandResidAToB, 0)),
+      demandResidBToA = math.max(0, util.integer(item.demandResidBToA, 0)),
       departuresPlanned = math.max(1, util.integer(item.departuresPlanned, 1)),
       departuresAToB = count(item.departuresAToB),
       departuresBToA = count(item.departuresBToA),
       seatsPerVehicle = math.max(1, count(item.seatsPerVehicle)),
       boardedTotal = count(item.boardedTotal),
       alightedTotal = count(item.alightedTotal),
+      discardedTotal = count(item.discardedTotal),
       earnedRevenueCents = cents(item.earnedRevenueCents),
       overflowTotal = count(item.overflowTotal),
+      generatedTotal = count(item.generatedTotal),
     }
   end
   local vehicles = {}
@@ -502,6 +713,9 @@ function M.digestView(value)
     optional(record, "destinationStationGroupCid", item.destinationStationGroupCid)
     optional(record, "boardedFareCents", item.boardedFareCents
       and math.max(0, util.integer(item.boardedFareCents, 0)))
+    optional(record, "lastReleaseAtMilliseconds", item.lastReleaseAtMilliseconds
+      and math.max(0, math.min(M.MAX_TIME_MILLISECONDS,
+        util.integer(item.lastReleaseAtMilliseconds, 0))))
     vehicles[#vehicles + 1] = record
   end
   return {
@@ -544,7 +758,8 @@ function M.publicView(value, economyState, registry)
     lines = {}, stations = {}, vehicles = {},
     localVehicles = {}, localStations = {}, localLines = {},
     totals = { waiting = 0, aboard = 0, capacity = 0, boarded = 0,
-      alighted = 0, earnedRevenueCents = 0 },
+      alighted = 0, discarded = 0, requested = 0, allocated = 0, capacityOverflow = 0,
+      abandoned = 0, earnedRevenueCents = 0 },
   }
   for _, lineCid in ipairs(util.sortedKeys(state.lines)) do
     local item = state.lines[lineCid]
@@ -556,43 +771,66 @@ function M.publicView(value, economyState, registry)
     result.lines[lineCid] = line
     if localLineId then result.localLines[tostring(localLineId)] = lineCid end
     result.totals.waiting = add(result.totals.waiting, line.waiting)
+    result.totals.requested = add(result.totals.requested, line.requested)
+    result.totals.allocated = add(result.totals.allocated, line.allocated)
+    result.totals.capacityOverflow = add(
+      result.totals.capacityOverflow, line.capacityOverflow)
+    result.totals.abandoned = add(result.totals.abandoned, line.overflowTotal)
     result.totals.boarded = add(result.totals.boarded, line.boardedTotal)
     result.totals.alighted = add(result.totals.alighted, line.alightedTotal)
+    result.totals.discarded = add(result.totals.discarded, line.discardedTotal)
     result.totals.earnedRevenueCents = addCents(
       result.totals.earnedRevenueCents, line.earnedRevenueCents)
     local firstThroughput, secondThroughput = splitAllocation(line.allocated, line.epoch)
+    local firstRequested, secondRequested = splitAllocation(line.requested, line.epoch)
+    local firstOverflow, secondOverflow = splitAllocation(
+      line.capacityOverflow, line.epoch)
     local routeStops = line.stops or { line.terminalA, line.terminalB }
     local seenStops = {}
     for _, stopCid in ipairs(routeStops) do
       if not seenStops[stopCid] then
         seenStops[stopCid] = true
-        local terminal = { cid = stopCid, waiting = 0, throughput = 0 }
+        local terminal = {
+          cid = stopCid, waiting = 0, throughput = 0,
+          requested = 0, capacityOverflow = 0,
+        }
         if stopCid == line.terminalA then
           terminal.waiting, terminal.throughput = line.waitingAToB, firstThroughput
+          terminal.requested, terminal.capacityOverflow = firstRequested, firstOverflow
         elseif stopCid == line.terminalB then
           terminal.waiting, terminal.throughput = line.waitingBToA, secondThroughput
+          terminal.requested, terminal.capacityOverflow = secondRequested, secondOverflow
         end
-      local stationName, localStationId = nameOf(registry, terminal.cid)
-      local station = result.stations[terminal.cid] or {
-        stationGroupCid = terminal.cid,
-        name = stationName,
-        localId = localStationId,
-        waiting = 0,
-        throughput = 0,
-        lines = {},
-      }
-      station.waiting = add(station.waiting, terminal.waiting)
-      station.throughput = add(station.throughput, terminal.throughput)
-      station.lines[#station.lines + 1] = {
-        lineCid = lineCid,
-        name = lineName,
-        companyCid = line.companyCid,
-        allocated = terminal.throughput,
-        lineAllocated = line.allocated,
-        waiting = terminal.waiting,
-      }
-      result.stations[terminal.cid] = station
-      if localStationId then result.localStations[tostring(localStationId)] = terminal.cid end
+        local stationName, localStationId = nameOf(registry, terminal.cid)
+        local station = result.stations[terminal.cid] or {
+          stationGroupCid = terminal.cid,
+          name = stationName,
+          localId = localStationId,
+          waiting = 0,
+          throughput = 0,
+          requested = 0,
+          capacityOverflow = 0,
+          lines = {},
+        }
+        station.waiting = add(station.waiting, terminal.waiting)
+        station.throughput = add(station.throughput, terminal.throughput)
+        station.requested = add(station.requested, terminal.requested)
+        station.capacityOverflow = add(
+          station.capacityOverflow, terminal.capacityOverflow)
+        station.lines[#station.lines + 1] = {
+          lineCid = lineCid,
+          name = lineName,
+          companyCid = line.companyCid,
+          allocated = terminal.throughput,
+          requested = terminal.requested,
+          capacityOverflow = terminal.capacityOverflow,
+          lineAllocated = line.allocated,
+          waiting = terminal.waiting,
+        }
+        result.stations[terminal.cid] = station
+        if localStationId then
+          result.localStations[tostring(localStationId)] = terminal.cid
+        end
       end
     end
   end

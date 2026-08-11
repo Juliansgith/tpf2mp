@@ -7,11 +7,14 @@ param(
     [Parameter(Mandatory = $true)][int]$GameProcessId,
     [Parameter(Mandatory = $true)][string]$GameExecutable,
     [Parameter(Mandatory = $true)][string]$GameStartedAtUtc,
+    [string]$MatchContentProfilePath,
     [string]$BundleRoot,
     [string]$EvidenceCollectorPath,
     [ValidateRange(1, 60)][int]$PollSeconds = 2,
     [ValidateRange(2, 120)][int]$StableSeconds = 6,
+    [ValidateRange(2, 120)][int]$UiSaveFallbackDelaySeconds = 8,
     [ValidateRange(1, 8760)][int]$LifetimeHours = 720,
+    [switch]$DisableUiSaveFallback,
     [switch]$OneShot
 )
 
@@ -19,6 +22,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
 . (Join-Path $PSScriptRoot 'recovery_plan_common.ps1')
+. (Join-Path $PSScriptRoot 'recovery_save_common.ps1')
 
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
@@ -44,14 +48,16 @@ $receivedPlanPath = Join-Path $bridge 'companion_state\received_restore_plan.jso
 $requestRoot = Join-Path $bridge 'companion_state\anchor_requests'
 $resultRoot = Join-Path $bridge 'companion_state\anchor_results'
 $auditPath = Join-Path $bridge "audit\$safeSession.ndjson"
-$matchProfilePath = Join-Path $sessionRoot 'match-content-profile.json'
+$matchProfilePath = Resolve-Tpf2mpFullPath $(if ($MatchContentProfilePath) {
+    $MatchContentProfilePath
+} else { Join-Path $sessionRoot 'match-content-profile.json' })
 $companion = Get-Tpf2mpCompanionCommand $bundle
 $deadline = (Get-Date).AddHours($LifetimeHours)
 $expectedSavePrefix = "tpf2mp_${safeSession}_${Peer}"
 New-Item -ItemType Directory -Force -Path $recoveryRoot, $requestRoot, $resultRoot | Out-Null
 
 $watch = [ordered]@{
-    schemaVersion = 6
+    schemaVersion = 7
     session = $safeSession
     peer = $Peer
     status = 'starting'
@@ -62,6 +68,13 @@ $watch = [ordered]@{
     anchorBoundary = $null
     anchorReadyObservedAtUtc = $null
     automaticSaveName = $null
+    uiSaveFallbackEnabled = -not $DisableUiSaveFallback
+    uiSaveFallbackAttempts = 0
+    uiSaveFallbackStatus = 'idle'
+    uiSaveFallbackStartedAtUtc = $null
+    uiSaveCompletionTimeoutSeconds = 1200
+    uiSaveFallbackEvidence = $null
+    uiSaveFallbackError = $null
     candidateSave = $null
     candidateStableSinceUtc = $null
     requestId = $null
@@ -124,6 +137,16 @@ function Get-CompanionStatus {
     catch { return $null }
     if ($status.session -ne $safeSession -or $status.peer -ne $Peer) { return $null }
     return $status
+}
+
+function Test-PreparedBoundary([object]$CompanionStatus, [int]$Boundary) {
+    if (-not $CompanionStatus -or $Boundary -lt 1) { return $false }
+    $statusProperty = $CompanionStatus.PSObject.Properties['anchorPreparationStatus']
+    $checkpointProperty = `
+        $CompanionStatus.PSObject.Properties['anchorPreparationCheckpointSeq']
+    if (-not $statusProperty -or -not $checkpointProperty) { return $false }
+    return [string]$statusProperty.Value -eq 'ready' `
+        -and [int]$checkpointProperty.Value -eq $Boundary
 }
 
 function Capture-FirstFaultEvidence([object]$CompanionStatus) {
@@ -189,7 +212,8 @@ function Get-StableCandidateSignature([IO.FileInfo]$Save) {
 }
 
 function Get-NewRecoverySave([DateTime]$AfterUtc, [int]$Boundary) {
-    $automaticBaseName = "${expectedSavePrefix}_b$Boundary"
+    $automaticBaseName = Get-Tpf2mpRecoverySaveBaseName `
+        -Session $safeSession -Peer $Peer -BoundarySeq $Boundary
     # The game sees the same READY companion status as this watcher. It can
     # finish the automatic SaveGame command just before our next two-second
     # poll records READY, so admit only the exact automatic name in that small
@@ -201,8 +225,8 @@ function Get-NewRecoverySave([DateTime]$AfterUtc, [int]$Boundary) {
             $automaticRecent = $_.BaseName -ieq $automaticBaseName `
                 -and $_.LastWriteTimeUtc -ge $automaticGraceUtc
             $manualRecent = $_.LastWriteTimeUtc -ge $AfterUtc
-            $_.BaseName.StartsWith($expectedSavePrefix, [StringComparison]::OrdinalIgnoreCase) `
-                -and ($automaticRecent -or $manualRecent) `
+            ($automaticRecent -or ($manualRecent -and $_.BaseName.StartsWith(
+                $expectedSavePrefix, [StringComparison]::OrdinalIgnoreCase))) `
                 -and (Test-Path -LiteralPath ($_.FullName + '.lua') -PathType Leaf)
         } |
         Sort-Object LastWriteTimeUtc -Descending) | Select-Object -First 1
@@ -324,6 +348,8 @@ $candidateStableSince = $null
 $candidate = $null
 $requestId = $null
 $requestBoundary = 0
+$uiSaveFallbackBoundary = 0
+$uiSaveFallbackRetryAt = [DateTime]::MinValue
 
 try {
     Write-RecoveryWatcherStatus 'waiting-for-ready-boundary'
@@ -349,7 +375,18 @@ try {
             $candidate = $null
             $watch.anchorBoundary = $readyBoundary
             $watch.anchorReadyObservedAtUtc = $readyObservedAt.ToString('o')
-            $watch.automaticSaveName = "${expectedSavePrefix}_b$readyBoundary"
+            $watch.automaticSaveName = Get-Tpf2mpRecoverySaveBaseName `
+                -Session $safeSession -Peer $Peer -BoundarySeq $readyBoundary
+            $preparedBoundary = Test-PreparedBoundary $status $readyBoundary
+            $uiSaveFallbackBoundary = if ($preparedBoundary) { $readyBoundary } else { 0 }
+            $uiSaveFallbackRetryAt = [DateTime]::MinValue
+            $watch.uiSaveFallbackAttempts = 0
+            $watch.uiSaveFallbackStatus = if ($preparedBoundary) {
+                'waiting-for-native-command'
+            } else { 'manual-save-available' }
+            $watch.uiSaveFallbackEvidence = $null
+            $watch.uiSaveFallbackError = $null
+            $watch.uiSaveFallbackStartedAtUtc = $null
             $watch.candidateSave = $null
             $watch.candidateStableSinceUtc = $null
             $watch.receiptStatus = $null
@@ -362,6 +399,20 @@ try {
             $watch.receiptBoundArchiveAttempts = 0
             $watch.receiptBoundArchiveError = $null
             Write-RecoveryWatcherStatus 'ready-save-now'
+        }
+
+        # Preparation status can become visible one poll after the generic
+        # READY projection. Arm UI automation only for that explicit workflow;
+        # ordinary paused economy/operation checkpoints must never steal focus.
+        if ($readyBoundary -gt 0 -and $requestBoundary -eq $readyBoundary `
+            -and $uiSaveFallbackBoundary -ne $readyBoundary `
+            -and (Test-PreparedBoundary $status $readyBoundary)) {
+            $uiSaveFallbackBoundary = $readyBoundary
+            $uiSaveFallbackRetryAt = [DateTime]::MinValue
+            $watch.uiSaveFallbackAttempts = 0
+            $watch.uiSaveFallbackStatus = 'waiting-for-native-command'
+            $watch.uiSaveFallbackError = $null
+            Write-RecoveryWatcherStatus 'prepared-boundary-awaiting-native-save'
         }
 
         if ($readyObservedAt -and -not $requestId) {
@@ -379,7 +430,12 @@ try {
                 elseif ($signature -and $candidateStableSince `
                     -and ([DateTime]::UtcNow - $candidateStableSince).TotalSeconds -ge $StableSeconds) {
                     $latest = Get-CompanionStatus
-                    if (-not $latest -or $latest.anchorReady -ne $true `
+                    $receiptReady = $latest -and ((
+                        $latest.PSObject.Properties['anchorReceiptReady'] `
+                            -and $latest.anchorReceiptReady -eq $true) `
+                        -or (-not $latest.PSObject.Properties['anchorReceiptReady'] `
+                            -and $latest.anchorReady -eq $true))
+                    if (-not $receiptReady `
                         -or [int]$latest.anchorBoundarySeq -ne $requestBoundary) {
                         $readyObservedAt = $null
                         $requestBoundary = 0
@@ -391,6 +447,90 @@ try {
                         $watch.receiptStatus = 'pending'
                         Write-RecoveryWatcherStatus 'filing-ordered-receipt'
                     }
+                }
+            }
+        }
+
+        if (-not $OneShot -and -not $DisableUiSaveFallback `
+            -and $readyObservedAt -and -not $requestId -and -not $candidate `
+            -and $uiSaveFallbackBoundary -eq $requestBoundary `
+            -and $watch.uiSaveFallbackAttempts -lt 3 `
+            -and [DateTime]::UtcNow -ge $uiSaveFallbackRetryAt `
+            -and ([DateTime]::UtcNow - $readyObservedAt).TotalSeconds `
+                -ge $UiSaveFallbackDelaySeconds) {
+            $watch.uiSaveFallbackAttempts = [int]$watch.uiSaveFallbackAttempts + 1
+            $attempt = [int]$watch.uiSaveFallbackAttempts
+            $uiEvidence = Join-Path $recoveryRoot `
+                "stock-ui-save-b$requestBoundary-attempt-$attempt"
+            New-Item -ItemType Directory -Force -Path $uiEvidence | Out-Null
+            $watch.uiSaveFallbackStatus = 'running'
+            $watch.uiSaveFallbackStartedAtUtc = [DateTime]::UtcNow.ToString('o')
+            $watch.uiSaveFallbackEvidence = $uiEvidence
+            $watch.uiSaveFallbackError = $null
+            Write-RecoveryWatcherStatus 'saving-ready-boundary-through-stock-ui'
+            try {
+                $uiArguments = @(
+                    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+                    (Join-Path $PSScriptRoot 'save_recovery_via_ui.ps1'),
+                    '-Session', $safeSession, '-Peer', $Peer,
+                    '-BoundarySeq', [string]$requestBoundary,
+                    '-BridgePath', $bridge, '-SaveDirectory', $saveRoot,
+                    '-SaveBaseName', ([string]$watch.automaticSaveName),
+                    '-GameProcessId', [string]$GameProcessId,
+                    '-GameExecutable', $expectedGame,
+                    '-GameStartedAtUtc', $expectedStart.ToString('o'),
+                    '-EvidenceDirectory', $uiEvidence,
+                    '-SaveCompletionTimeoutSeconds',
+                    [string]$watch.uiSaveCompletionTimeoutSeconds
+                )
+                # A failed focus/dialog attempt is an expected bounded retry,
+                # not an unhandled watcher error. Preserve the child process's
+                # complete output beside its receipts without polluting the
+                # launcher's stderr stream or disguising a final failure.
+                $uiProcessLog = Join-Path $uiEvidence 'process.log'
+                $uiOutput = @(
+                    & (Join-Path $PSHOME 'powershell.exe') @uiArguments 2>&1
+                )
+                $uiExitCode = $LASTEXITCODE
+                $uiOutput | Set-Content -LiteralPath $uiProcessLog -Encoding UTF8
+                if ($uiExitCode -ne 0) {
+                    $lastLine = @($uiOutput | Select-Object -Last 1) -join ''
+                    $suffix = if ($lastLine) { ": $lastLine" } else { '' }
+                    throw "Stock-UI recovery save exited $uiExitCode$suffix"
+                }
+                $watch.uiSaveFallbackStatus = 'completed'
+                Write-RecoveryWatcherStatus 'stock-ui-save-completed-awaiting-stability'
+            }
+            catch {
+                $watch.uiSaveFallbackError = $_.Exception.Message
+                $partialSave = Join-Path $saveRoot `
+                    (([string]$watch.automaticSaveName) + '.sav')
+                $partialMetadata = $partialSave + '.lua'
+                $partialTemporary = $partialMetadata + '.tmp'
+                $partialFresh = @($partialSave, $partialTemporary) | Where-Object {
+                    Test-Path -LiteralPath $_ -PathType Leaf
+                } | Where-Object {
+                    (Get-Item -LiteralPath $_).LastWriteTimeUtc `
+                        -ge $readyObservedAt.AddSeconds(-4)
+                }
+                $metadataComplete = (Test-Path -LiteralPath $partialMetadata -PathType Leaf) `
+                    -and (Get-Item -LiteralPath $partialMetadata).Length -gt 0
+                if ($partialFresh -and -not $metadataComplete) {
+                    # A retry can open a second stock Save dialog over an
+                    # engine which is still finalising the first save. Stop
+                    # automatic retries; the normal candidate poll will still
+                    # accept the file if native metadata appears later.
+                    $watch.uiSaveFallbackStatus = 'native-save-incomplete-no-retry'
+                    $watch.uiSaveFallbackAttempts = 3
+                    $uiSaveFallbackRetryAt = [DateTime]::MaxValue
+                    Write-RecoveryWatcherStatus `
+                        'native-save-incomplete-awaiting-finalization' $_.Exception.Message
+                }
+                else {
+                    $watch.uiSaveFallbackStatus = 'failed'
+                    $uiSaveFallbackRetryAt = [DateTime]::UtcNow.AddSeconds(15)
+                    Write-RecoveryWatcherStatus `
+                        'stock-ui-save-failed-manual-save-still-available' $_.Exception.Message
                 }
             }
         }
@@ -411,16 +551,20 @@ try {
                 elseif ($result -and $result.status -eq 'accepted') {
                     $watch.receiptStatus = 'accepted'
                     $watch.receiptError = $null
+                    $receiptSave = Get-Tpf2mpReceiptBoundSave `
+                        -SaveDirectory $saveRoot -ExpectedSavePrefix $expectedSavePrefix `
+                        -AutomaticSaveName ([string]$watch.automaticSaveName) `
+                        -Receipt $result -PreferredSavePath $candidate.FullName
                     if ($Peer -eq 'player2') {
                         Write-RecoveryWatcherStatus 'archiving-local-receipt-save'
                         & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $Peer `
-                            -SavePath $candidate.FullName -BoundarySeq $requestBoundary `
+                            -SavePath $receiptSave.FullName -BoundarySeq $requestBoundary `
                             -PendingReceipt -BundleRoot $bundle
                         if ($LASTEXITCODE -ne 0) { throw "Recovery archive exited $LASTEXITCODE" }
                         $watch.lastArchivedBoundary = $requestBoundary
                         $watch.pendingArchivePointer = Join-Path $sessionRoot `
                             "pending-recovery-archive-b$requestBoundary.json"
-                        $watch.receiptSave = $candidate.FullName
+                        $watch.receiptSave = $receiptSave.FullName
                         $watch.archiveCount = [int]$watch.archiveCount + 1
                         Write-RecoveryWatcherStatus 'receipt-filed-awaiting-verified-plan'
                         $requestId = $null
@@ -433,7 +577,7 @@ try {
                             Write-RecoveryWatcherStatus 'building-verified-restore-plan'
                             $planPath = New-VerifiedRestorePlan $requestBoundary
                             & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $Peer `
-                                -SavePath $candidate.FullName -RecoveryPlanPath $planPath `
+                                -SavePath $receiptSave.FullName -RecoveryPlanPath $planPath `
                                 -BoundarySeq $requestBoundary -BundleRoot $bundle
                             if ($LASTEXITCODE -ne 0) { throw "Recovery archive exited $LASTEXITCODE" }
                             $watch.lastArchivedBoundary = $requestBoundary

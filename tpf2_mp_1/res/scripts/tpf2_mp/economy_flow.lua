@@ -4,6 +4,7 @@ local revenue = require "tpf2_mp/economy_revenue"
 local difficulty = require "tpf2_mp/economy_difficulty"
 local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
 local feederAccess = require "tpf2_mp/economy_feeder_access"
+local allocation = require "tpf2_mp/economy_allocation"
 
 local M = {}
 local SHARE_SCALE = 1000000
@@ -79,27 +80,6 @@ function M.logitWeight(gcCents, gcMinCents, thetaCents)
   return logitWeight(gcCents, gcMinCents, thetaCents, 0)
 end
 
-local function proportional(total, items)
-  local weight = 0
-  for _, item in ipairs(items) do weight = weight + item.weight end
-  local allocations, ranked, used = {}, {}, 0
-  if total <= 0 or weight <= 0 then return allocations end
-  for _, item in ipairs(items) do
-    local numerator = total * item.weight
-    local base = math.floor(numerator / weight)
-    allocations[item.cid], used = base, used + base
-    ranked[#ranked + 1] = { cid = item.cid, remainder = numerator % weight }
-  end
-  table.sort(ranked, function(a, b)
-    return a.remainder == b.remainder and a.cid < b.cid or a.remainder > b.remainder
-  end)
-  for index = 1, total - used do
-    local cid = ranked[((index - 1) % #ranked) + 1].cid
-    allocations[cid] = allocations[cid] + 1
-  end
-  return allocations
-end
-
 local function scaledRate(hourly, residual, periodSeconds)
   local numerator = math.max(0, util.integer(hourly, 0)) * periodSeconds
     + math.max(0, util.integer(residual, 0))
@@ -141,7 +121,9 @@ end
 function M.evaluateMarket(state, marketCid, deliverySnapshot, periodSeconds)
   local market = state.markets[marketCid]
   if not market then return nil, "unknown market" end
-  local v6 = util.integer(state.version, 1) >= 6
+  local version = util.integer(state.version, 1)
+  local v6 = version >= 6
+  local v9 = version >= 9
   periodSeconds = v6 and integer(periodSeconds, 300, 60, 86400) or 3600
   local demand, demandResid = market.demand, 0
   if v6 then demand, demandResid = scaledRate(
@@ -179,7 +161,7 @@ function M.evaluateMarket(state, marketCid, deliverySnapshot, periodSeconds)
     option.weight = logitWeight(option.gcCents, gcMin, market.thetaCents, cutoff)
     weights[#weights + 1] = { cid = option.cid, weight = option.weight }
   end
-  local equilibria, serviceShare = proportional(SHARE_SCALE, weights), 0
+  local equilibria, serviceShare = allocation.proportional(SHARE_SCALE, weights), 0
   for _, option in ipairs(services) do
     local service, equilibrium = option.service, equilibria[option.cid] or 0
     option.equilibriumPpm = equilibrium
@@ -197,31 +179,14 @@ function M.evaluateMarket(state, marketCid, deliverySnapshot, periodSeconds)
     serviceShare = serviceShare + service.sharePpm
   end
   local outsidePpm = math.max(0, SHARE_SCALE - serviceShare)
-  local active, allocations, remaining = {}, {}, demand
-  for _, option in ipairs(services) do active[#active + 1] = option end
-  while remaining > 0 and #active > 0 do
-    local items = { { cid = "~outside", weight = outsidePpm } }
-    for _, option in ipairs(active) do
-      items[#items + 1] = { cid = option.cid, weight = option.service.sharePpm }
-    end
-    local preview, capped, survivors = proportional(remaining, items), {}, {}
-    for _, option in ipairs(active) do
-      if (preview[option.cid] or 0) > option.availableCapacity then
-        capped[#capped + 1] = option
-      else survivors[#survivors + 1] = option end
-    end
-    if #capped == 0 then
-      for cid, amount in pairs(preview) do allocations[cid] = (allocations[cid] or 0) + amount end
-      remaining = 0
-    else
-      for _, option in ipairs(capped) do
-        allocations[option.cid] = option.availableCapacity
-        remaining = remaining - option.availableCapacity
-      end
-      active = survivors
-    end
-  end
-  if remaining > 0 then allocations["~outside"] = (allocations["~outside"] or 0) + remaining end
+  -- Capacity must not erase the distinction between people who chose a
+  -- service and people it can actually carry. Version 9 preserves the first
+  -- proportional choice before the capacity loop redistributes its overflow
+  -- to the outside option. Passenger presentation consumes this requested
+  -- flow as a real station arrival rate; money still requires a synchronized
+  -- completed trip.
+  local allocations, requestedAllocations, queued = allocation.capacityConstrained(
+    demand, services, outsidePpm, version)
   local result = {
     marketCid = marketCid, name = market.name, kind = market.kind,
     demand = demand, hourlyDemand = v6 and market.demand or nil,
@@ -229,10 +194,15 @@ function M.evaluateMarket(state, marketCid, deliverySnapshot, periodSeconds)
     gcOutsideCents = market.gcOutsideCents, thetaCents = market.thetaCents,
     outside = allocations["~outside"] or 0, outsidePpm = outsidePpm, services = {},
   }
+  if v9 then
+    result.requestedOutside = requestedAllocations["~outside"] or 0
+    result.queued = queued
+  end
   for _, option in ipairs(services) do
     local service, amount = option.service, allocations[option.cid] or 0
+    local requested = v9 and (requestedAllocations[option.cid] or 0) or amount
     service.lagLoadPpm = option.availableCapacity > 0
-      and math.floor(amount * SHARE_SCALE / option.availableCapacity) or SHARE_SCALE
+      and math.floor(requested * SHARE_SCALE / option.availableCapacity) or SHARE_SCALE
     local delivered, rawGross = delivery(state, deliverySnapshot, market, service, amount)
     local gross = rawGross
     if util.integer(state.version, 1) >= 7 then
@@ -266,6 +236,10 @@ function M.evaluateMarket(state, marketCid, deliverySnapshot, periodSeconds)
       equilibriumPpm = option.equilibriumPpm, lagLoadPpm = service.lagLoadPpm,
       factors = option.factors,
     }
+    if v9 then
+      result.services[option.cid].requested = requested
+      result.services[option.cid].capacityOverflow = math.max(0, requested - amount)
+    end
   end
   return result
 end

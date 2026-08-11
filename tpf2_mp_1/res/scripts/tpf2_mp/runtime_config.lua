@@ -64,11 +64,14 @@ local function restoreResumeConfig(readEnvironment, enabled)
   local coreDigest = tostring(readEnvironment("TPF2MP_RESTORE_CORE_DIGEST") or "")
   local convergenceKey = tostring(readEnvironment("TPF2MP_RESTORE_CONVERGENCE_KEY") or "")
   local planChecksum = tostring(readEnvironment("TPF2MP_RESTORE_PLAN_CHECKSUM") or "")
+  local vehiclePhaseDigest = tostring(
+    readEnvironment("TPF2MP_RESTORE_VEHICLE_PHASE_DIGEST") or "")
   local valid = sourceSession:match("^[%w][%w_.%-]*$") ~= nil and #sourceSession <= 64
     and boundarySeq and boundarySeq >= 1 and boundarySeq == math.floor(boundarySeq)
     and coreDigest:match("^[0-9a-f]+$") ~= nil and #coreDigest == 8
     and convergenceKey:match("^[0-9a-f]+$") ~= nil and #convergenceKey == 8
     and planChecksum:match("^[0-9a-f]+$") ~= nil and #planChecksum == 8
+    and vehiclePhaseDigest:match("^[0-9a-f]+$") ~= nil and #vehiclePhaseDigest == 8
   return {
     requested = true,
     valid = valid and true or false,
@@ -77,6 +80,7 @@ local function restoreResumeConfig(readEnvironment, enabled)
     coreDigest = coreDigest,
     convergenceKey = convergenceKey,
     planChecksum = planChecksum,
+    vehiclePhaseDigest = vehiclePhaseDigest,
     error = not valid and "launcher restore attestation is malformed" or nil,
   }
 end
@@ -155,7 +159,10 @@ function M.read(options)
     networkBridgeStride = math.max(1, tonumber(
       readEnvironment("TPF2MP_NETWORK_BRIDGE_STRIDE")
         or source.networkBridgeStride) or 1),
-    maxEvents = math.max(32, tonumber(source.maxEvents) or 512),
+    networkBridgeFallbackStride = math.max(1, tonumber(
+      readEnvironment("TPF2MP_NETWORK_FALLBACK_STRIDE")
+        or source.networkBridgeFallbackStride) or 1),
+    maxEvents = math.max(32, tonumber(source.maxEvents) or 64),
     autoFreeze = source.autoFreeze == true or networkRuntimeRequested or operationalCapture,
     neutralizer = source.journalNeutralizerEnabled == true,
     startNetwork = startNetwork,
@@ -171,6 +178,12 @@ function M.read(options)
       or environmentEnabled("TPF2MP_DEVELOPER_ECONOMY")
       or networkAutoValidate or forced ~= nil,
     manualBootstrapReady = manualBootstrapReady,
+    -- Test/launcher automation may request the same safe host-authored action
+    -- as the in-game Prepare & Save button. The marker grants no save or
+    -- restore authority; normal ordering, quiescence and receipt checks remain
+    -- mandatory.
+    automaticRecoveryPrepare = manualNetwork
+      and markerValue(root, "prepare-restore") == "ready",
     restoreResume = restoreResume,
     operationalCapture = operationalCapture,
     -- Agent presentation policy is match content; the label and its

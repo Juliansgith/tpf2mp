@@ -12,7 +12,11 @@ from .network import CommitHost
 from .protocol import ProtocolError, validate_envelope
 
 
-def replay(path: Path, session: str | None) -> int:
+def replay(
+    path: Path,
+    session: str | None,
+    require_settled: bool = False,
+) -> int:
     commits = controls = records = 0
     expected = 1
     commit_sequences: list[int] = []
@@ -215,7 +219,7 @@ def replay(path: Path, session: str | None) -> int:
             if any(item.get(field) != outcome.get(field) for item in selected):
                 raise ProtocolError(f"checkpoint {field} mismatch at boundary {boundary_seq}")
         checkpoint_complete += 1
-    print(
+    summary = (
         f"audit valid: {commits} commits, {controls} controls, {records} telemetry records, "
         f"{converged} converged, {incomplete} awaiting peer digests, "
         "physical proposals complete/rejected/faulted/pending="
@@ -227,4 +231,28 @@ def replay(path: Path, session: str | None) -> int:
         f"{checkpoints} checkpoints, {event_records} event records "
         f"({replayed_events} chained), peers={sorted(peers)}"
     )
+    print(summary)
+    if require_settled:
+        problems: list[str] = []
+        if commits == 0:
+            problems.append("the audit contains no committed actions")
+        if incomplete:
+            problems.append(f"{incomplete} commit(s) await peer digests")
+        if physical_faulted or physical_pending:
+            problems.append(
+                "physical proposals faulted/pending="
+                f"{physical_faulted}/{physical_pending}"
+            )
+        if operation_faulted or operation_pending:
+            problems.append(
+                "physical operations faulted/pending="
+                f"{operation_faulted}/{operation_pending}"
+            )
+        if checkpoint_faulted or checkpoint_pending:
+            problems.append(
+                "checkpoint barriers faulted/pending="
+                f"{checkpoint_faulted}/{checkpoint_pending}"
+            )
+        if problems:
+            raise ProtocolError("audit is valid but not settled: " + "; ".join(problems))
     return 0

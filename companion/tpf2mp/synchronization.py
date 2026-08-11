@@ -8,6 +8,7 @@ from .consensus import (
     clock_health_payload,
     clock_rendezvous_payload,
 )
+from .clock_governor import AdaptiveClockGovernor
 from .protocol import PROTOCOL_VERSION, ProtocolError, sign, validate_action
 from .paused_deadline import SharedPauseProtection
 from .vehicle_barrier import VehicleStationBarrier
@@ -21,7 +22,11 @@ class SynchronizationCoordinator:
     stop until all peers have reached the same leg boundary.
     """
 
-    CLOCK_SKEW_LIMIT = 2.0
+    CLOCK_SKEW_LIMIT = AdaptiveClockGovernor.SKEW_LIMIT
+    CLOCK_HARD_SKEW_LIMIT = AdaptiveClockGovernor.HARD_SKEW_LIMIT
+    CLOCK_SKEW_CONFIRM_SECONDS = AdaptiveClockGovernor.SKEW_CONFIRM_SECONDS
+    CLOCK_DEGRADE_CONFIRM_SECONDS = AdaptiveClockGovernor.DEGRADE_CONFIRM_SECONDS
+    CLOCK_RECOVERY_STABLE_SECONDS = AdaptiveClockGovernor.RECOVERY_STABLE_SECONDS
     CLOCK_RENDEZVOUS_TOLERANCE = 0.35
     CLOCK_MAX_CATCHUP_SPAN = 1_800.0
     CLOCK_RENDEZVOUS_TIMEOUT = 60.0
@@ -41,6 +46,7 @@ class SynchronizationCoordinator:
         self.pause = SharedPauseProtection(host)
         self.clock_pause_fence: dict[str, Any] | None = None
         self.clock_last_pause_fence: dict[str, Any] | None = None
+        self.governor = AdaptiveClockGovernor(host, self)
         self.vehicle = VehicleStationBarrier(host, self)
 
     def status(self) -> dict[str, Any]:
@@ -55,6 +61,7 @@ class SynchronizationCoordinator:
                 "gameTimeSkew": self.host.clock_game_time_skew,
                 "projectedGameTimeSkew": self.host.clock_projected_game_time_skew,
                 "skewSamplesComparable": self.host.clock_skew_samples_comparable,
+                **self.governor.status(),
                 "pauseAcknowledged": self.shared_pause_acknowledged(),
                 "pauseAcknowledgedGeneration": self.host.clock_pause_acknowledged_generation,
                 **self.pause.status(),
@@ -157,9 +164,10 @@ class SynchronizationCoordinator:
             and abs(float(sample["gameRate"])) > 0.1
         ]
         if not rates:
-            speed = max(1, int(self.host.clock_effective_speed or 1))
-            rates = [12.0 * (2 ** (speed - 1))]
-        return max(3.0, min(480.0, max(rates) * seconds))
+            rates = [AdaptiveClockGovernor.nominal_game_rate(
+                self.host.clock_effective_speed or 1
+            )]
+        return max(0.5, min(16.0, max(rates) * seconds))
 
     def _projected_game_times(
         self, samples: list[Mapping[str, Any]], now: float | None = None
@@ -177,7 +185,7 @@ class SynchronizationCoordinator:
             observed = int(float(sample.get("observedSpeed") or 0))
             rate_value = sample.get("gameRate")
             rate = float(rate_value) if rate_value is not None else math.nan
-            expected_rate = 12.0 * (2 ** (max(1, min(4, observed)) - 1))
+            expected_rate = AdaptiveClockGovernor.nominal_game_rate(observed)
             if observed <= 0:
                 rate = 0.0
             elif not math.isfinite(rate) or rate < 0:
@@ -211,6 +219,9 @@ class SynchronizationCoordinator:
             int(sample.get("generation", generation)) == generation
             for sample in samples
         )
+
+    def skew_requires_rendezvous(self, now: float | None = None) -> bool:
+        return self.governor.skew_requires_rendezvous(now)
 
     def prepare_clock_request(self, requested_speed: int, origin: str) -> dict[str, Any]:
         requested = max(0, min(4, int(requested_speed)))
@@ -370,6 +381,7 @@ class SynchronizationCoordinator:
             max(times) + self._guard_distance(samples), reason,
         )
         message = self._emit_action(action, "clock_control")
+        self.governor.observe_rendezvous(str(reason))
         print(
             f"shared clock rendezvous generation={action['generation']} "
             f"target={action['targetGameTime']:.3f}: {reason}"
@@ -546,112 +558,7 @@ class SynchronizationCoordinator:
         self._emit_action(action, "clock_control")
 
     def maybe_adjust_clock(self, now: float | None = None) -> None:
-        now = time.monotonic() if now is None else now
-        samples = [self.host.clock_health.get(peer) for peer in self.host.required_peers]
-        timed_samples = [
-            sample for sample in samples
-            if sample is not None and sample.get("gameTime") is not None
-        ]
-        times = self._projected_game_times(timed_samples, now)
-        projected_skew = max(times) - min(times) if len(times) >= 2 else None
-        self.host.clock_projected_game_time_skew = projected_skew
-        fresh_samples = self._fresh_samples(now)
-        comparable = self._skew_samples_match_authority(fresh_samples)
-        self.host.clock_skew_samples_comparable = comparable
-        self.host.clock_game_time_skew = projected_skew if comparable else None
-        if self.host.session_fault:
-            self._retire_pause_fence("faulted-session")
-            observed_running = any(
-                sample is not None and sample.get("observedSpeed") is not None
-                and abs(float(sample["observedSpeed"])) > 0.1
-                for sample in samples
-            )
-            pending_clock = self.host.consensus.pending_clock_seq()
-            # A hard session fault cancels the requested speed as well as the
-            # current effective speed.  Supersede an older in-flight recovery
-            # order once; after this order is tracked both authority fields are
-            # zero, so heartbeat retries remain bounded while its ACKs arrive.
-            if self.host.clock_requested_speed != 0 \
-                    or self.host.clock_effective_speed != 0 \
-                    or (observed_running and pending_clock is None):
-                self.emit_clock_set(0, 0, "faulted-session-pause-enforcement")
-            return
-        if self.clock_pause_fence:
-            self._maybe_resume_native_pause_fence(now)
-            return
-        if self.host.clock_rendezvous or self.host.consensus.pending_clock_seq() is not None:
-            return
-        if self.host.clock_requested_speed == 0:
-            observed_running = any(
-                sample is not None and sample.get("observedSpeed") is not None
-                and abs(float(sample["observedSpeed"])) > 0.1
-                for sample in samples
-            )
-            if observed_running and now - self.host.clock_last_adjustment >= 1.0:
-                self.emit_clock_set(0, 0, "authoritative-pause-enforcement")
-            return
-        paused_peers = self._unexpected_native_pause_peers(now)
-        if paused_peers:
-            self._begin_native_pause_fence(paused_peers, now)
-            return
-        missing = any(sample is None for sample in samples)
-        stale = [now - float(sample["receivedAt"]) for sample in samples if sample is not None]
-        max_stale = max(stale, default=0.0)
-        latest_seq = max(0, self.host.next_seq - 1)
-        backlogs = [
-            max(0, latest_seq - int(sample.get("lastCommitSeq", 0)))
-            for sample in samples if sample is not None
-        ]
-        max_backlog = max(backlogs, default=0)
-        rates = [
-            float(sample["tickRate"])
-            for sample in samples if sample is not None and sample.get("tickRate") is not None
-        ]
-        rate_ratio = min(rates) / max(rates) if len(rates) >= 2 and max(rates) > 0 else 1.0
-        observed_mismatch = any(
-            sample is not None and sample.get("observedSpeed") is not None
-            and abs(float(sample["observedSpeed"]) - self.host.clock_effective_speed) > 0.1
-            for sample in samples
-        )
-        low_rate = any(rate < 2.0 for rate in rates)
-        absolute_skew = float(self.host.clock_game_time_skew or 0.0)
-        if absolute_skew > self.CLOCK_SKEW_LIMIT:
-            self.host.clock_healthy_since = None
-            if now - self.host.clock_last_adjustment >= 1.0:
-                self.begin_rendezvous(
-                    self.host.clock_requested_speed, self.host.clock_effective_speed,
-                    f"absolute-skew-rendezvous:{absolute_skew:.3f}",
-                )
-            return
-        unhealthy = (
-            missing and now - self.host.clock_last_adjustment > 9.0
-        ) or max_stale > 6.0 or max_backlog > 2 or rate_ratio < 0.65 or low_rate or observed_mismatch
-        severe = max_stale > 12.0 or max_backlog > 6
-        if unhealthy:
-            self.host.clock_healthy_since = None
-            if now - self.host.clock_last_adjustment < 3.0:
-                return
-            target = 0 if severe else max(1, self.host.clock_effective_speed - 1)
-            if target != self.host.clock_effective_speed:
-                reason = "adaptive-resync-pause" if severe else "adaptive-slowest-peer-cap"
-                if severe:
-                    self.emit_clock_set(self.host.clock_requested_speed, 0, reason)
-                else:
-                    self.begin_rendezvous(self.host.clock_requested_speed, target, reason)
-            return
-        if self.host.clock_healthy_since is None:
-            self.host.clock_healthy_since = now
-            return
-        if self.host.clock_effective_speed < self.host.clock_requested_speed \
-                and now - self.host.clock_healthy_since >= 12.0 \
-                and now - self.host.clock_last_adjustment >= 4.0:
-            self.begin_rendezvous(
-                self.host.clock_requested_speed, self.host.clock_effective_speed + 1,
-                "adaptive-recovery-step",
-            )
-            self.host.clock_healthy_since = now
-        elif str(self.host.last_error or "").startswith("clock-ack-timeout:"):
-            self.host.last_error = None
+        self.governor.adjust(now)
 
     def emergency_pause(self, reason: str) -> None:
         self._retire_pause_fence("faulted:" + str(reason)[:120])

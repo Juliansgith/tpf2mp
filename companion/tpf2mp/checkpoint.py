@@ -63,7 +63,7 @@ def _validate_passenger_presentation(
     presentation = _mapping(value, "checkpoint passenger presentation")
     schema = presentation.get("schemaVersion")
     if set(presentation) != {"schemaVersion", "epoch", "lines", "vehicles"} \
-            or schema not in {1, 2}:
+            or schema not in {1, 2, 3, 4}:
         raise ProtocolError("checkpoint passenger presentation header is invalid")
     epoch = _positive_int(presentation["epoch"], "passenger presentation epoch")
     if epoch > 1_000_000_000:
@@ -88,10 +88,22 @@ def _validate_passenger_presentation(
     }
     if schema >= 2:
         line_fields.add("earnedRevenueCents")
+    if schema >= 3:
+        line_fields.update({
+            "requested", "capacityOverflow", "intervalSeconds",
+            "demandCursorMilliseconds", "demandResidAToB", "demandResidBToA",
+            "generatedTotal",
+        })
+    if schema >= 4:
+        line_fields.add("discardedTotal")
     bounded_counts = {
         "allocated", "waitingAToB", "waitingBToA", "departuresAToB",
         "departuresBToA", "boardedTotal", "alightedTotal", "overflowTotal",
     }
+    if schema >= 3:
+        bounded_counts.update({"requested", "capacityOverflow", "generatedTotal"})
+    if schema >= 4:
+        bounded_counts.add("discardedTotal")
     for item_value in lines:
         item = _mapping(item_value, "checkpoint passenger line")
         if set(item) != line_fields:
@@ -143,6 +155,46 @@ def _validate_passenger_presentation(
             item["earnedRevenueCents"], "passenger line earned revenue"
         ) > _ACCUMULATOR_LIMIT:
             raise ProtocolError("checkpoint passenger line earned revenue is too large")
+        if schema >= 3:
+            interval_seconds = _positive_int(
+                item["intervalSeconds"], "passenger line intervalSeconds", 60
+            )
+            cursor = _positive_int(
+                item["demandCursorMilliseconds"],
+                "passenger line demandCursorMilliseconds",
+            )
+            if interval_seconds > 86_400 or cursor > MAX_EXACT_INTEGER:
+                raise ProtocolError("checkpoint passenger line demand clock is invalid")
+            interval_milliseconds = interval_seconds * 1000
+            for field in ("demandResidAToB", "demandResidBToA"):
+                if _positive_int(item[field], f"passenger line {field}") \
+                        >= interval_milliseconds:
+                    raise ProtocolError("checkpoint passenger line demand residual is invalid")
+            if item["requested"] < item["allocated"] \
+                    or item["capacityOverflow"] != item["requested"] - item["allocated"]:
+                raise ProtocolError("checkpoint passenger line requested flow is inconsistent")
+            last_results_value = economy_model.get("lastResults")
+            last_results = dict(last_results_value) \
+                if isinstance(last_results_value, Mapping) else {}
+            markets_value = last_results.get("markets")
+            result_markets = dict(markets_value) if isinstance(markets_value, Mapping) else {}
+            market_result_value = result_markets.get(item["marketCid"])
+            market_result = dict(market_result_value) \
+                if isinstance(market_result_value, Mapping) else {}
+            result_services_value = market_result.get("services")
+            result_services = dict(result_services_value) \
+                if isinstance(result_services_value, Mapping) else {}
+            result_row_value = result_services.get(line_cid)
+            result_row = dict(result_row_value) \
+                if isinstance(result_row_value, Mapping) else {}
+            if result_row and (
+                result_row.get("allocated") != item["allocated"]
+                or result_row.get("requested") != item["requested"]
+                or result_row.get("capacityOverflow") != item["capacityOverflow"]
+            ):
+                raise ProtocolError(
+                    "checkpoint passenger line disagrees with its latest demand result"
+                )
 
     vehicles = _array_or_lua_empty(
         presentation["vehicles"], "checkpoint passenger vehicles"
@@ -158,7 +210,10 @@ def _validate_passenger_presentation(
         "originStationGroupCid", "destinationStationGroupCid",
         "boardedFareCents",
     }
+    if schema >= 3:
+        optional_vehicle.add("lastReleaseAtMilliseconds")
     seen_vehicles: set[str] = set()
+    aboard_by_line: dict[str, int] = {line_cid: 0 for line_cid in seen_lines}
     previous_vehicle_cid: str | None = None
     for item_value in vehicles:
         item = _mapping(item_value, "checkpoint passenger vehicle")
@@ -183,6 +238,11 @@ def _validate_passenger_presentation(
         for field in ("boardedTotal", "alightedTotal", "discardedTotal"):
             if _positive_int(item[field], f"passenger vehicle {field}") > 1_000_000_000:
                 raise ProtocolError(f"checkpoint passenger vehicle {field} is too large")
+        if schema >= 4 and item["boardedTotal"] != (
+            item["alightedTotal"] + item["discardedTotal"] + aboard
+        ):
+            raise ProtocolError("checkpoint passenger vehicle conservation is invalid")
+        aboard_by_line[line_cid] += aboard
         if schema >= 2 and _positive_int(
             item["earnedRevenueCents"], "passenger vehicle earned revenue"
         ) > _ACCUMULATOR_LIMIT:
@@ -195,6 +255,11 @@ def _validate_passenger_presentation(
             _positive_int(item["boardedEpoch"], "passenger vehicle boardedEpoch") > epoch
         ):
             raise ProtocolError("checkpoint passenger vehicle epoch is in the future")
+        if "lastReleaseAtMilliseconds" in item and _positive_int(
+            item["lastReleaseAtMilliseconds"],
+            "passenger vehicle lastReleaseAtMilliseconds",
+        ) > MAX_EXACT_INTEGER:
+            raise ProtocolError("checkpoint passenger vehicle release time is too large")
         if "lastStopIndex" in item and (
             _positive_int(item["lastStopIndex"], "passenger vehicle stopIndex") > 255
             or item["lastStopIndex"] >= line["stopCount"]
@@ -237,6 +302,18 @@ def _validate_passenger_presentation(
             or item["lastStationGroupCid"] != line["stops"][item["lastStopIndex"]]
         ):
             raise ProtocolError("checkpoint passenger vehicle stop disagrees with synchronization")
+    if schema >= 4:
+        for line_cid, line in line_by_cid.items():
+            if line["boardedTotal"] != (
+                line["alightedTotal"] + line["discardedTotal"]
+                + aboard_by_line[line_cid]
+            ):
+                raise ProtocolError("checkpoint passenger line conservation is invalid")
+            if line["generatedTotal"] != (
+                line["boardedTotal"] + line["waitingAToB"]
+                + line["waitingBToA"] + line["overflowTotal"]
+            ):
+                raise ProtocolError("checkpoint passenger arrival conservation is invalid")
     return presentation
 
 
@@ -1167,6 +1244,7 @@ def _evaluate_market_v2(
     params = _economy_params(economy)
     version = _economy_version(economy)
     v6 = version >= 6
+    v9 = version >= 9
     period = _integer(period_seconds, 300, 60, 86400) if v6 else 3600
     demand = int(market["demand"])
     if v6:
@@ -1246,30 +1324,51 @@ def _evaluate_market_v2(
         service_share_ppm += int(service["sharePpm"])
     outside_ppm = max(0, _SHARE_SCALE - service_share_ppm)
 
+    requested_allocations: dict[str, int] | None = None
+    if v9:
+        requested_items = [{"cid": "~outside", "weight": outside_ppm}]
+        requested_items.extend(
+            {"cid": option["cid"], "weight": int(option["service"]["sharePpm"])}
+            for option in services
+        )
+        requested_allocations = _proportional(demand, requested_items)
+
     active = list(services)
     allocations: dict[str, int] = {}
     remaining = demand
-    while remaining > 0 and active:
-        preview_items = [{"cid": "~outside", "weight": outside_ppm}]
-        preview_items.extend(
-            {"cid": option["cid"], "weight": int(option["service"]["sharePpm"])} for option in active
-        )
-        preview = _proportional(remaining, preview_items)
-        capped = [
-            option for option in active
-            if preview.get(option["cid"], 0) > int(option["availableCapacity"])
-        ]
-        if not capped:
-            for cid, amount in preview.items():
-                allocations[cid] = allocations.get(cid, 0) + amount
-            remaining = 0
-        else:
-            capped_ids = {option["cid"] for option in capped}
-            for option in capped:
-                amount = int(option["availableCapacity"])
-                allocations[option["cid"]] = amount
-                remaining -= amount
-            active = [option for option in active if option["cid"] not in capped_ids]
+    queued = 0
+    if v9 and requested_allocations is not None:
+        allocations["~outside"] = requested_allocations.get("~outside", 0)
+        for option in services:
+            requested = requested_allocations.get(option["cid"], 0)
+            allocations[option["cid"]] = min(
+                requested, int(option["availableCapacity"])
+            )
+            queued += max(0, requested - allocations[option["cid"]])
+        remaining = 0
+    else:
+        while remaining > 0 and active:
+            preview_items = [{"cid": "~outside", "weight": outside_ppm}]
+            preview_items.extend(
+                {"cid": option["cid"], "weight": int(option["service"]["sharePpm"])}
+                for option in active
+            )
+            preview = _proportional(remaining, preview_items)
+            capped = [
+                option for option in active
+                if preview.get(option["cid"], 0) > int(option["availableCapacity"])
+            ]
+            if not capped:
+                for cid, amount in preview.items():
+                    allocations[cid] = allocations.get(cid, 0) + amount
+                remaining = 0
+            else:
+                capped_ids = {option["cid"] for option in capped}
+                for option in capped:
+                    amount = int(option["availableCapacity"])
+                    allocations[option["cid"]] = amount
+                    remaining -= amount
+                active = [option for option in active if option["cid"] not in capped_ids]
     if remaining > 0:
         allocations["~outside"] = allocations.get("~outside", 0) + remaining
 
@@ -1286,13 +1385,22 @@ def _evaluate_market_v2(
     if v6:
         result["hourlyDemand"] = int(market["demand"])
         result["intervalSeconds"] = period
+    if v9 and requested_allocations is not None:
+        result["requestedOutside"] = requested_allocations.get("~outside", 0)
+        result["queued"] = queued
     if market.get("kind") is not None:
         result["kind"] = market["kind"]
     for option in services:
         service = option["service"]
         amount = allocations.get(option["cid"], 0)
+        requested = (
+            requested_allocations.get(option["cid"], 0)
+            if requested_allocations is not None else amount
+        )
         if int(option["availableCapacity"]) > 0:
-            service["lagLoadPpm"] = amount * _SHARE_SCALE // int(option["availableCapacity"])
+            service["lagLoadPpm"] = (
+                requested * _SHARE_SCALE // int(option["availableCapacity"])
+            )
         else:
             service["lagLoadPpm"] = _SHARE_SCALE
         delivered, raw_gross_revenue = _delivery_delta(
@@ -1351,6 +1459,9 @@ def _evaluate_market_v2(
             service_result["revenueMultiplierResid"] = int(
                 service.get("revenueMultiplierResid", 0)
             )
+        if v9:
+            service_result["requested"] = requested
+            service_result["capacityOverflow"] = max(0, requested - amount)
         result["services"][option["cid"]] = service_result
     return result
 

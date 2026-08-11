@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][int]$GameProcessId,
-    [Parameter(Mandatory = $true)][ValidateSet('start', 'load', 'quit', 'free-game', 'maximize', 'click-client', 'click-ui', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui', 'inspect', 'accept', 'accept-down', 'accept-up', 'escape', 'resume', 'replace-ui-text', 'custom', 'custom-active', 'custom-stay', 'custom-active-stay', 'custom-stage', 'custom-active-stage', 'toggle-console', 'toggle-console-down', 'toggle-console-up')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('start', 'load', 'quit', 'free-game', 'maximize', 'click-client', 'click-ui', 'message-click-client', 'message-click-replace-ui-text', 'click-replace-ui-text', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui', 'inspect', 'accept', 'accept-down', 'accept-up', 'tab', 'shift-tab', 'escape', 'resume', 'replace-ui-text', 'custom', 'custom-active', 'custom-stay', 'custom-active-stay', 'custom-stage', 'custom-active-stage', 'toggle-console', 'toggle-console-down', 'toggle-console-up')][string]$Action,
     [string]$Command,
     [string]$SavePath,
     [int]$DelayMilliseconds = 2500,
@@ -47,6 +47,7 @@ public static class Tpf2ConsoleInput {
     [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int left; public int top; public int right; public int bottom; }
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+    [DllImport("user32.dll", SetLastError=true)] public static extern bool PostMessage(IntPtr h, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", SetLastError=true)] private static extern uint SendInput(uint count, INPUT[] inputs, int size);
 
     [StructLayout(LayoutKind.Sequential)] private struct INPUT { public uint type; public INPUTUNION data; }
@@ -86,6 +87,19 @@ public static class Tpf2ConsoleInput {
             SendKeyboard(0, character, 0x0004);
             SendKeyboard(0, character, 0x0004 | 0x0002);
         }
+    }
+    public static void MessageClick(IntPtr window, int x, int y) {
+        if (x < 0 || x > 65535 || y < 0 || y > 65535)
+            throw new ArgumentOutOfRangeException("message click coordinates");
+        IntPtr position = (IntPtr)((y << 16) | (x & 0xffff));
+        if (!PostMessage(window, 0x0200, IntPtr.Zero, position))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        System.Threading.Thread.Sleep(80);
+        if (!PostMessage(window, 0x0201, (IntPtr)1, position))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        System.Threading.Thread.Sleep(100);
+        if (!PostMessage(window, 0x0202, IntPtr.Zero, position))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     }
 }
 '@
@@ -148,13 +162,37 @@ if ($Action -eq 'maximize') {
         $receiptDetails.clientHeight = $maximizedRect.bottom - $maximizedRect.top
     }
 }
+elseif ($Action -in @('message-click-client', 'message-click-replace-ui-text')) {
+    if ($ClientX -lt 0 -or $ClientY -lt 0) {
+        throw 'message-click-client requires non-negative ClientX and ClientY'
+    }
+    # Build 35924 can render in per-monitor physical pixels while receiving
+    # DPI-virtualised global cursor coordinates. Post the exact client-space
+    # coordinates so lower-half stock controls remain reachable without
+    # changing the user's display scaling.
+    [Tpf2ConsoleInput]::MessageClick($target, $ClientX, $ClientY)
+    $receiptDetails.clientX = $ClientX
+    $receiptDetails.clientY = $ClientY
+    if ($Action -eq 'message-click-replace-ui-text') {
+        if ($null -eq $Command) {
+            throw 'message-click-replace-ui-text requires -Command'
+        }
+        Start-Sleep -Milliseconds 120
+        [Tpf2ConsoleInput]::ScanCodeDown(0x1D) # Left Control
+        [Tpf2ConsoleInput]::PressScanCode(0x1E) # A
+        [Tpf2ConsoleInput]::ScanCodeUp(0x1D)
+        Start-Sleep -Milliseconds 120
+        [Tpf2ConsoleInput]::TypeUnicode($Command)
+        $receiptDetails.textLength = $Command.Length
+    }
+}
 elseif ($Action -eq 'free-game') {
     [void][Tpf2ConsoleInput]::SetCursorPos($ScreenX, $ScreenY)
     Start-Sleep -Milliseconds 200
     [Tpf2ConsoleInput]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
     [Tpf2ConsoleInput]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
 }
-elseif ($Action -in @('click-client', 'click-ui', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui')) {
+elseif ($Action -in @('click-client', 'click-ui', 'click-replace-ui-text', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui')) {
     if ($ClientX -lt 0 -or $ClientY -lt 0) { throw "$Action requires non-negative ClientX and ClientY" }
     $isDrag = $Action -in @('drag-client', 'drag-ui')
     $isWheel = $Action -in @('wheel-client', 'wheel-ui')
@@ -229,6 +267,19 @@ elseif ($Action -in @('click-client', 'click-ui', 'drag-client', 'drag-ui', 'whe
     if (-not $isWheel) {
         [Tpf2ConsoleInput]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
     }
+    if ($Action -eq 'click-replace-ui-text') {
+        if ($null -eq $Command) { throw 'click-replace-ui-text requires -Command' }
+        # Keep the stock TextInputField focused in the same foreground/input
+        # transaction. A second helper invocation can cause the save-list
+        # widget to reclaim internal focus before Ctrl+A reaches the game.
+        Start-Sleep -Milliseconds 120
+        [Tpf2ConsoleInput]::ScanCodeDown(0x1D) # Left Control
+        [Tpf2ConsoleInput]::PressScanCode(0x1E) # A
+        [Tpf2ConsoleInput]::ScanCodeUp(0x1D)
+        Start-Sleep -Milliseconds 120
+        [Tpf2ConsoleInput]::TypeUnicode($Command)
+        $receiptDetails.textLength = $Command.Length
+    }
 }
 elseif ($Action -eq 'accept') {
     # One physical pulse is long enough to cross an input frame but releases
@@ -243,6 +294,14 @@ elseif ($Action -eq 'accept-down') {
 }
 elseif ($Action -eq 'accept-up') {
     [Tpf2ConsoleInput]::ScanCodeUp(0x1C)
+}
+elseif ($Action -eq 'tab') {
+    [Tpf2ConsoleInput]::PressScanCode(0x0F)
+}
+elseif ($Action -eq 'shift-tab') {
+    [Tpf2ConsoleInput]::ScanCodeDown(0x2A) # Left Shift
+    [Tpf2ConsoleInput]::PressScanCode(0x0F)
+    [Tpf2ConsoleInput]::ScanCodeUp(0x2A)
 }
 elseif ($Action -eq 'escape') {
     [Tpf2ConsoleInput]::PressScanCode(0x01)

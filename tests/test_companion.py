@@ -14,7 +14,7 @@ from contextlib import redirect_stdout
 from unittest import mock
 from pathlib import Path
 
-from tpf2mp.bridge import AuditLog, GameBridge, atomic_write
+from tpf2mp.bridge import AuditLog, AuditUnavailable, GameBridge, atomic_write
 from tpf2mp.anchor_io import AnchorRequestStore, anchor_state_message, validate_anchor_state
 from tpf2mp.completion_validation import (
     operation_completion_result_digest,
@@ -47,7 +47,7 @@ from tpf2mp.aboard_witness import verify_aboard_witness
 from tpf2mp.passenger_feeder_live_report import analyse_passenger_feeder_audit
 from tpf2mp.cli import main as companion_main, replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
-from tpf2mp.local_restore import latest_local_restore
+from tpf2mp.local_restore import latest_local_restore, latest_local_restore_pair
 from tpf2mp.industry_content import (
     IndustryContentCoordinator,
     build_registry as build_industry_registry,
@@ -66,6 +66,7 @@ from tpf2mp.protocol import (
     decode_line,
     sign,
     validate_action,
+    validate_envelope,
 )
 from tpf2mp.recovery import (
     build_recovery_plan,
@@ -101,7 +102,7 @@ def current_restore_plan(session: str, boundary: int = 9) -> dict:
         "convergenceKey": f"key-{boundary}",
     }
     return sign({
-        "format": "tpf2mp-restore-plan", "version": 4, "protocol": 1,
+        "format": "tpf2mp-restore-plan", "version": 6, "protocol": 1,
         "session": session,
         "resumeSession": derive_resume_session(session, boundary),
         "generatedAtUtc": "2026-08-09T00:00:00+00:00",
@@ -117,6 +118,12 @@ def current_restore_plan(session: str, boundary: int = 9) -> dict:
         },
         "matchContentProfile": {
             "schemaVersion": 1, "agentMode": "skeleton", "townDevelopment": False,
+        },
+        "vehiclePhaseProof": {
+            "schemaVersion": 1,
+            "sampleKeys": [f"{session}:player1:{boundary - 2}", f"{session}:player1:{boundary - 1}"],
+            "vehiclePhaseDigest": "4567def0",
+            "vehicleRounds": [],
         },
         "steps": ["restore both peers"],
     })
@@ -647,6 +654,11 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             decode_line(canonical_json(message))
 
+    def test_malformed_envelope_protocol_is_a_clean_protocol_rejection(self) -> None:
+        message = sign({"protocol": {}, "session": "protocol-test"})
+        with self.assertRaisesRegex(ProtocolError, "protocol mismatch"):
+            validate_envelope(message, "protocol-test")
+
     def test_machine_local_ids_are_rejected_on_the_wire(self) -> None:
         with self.assertRaises(ProtocolError):
             validate_action({"type": "line.register", "localLineId": 42})
@@ -929,8 +941,30 @@ class ProtocolTests(unittest.TestCase):
             "type": "network.checkpoint_request",
             "preparationSeq": 7,
             "reason": "recovery-prepare:7",
+            "vehiclePhaseProof": {
+                "schemaVersion": 1,
+                "sampleKeys": ["saved-session:player1:5", "saved-session:player1:6"],
+                "vehiclePhaseDigest": "4567def0",
+                "vehicleRounds": [],
+            },
         })
         self.assertEqual(request["preparationSeq"], 7)
+        with_rounds = json.loads(json.dumps(request))
+        with_rounds["vehiclePhaseProof"]["vehicleRounds"] = [{
+            "vehicleCid": "vehicle:test", "lineCid": "line:test",
+            "lastAuthorizedRound": 4,
+        }]
+        self.assertEqual(
+            validate_action(with_rounds)["vehiclePhaseProof"]["vehicleRounds"][0]
+            ["lastAuthorizedRound"],
+            4,
+        )
+        malformed = json.loads(json.dumps(with_rounds))
+        malformed["vehiclePhaseProof"]["vehicleRounds"].append(
+            dict(malformed["vehiclePhaseProof"]["vehicleRounds"][0])
+        )
+        with self.assertRaisesRegex(ProtocolError, "round is invalid"):
+            validate_action(malformed)
         with self.assertRaisesRegex(ProtocolError, "client-supplied fields"):
             validate_action({"type": "recovery.prepare", "boundarySeq": 9})
         with self.assertRaisesRegex(ProtocolError, "reason is invalid"):
@@ -940,6 +974,7 @@ class ProtocolTests(unittest.TestCase):
             "type": "recovery.resume", "fromSession": "saved-session",
             "boundarySeq": 9, "coreDigest": "1234abcd",
             "convergenceKey": "2345bcde", "planChecksum": "3456cdef",
+            "vehiclePhaseDigest": "4567def0",
         }
         self.assertEqual(validate_action(resume), resume)
         with self.assertRaisesRegex(ProtocolError, "unknown or missing"):
@@ -1982,6 +2017,128 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(attempts, 3)
             self.assertEqual(pause.call_count, 2)
 
+    def test_audit_append_retries_transient_reader_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audit = AuditLog(Path(directory) / "authority.ndjson")
+            message = sign({
+                "protocol": 1, "session": "audit-retry", "seq": 1,
+                "kind": "commit", "origin_peer": "player1",
+                "origin_local_seq": 1, "tick": 0,
+                "payload": {"action": {"type": "demo"}},
+            })
+            real_open = Path.open
+            attempts = 0
+
+            def flaky_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
+                nonlocal attempts
+                if mode == "ab":
+                    attempts += 1
+                    if attempts < 3:
+                        error = PermissionError(
+                            13, "transient audit sharing violation", str(path)
+                        )
+                        error.winerror = 5
+                        raise error
+                return real_open(path, mode, *args, **kwargs)
+
+            with mock.patch("tpf2mp.audit_log.Path.open", new=flaky_open), mock.patch(
+                "tpf2mp.audit_log.time.sleep"
+            ) as pause:
+                audit.append(message)
+
+            self.assertEqual(list(audit.messages()), [message])
+            self.assertEqual(attempts, 3)
+            self.assertEqual(audit.append_retries, 2)
+            self.assertEqual(pause.call_count, 2)
+
+    def test_audit_replay_parses_a_closed_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audit = AuditLog(Path(directory) / "authority.ndjson")
+            messages = [
+                sign({
+                    "protocol": 1, "session": "audit-snapshot", "seq": seq,
+                    "kind": "commit", "origin_peer": "player1",
+                    "origin_local_seq": seq, "tick": seq,
+                    "payload": {"action": {"type": "demo"}},
+                })
+                for seq in range(1, 5)
+            ]
+            for message in messages[:3]:
+                audit.append(message)
+
+            parsing = threading.Event()
+            release = threading.Event()
+            observed: list[dict] = []
+            real_decode = decode_line
+            calls = 0
+
+            def blocking_decode(raw: bytes | str) -> dict:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    parsing.set()
+                    self.assertTrue(release.wait(2.0))
+                return real_decode(raw)
+
+            with mock.patch("tpf2mp.audit_log.decode_line", side_effect=blocking_decode):
+                reader = threading.Thread(
+                    target=lambda: observed.extend(audit.messages()), daemon=True
+                )
+                reader.start()
+                self.assertTrue(parsing.wait(2.0))
+                audit.append(messages[3])
+                release.set()
+                reader.join(2.0)
+                self.assertFalse(reader.is_alive())
+
+            self.assertEqual(observed, messages[:3])
+            self.assertEqual(list(audit.messages()), messages)
+
+    def test_host_stays_alive_and_fail_closed_after_audit_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bridge = GameBridge(root / "bridge", "audit-fault", "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, root / "authority.ndjson",
+                require_connected_peers=False,
+            )
+            failure = AuditUnavailable(
+                13, "permanent audit sharing violation", str(host.audit.path)
+            )
+            with mock.patch.object(host.audit, "append", side_effect=failure):
+                runner = threading.Thread(target=host.run, daemon=True)
+                runner.start()
+                try:
+                    self.assertTrue(wait_for(
+                        lambda: bridge.status_path.exists()
+                        and json.loads(bridge.status_path.read_text(encoding="utf-8"))
+                        .get("status") == "running"
+                    ))
+                    intent = sign({
+                        "protocol": 1, "session": "audit-fault", "peer": "player1",
+                        "local_seq": 1, "tick": 0, "kind": "intent",
+                        "payload": {"action": {"type": "probe.run"}},
+                    })
+                    atomic_write(
+                        bridge.outbox / "000000000001.json",
+                        (canonical_json(intent) + "\n").encode("utf-8"),
+                    )
+                    self.assertTrue(wait_for(host.audit_failure.is_set))
+                    self.assertTrue(wait_for(
+                        lambda: json.loads(
+                            bridge.status_path.read_text(encoding="utf-8")
+                        ).get("status") == "faulted"
+                    ))
+                    status = json.loads(bridge.status_path.read_text(encoding="utf-8"))
+                    self.assertEqual(status["sessionFault"], "audit-persistence-failure")
+                    self.assertTrue(status["auditFaulted"])
+                    self.assertTrue(runner.is_alive())
+                    self.assertEqual(bridge.outbox_cursor, 0)
+                finally:
+                    host.stop.set()
+                    runner.join(2.0)
+            self.assertFalse(runner.is_alive())
+
     def test_outbound_cursor_and_idempotent_inbound(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bridge = GameBridge(directory, "session", "player1")
@@ -2021,13 +2178,13 @@ class BridgeTests(unittest.TestCase):
     def test_outbound_poll_is_cursor_direct_and_retention_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bridge = GameBridge(directory, "session", "player1")
-            bridge.outbox_cursor = 4097
+            bridge.outbox_cursor = 4098
             message = sign(
                 {
                     "protocol": 1,
                     "session": "session",
                     "peer": "player1",
-                    "local_seq": 4098,
+                    "local_seq": 4099,
                     "tick": 0,
                     "kind": "telemetry",
                     "payload": {},
@@ -2041,16 +2198,24 @@ class BridgeTests(unittest.TestCase):
                 }
             )
             old.write_bytes((canonical_json(old_health) + "\n").encode())
-            durable = bridge.outbox / "000000000002.json"
+            old_vehicle = bridge.outbox / "000000000002.json"
+            old_vehicle_sync = sign(
+                {
+                    "protocol": 1, "session": "session", "peer": "player1",
+                    "local_seq": 2, "tick": 0, "kind": "vehicle_sync", "payload": {},
+                }
+            )
+            old_vehicle.write_bytes((canonical_json(old_vehicle_sync) + "\n").encode())
+            durable = bridge.outbox / "000000000003.json"
             old_checkpoint = sign(
                 {
                     "protocol": 1, "session": "session", "peer": "player1",
-                    "local_seq": 2, "tick": 0, "kind": "checkpoint", "payload": {},
+                    "local_seq": 3, "tick": 0, "kind": "checkpoint", "payload": {},
                 }
             )
             durable.write_bytes((canonical_json(old_checkpoint) + "\n").encode())
             atomic_write(
-                bridge.outbox / "000000004098.json",
+                bridge.outbox / "000000004099.json",
                 (canonical_json(message) + "\n").encode(),
             )
             with mock.patch(
@@ -2058,13 +2223,14 @@ class BridgeTests(unittest.TestCase):
                 side_effect=AssertionError("outbound polling enumerated history"),
             ):
                 pending = list(bridge.pending_outbound())
-            self.assertEqual([item[0] for item in pending], [4098])
-            bridge.acknowledge_outbound(4098)
+            self.assertEqual([item[0] for item in pending], [4099])
+            bridge.acknowledge_outbound(4099)
             self.assertFalse(old.exists())
+            self.assertFalse(old_vehicle.exists())
             self.assertTrue(durable.exists())
             cursor = json.loads(bridge.cursor_path.read_text(encoding="utf-8"))
             self.assertEqual(cursor["schemaVersion"], 2)
-            self.assertEqual(cursor["pruned_through"], 2)
+            self.assertEqual(cursor["pruned_through"], 3)
             self.assertEqual(cursor["ephemeral_retention_messages"], 4096)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -3292,6 +3458,7 @@ class CheckpointTests(unittest.TestCase):
                     "type": "recovery.resume", "fromSession": "prior",
                     "boundarySeq": 10, "coreDigest": "12345678",
                     "convergenceKey": "87654321", "planChecksum": "abcdef12",
+                    "vehiclePhaseDigest": "fedcba98",
                 }},
             }))
             report = analyse_passenger_feeder_audit(
@@ -3553,6 +3720,95 @@ class CheckpointTests(unittest.TestCase):
                     ],
                 ),
                 "disagrees with its economy service",
+            ),
+            (
+                lambda value: value["vehicleSynchronization"]["vehicles"][0].pop(
+                    "companyCid"
+                ),
+                "no matching synchronized vehicle",
+            ),
+        ):
+            tampered = json.loads(json.dumps(payload))
+            mutate(tampered)
+            self.resign_checkpoint(tampered)
+            with self.assertRaisesRegex(ProtocolError, error):
+                verify_checkpoint(tampered)
+
+    def test_checkpoint_binds_departure_timed_passenger_demand_state(self) -> None:
+        payload = self.populated_passenger_checkpoint()
+        economy = payload["model"]["economy"]
+        economy["version"] = 9
+        economy["lastResults"]["markets"] = {
+            "market:event:presentation:1": {
+                "services": {
+                    "line:event:presentation:1": {
+                        "allocated": 65,
+                        "requested": 85,
+                        "capacityOverflow": 20,
+                    }
+                }
+            }
+        }
+        presentation = payload["vehicleSynchronization"]["passengerPresentation"]
+        presentation["schemaVersion"] = 4
+        line = presentation["lines"][0]
+        line.update({
+            "requested": 85,
+            "capacityOverflow": 20,
+            "intervalSeconds": 300,
+            "demandCursorMilliseconds": 100_000,
+            "demandResidAToB": 17,
+            "demandResidBToA": 29,
+            "generatedTotal": 65,
+            "discardedTotal": 0,
+            "earnedRevenueCents": 0,
+        })
+        presentation["vehicles"][0].update({
+            "lastReleaseAtMilliseconds": 100_000,
+            "earnedRevenueCents": 0,
+        })
+        self.resign_checkpoint(payload)
+        verified = verify_checkpoint(payload)
+        self.assertEqual(
+            verified["vehicleSynchronization"]["passengerPresentation"]
+            ["lines"][0]["capacityOverflow"],
+            20,
+        )
+
+        for mutate, error in (
+            (
+                lambda value: value["vehicleSynchronization"]
+                ["passengerPresentation"]["lines"][0].__setitem__(
+                    "capacityOverflow", 19
+                ),
+                "requested flow is inconsistent",
+            ),
+            (
+                lambda value: value["vehicleSynchronization"]
+                ["passengerPresentation"]["lines"][0].__setitem__(
+                    "demandResidAToB", 300_000
+                ),
+                "demand residual is invalid",
+            ),
+            (
+                lambda value: value["model"]["economy"]["lastResults"]
+                ["markets"]["market:event:presentation:1"]["services"]
+                ["line:event:presentation:1"].__setitem__("requested", 84),
+                "disagrees with its latest demand result",
+            ),
+            (
+                lambda value: value["vehicleSynchronization"]
+                ["passengerPresentation"]["lines"][0].__setitem__(
+                    "discardedTotal", 1
+                ),
+                "line conservation is invalid",
+            ),
+            (
+                lambda value: value["vehicleSynchronization"]
+                ["passengerPresentation"]["vehicles"][0].__setitem__(
+                    "discardedTotal", 1
+                ),
+                "vehicle conservation is invalid",
             ),
         ):
             tampered = json.loads(json.dumps(payload))
@@ -3932,6 +4188,30 @@ class RestorePointTests(unittest.TestCase):
             result["payload"]["action"]["metadataSha256"] = metadata_sha
         return result
 
+    def _phase_request(
+        self, boundary: int, digest: str = "abcdef12",
+        session: str | None = None,
+    ) -> dict:
+        source_session = session or self.SESSION
+        return {
+            "protocol": 1, "session": source_session, "peer": "player1",
+            "origin_peer": "player1", "seq": boundary, "kind": "control",
+            "tick": boundary, "payload": {"action": {
+                "type": "network.checkpoint_request",
+                "preparationSeq": max(1, boundary - 3),
+                "reason": f"recovery-prepare:{max(1, boundary - 3)}",
+                "vehiclePhaseProof": {
+                    "schemaVersion": 1,
+                    "sampleKeys": [
+                        f"{source_session}:player1:{boundary - 2}",
+                        f"{source_session}:player1:{boundary - 1}",
+                    ],
+                    "vehiclePhaseDigest": digest,
+                    "vehicleRounds": [],
+                },
+            }},
+        }
+
     def _commit(self, seq: int, peer: str = "player2") -> dict:
         return {
             "protocol": 1, "session": self.SESSION, "peer": peer, "origin_peer": peer,
@@ -4046,16 +4326,24 @@ class RestorePointTests(unittest.TestCase):
             audit = self._audit(root, [
                 self._checkpoint(1, 2),
                 self._commit(2),
-                self._checkpoint(3, 4),
-                self._receipt(4, "player1", 4, sha1, metadata_sha=metadata_sha1),
-                self._receipt(5, "player2", 4, sha2, metadata_sha=metadata_sha2),
+                self._phase_request(4),
+                self._checkpoint(5, 4),
+                self._receipt(6, "player1", 4, sha1, metadata_sha=metadata_sha1),
+                self._receipt(7, "player2", 4, sha2, metadata_sha=metadata_sha2),
             ])
             analysis = analyse_restore_points(audit, self.SESSION, ("player1", "player2"))
             self.assertEqual(analysis["latestReady"]["boundarySeq"], 4)
             # Boundary 2 has no receipts and must not be offered.
             self.assertFalse(analysis["points"][0]["ready"])
 
-            plan = build_restore_plan(audit, self.SESSION, required_peers=("player1", "player2"))
+            with self.assertRaisesRegex(ProtocolError, "explicit opt-in"):
+                build_restore_plan(
+                    audit, self.SESSION, required_peers=("player1", "player2")
+                )
+            plan = build_restore_plan(
+                audit, self.SESSION, required_peers=("player1", "player2"),
+                allow_legacy_unbound=True,
+            )
             verified = verify_restore_plan(plan)
             self.assertEqual(verified["version"], 2)
             self.assertNotIn("matchContentProfile", verified)
@@ -4105,8 +4393,12 @@ class RestorePointTests(unittest.TestCase):
                 match_profile=profile,
             )
             bound_verified = verify_restore_plan(bound)
-            self.assertEqual(bound_verified["version"], 4)
+            self.assertEqual(bound_verified["version"], 6)
             self.assertEqual(bound_verified["matchContentProfile"], profile)
+            self.assertEqual(
+                bound_verified["vehiclePhaseProof"]["vehiclePhaseDigest"],
+                "abcdef12",
+            )
             self.assertEqual(
                 bound_verified["peerSaves"]["player1"]["metadataSha256"], metadata_sha1,
             )
@@ -4128,13 +4420,14 @@ class RestorePointTests(unittest.TestCase):
             v3_core = json.loads(json.dumps(bound))
             v3_core.pop("checksum")
             v3_core["version"] = 3
+            v3_core.pop("vehiclePhaseProof")
             for save_attestation in v3_core["peerSaves"].values():
                 save_attestation.pop("metadataSha256")
             self.assertEqual(verify_restore_plan(sign(v3_core))["version"], 3)
 
             profile_path = root / "match-content-profile.json"
             profile_path.write_text(json.dumps(profile), encoding="utf-8")
-            cli_plan_path = root / "restore-plan-v4.json"
+            cli_plan_path = root / "restore-plan-v6.json"
             self.assertEqual(companion_main([
                 "restore-plan", str(audit), "--session", self.SESSION,
                 "--match-profile", str(profile_path), "--output", str(cli_plan_path),
@@ -4146,6 +4439,22 @@ class RestorePointTests(unittest.TestCase):
                 "verify-restore-plan", str(cli_plan_path), "--metadata-only",
                 "--save", f"player1={player1}",
             ]), 2)
+            cli_legacy_path = root / "restore-plan-v2.json"
+            self.assertEqual(companion_main([
+                "restore-plan", str(audit), "--session", self.SESSION,
+                "--allow-legacy-unbound", "--output", str(cli_legacy_path),
+            ]), 0)
+            self.assertEqual(
+                verify_restore_plan(json.loads(
+                    cli_legacy_path.read_text(encoding="utf-8")
+                ))["version"],
+                2,
+            )
+            with self.assertRaisesRegex(ProtocolError, "cannot be combined"):
+                build_restore_plan(
+                    audit, self.SESSION, required_peers=("player1", "player2"),
+                    match_profile=profile, allow_legacy_unbound=True,
+                )
 
             for bad_profile in (
                 {**profile, "schemaVersion": True},
@@ -4171,10 +4480,17 @@ class RestorePointTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "unsupported"):
                 verify_restore_plan(sign(float_version))
 
+            malformed_protocol = dict(bound)
+            malformed_protocol.pop("checksum")
+            malformed_protocol["protocol"] = {}
+            with self.assertRaisesRegex(ProtocolError, "protocol mismatch"):
+                verify_restore_plan(sign(malformed_protocol))
+
             mixed_audit = self._audit(root, [
-                self._checkpoint(1, 6),
-                self._receipt(2, "player1", 6, sha1, metadata_sha=metadata_sha1),
-                self._receipt(3, "player2", 6, sha2),
+                self._phase_request(6),
+                self._checkpoint(7, 6),
+                self._receipt(8, "player1", 6, sha1, metadata_sha=metadata_sha1),
+                self._receipt(9, "player2", 6, sha2),
             ])
             mixed_analysis = analyse_restore_points(
                 mixed_audit, self.SESSION, ("player1", "player2"),
@@ -4189,9 +4505,10 @@ class RestorePointTests(unittest.TestCase):
 
             long_session = "session-" + "x" * 56
             long_entries = [
-                self._checkpoint(1, 7),
-                self._receipt(2, "player1", 7, sha1, metadata_sha=metadata_sha1),
-                self._receipt(3, "player2", 7, sha2, metadata_sha=metadata_sha2),
+                self._phase_request(7, session=long_session),
+                self._checkpoint(8, 7),
+                self._receipt(9, "player1", 7, sha1, metadata_sha=metadata_sha1),
+                self._receipt(10, "player2", 7, sha2, metadata_sha=metadata_sha2),
             ]
             for entry in long_entries:
                 entry["session"] = long_session
@@ -4207,7 +4524,7 @@ class RestorePointTests(unittest.TestCase):
             with self.assertRaisesRegex(ProtocolError, "legacy restore resume session"):
                 build_restore_plan(
                     long_audit, long_session, required_peers=("player1", "player2"),
-                    match_profile=None,
+                    match_profile=None, allow_legacy_unbound=True,
                 )
 
     def test_game_event_copies_of_receipts_do_not_invalidate_the_ordered_receipts(self) -> None:
@@ -4227,8 +4544,27 @@ class RestorePointTests(unittest.TestCase):
             plan = build_restore_plan(
                 audit, self.SESSION, boundary_seq=4,
                 required_peers=("player1", "player2"),
+                allow_legacy_unbound=True,
             )
             self.assertEqual(verify_restore_plan(plan)["boundarySeq"], 4)
+
+    def test_impossible_empty_ready_receipt_roster_fails_closed(self) -> None:
+        analysis = {
+            "session": self.SESSION,
+            "requiredPeers": [],
+            "points": [],
+            "latestReady": {
+                "boundarySeq": 4, "convergenceKey": "key-4",
+                "coreDigest": "core-1", "receipts": {},
+            },
+        }
+        with mock.patch(
+            "tpf2mp.restore.analyse_restore_points", return_value=analysis,
+        ):
+            with self.assertRaisesRegex(ProtocolError, "receipt roster"):
+                build_restore_plan(
+                    "unused.ndjson", self.SESSION, allow_legacy_unbound=True,
+                )
 
     def test_save_receipt_action_is_strictly_validated(self) -> None:
         base = {
@@ -4486,6 +4822,75 @@ class AnchorCoordinatorTests(unittest.TestCase):
                 host.anchor.readiness()["reasons"],
             )
 
+    def test_prepared_boundary_accepts_receipts_after_native_save_blocks_health(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = self._host(root)
+            self._converge(host, 4)
+            host.clock_pause_acknowledged = True
+            host.anchor_preparation.current = {
+                "preparationSeq": 1, "status": "ready",
+                "checkpointBoundarySeq": 4, "detail": "save now",
+            }
+            for sample in host.clock_health.values():
+                sample["receivedAt"] = time.monotonic() - 1200
+            host.clock_pause_acknowledged = False
+            self.assertFalse(host.anchor.readiness()["ready"])
+            self.assertTrue(host.anchor.readiness(receipt=True)["ready"])
+
+            host.commits[9] = sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "origin_peer": "player1", "seq": 9, "kind": "commit", "tick": 0,
+                "payload": {"action": {"type": "world.freeze", "freeze": True}},
+            })
+            self.assertFalse(host.anchor.readiness(receipt=True)["ready"])
+            del host.commits[9]
+            save = root / "slow-native-save.sav"
+            save.write_bytes(b"slow-native-save")
+            Path(str(save) + ".lua").write_text("return {}", encoding="utf-8")
+            self.assertTrue(host.anchor.anchor_save(save, 1717171717)["filed"])
+
+    def test_paused_native_game_time_skew_blocks_a_false_ready_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            self._converge(host, 4)
+            host.clock_pause_acknowledged = True
+            host.clock_health["player2"]["gameTime"] = 166.4
+            reasons = host.anchor.readiness()["reasons"]
+            self.assertTrue(any(
+                reason.startswith("paused peer game times differ by 66.400s")
+                for reason in reasons
+            ))
+
+    def test_converged_preparation_resynchronizes_native_time_before_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            self._converge(host, 4)
+            host.next_seq = 5
+            host.clock_pause_acknowledged = True
+            host.clock_health["player2"]["gameTime"] = 166.4
+            host.anchor_preparation.current = {
+                "preparationSeq": 1,
+                "originPeer": "player1",
+                "status": "converged",
+                "checkpointBoundarySeq": 4,
+                "resumeSpeed": 0,
+                "drainRetries": 0,
+                "detail": "checkpoint converged",
+                "startedAt": time.monotonic(),
+            }
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            action = host.commits[5]["payload"]["action"]
+            self.assertEqual(action["type"], "clock.rendezvous")
+            self.assertEqual(action["requestedSpeed"], 0)
+            self.assertEqual(action["approachSpeed"], 1)
+            self.assertEqual(action["releaseSpeed"], 0)
+            self.assertAlmostEqual(action["targetGameTime"], 166.4)
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "pausing"
+            )
+
     def test_anchoring_files_one_ordered_receipt_and_reports_restorability(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4590,27 +4995,509 @@ class AnchorCoordinatorTests(unittest.TestCase):
             self.assertEqual(prepare["seq"], 1)
             self.assertTrue(host.anchor_preparation.maintain())
             self.assertTrue(host.anchor_preparation.maintain())
-            self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "checkpointing")
-            request = decode_line((host.bridge.inbox / "000000000002.json").read_bytes())
-            self.assertEqual(request["payload"]["action"]["type"], "network.checkpoint_request")
-            self.assertEqual(request["payload"]["action"]["preparationSeq"], 1)
-
-            reason = "recovery-prepare:1"
-            host._record_non_intent(consensus_checkpoint("anchor-test", "player1", 2, 2, reason))
-            host._record_non_intent(consensus_checkpoint("anchor-test", "player2", 3, 2, reason))
-            self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], 2)
-            self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "converged")
-            restored = self._host(Path(directory))
-            self.assertEqual(restored.last_agreed_checkpoint["boundarySeq"], 2)
-            self.assertEqual(
-                restored.anchor_preparation.status()["anchorPreparationStatus"], "converged"
-            )
+            phase_probe = host.commits[2]["payload"]["action"]
+            self.assertEqual(phase_probe["type"], "probe.mobility")
+            phase_key = host.anchor_preparation.current["phaseProbeKey"]
+            host.vehicle_phase_outcomes[phase_key] = "converged"
+            host.vehicle_restore_safety[phase_key] = {
+                peer: True for peer in host.required_peers
+            }
+            host.vehicle_phase_digests[phase_key] = {
+                peer: "abcdef12" for peer in host.required_peers
+            }
+            cursor_phase = {
+                "vehicle:test": {
+                    "lineCid": "line:test", "authorizedRound": 1,
+                },
+            }
+            host.vehicle_phase_details[phase_key] = {
+                peer: json.loads(json.dumps(cursor_phase))
+                for peer in host.required_peers
+            }
+            for sample in host.clock_health.values():
+                sample["lastCommitSeq"] = 2
+                sample["receivedAt"] = time.monotonic()
+            self.assertTrue(host.anchor_preparation.maintain())
+            second_phase_key = host.anchor_preparation.current["phaseProbeKey"]
+            self.assertNotEqual(second_phase_key, phase_key)
+            self.assertEqual(host.commits[3]["payload"]["action"]["type"], "probe.mobility")
+            host.vehicle_phase_outcomes[second_phase_key] = "converged"
+            host.vehicle_restore_safety[second_phase_key] = {
+                peer: True for peer in host.required_peers
+            }
+            host.vehicle_phase_digests[second_phase_key] = {
+                peer: "abcdef12" for peer in host.required_peers
+            }
+            host.vehicle_phase_details[second_phase_key] = {
+                peer: json.loads(json.dumps(cursor_phase))
+                for peer in host.required_peers
+            }
             for sample in host.clock_health.values():
                 sample["lastCommitSeq"] = 3
                 sample["receivedAt"] = time.monotonic()
             self.assertTrue(host.anchor_preparation.maintain())
+            self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "checkpointing")
+            request = decode_line((host.bridge.inbox / "000000000004.json").read_bytes())
+            self.assertEqual(request["payload"]["action"]["type"], "network.checkpoint_request")
+            self.assertEqual(request["payload"]["action"]["preparationSeq"], 1)
+            self.assertEqual(
+                request["payload"]["action"]["vehiclePhaseProof"],
+                {
+                    "schemaVersion": 1,
+                    "sampleKeys": [phase_key, second_phase_key],
+                    "vehiclePhaseDigest": "abcdef12",
+                    "vehicleRounds": [{
+                        "vehicleCid": "vehicle:test", "lineCid": "line:test",
+                        "lastAuthorizedRound": 1,
+                    }],
+                },
+            )
+
+            reason = "recovery-prepare:1"
+            host._record_non_intent(consensus_checkpoint("anchor-test", "player1", 3, 4, reason))
+            host._record_non_intent(consensus_checkpoint("anchor-test", "player2", 4, 4, reason))
+            self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], 4)
+            self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "converged")
+            restored = self._host(Path(directory))
+            self.assertEqual(restored.last_agreed_checkpoint["boundarySeq"], 4)
+            self.assertEqual(
+                restored.anchor_preparation.status()["anchorPreparationStatus"], "converged"
+            )
+            for sample in host.clock_health.values():
+                sample["lastCommitSeq"] = 5
+                sample["receivedAt"] = time.monotonic()
+            self.assertTrue(host.anchor_preparation.maintain())
             self.assertTrue(host.anchor.readiness()["ready"])
             self.assertEqual(host.anchor_preparation.status()["anchorPreparationStatus"], "ready")
+
+            save = Path(directory) / "prepared.sav"
+            save.write_bytes(b"prepared-boundary")
+            Path(str(save) + ".lua").write_text("return {}", encoding="utf-8")
+            host.anchor.anchor_save(save, 1717171717)
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "ready"
+            )
+            self.assertTrue(host.anchor.readiness()["ready"])
+
+    def test_preparation_refuses_divergent_paused_vehicle_route_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertTrue(host.anchor_preparation.maintain())
+            phase_key = host.anchor_preparation.current["phaseProbeKey"]
+            host.vehicle_phase_outcomes[phase_key] = "diverged"
+            for sample in host.clock_health.values():
+                sample["lastCommitSeq"] = 2
+                sample["receivedAt"] = time.monotonic()
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            status = host.anchor_preparation.status()
+            self.assertEqual(status["anchorPreparationStatus"], "failed")
+            self.assertIn("route phases differ", status["anchorPreparationDetail"])
+            self.assertEqual(host.next_seq, 3)
+
+    def test_preparation_recovers_local_phase_divergence_on_one_native_leg(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertTrue(host.anchor_preparation.maintain())
+            phase_key = host.anchor_preparation.current["phaseProbeKey"]
+            host.vehicle_phase_outcomes[phase_key] = "diverged"
+            host.vehicle_restore_safety[phase_key] = {
+                peer: False for peer in host.required_peers
+            }
+            host.vehicle_restore_unsafe_details[phase_key] = {
+                "player1": {"vehicle:test": (
+                    "canonical station synchronization is not bound to the line; "
+                    "local and authorized station rounds differ"
+                )},
+                "player2": {"vehicle:test": (
+                    "canonical station synchronization is not bound to the line; "
+                    "local station synchronization has no matching line state"
+                )},
+            }
+            native_leg = {
+                "lineCid": "line:test", "atTerminal": False,
+                "nativeStopIndex": 0, "nativeUserStopped": False,
+                "requestedStopped": False,
+            }
+            host.vehicle_phase_details[phase_key] = {
+                "player1": {"vehicle:test": {**native_leg, "syncPhase": "enroute"}},
+                "player2": {"vehicle:test": {**native_leg, "syncPhase": "missing"}},
+            }
+            for sample in host.clock_health.values():
+                sample["lastCommitSeq"] = 2
+                sample["receivedAt"] = time.monotonic()
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "draining"
+            )
+            self.assertTrue(host.anchor_preparation.maintain())
+            resume = host.commits[host.next_seq - 1]["payload"]["action"]
+            self.assertIn(resume["type"], {"clock.request", "clock.rendezvous"})
+            self.assertEqual(resume["requestedSpeed"], 1)
+
+    def test_preparation_refuses_equal_but_transient_native_vehicle_phases(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertTrue(host.anchor_preparation.maintain())
+            phase_key = host.anchor_preparation.current["phaseProbeKey"]
+            host.vehicle_phase_outcomes[phase_key] = "converged"
+            host.vehicle_restore_safety[phase_key] = {
+                "player1": True, "player2": False,
+            }
+            for sample in host.clock_health.values():
+                sample["lastCommitSeq"] = 2
+                sample["receivedAt"] = time.monotonic()
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            status = host.anchor_preparation.status()
+            self.assertEqual(status["anchorPreparationStatus"], "failed")
+            self.assertIn("did not provide one matching recoverable vehicle set", status["anchorPreparationDetail"])
+            self.assertEqual(host.next_seq, 3)
+
+    def test_preparation_runs_to_the_next_barrier_for_an_unbound_vehicle_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertTrue(host.anchor_preparation.maintain())
+            phase_key = host.anchor_preparation.current["phaseProbeKey"]
+            host.vehicle_phase_outcomes[phase_key] = "converged"
+            host.vehicle_restore_safety[phase_key] = {
+                peer: False for peer in host.required_peers
+            }
+            details = {
+                "vehicle:test": (
+                    "canonical station synchronization is not bound to the line; "
+                    "local station synchronization has no matching line state"
+                )
+            }
+            host.vehicle_restore_unsafe_details[phase_key] = {
+                peer: dict(details) for peer in host.required_peers
+            }
+            for sample in host.clock_health.values():
+                sample["lastCommitSeq"] = 2
+                sample["receivedAt"] = time.monotonic()
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "draining"
+            )
+            self.assertTrue(host.anchor_preparation.maintain())
+            resume_seq = host.next_seq - 1
+            self.assertEqual(
+                host.commits[resume_seq]["payload"]["action"]["requestedSpeed"], 1
+            )
+
+            host.clock_controls[resume_seq]["status"] = "complete"
+            host.clock_rendezvous = None
+            host.clock_effective_speed = host.clock_requested_speed = 1
+            host.clock_pause_acknowledged = False
+            host.vehicle_sync_last_round["vehicle:test"] = 1
+            for sample in host.clock_health.values():
+                sample.update({
+                    "requestedSpeed": 1, "effectiveSpeed": 1, "observedSpeed": 1,
+                    "lastCommitSeq": resume_seq, "receivedAt": time.monotonic(),
+                })
+            self.assertTrue(
+                host.anchor_preparation.maintain(), host.anchor_preparation.status()
+            )
+            pause = host.commits[host.next_seq - 1]["payload"]["action"]
+            self.assertEqual(pause["requestedSpeed"], 0)
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "pausing"
+            )
+
+    def test_preparation_drains_vehicle_work_before_ordering_pause(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_requested_speed = 3
+            host.clock_effective_speed = 3
+            host.vehicle_sync_rounds["vehicle:test#1"] = {
+                "status": "waiting-arrivals",
+            }
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 3, "effectiveSpeed": 3,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 3, "gameTime": 100.0, "receivedAt": now,
+                }
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+
+            self.assertFalse(host.anchor_preparation.maintain())
+            self.assertEqual(host.next_seq, 2)
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "draining"
+            )
+            host.vehicle_sync_rounds.clear()
+            for sample in host.clock_health.values():
+                sample["receivedAt"] = time.monotonic()
+            self.assertTrue(host.anchor_preparation.maintain())
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "pausing"
+            )
+            pause = host.commits[2]["payload"]["action"]
+            self.assertIn(pause["type"], {"clock.set", "clock.rendezvous"})
+            self.assertEqual(pause["requestedSpeed"], 0)
+
+    def test_paused_vehicle_round_resumes_drain_instead_of_deadlocking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_requested_speed = 3
+            host.clock_effective_speed = 3
+            host.vehicle_sync_rounds["vehicle:test#1"] = {
+                "status": "release-ordered",
+            }
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            host.clock_requested_speed = 0
+            host.clock_effective_speed = 0
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            resume = host.commits[2]["payload"]["action"]
+            self.assertIn(resume["type"], {"clock.set", "clock.rendezvous"})
+            self.assertEqual(resume["requestedSpeed"], 3)
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "draining"
+            )
+
+    def test_vehicle_round_racing_the_pause_retries_the_drain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_requested_speed = 3
+            host.clock_effective_speed = 3
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 3, "effectiveSpeed": 3,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 3, "gameTime": 100.0, "receivedAt": now,
+                }
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            self.assertTrue(host.anchor_preparation.maintain())
+            pause_seq = host.next_seq - 1
+            host.clock_controls[pause_seq]["status"] = "complete"
+            host.clock_rendezvous = None
+            host.clock_requested_speed = 0
+            host.clock_effective_speed = 0
+            host.clock_pause_acknowledged = True
+            host.vehicle_sync_rounds["vehicle:test#1"] = {
+                "status": "waiting-arrivals",
+            }
+            for sample in host.clock_health.values():
+                sample.update({
+                    "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "observedSpeed": 0, "lastCommitSeq": pause_seq,
+                    "receivedAt": time.monotonic(),
+                })
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            resume = host.commits[host.next_seq - 1]["payload"]["action"]
+            self.assertEqual(resume["requestedSpeed"], 3)
+            self.assertEqual(
+                host.anchor_preparation.current["drainRetries"], 1
+            )
+
+    def test_completed_drain_can_pause_through_old_running_heartbeat_hole(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_requested_speed = 4
+            host.clock_effective_speed = 4
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            host.anchor_preparation.current["drainResumeCommitSeq"] = 1
+            stale = time.monotonic() - 10.0
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 4, "effectiveSpeed": 4,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 0,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 4, "gameTime": 100.0, "receivedAt": stale,
+                }
+
+            self.assertTrue(host.anchor_preparation.maintain())
+            pause = host.commits[2]["payload"]["action"]
+            self.assertEqual(pause["type"], "clock.set")
+            self.assertEqual(pause["effectiveSpeed"], 0)
+            self.assertEqual(
+                host.anchor_preparation.status()["anchorPreparationStatus"], "pausing"
+            )
+
+    def test_stale_health_without_a_completed_drain_remains_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host.clock_requested_speed = 4
+            host.clock_effective_speed = 4
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            stale = time.monotonic() - 10.0
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 4, "effectiveSpeed": 4,
+                    "generation": 0, "engineTick": 10, "lastCommitSeq": 0,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 4, "gameTime": 100.0, "receivedAt": stale,
+                }
+            self.assertFalse(host.anchor_preparation.maintain())
+            self.assertEqual(host.next_seq, 2)
+
+    def test_preparation_fences_player_intents_during_drain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            host._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            with self.assertRaisesRegex(ProtocolError, "preparation 1 is draining"):
+                host._commit(sign({
+                    "protocol": 1, "session": "anchor-test", "peer": "player2",
+                    "local_seq": 2, "tick": 0, "kind": "intent",
+                    "payload": {"action": {"type": "recovery.prepare"}},
+                }))
+
+    def test_audit_replay_recovers_a_pause_before_vehicle_drain(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            seed = self._host(root)
+            seed._record_non_intent(vehicle_sync_record("player1", 1, "held"))
+            seed._commit(sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.prepare"}},
+            }))
+            seed.emit_local_intent({"type": "clock.request", "requestedSpeed": 0})
+
+            restored = self._host(root)
+            self.assertEqual(
+                restored.anchor_preparation.status()["anchorPreparationStatus"], "draining"
+            )
+            for tracker in restored.clock_controls.values():
+                tracker["status"] = "complete"
+            restored.clock_rendezvous = None
+            self.assertEqual(restored.anchor._pending_work(), 1)
+            restored.clock_pause_acknowledged = True
+            restored.clock_requested_speed = 0
+            restored.clock_effective_speed = 0
+            now = time.monotonic()
+            for peer in restored.required_peers:
+                restored.clock_health[peer] = {
+                    "schemaVersion": 3, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": 1, "engineTick": 10,
+                    "lastCommitSeq": restored.next_seq - 1,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            self.assertTrue(restored.anchor_preparation.maintain())
+            resume = restored.commits[restored.next_seq - 1]["payload"]["action"]
+            self.assertEqual(resume["requestedSpeed"], 1)
 
     def test_matching_manual_exports_open_a_paused_tip_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -4629,6 +5516,56 @@ class AnchorCoordinatorTests(unittest.TestCase):
 
 
 class AnchorRequestStoreTests(unittest.TestCase):
+    def test_client_accepts_the_pre_pause_drain_status(self) -> None:
+        state = validate_anchor_state(anchor_state_message(
+            "anchor-io", "player1", {
+                "ready": False, "boundarySeq": 9, "coreDigest": "core-9",
+                "convergenceKey": "key-9", "reasons": ["station round pending"],
+            }, {
+                "anchorPreparationStatus": "draining",
+                "anchorPreparationSeq": 11,
+                "anchorPreparationCheckpointSeq": None,
+                "anchorPreparationDetail": "draining ordered work",
+            },
+        ))
+        self.assertEqual(state["preparationStatus"], "draining")
+        self.assertEqual(state["preparationSeq"], 11)
+        self.assertTrue(state["pausedHeartbeatRequired"])
+
+    def test_client_receives_running_world_heartbeat_policy(self) -> None:
+        state = validate_anchor_state(anchor_state_message(
+            "anchor-io", "player1", {
+                "ready": False, "boundarySeq": 1, "coreDigest": "core-1",
+                "convergenceKey": "key-1", "reasons": [],
+            }, paused_heartbeat_required=False,
+        ))
+        self.assertFalse(state["pausedHeartbeatRequired"])
+
+    def test_missing_request_save_is_rejected_without_escaping_the_poll(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            bridge = GameBridge(root / "host", "anchor-io", "player1")
+            store = AnchorRequestStore(bridge)
+            request_id = "d" * 32
+            request = {
+                "schemaVersion": 1, "session": "anchor-io", "peer": "player1",
+                "requestId": request_id, "boundarySeq": 9,
+                "coreDigest": "core-9", "convergenceKey": "key-9",
+                "savePath": str(root / "moved-before-poll.sav"),
+                "savedAtUnix": 1717171717,
+            }
+            atomic_write(
+                store.requests / f"{request_id}.json",
+                (json.dumps(request) + "\n").encode("utf-8"),
+            )
+            self.assertEqual(list(store.pending()), [])
+            self.assertEqual(list(store.pending()), [])
+            result = json.loads(
+                (store.results / f"{request_id}.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(result["status"], "rejected")
+            self.assertIn("save is missing", result["error"])
+
     def test_client_receipt_uses_persistent_negative_sequence_and_acknowledges(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4651,10 +5588,20 @@ class AnchorRequestStoreTests(unittest.TestCase):
             )
             state = validate_anchor_state(anchor_state_message(
                 "anchor-io", "player1", {
+                    "ready": False, "boundarySeq": 9, "coreDigest": "core-9",
+                    "convergenceKey": "key-9", "reasons": ["health is stale"],
+                }, {
+                    "anchorPreparationStatus": "ready",
+                    "anchorPreparationSeq": 8,
+                    "anchorPreparationCheckpointSeq": 9,
+                    "anchorPreparationDetail": "save now",
+                }, {
                     "ready": True, "boundarySeq": 9, "coreDigest": "core-9",
                     "convergenceKey": "key-9", "reasons": [],
                 },
             ))
+            self.assertFalse(state["ready"])
+            self.assertTrue(state["receiptReady"])
             first = list(store.client_intents(state))
             second = list(store.client_intents(state))
             self.assertEqual(len(first), 1)
@@ -4884,7 +5831,7 @@ class SessionIdentityTests(unittest.TestCase):
             "coreDigest": "core-7", "convergenceKey": "key-7",
         }
         current = sign({
-            "format": "tpf2mp-restore-plan", "version": 4, "protocol": 1,
+            "format": "tpf2mp-restore-plan", "version": 6, "protocol": 1,
             "session": source, "resumeSession": expected,
             "generatedAtUtc": "2026-08-09T00:00:00+00:00", "boundarySeq": 7,
             "convergenceKey": "key-7", "coreDigest": "core-7",
@@ -4899,14 +5846,27 @@ class SessionIdentityTests(unittest.TestCase):
             "matchContentProfile": {
                 "schemaVersion": 1, "agentMode": "skeleton", "townDevelopment": False,
             },
+            "vehiclePhaseProof": {
+                "schemaVersion": 1,
+                "sampleKeys": [f"{source}:player1:5", f"{source}:player1:6"],
+                "vehiclePhaseDigest": "abcdef12",
+                "vehicleRounds": [],
+            },
             "steps": ["restore both peers"],
         })
         self.assertEqual(verify_restore_plan(current)["resumeSession"], expected)
+
+        cursorless = json.loads(json.dumps(current))
+        cursorless.pop("checksum")
+        cursorless["version"] = 5
+        with self.assertRaisesRegex(ProtocolError, "unsupported restore plan format"):
+            verify_restore_plan(sign(cursorless))
 
         legacy = dict(current)
         legacy.pop("checksum")
         legacy["version"] = 3
         legacy["resumeSession"] = f"{source}-r7"
+        legacy.pop("vehiclePhaseProof")
         for attestation in legacy["peerSaves"].values():
             attestation.pop("metadataSha256")
         with self.assertRaisesRegex(ProtocolError, "resume session is invalid"):
@@ -5021,8 +5981,9 @@ class RecoveryArchiveTests(unittest.TestCase):
                 "boundarySeq": 9, "coreDigest": "core-9", "convergenceKey": "key-9",
             }
             plan = sign({
-                "format": "tpf2mp-restore-plan", "version": 4, "protocol": 1,
-                "session": "archive-current", "resumeSession": "archive-current-r9",
+                "format": "tpf2mp-restore-plan", "version": 6, "protocol": 1,
+                "session": "archive-current",
+                "resumeSession": derive_resume_session("archive-current", 9),
                 "generatedAtUtc": "2026-08-09T00:00:00+00:00", "boundarySeq": 9,
                 "convergenceKey": "key-9", "coreDigest": "core-9",
                 "requiredPeers": ["player1", "player2"],
@@ -5036,6 +5997,12 @@ class RecoveryArchiveTests(unittest.TestCase):
                 "matchContentProfile": {
                     "schemaVersion": 1, "agentMode": "skeleton",
                     "townDevelopment": False,
+                },
+                "vehiclePhaseProof": {
+                    "schemaVersion": 1,
+                    "sampleKeys": ["archive-current:player1:7", "archive-current:player1:8"],
+                    "vehiclePhaseDigest": "4567def0",
+                    "vehicleRounds": [],
                 },
                 "steps": ["restore both peers"],
             })
@@ -5118,11 +6085,20 @@ class LocalRestoreDiscoveryTests(unittest.TestCase):
             metadata = Path(str(source) + ".lua")
             metadata.write_text("return { boundary = 9 }", encoding="utf-8")
             hashes = hash_load_bearing_save(source)
+            source2 = root / "source-player2.sav"
+            source2.write_bytes(b"receipt-bound-world-player2")
+            metadata2 = Path(str(source2) + ".lua")
+            metadata2.write_text("return { boundary = 9, peer = 2 }", encoding="utf-8")
+            hashes2 = hash_load_bearing_save(source2)
             plan = current_restore_plan(session)
             plan.pop("checksum")
             plan["peerSaves"]["player1"].update({
                 "saveSha256": hashes["saveSha256"],
                 "metadataSha256": hashes["metadataSha256"],
+            })
+            plan["peerSaves"]["player2"].update({
+                "saveSha256": hashes2["saveSha256"],
+                "metadataSha256": hashes2["metadataSha256"],
             })
             plan = sign(plan)
             plan_path = recovery / "restore-plan.json"
@@ -5167,6 +6143,33 @@ class LocalRestoreDiscoveryTests(unittest.TestCase):
                 ])
             self.assertEqual(result, 0)
             self.assertEqual(json.loads(output.getvalue())["savePath"], latest["savePath"])
+
+            peer2_root = sessions / session / "player2"
+            peer2_recovery = peer2_root / "recovery"
+            peer2_recovery.mkdir(parents=True)
+            peer2_plan = peer2_recovery / "restore-plan.json"
+            atomic_write(peer2_plan, (canonical_json(plan) + "\n").encode("utf-8"))
+            peer2_archive = peer2_recovery / "archive"
+            write_recovery_archive(source2, peer2_archive, session, "player2", plan)
+            peer2_manifest = peer2_archive / "archive-manifest.json"
+            atomic_write(peer2_root / "latest-recovery-archive.json", (json.dumps({
+                "schemaVersion": 1, "session": session, "peer": "player2",
+                "archiveDirectory": str(peer2_archive),
+                "manifestPath": str(peer2_manifest),
+                "manifestSha256": sha256_file(peer2_manifest),
+                "recoveryPlanPath": str(peer2_plan), "sourceSave": str(source2),
+                "archivedAtUtc": "2026-08-09T12:01:00+00:00",
+            }) + "\n").encode("utf-8"))
+            pair = latest_local_restore_pair(sessions)
+            self.assertEqual(pair["planChecksum"], plan["checksum"])
+            self.assertEqual(set(pair["peers"]), {"player1", "player2"})
+            output = io.StringIO()
+            with redirect_stdout(output):
+                result = companion_main([
+                    "latest-local-restore-pair", "--sessions-root", str(sessions),
+                ])
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(output.getvalue())["session"], session)
 
 
 class NetworkIntegrationTests(unittest.TestCase):
@@ -5388,21 +6391,43 @@ class NetworkIntegrationTests(unittest.TestCase):
             root = Path(directory)
             session, source, boundary = "restore-source-r9", "restore-source", 9
             probe = consensus_checkpoint(session, "player1", 1, 1, "probe")
-            core = probe["payload"]["coreDigest"]
+            migrated_core = probe["payload"]["coreDigest"]
+            source_core = "b308c2a8"
+            self.assertNotEqual(source_core, migrated_core)
             save = {
-                "saveSha256": "a" * 64, "savedAtUnix": 100,
+                "saveSha256": "a" * 64, "metadataSha256": "c" * 64,
+                "savedAtUnix": 100,
                 "receiptCommitSeq": 10, "boundarySeq": boundary,
-                "coreDigest": core, "convergenceKey": "1234abcd",
+                "coreDigest": source_core, "convergenceKey": "1234abcd",
             }
             plan = sign({
-                "format": "tpf2mp-restore-plan", "version": 2, "protocol": 1,
+                "format": "tpf2mp-restore-plan", "version": 6, "protocol": 1,
                 "session": source, "resumeSession": session,
                 "generatedAtUtc": "2026-08-06T00:00:00+00:00",
                 "boundarySeq": boundary, "convergenceKey": "1234abcd",
-                "coreDigest": core, "requiredPeers": ["player1", "player2"],
+                "coreDigest": source_core, "requiredPeers": ["player1", "player2"],
                 "peerSaves": {
                     "player1": save,
-                    "player2": {**save, "saveSha256": "b" * 64, "receiptCommitSeq": 11},
+                    "player2": {
+                        **save, "saveSha256": "b" * 64,
+                        "metadataSha256": "d" * 64, "receiptCommitSeq": 11,
+                    },
+                },
+                "matchContentProfile": {
+                    "schemaVersion": 1, "agentMode": "skeleton",
+                    "townDevelopment": False,
+                },
+                "vehiclePhaseProof": {
+                    "schemaVersion": 1,
+                    "sampleKeys": [
+                        "restore-source:player1:7", "restore-source:player1:8",
+                    ],
+                    "vehiclePhaseDigest": "4567def0",
+                    "vehicleRounds": [{
+                        "vehicleCid": "vehicle:event:station-sync:1",
+                        "lineCid": "line:event:station-sync:1",
+                        "lastAuthorizedRound": 1,
+                    }],
                 },
                 "steps": ["load each attested save"],
             })
@@ -5410,6 +6435,10 @@ class NetworkIntegrationTests(unittest.TestCase):
                 GameBridge(root / "host", session, "player1"),
                 "127.0.0.1", 0, root / "audit.ndjson",
                 require_connected_peers=False, restore_plan=plan,
+            )
+            self.assertEqual(
+                host.vehicle_sync_last_round,
+                {"vehicle:event:station-sync:1": 1},
             )
             with self.assertRaisesRegex(ProtocolError, "restore handshake"):
                 host._commit(sign({
@@ -5423,11 +6452,29 @@ class NetworkIntegrationTests(unittest.TestCase):
                 "payload": {"action": host.restore_session.expected_action()},
             }))
             self.assertEqual(commit["seq"], 1)
+            with self.assertRaisesRegex(ProtocolError, "outcome boundary"):
+                host.restore_session.observe_checkpoint_outcome({
+                    "boundarySeq": {}, "success": True,
+                })
             reason = f"restore-resume:{plan['checksum']}"
             host._record_non_intent(consensus_checkpoint(session, "player1", 3, 1, reason))
             host._record_non_intent(consensus_checkpoint(session, "player2", 4, 1, reason))
             self.assertEqual(host.restore_session.state, "complete")
             self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], 1)
+            host._record_non_intent(vehicle_sync_record(
+                "player1", 5, "held", round_number=2,
+            ))
+            host._record_non_intent(vehicle_sync_record(
+                "player2", 6, "held", round_number=2,
+            ))
+            self.assertIsNone(host.session_fault)
+            releases = [
+                item["payload"]["action"] for item in host.commits.values()
+                if item["payload"]["action"].get("type") == "vehicle.sync_release"
+            ]
+            self.assertEqual(
+                releases[-1]["round"], 2,
+            )
 
     def test_generic_ordered_action_rejection_faults_instead_of_hanging_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -5606,20 +6653,146 @@ class NetworkIntegrationTests(unittest.TestCase):
             host.clock_last_adjustment = adjustment_at - 10.0
             host.clock_health = {
                 "player1": {
-                    "receivedAt": adjustment_at - 1.0, "engineTick": 100, "lastCommitSeq": 2,
+                    "receivedAt": adjustment_at, "engineTick": 100, "lastCommitSeq": 2,
                     "tickRate": 5.0, "observedSpeed": 4, "gameTime": 200.0,
-                    "gameRate": 12.0,
+                    "gameRate": 4.0,
                 },
                 "player2": {
-                    "receivedAt": adjustment_at - 1.0, "engineTick": 100, "lastCommitSeq": 2,
+                    "receivedAt": adjustment_at, "engineTick": 100, "lastCommitSeq": 2,
                     "tickRate": 1.0, "observedSpeed": 4, "gameTime": 200.0,
-                    "gameRate": 12.0,
+                    "gameRate": 1.25,
                 },
             }
             host._maybe_adjust_clock_locked(adjustment_at)
+            self.assertEqual(len(host.commits), 2,
+                "one slow progress sample stepped the shared clock down")
+            for sample in host.clock_health.values():
+                sample["receivedAt"] = adjustment_at + 8.1
+            host._maybe_adjust_clock_locked(adjustment_at + 8.1)
             adjustment = host.commits[3]["payload"]["action"]
             self.assertEqual(adjustment["type"], "clock.rendezvous")
             self.assertEqual(adjustment["requestedSpeed"], 4)
+            self.assertEqual(adjustment["releaseSpeed"], 3)
+            self.assertEqual(adjustment["reason"], "adaptive-slowest-peer-cap")
+
+    def test_clock_health_audit_is_sampled_without_losing_live_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host", "sampled-health", "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+
+            def health(local_seq: int, engine_tick: int) -> dict[str, object]:
+                return sign({
+                    "protocol": 1,
+                    "session": "sampled-health",
+                    "peer": "player1",
+                    "local_seq": local_seq,
+                    "tick": engine_tick,
+                    "kind": "clock_health",
+                    "payload": {
+                        "schemaVersion": 3,
+                        "requestedSpeed": 0,
+                        "effectiveSpeed": 0,
+                        "generation": 0,
+                        "engineTick": engine_tick,
+                        "lastCommitSeq": 0,
+                        "proposalPending": False,
+                        "localWorkPending": False,
+                        "deferredIntentCount": 0,
+                        "rendezvousGeneration": 0,
+                        "rendezvousState": "idle",
+                        "rendezvousTargetTime": 0.0,
+                        "observedSpeed": 0.0,
+                        "gameTime": 100.0,
+                    },
+                })
+
+            host._record_non_intent(health(1, 100))
+            host._record_non_intent(health(2, 101))
+            records = [
+                item for item in AuditLog(audit).messages()
+                if item.get("record_type") == "clock_health"
+            ]
+            self.assertEqual(len(records), 1)
+            self.assertEqual(host.clock_health["player1"]["engineTick"], 101)
+            self.assertEqual(host.clock_health_audited, 1)
+            self.assertEqual(host.clock_health_not_audited, 1)
+
+            host.clock_health_last_audit_at["player1"] = time.monotonic() - 11.0
+            host._record_non_intent(health(3, 102))
+            records = [
+                item for item in AuditLog(audit).messages()
+                if item.get("record_type") == "clock_health"
+            ]
+            self.assertEqual(len(records), 2)
+            self.assertEqual(host.clock_health["player1"]["engineTick"], 102)
+
+    def test_shared_clock_ignores_render_tick_rate_asymmetry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "render-rate-clock", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 4
+            host.clock_generation = 7
+            host.clock_last_adjustment = sampled_at - 60.0
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": sampled_at, "engineTick": 100,
+                    "lastCommitSeq": 0, "generation": 7,
+                    "observedSpeed": 4, "gameTime": 200.0,
+                    "tickRate": 8.0, "gameRate": 4.0,
+                },
+                "player2": {
+                    "receivedAt": sampled_at, "engineTick": 100,
+                    "lastCommitSeq": 0, "generation": 7,
+                    "observedSpeed": 4, "gameTime": 200.0,
+                    "tickRate": 180.0, "gameRate": 4.0,
+                },
+            }
+            host._maybe_adjust_clock_locked(sampled_at)
+            for sample in host.clock_health.values():
+                sample["receivedAt"] = sampled_at + 60.0
+            host._maybe_adjust_clock_locked(sampled_at + 60.0)
+            self.assertEqual(host.commits, {})
+            self.assertIsNone(host.clock_degraded_since)
+            self.assertEqual(host.clock_progress_rate_ratio, 1.0)
+
+    def test_shared_clock_caps_two_equally_overloaded_peers(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "equal-overload-clock", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 4
+            host.clock_generation = 7
+            host.clock_last_adjustment = sampled_at - 60.0
+            host.clock_health = {
+                peer: {
+                    "receivedAt": sampled_at, "engineTick": 100,
+                    "lastCommitSeq": 0, "generation": 7,
+                    "observedSpeed": 4, "gameTime": 200.0,
+                    "tickRate": 8.0, "gameRate": 1.25,
+                }
+                for peer in ("player1", "player2")
+            }
+            host._maybe_adjust_clock_locked(sampled_at)
+            self.assertAlmostEqual(host.clock_progress_rate_ratio, 1.25 / 4.0)
+            self.assertEqual(host.commits, {})
+            for sample in host.clock_health.values():
+                sample["receivedAt"] = sampled_at + 8.1
+            host._maybe_adjust_clock_locked(sampled_at + 8.1)
+            adjustment = host.commits[1]["payload"]["action"]
+            self.assertEqual(adjustment["type"], "clock.rendezvous")
             self.assertEqual(adjustment["releaseSpeed"], 3)
             self.assertEqual(adjustment["reason"], "adaptive-slowest-peer-cap")
 
@@ -5638,22 +6811,61 @@ class NetworkIntegrationTests(unittest.TestCase):
                 "player1": {
                     "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
                     "gameTime": 100.0, "observedSpeed": 1,
-                    "tickRate": 60.0, "gameRate": 12.0,
+                    "tickRate": 60.0, "gameRate": 1.0,
                 },
                 "player2": {
                     "receivedAt": sampled_at - 0.25, "engineTick": 85,
-                    "lastCommitSeq": 0, "gameTime": 97.0, "observedSpeed": 1,
-                    "tickRate": 60.0, "gameRate": 12.0,
+                    "lastCommitSeq": 0, "gameTime": 99.75, "observedSpeed": 1,
+                    "tickRate": 60.0, "gameRate": 1.0,
                 },
             }
             host._maybe_adjust_clock_locked(sampled_at)
             self.assertAlmostEqual(host.clock_game_time_skew, 0.0, places=6)
             self.assertEqual(host.commits, {},
                 "staggered healthy heartbeats caused a false resync")
-            host.clock_health["player2"]["gameTime"] = 94.0
+            host.clock_health["player2"]["gameTime"] = 96.75
             host._maybe_adjust_clock_locked(sampled_at)
             self.assertAlmostEqual(host.clock_game_time_skew, 3.0, places=6)
+            self.assertEqual(host.commits, {},
+                "one soft-skew sample caused a rendezvous")
+            host.clock_health["player1"]["receivedAt"] = sampled_at + 4.1
+            host.clock_health["player2"].update({
+                "receivedAt": sampled_at + 4.1,
+                "gameTime": 97.0,
+            })
+            host._maybe_adjust_clock_locked(sampled_at + 4.1)
             self.assertEqual(host.commits[1]["payload"]["action"]["type"], "clock.rendezvous")
+
+    def test_shared_clock_corrects_hard_skew_without_debounce(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            host = CommitHost(
+                GameBridge(root / "host", "hard-skew-clock", "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            sampled_at = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host.clock_generation = 3
+            host.clock_last_adjustment = sampled_at - 10.0
+            host.clock_health = {
+                "player1": {
+                    "receivedAt": sampled_at, "engineTick": 100,
+                    "lastCommitSeq": 0, "generation": 3,
+                    "gameTime": 120.0, "observedSpeed": 1,
+                    "tickRate": 60.0, "gameRate": 1.0,
+                },
+                "player2": {
+                    "receivedAt": sampled_at, "engineTick": 100,
+                    "lastCommitSeq": 0, "generation": 3,
+                    "gameTime": 100.0, "observedSpeed": 1,
+                    "tickRate": 60.0, "gameRate": 1.0,
+                },
+            }
+            host._maybe_adjust_clock_locked(sampled_at)
+            action = host.commits[1]["payload"]["action"]
+            self.assertEqual(action["type"], "clock.rendezvous")
+            self.assertTrue(action["reason"].startswith("absolute-skew-rendezvous:"))
 
     def test_clock_skew_ignores_samples_from_adjacent_authority_generations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -5672,7 +6884,7 @@ class NetworkIntegrationTests(unittest.TestCase):
                     "receivedAt": sampled_at, "engineTick": 19815,
                     "lastCommitSeq": 14, "gameTime": 3124.8,
                     "observedSpeed": 1, "effectiveSpeed": 1,
-                    "generation": 8, "tickRate": 60.0, "gameRate": 12.0,
+                    "generation": 8, "tickRate": 60.0, "gameRate": 1.0,
                 },
                 "player2": {
                     "receivedAt": sampled_at - 0.05, "engineTick": 21376,
@@ -5697,7 +6909,7 @@ class NetworkIntegrationTests(unittest.TestCase):
                 "observedSpeed": 1,
                 "effectiveSpeed": 1,
                 "generation": 8,
-                "gameRate": 12.0,
+                "gameRate": 1.0,
             })
             host._maybe_adjust_clock_locked(sampled_at)
             self.assertAlmostEqual(host.clock_game_time_skew, 0.0, places=6)
@@ -5720,7 +6932,7 @@ class NetworkIntegrationTests(unittest.TestCase):
                 peer: {
                     "receivedAt": sampled_at, "engineTick": 100,
                     "lastCommitSeq": 0, "gameTime": 100.0,
-                    "observedSpeed": 1, "tickRate": 60.0, "gameRate": 12.0,
+                    "observedSpeed": 1, "tickRate": 60.0, "gameRate": 1.0,
                 }
                 for peer in ("player1", "player2")
             }
@@ -5746,7 +6958,7 @@ class NetworkIntegrationTests(unittest.TestCase):
                 peer: {
                     "receivedAt": sampled_at, "engineTick": 100,
                     "lastCommitSeq": 0, "gameTime": 100.0,
-                    "observedSpeed": 1, "tickRate": 60.0, "gameRate": 12.0,
+                    "observedSpeed": 1, "tickRate": 60.0, "gameRate": 1.0,
                 }
                 for peer in ("player1", "player2")
             }
@@ -5774,7 +6986,7 @@ class NetworkIntegrationTests(unittest.TestCase):
                     "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
                     "requestedSpeed": 4, "effectiveSpeed": 4, "generation": 8,
                     "gameTime": 101.0, "observedSpeed": 4,
-                    "tickRate": 60.0, "gameRate": 96.0,
+                    "tickRate": 60.0, "gameRate": 4.0,
                 },
                 "player2": {
                     "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
@@ -5820,7 +7032,7 @@ class NetworkIntegrationTests(unittest.TestCase):
                 "the host resumed while the native modal pause was still open")
 
             host.clock_health["player2"]["observedSpeed"] = 4
-            host.clock_health["player2"]["gameRate"] = 96.0
+            host.clock_health["player2"]["gameRate"] = 4.0
             host._maybe_adjust_clock_locked(resumed_at)
             catch_up = host.commits[2]["payload"]["action"]
             self.assertEqual(catch_up["type"], "clock.rendezvous")
@@ -5848,12 +7060,12 @@ class NetworkIntegrationTests(unittest.TestCase):
                 "player1": {
                     "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
                     "gameTime": 100.0, "observedSpeed": 1, "tickRate": 60.0,
-                    "gameRate": 12.0,
+                    "gameRate": 1.0,
                 },
                 "player2": {
                     "receivedAt": sampled_at, "engineTick": 100, "lastCommitSeq": 0,
                     "gameTime": 103.0, "observedSpeed": 1, "tickRate": 60.0,
-                    "gameRate": 12.0,
+                    "gameRate": 1.0,
                 },
             }
             intent = sign({
@@ -5954,7 +7166,7 @@ class NetworkIntegrationTests(unittest.TestCase):
                 peer: {
                     "receivedAt": now, "engineTick": 10, "lastCommitSeq": 0,
                     "gameTime": 100.0, "observedSpeed": 1,
-                    "tickRate": 60.0, "gameRate": 12.0,
+                    "tickRate": 60.0, "gameRate": 1.0,
                 }
                 for peer in ("player1", "player2")
             }
@@ -7031,6 +8243,8 @@ class NetworkIntegrationTests(unittest.TestCase):
                             "digest": digest,
                             "vehicleLifecycleDigest": "life",
                             "vehiclePhaseDigest": "phase",
+                            "vehicleRestoreSafe": True,
+                            "vehicleRestoreUnsafeVehicles": [],
                         },
                     }
                 )
@@ -7038,6 +8252,10 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertEqual(host.mobility_outcomes["mobility:player1:7"], "converged")
             self.assertEqual(host.vehicle_lifecycle_outcomes["mobility:player1:7"], "converged")
             self.assertEqual(host.vehicle_phase_outcomes["mobility:player1:7"], "converged")
+            self.assertEqual(
+                host.vehicle_restore_safety["mobility:player1:7"],
+                {"player1": True, "player2": True},
+            )
             self.assertEqual(host.vehicle_phase_state, "converged")
 
             host._record_non_intent(
@@ -7078,6 +8296,56 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 host.vehicle_lifecycle_outcomes["mobility:player1:11"], "converged"
             )
+
+    def test_client_reconnect_backoff_is_bounded_and_observable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = CommitClient(
+                GameBridge(root / "client", "retry-client", "player2"),
+                "127.0.0.1", 29742,
+            )
+            waits: list[float] = []
+
+            def unavailable(_poll_seconds: float) -> None:
+                raise ConnectionError("host unavailable")
+
+            def record_wait(seconds: float) -> bool:
+                waits.append(seconds)
+                if len(waits) >= 5:
+                    client.stop.set()
+                return client.stop.is_set()
+
+            client._session = unavailable  # type: ignore[method-assign]
+            client.stop.wait = record_wait  # type: ignore[method-assign]
+            client.run(retry_seconds=2.0)
+
+            self.assertEqual(waits, [2.0, 4.0, 8.0, 10.0, 10.0])
+            status = json.loads(client.bridge.status_path.read_text(encoding="utf-8"))
+            self.assertEqual(status["retryAttempts"], 5)
+            self.assertEqual(status["retryDelaySeconds"], 10.0)
+            self.assertEqual(status["status"], "stopped")
+
+    def test_strict_audit_replay_rejects_an_unsettled_valid_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            audit = AuditLog(Path(directory) / "audit.ndjson")
+            session = "strict-replay"
+            audit.append(sign({
+                "protocol": 1,
+                "session": session,
+                "seq": 1,
+                "kind": "commit",
+                "origin_peer": "player1",
+                "origin_local_seq": 1,
+                "tick": 0,
+                "payload": {"action": {
+                    "type": "fare.adjust",
+                    "lineCid": "line:pre:test",
+                    "deltaCents": 100,
+                }},
+            }))
+            self.assertEqual(replay(audit.path, session), 0)
+            with self.assertRaisesRegex(ProtocolError, "not settled"):
+                replay(audit.path, session, require_settled=True)
 
     def test_client_intent_is_committed_to_both_game_inboxes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

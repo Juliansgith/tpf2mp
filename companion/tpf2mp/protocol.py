@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from .aboard_milestone_protocol import AboardMilestoneError, validate as validate_aboard_milestone
 from .line_registration_protocol import validate_metadata as validate_line_metadata
 from .recovery_receipt_protocol import validation_error as receipt_validation_error
+from .vehicle_phase_proof import VehiclePhaseProofError, normalise as normalise_vehicle_phase_proof
 
 PROTOCOL_VERSION = 1
 MAX_EXACT_INTEGER = 9_007_199_254_740_991
@@ -208,7 +209,9 @@ def decode_line(data: bytes | str) -> dict[str, Any]:
 
 def validate_envelope(message: Mapping[str, Any], session: str) -> None:
     verify(message)
-    if int(message.get("protocol", -1)) != PROTOCOL_VERSION:
+    protocol = message.get("protocol")
+    if not isinstance(protocol, int) or isinstance(protocol, bool) \
+            or protocol != PROTOCOL_VERSION:
         raise ProtocolError(f"protocol mismatch: {message.get('protocol')}")
     if str(message.get("session", "")) != session:
         raise ProtocolError(f"session mismatch: {message.get('session')}")
@@ -1296,6 +1299,13 @@ def validate_operation_transaction(value: Any) -> dict[str, Any]:
     return value
 
 
+def validate_vehicle_phase_proof(value: Any) -> dict[str, Any]:
+    try:
+        return normalise_vehicle_phase_proof(value)
+    except VehiclePhaseProofError as exc:
+        raise ProtocolError(str(exc)) from exc
+
+
 def validate_action(action: Any) -> dict[str, Any]:
     if not isinstance(action, dict):
         raise ProtocolError("action must be an object")
@@ -1637,7 +1647,7 @@ def validate_action(action: Any) -> dict[str, Any]:
     if action_type == "recovery.resume":
         expected = {
             "type", "fromSession", "boundarySeq", "coreDigest",
-            "convergenceKey", "planChecksum",
+            "convergenceKey", "planChecksum", "vehiclePhaseDigest",
         }
         if set(action) != expected:
             raise ProtocolError("recovery.resume has unknown or missing fields")
@@ -1647,12 +1657,16 @@ def validate_action(action: Any) -> dict[str, Any]:
             raise ProtocolError("recovery.resume source session is invalid")
         if boundary < 1 or boundary > MAX_EXACT_INTEGER:
             raise ProtocolError("recovery.resume boundarySeq is invalid")
-        for field in ("coreDigest", "convergenceKey", "planChecksum"):
+        for field in (
+            "coreDigest", "convergenceKey", "planChecksum", "vehiclePhaseDigest",
+        ):
             value = action.get(field)
             if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{8}", value):
                 raise ProtocolError(f"recovery.resume {field} is invalid")
     if action_type == "network.checkpoint_request":
-        if set(action) != {"type", "preparationSeq", "reason"}:
+        if set(action) != {
+            "type", "preparationSeq", "reason", "vehiclePhaseProof",
+        }:
             raise ProtocolError("network.checkpoint_request has unknown or missing fields")
         preparation = _protocol_int(
             action.get("preparationSeq"), "checkpoint request preparationSeq"
@@ -1662,6 +1676,7 @@ def validate_action(action: Any) -> dict[str, Any]:
             raise ProtocolError("network checkpoint request preparationSeq is invalid")
         if not isinstance(reason, str) or reason != f"recovery-prepare:{preparation}":
             raise ProtocolError("network checkpoint request reason is invalid")
+        validate_vehicle_phase_proof(action.get("vehiclePhaseProof"))
     if action_type == "recovery.save_receipt":
         # A peer declaring "I wrote a native save of this exact agreed
         # boundary, while paused, with nothing ordered since". The claim is

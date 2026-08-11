@@ -50,6 +50,7 @@ function M.new(env)
       "mobility", "mobilityHistory", "operational", "agentPolicy",
       "townDevelopment", "townDevelopmentQueue", "passengerCosmetics",
       "serviceRegistration", "freightMilestone", "passengerMilestone",
+      "performance",
     }) do
       report[field] = util.deepCopy(state.probes[field])
     end

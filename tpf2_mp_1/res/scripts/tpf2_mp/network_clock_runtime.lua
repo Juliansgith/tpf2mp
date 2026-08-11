@@ -1,6 +1,6 @@
 local util = require "tpf2_mp/util"
 local bridge = require "tpf2_mp/bridge"
-local clockHealth = require "tpf2_mp/network_clock_health"
+local heartbeatModule = require "tpf2_mp/network_clock_heartbeat"
 local world = require "tpf2_mp/world"
 local restoreBootstrapRuntime = require "tpf2_mp/restore_bootstrap_runtime"
 local M = {}
@@ -43,14 +43,17 @@ function M.new(deps)
   })
   local networkClock = {
     manualBootstrap = { nextAttemptTick = 240, attempts = 0, submitted = false },
-    pausedHealth = { calls = 0, lastWall = nil },
   }
+  local heartbeat = heartbeatModule.new({
+    getState = getState, clockSnapshot = clockSnapshot,
+    localWorkState = localWorkState, emit = emit, wallTime = wallTime,
+  })
   -- Native clocks are not saved; their process-local rearm need is never serialized.
   local nativeRearmPending = false
   local restoreBootstrap = restoreBootstrapRuntime.new({
     getState = getState, config = config, diagnosticLog = diagnosticLog,
     submitIntent = submitIntent, awaitingOrder = awaitingOrder,
-    pendingBarrierReason = networkPendingBarrierReason,
+    pendingBarrierReason = networkPendingBarrierReason, wallTime = wallTime,
   })
 
   local function issueSpeed(speed, callback, origin)
@@ -288,34 +291,15 @@ function M.new(deps)
     return true, util.deepCopy(current.rendezvous)
   end
   emitHealth = function(force)
-    if state.networkMode ~= "network" or not state.initialized
-      or (force ~= true and state.tick % 15 ~= 0) then return false end
-    local observed, clock = clockSnapshot(), state.world.networkClock
-    local payload = clockHealth.payload(state, observed, clock, localWorkState() or {})
-    local ok, envelope = emit("clock_health", payload, state.tick)
-    if ok then
-      clock.healthEmitted = (clock.healthEmitted or 0) + 1
-      clock.lastHealthLocalSeq = envelope.local_seq
-    else clock.lastError = tostring(envelope) end
-    return ok
+    -- network_pump_runtime owns the running cadence. Keeping a second modulo
+    -- gate here phase-locked the scheduler onto a permanently non-divisible
+    -- tick after resume, so every running heartbeat disappeared.
+    return heartbeat.emit(force)
   end
   networkClock.emitHealth = emitHealth
 
   function networkClock.emitPausedHealth()
-    if state.networkMode ~= "network" or not state.initialized then return false end
-    local observed = clockSnapshot()
-    if tonumber(observed.gameSpeed) ~= 0 then return false end
-    local throttle = networkClock.pausedHealth
-    throttle.calls = throttle.calls + 1
-    local wall = wallTime()
-    if wall then
-      if throttle.lastWall and wall - throttle.lastWall < 2 then return false end
-      throttle.lastWall = wall
-    elseif throttle.calls % 4 ~= 1 then
-      -- Sandboxed fallback: snapshot.request is already launcher-throttled.
-      return false
-    end
-    return emitHealth(true)
+    return heartbeat.emitPaused()
   end
 
   function networkClock.operationPrerequisite(action)
@@ -339,9 +323,9 @@ function M.new(deps)
     if launcherReady == true then bootstrap.launcherReady = true end
     local bootstrapReady = cfg.manualBootstrapReady == true or bootstrap.launcherReady == true
     if not cfg.manualNetwork or not bootstrapReady or state.networkMode ~= "network"
-      or state.bridge.peerId ~= "player1"
-      or state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
+      or state.bridge.peerId ~= "player1" then return end
     if restoreBootstrap.maintain(bootstrap) then return end
+    if state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
     if state.initialized then return end
     if awaitingOrder() or networkPendingBarrierReason() then return end
     local authority = state.probes.networkAuthority or {}
@@ -362,9 +346,10 @@ function M.new(deps)
   networkClock.freezeGame = freezeNetworkGame
   networkClock.reset = function()
     networkClock.manualBootstrap = {
-      nextAttemptTick = 240, attempts = 0, submitted = false, launcherReady = false,
+      nextAttemptTick = 240, attempts = 0, submitted = false,
+      launcherReady = false, restoreNextAttemptAt = nil,
     }
-    networkClock.pausedHealth = { calls = 0, lastWall = nil }
+    heartbeat.reset()
     nativeRearmPending = true
   end
   return networkClock

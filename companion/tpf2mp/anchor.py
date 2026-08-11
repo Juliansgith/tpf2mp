@@ -1,13 +1,8 @@
-"""Creating restore points from live sessions.
+"""Create restore points from paused, converged live sessions.
 
-`restore.py` decides whether a boundary *is* a restore point. This decides
-when one can be made, and makes it.
-
-The companion is the right place for both halves because it already knows
-everything the attestation needs: it coordinates the shared clock, so it
-knows whether the pause is acknowledged; it owns the ordered history, so it
-knows whether anything has happened since the last converged checkpoint; and
-the recovery watcher already sees new native saves appear.
+The companion owns the shared clock and ordered history; the recovery watcher
+identifies the exact native save. Together they can attest a boundary without
+asking a player to understand the invariant.
 
 A player therefore never has to understand the invariant. One preparation
 request makes the companion pause and checkpoint both worlds; after READY,
@@ -17,6 +12,7 @@ attests that stable file. A correctly prefixed manual save remains a fallback.
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 from typing import Any, Mapping
@@ -38,7 +34,7 @@ class AnchorCoordinator:
 
     # -- readiness -----------------------------------------------------
 
-    def readiness(self) -> dict[str, Any]:
+    def readiness(self, receipt: bool = False) -> dict[str, Any]:
         """Whether a save taken right now would be a valid restore anchor.
 
         Reported as reasons rather than a bare boolean so the overlay can
@@ -49,11 +45,17 @@ class AnchorCoordinator:
         reasons: list[str] = []
         checkpoint = self.host.last_agreed_checkpoint
         boundary = int(checkpoint.get("boundarySeq", 0)) if checkpoint else 0
+        preparation = getattr(self.host, "anchor_preparation", None)
+        active = getattr(preparation, "current", None)
+        latched = receipt and isinstance(active, Mapping) \
+            and active.get("status") == "ready" \
+            and int(active.get("checkpointBoundarySeq") or 0) == boundary
         if boundary <= 0:
             reasons.append("no checkpoint boundary has converged yet")
-        if not self.host.synchronization.shared_pause_acknowledged():
-            reasons.append("the shared clock is not paused on every peer")
-        reasons.extend(self._health_reasons(boundary))
+        if not latched:
+            if not self.host.synchronization.shared_pause_acknowledged():
+                reasons.append("the shared clock is not paused on every peer")
+            reasons.extend(self._health_reasons(boundary))
         if self.host.session_fault:
             reasons.append("the session has already faulted; restore instead of anchoring")
         pending = self._pending_work()
@@ -61,7 +63,6 @@ class AnchorCoordinator:
             reasons.append(f"{pending} ordered action(s) are still settling")
         if boundary > 0 and self._commits_since(boundary):
             reasons.append("work has been ordered since the last converged checkpoint")
-        preparation = getattr(self.host, "anchor_preparation", None)
         if preparation is not None:
             reasons = preparation.readiness_reasons() + reasons
         return {
@@ -110,6 +111,33 @@ class AnchorCoordinator:
                 outcome_seq = max(outcome_seq, int(seq))
         return outcome_seq
 
+    def paused_game_time_skew(self) -> float | None:
+        """Return raw all-peer game-time skew at a fresh paused generation.
+
+        Authored/core digests intentionally exclude native vehicle position and
+        the engine clock.  Matching checkpoint digests therefore do not prove
+        that two native saves were taken at the same simulation instant.  A
+        restore anchor needs that additional proof explicitly.
+        """
+
+        now = time.monotonic()
+        generation = int(self.host.clock_pause_acknowledged_generation)
+        times: list[float] = []
+        for peer in self.host.required_peers:
+            sample = self.host.clock_health.get(peer)
+            if not isinstance(sample, Mapping) \
+                    or now - float(sample.get("receivedAt", 0.0)) > self.HEALTH_MAX_AGE \
+                    or int(sample.get("schemaVersion", 0)) < 3 \
+                    or sample.get("observedSpeed") is None \
+                    or float(sample.get("observedSpeed")) != 0.0 \
+                    or int(sample.get("generation", -1)) < generation:
+                return None
+            value = sample.get("gameTime")
+            if value is None or not math.isfinite(float(value)):
+                return None
+            times.append(float(value))
+        return max(times) - min(times) if times else None
+
     def _health_reasons(self, boundary_seq: int) -> list[str]:
         """Prove every game process is paused and locally quiescent now.
 
@@ -142,6 +170,13 @@ class AnchorCoordinator:
                 reasons.append(f"{peer} has not observed the acknowledged pause generation")
             if outcome_seq > 0 and int(sample.get("lastCommitSeq", -1)) < outcome_seq:
                 reasons.append(f"{peer} has not consumed the converged checkpoint outcome")
+        skew = self.paused_game_time_skew()
+        tolerance = float(self.host.synchronization.CLOCK_RENDEZVOUS_TOLERANCE)
+        if skew is not None and skew > tolerance:
+            reasons.append(
+                f"paused peer game times differ by {skew:.3f}s "
+                f"(maximum {tolerance:.3f}s)"
+            )
         return reasons
 
     def _commits_since(self, boundary_seq: int) -> bool:
@@ -173,7 +208,7 @@ class AnchorCoordinator:
         because a later restore would trust it.
         """
 
-        state = self.readiness()
+        state = self.readiness(receipt=True)
         if not state["ready"]:
             self.last_reason = "; ".join(state["reasons"])
             raise ProtocolError(f"save cannot be anchored: {self.last_reason}")
@@ -231,7 +266,7 @@ class AnchorCoordinator:
 
         if origin_peer not in self.host.required_peers:
             raise ProtocolError("save receipt came from a peer outside the match roster")
-        readiness = self.readiness()
+        readiness = self.readiness(receipt=True)
         if not readiness["ready"]:
             raise ProtocolError(
                 "save receipt arrived while the boundary was not READY: "

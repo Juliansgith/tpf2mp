@@ -1,6 +1,7 @@
 local util = require "tpf2_mp/util"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
 local cargoPresentation = require "tpf2_mp/cargo_presentation"
+local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 
 local M = {}
 
@@ -37,6 +38,15 @@ end
 function M.applyOperation(worldState, economyState, transaction, companyCid)
   local presentation = util.deepCopy(worldState.passengerPresentation)
   local cargo = util.deepCopy(worldState.cargoPresentation)
+  local freight, freightResult = worldState.freightIndustry, nil
+  if type(transaction) == "table" and type(transaction.data) == "table"
+    and transaction.kind == "line.delete" then
+    freight = util.deepCopy(worldState.freightIndustry)
+    local freightOk
+    freightOk, freightResult = freightIndustryModel.retireTransportLine(
+      freight, transaction.data.targetCid)
+    if not freightOk then return false, freightResult end
+  end
   local ok, result = passengerPresentation.onOperation(
     presentation, economyState, transaction, companyCid)
   if not ok then return false, result end
@@ -45,7 +55,8 @@ function M.applyOperation(worldState, economyState, transaction, companyCid)
   if not cargoOk then return false, cargoResult end
   worldState.passengerPresentation = result
   worldState.cargoPresentation = cargoResult
-  return true, { passenger = result, cargo = cargoResult }
+  if freightResult ~= nil then worldState.freightIndustry = freight end
+  return true, { passenger = result, cargo = cargoResult, freight = freightResult }
 end
 
 return M

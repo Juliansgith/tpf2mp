@@ -403,7 +403,10 @@ function M.reconcileNetworkAccounts(state, companies, context)
         }
       end
     end
-    local after = playerId and nativeBalance(playerId) or nil
+    -- The pre-read already observes completion of any command issued on an
+    -- earlier update. Avoid a second native PLAYER lookup on every idle audit;
+    -- retain the immediate diagnostic read only after issuing a new command.
+    local after = commandIssued and playerId and nativeBalance(playerId) or before
     if after ~= nil and math.abs(after - target) < 0.5 then
       reconciliation.pending[companyCid] = nil
       waiting = false

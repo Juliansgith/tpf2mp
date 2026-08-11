@@ -28,10 +28,14 @@ For a topology edit with construction removals, capture now:
 - retains all ordinary named street/track, node, signal, waypoint, resource,
   cost, ownership, and dependency fields.
 
-The compound path is intentionally narrow. It requires new/replacement topology
-in the same transaction. A station or ordinary construction bulldoze that only
-removes its generated edges/nodes remains on the established multi-tick
-construction helper path.
+The compound path was initially limited to new/replacement topology. The
+2026-08-10 town-road live run proved that a removal-only road/node transaction
+may also carry ordinary autonomous-building collateral. That shape now uses
+the same atomic topology path. A station or depot bulldoze that removes its
+generated graph remains on the established multi-tick construction helper
+path; semantic construction-resource classification keeps that boundary
+explicit. See
+[the follow-up investigation](REMOVAL_ONLY_TOWN_ROAD_COLLATERAL_2026-08-10.md).
 
 ## Atomic replay and settlement
 

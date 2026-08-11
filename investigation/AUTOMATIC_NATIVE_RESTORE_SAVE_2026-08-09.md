@@ -1,5 +1,10 @@
 # Automatic native restore save — 2026-08-09
 
+> Superseded live finding: pinned Build 35924 does not publish the assumed
+> `api.cmd.make.saveGame` factory and truncates normal session-based names at 50
+> characters. The guarded stock-UI fallback and boundary-11 handoff evidence are
+> recorded in [LIVE_RESTORE_HANDOFF_AND_SAVE_FALLBACK_2026-08-09.md](LIVE_RESTORE_HANDOFF_AND_SAVE_FALLBACK_2026-08-09.md).
+
 Prototype `0.37.0-alpha`, state schema `29`, checkpoint format `5`, and native
 hook `0.16.0` replace the last stock Save-dialog step in coordinated restore
 preparation with a bounded automatic native command.

@@ -3,6 +3,7 @@ local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
 local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
+local proposalRejectionSnapshot = require "tpf2_mp/gui_proposal_rejection_snapshot"
 
 local M = {}
 
@@ -19,6 +20,10 @@ function M.new(deps)
   local EVENT_ID = tostring(deps.eventId or "tpf2mp")
   local SCRIPT_FILE = tostring(deps.scriptFile or "tpf2_mp.lua")
   local setDifference = util.setDifference
+  local proposalWorld = proposalRejectionSnapshot.new({
+    componentEntitySet = componentEntitySet,
+    balanceOf = balanceOf,
+  })
 
   local state = setmetatable({}, {
     __index = function(_, key) return getState()[key] end,
@@ -167,6 +172,11 @@ function M.new(deps)
     gui.proposalResults[#gui.proposalResults + 1] = payload
   end
 
+  local function rejectGuiProposal(proposalId, errorValue, worldUnchanged)
+    queueGuiProposalResult({ proposalId = proposalId, success = false,
+      worldUnchanged = worldUnchanged == true, error = tostring(errorValue) })
+  end
+
   local function processPendingProposalCaptures()
     for index = #gui.pendingProposalCaptures, 1, -1 do
       local pending = gui.pendingProposalCaptures[index]
@@ -233,7 +243,7 @@ function M.new(deps)
         local nativePlayerId = tonumber(record.nativeOwnerPlayerId)
         local issuerPlayerId = tonumber(record.issuerPlayerId or record.controlPlayerId)
         if not nativePlayerId or not issuerPlayerId then
-          queueGuiProposalResult({ proposalId = proposalId, success = false, error = "proposal player mapping is unavailable" })
+          rejectGuiProposal(proposalId, "proposal player mapping is unavailable", true)
           return true
         end
         local issuerBalanceBefore = balanceOf(issuerPlayerId)
@@ -243,43 +253,38 @@ function M.new(deps)
           nativePlayerId = nativePlayerId,
         })
         if not proposal then
-          queueGuiProposalResult({ proposalId = proposalId, success = false, error = tostring(materialiseError) })
+          rejectGuiProposal(proposalId, materialiseError, true)
           return true
         end
         local factory = util.commandFactory("buildProposal")
         if not (factory and api and api.cmd and type(api.cmd.sendCommand) == "function") then
-          queueGuiProposalResult({ proposalId = proposalId, success = false, error = "GUI BuildProposal API is unavailable" })
+          rejectGuiProposal(proposalId, "GUI BuildProposal API is unavailable", true)
           return true
         end
         local types = api.type and api.type.ComponentType or {}
-        local beforeEdges, edgeError = componentEntitySet(types.BASE_EDGE)
-        local beforeNodes, nodeError = componentEntitySet(types.BASE_NODE)
-        if not beforeEdges or not beforeNodes then
-          queueGuiProposalResult({ proposalId = proposalId, success = false, error = tostring(edgeError or nodeError) })
+        local beforeWorld, worldCaptureError = proposalWorld.capture(
+          types, issuerPlayerId, nativePlayerId)
+        if not beforeWorld then
+          rejectGuiProposal(proposalId, worldCaptureError, true)
           return true
         end
+        local beforeEdges = beforeWorld.sets.edges
+        local beforeNodes = beforeWorld.sets.nodes
         local commandOk, commandOrError = pcall(factory, proposal, nil, false)
         if not commandOk then
-          queueGuiProposalResult({ proposalId = proposalId, success = false, error = tostring(commandOrError) })
+          rejectGuiProposal(proposalId, commandOrError, true)
           return true
         end
         if state.networkMode == "network" then
           local authorize = rawget(_G, "tpf2mp_native_authorize_build")
           if type(authorize) ~= "function" then
-            queueGuiProposalResult({
-              proposalId = proposalId,
-              success = false,
-              error = "network proposal requires GUI-state native authorization",
-            })
+            rejectGuiProposal(proposalId,
+              "network proposal requires GUI-state native authorization", true)
             return true
           end
           local called, authorized, authorizeError = pcall(authorize)
           if not called or authorized == false then
-            queueGuiProposalResult({
-              proposalId = proposalId,
-              success = false,
-              error = tostring(authorizeError or authorized),
-            })
+            rejectGuiProposal(proposalId, authorizeError or authorized, true)
             return true
           end
         end
@@ -287,7 +292,8 @@ function M.new(deps)
         gui.issuingCanonicalProposal = proposalId
         local sent, sendError = util.sendCommand(commandOrError, function(_, success)
             if success ~= true then
-              queueGuiProposalResult({ proposalId = proposalId, success = false, error = "native BuildProposal rejected" })
+              rejectGuiProposal(proposalId, "native BuildProposal rejected",
+                proposalWorld.unchanged(beforeWorld, types, issuerPlayerId, nativePlayerId))
               return
             end
             local afterEdges, afterEdgeError = componentEntitySet(types.BASE_EDGE)
@@ -324,7 +330,8 @@ function M.new(deps)
           end, "mod.network.replay-build-proposal")
         gui.issuingCanonicalProposal = nil
         if not sent then
-          queueGuiProposalResult({ proposalId = proposalId, success = false, error = tostring(sendError) })
+          rejectGuiProposal(proposalId, sendError,
+            proposalWorld.unchanged(beforeWorld, types, issuerPlayerId, nativePlayerId))
         end
         return true
       end

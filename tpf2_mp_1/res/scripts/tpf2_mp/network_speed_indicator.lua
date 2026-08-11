@@ -6,6 +6,7 @@ local BUTTON_IDS = {
   "menu.speedButton2",
   "menu.speedButton3",
 }
+local INSPECTION_STRIDE_FRAMES = 3
 
 -- Transport Fever 2 exposes three running-speed buttons.  The fastest stock
 -- button is native speed 4; native speed 3 is a valid adaptive cap but shares
@@ -46,6 +47,8 @@ function M.new(deps)
     local wanted = buttonIndex(clock and clock.effectiveSpeed)
     if wanted == nil then return false end
     stats.frames = stats.frames + 1
+    local changed = stats.lastEffectiveSpeed ~= tonumber(clock.effectiveSpeed)
+    if not changed and stats.frames % INSPECTION_STRIDE_FRAMES ~= 1 then return false end
     stats.lastEffectiveSpeed = tonumber(clock.effectiveSpeed)
     stats.lastButtonIndex = wanted
     stats.lastError = nil

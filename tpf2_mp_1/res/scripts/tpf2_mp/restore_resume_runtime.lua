@@ -13,6 +13,7 @@ function M.new(env)
       coreDigest = tostring(restore.coreDigest or ""),
       convergenceKey = tostring(restore.convergenceKey or ""),
       planChecksum = tostring(restore.planChecksum or ""),
+      vehiclePhaseDigest = tostring(restore.vehiclePhaseDigest or ""),
     }
   end
 
@@ -51,10 +52,21 @@ function M.new(env)
     if restore.status ~= "validated" then
       return false, "restore source validation did not complete"
     end
-    if coreDigest() ~= expected.coreDigest then
-      restore.status, restore.error = "failed", "restored core digest does not match the plan"
+    -- The plan binds the source checkpoint before state-schema migration. A
+    -- compatible newer build may deliberately add authored defaults and thus
+    -- produce a different current digest on both peers. Revalidate the saved
+    -- source anchor here; the mandatory restore-resume checkpoint immediately
+    -- following this action proves that both migrated worlds have the same
+    -- new core digest before gameplay is released.
+    local source = restore.sourceAnchor
+    if type(source) ~= "table"
+      or util.integer(source.boundarySeq, 0) ~= expected.boundarySeq
+      or tostring(source.coreDigest or "") ~= expected.coreDigest
+      or tostring(source.convergenceKey or "") ~= expected.convergenceKey then
+      restore.status, restore.error = "failed", "restored source anchor does not match the plan"
       return false, restore.error
     end
+    restore.migratedCoreDigest = coreDigest()
     restore.status, restore.commitSeq = "committed", commitSeq
     restore.resumedTick, restore.error = state.tick, nil
     return true, util.deepCopy(restore)

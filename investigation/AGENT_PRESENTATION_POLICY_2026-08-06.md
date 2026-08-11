@@ -1,5 +1,11 @@
 # Agent presentation policy: skeleton crew
 
+> Current-policy note (2026-08-10): the historical divide-by-64 skeleton rule
+> documented below has been superseded. Skeleton now caps every otherwise
+> populated building at exactly one native capacity slot while retaining 25%
+> destination recomputation. See
+> [the native async/runtime performance investigation](NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md).
+
 Date: 2026-08-06 (Europe/Amsterdam)  
 Scope: the native crowd becomes a chosen presentation cost rather than an
 unexamined default. Implements the agents-off research

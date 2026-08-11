@@ -161,10 +161,14 @@ $toolNames = @(
     'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
     'analyze_feeder_live_evidence.ps1', 'start_feeder_live_acceptance.ps1',
     'multiplayer_launcher.ps1',
-    'watch_recovery_saves.ps1', 'recovery_plan_common.ps1',
-    'run_localhost_live_validation.ps1', 'start_operational_capture_lab.ps1',
+    'watch_recovery_saves.ps1', 'recovery_plan_common.ps1', 'recovery_save_common.ps1',
+    'save_recovery_via_ui.ps1',
+    'run_localhost_live_validation.ps1', 'localhost_process_policy.ps1', 'start_operational_capture_lab.ps1',
     'analyze_operational_capture.ps1', 'localhost_bootstrap.lua', 'multiplayer_menu_bootstrap.lua',
-    'send_game_console.ps1', 'archive_recovery_save.ps1', 'main_menu_coordinator.ps1'
+    'send_game_console.ps1', 'ensure_paused_network_wake.ps1',
+    'automatic_restore_capture.ps1', 'run_latest_local_restore_acceptance.ps1',
+    'run_fresh_local_restore_cycle.ps1',
+    'archive_recovery_save.ps1', 'main_menu_coordinator.ps1'
 )
 foreach ($name in $toolNames) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $releaseRoot "tools\$name")

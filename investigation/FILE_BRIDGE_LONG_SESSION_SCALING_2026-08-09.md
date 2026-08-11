@@ -30,13 +30,15 @@ permits skipping to a later file. Envelope, session, peer, filename, and
 message-sequence validation remain unchanged.
 
 The cursor file is schema 2 and additionally records `pruned_through` and the
-retention contract. Checkpoints, events, intents, completions, telemetry
-samples, and manual research exports remain intact for offline tools. Only the
-high-frequency acknowledged `clock_health` stream is replaceable: the
-companion retains at least the latest 4,096 messages' worth and removes older
-heartbeats. A crash cannot lose unconsumed work because maintenance stays 4,096
-sequences behind the newly acknowledged cursor, whose earlier position was
-already durable.
+retention contract. Checkpoints, events, intents, completions, durable telemetry
+witnesses, and manual research exports remain intact for offline tools.
+High-frequency acknowledged `clock_health` and `vehicle_sync` source messages
+are replaceable: the companion retains at least the latest 4,096 messages'
+worth and removes older acknowledged reports. A crash cannot lose unconsumed
+work because maintenance stays 4,096 sequences behind the newly acknowledged
+cursor, whose earlier position was already durable. Every health report still
+updates the live governor; the host journal separately retains one forensic
+health sample per peer per ten seconds rather than copying every heartbeat.
 
 Old schema-1 cursors remain readable. Their pre-existing historical prefix is
 treated as outside the new maintenance range, avoiding a large synchronous

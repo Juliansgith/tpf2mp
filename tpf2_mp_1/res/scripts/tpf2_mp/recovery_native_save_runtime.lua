@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local hash = require "tpf2_mp/hash"
 
 local M = {}
 local SUBMISSION_TIMEOUT_TICKS = 1800
@@ -23,7 +24,15 @@ function M.saveName(sessionId, peerId, boundarySeq)
   local peer = safeIdentity(peerId, 16)
   local boundary = util.integer(boundarySeq, 0)
   if not session or not peer or boundary < 1 then return nil end
-  return "tpf2mp_" .. session .. "_" .. peer .. "_b" .. tostring(boundary)
+  -- Build 35924's stock save dialog truncates names to fifty characters.
+  -- Session ids are intentionally much longer, so preserve their identity in
+  -- a deterministic digest and keep the peer token bounded.  The watcher uses
+  -- the same Adler-32 construction and never accepts this name without also
+  -- checking the READY boundary and receipt-bound file hashes.
+  local peerToken = peer == "player1" and "p1"
+    or peer == "player2" and "p2" or hash.text(peer)
+  return "tpf2mp_r_" .. hash.text(session) .. "_" .. peerToken
+    .. "_b" .. tostring(boundary)
 end
 
 function M.new(env)

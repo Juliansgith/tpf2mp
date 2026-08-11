@@ -33,6 +33,7 @@ local guiView = require "tpf2_mp/gui_view"
 local presentation = require "tpf2_mp/presentation"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
 local cargoPresentation = require "tpf2_mp/cargo_presentation"
+local vehicleSyncPassengers = require "tpf2_mp/vehicle_sync_passengers"
 local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local nativeHook = require "tpf2_mp/native_hook"
@@ -41,6 +42,7 @@ local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
 local validationConstruction = require "tpf2_mp/validation_construction"
+local performanceRuntime = require "tpf2_mp/performance_runtime"
 
 local tests, passed = {}, 0
 
@@ -1735,6 +1737,83 @@ test("proposal codec replays topology and collateral construction demolition ato
   truthy(tostring(duplicateError):find("source cannot also be collateral", 1, true), duplicateError)
 end)
 
+test("proposal codec keeps removal-only town roads and attached buildings atomic", function()
+  -- Live regression shape from flat-medium-soak-20260810: one public town-road
+  -- edge, its terminal node, and two attached autonomous constructions were
+  -- emitted by one bulldozer click with no replacement topology.
+  local raw = {
+    __observedCost = 50000,
+    streetProposal = {
+      nodesToAdd = {}, edgesToAdd = {},
+      edgesToRemove = { 77 }, nodesToRemove = { 88 },
+      edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+    },
+    __constructionRemovals = { { entity = 902 }, { entity = 901 } },
+  }
+  local canonicalMap = {
+    [77] = "edge:pre:town-road", [88] = "node:pre:town-road-end",
+    [901] = "construction:pre:house-a", [902] = "construction:pre:house-b",
+  }
+  local transaction, transactionError = proposalCodec.normalise(raw, "company:1", {
+    resolveCanonical = function(_, localId) return canonicalMap[localId] end,
+    entityKind = function(localId)
+      return localId == 77 and "edge" or (localId == 88 and "node" or "construction")
+    end,
+    constructionKind = function() return "construction" end,
+  })
+  truthy(transaction, transactionError)
+  equal(transaction.constructions[1].kind, "construction")
+  equal(transaction.constructions[1].sourceCid, "construction:pre:house-a")
+  equal(transaction.constructions[1].collateral[1].cid, "construction:pre:house-b")
+  truthy(proposalCodec.isTopologyConstructionRemoval(transaction),
+    "removal-only town-road collateral was routed to the split construction helper")
+
+  local fakeApi = {
+    type = {
+      SimpleProposal = { new = function() return {
+        constructionsToRemove = {},
+        streetProposal = {
+          nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
+          edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+        },
+      } end },
+      SegmentAndEntity = { new = function() return { comp = {} } end },
+      NodeAndEntity = { new = function() return { comp = {} } end },
+      Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
+      BaseEdgeStreet = { new = function() return {} end },
+      BaseEdgeTrack = { new = function() return {} end },
+    },
+    res = {},
+  }
+  local localMap = {
+    ["edge:pre:town-road"] = 77, ["node:pre:town-road-end"] = 88,
+    ["construction:pre:house-a"] = 901, ["construction:pre:house-b"] = 902,
+  }
+  local materialised, materialiseError = proposalCodec.materialise(transaction, {
+    api = fakeApi,
+    resolveLocal = function(cid) return localMap[cid] end,
+  })
+  truthy(materialised, materialiseError)
+  equal(materialised.streetProposal.edgesToRemove[1], 77)
+  equal(materialised.streetProposal.nodesToRemove[1], 88)
+  equal(materialised.constructionsToRemove[1], 901)
+  equal(materialised.constructionsToRemove[2], 902)
+
+  local stationRaw = util.deepCopy(raw)
+  stationRaw.__constructionRemovals = { { entity = 901 } }
+  local stationTransaction, stationError = proposalCodec.normalise(stationRaw, "company:1", {
+    resolveCanonical = function(_, localId) return canonicalMap[localId] end,
+    entityKind = function(localId)
+      return localId == 77 and "edge" or (localId == 88 and "node" or "construction")
+    end,
+    constructionKind = function() return "station" end,
+  })
+  truthy(stationTransaction, stationError)
+  equal(stationTransaction.constructions[1].kind, "station")
+  equal(proposalCodec.isTopologyConstructionRemoval(stationTransaction), false,
+    "station generated topology escaped its asynchronous construction helper")
+end)
+
 test("proposal codec canonicalises the measured smallest modular passenger station", function()
   local first, firstError = proposalCodec.normalise(smallestStationProposal(0), "company:1", {
     resourceName = function(kind, index) return kind .. "/" .. index .. ".lua" end,
@@ -2335,7 +2414,7 @@ test("mobility telemetry falls back to direct populated-world components", funct
   }
   local snapshot = world.mobilitySnapshot(canonical.newState())
   api, game = previousApi, previousGame
-  equal(snapshot.schemaVersion, 4)
+  equal(snapshot.schemaVersion, 5)
   equal(snapshot.totalPersons, 4)
   equal(snapshot.totals.directCargoEntities, 3)
   equal(snapshot.totals.passengersOnVehicle, 2)
@@ -2354,6 +2433,7 @@ test("vehicle lifecycle normalizes barrier stop actuation and separates route ph
   local previousApi, previousGame = api, game
   local stopIndex = 1
   local nativeUserStopped = false
+  local nativeState = 1
   game = {
     interface = {
       getEntity = function(id)
@@ -2381,6 +2461,7 @@ test("vehicle lifecycle normalizes barrier stop actuation and separates route ph
         if kind == "TRANSPORT_VEHICLE" and id == 101 then
           return {
             line = 10,
+            state = nativeState,
             stopIndex = stopIndex,
             userStopped = nativeUserStopped,
             sellOnArrival = false,
@@ -2398,11 +2479,31 @@ test("vehicle lifecycle normalizes barrier stop actuation and separates route ph
     },
   }
   local registry = canonical.newState()
-  local first = world.mobilitySnapshot(registry)
+  local priming = world.mobilitySnapshot(registry)
+  local vehicleCid = priming.vehiclePhases[1].vehicleCid
+  local lineCid = priming.vehiclePhases[1].lineCid
+  local worldState = { vehicleSync = { vehicles = { [vehicleCid] = {
+    vehicleCid = vehicleCid, lineCid = lineCid, lastAuthorizedRound = 2,
+    stopIndex = 0,
+  } } } }
+  local runtimeState = { [vehicleCid] = {
+    lineCid = lineCid, round = 2, phase = "enroute", stopIndex = 0,
+    departedSinceRelease = true, releaseReportPending = false,
+  } }
+  local first = world.mobilitySnapshot(registry, worldState, runtimeState)
   stopIndex = 2
   nativeUserStopped = true
-  local second = world.mobilitySnapshot(registry)
+  nativeState = 2
+  worldState.vehicleSync.vehicles[vehicleCid].stopIndex = 2
+  runtimeState[vehicleCid] = {
+    lineCid = lineCid, round = 2, phase = "release-armed", stopIndex = 2,
+    departedSinceRelease = false, releaseReportPending = false,
+  }
+  local second = world.mobilitySnapshot(registry, worldState, runtimeState)
+  runtimeState[vehicleCid].phase = "holding"
+  local unsafe = world.mobilitySnapshot(registry, worldState, runtimeState)
   api, game = previousApi, previousGame
+  equal(first.schemaVersion, 5)
   equal(#first.vehicleLifecycle, 1)
   equal(first.vehicleLifecycle[1].vehicleParts, 2)
   equal(first.vehicleLifecycle[1].consistModels[2], "vehicle/waggon/open_1910.mdl")
@@ -2410,6 +2511,10 @@ test("vehicle lifecycle normalizes barrier stop actuation and separates route ph
   equal(first.vehicleLifecycleDigest, second.vehicleLifecycleDigest)
   equal(first.vehicleStopDiagnostics[1].nativeUserStopped, false)
   equal(second.vehicleStopDiagnostics[1].nativeUserStopped, true)
+  truthy(first.vehicleRestoreSafe)
+  truthy(second.vehicleRestoreSafe)
+  truthy(not unsafe.vehicleRestoreSafe)
+  truthy(unsafe.vehicleRestoreUnsafeVehicles[1].reason:match("transient"))
   truthy(first.vehiclePhaseDigest ~= second.vehiclePhaseDigest,
     "moving to another route stop did not change the vehicle phase digest")
   truthy(not json.encode(first):match('"vehicleCid":101'),
@@ -2835,9 +2940,12 @@ test("economy conserves demand and respects capacity", function()
     truthy(service.allocated <= service.availableCapacity, "interval capacity exceeded")
     allocated = allocated + service.allocated
   end
-  equal(allocated, result.demand, "demand was not conserved")
+  equal(allocated + result.queued, result.demand, "demand was not conserved")
   equal(result.services["line:a"].allocated, 17)
   equal(result.services["line:b"].allocated, 25)
+  equal(result.services["line:a"].requested,
+    result.services["line:a"].allocated + result.services["line:a"].capacityOverflow)
+  truthy(result.queued > 0, "capacity-constrained demand did not enter the waiting class")
 end)
 
 test("lower fares improve allocation deterministically", function()
@@ -2877,7 +2985,8 @@ test("share is a stock: entrants climb from zero and conservation is exact", fun
     lastResult = economy.evaluateAll(state).markets["market:a-b"]
     local total = lastResult.outside
     for _, service in pairs(lastResult.services) do total = total + service.allocated end
-    equal(total, lastResult.demand, "conservation broke at epoch " .. epoch)
+    equal(total + lastResult.queued, lastResult.demand,
+      "conservation broke at epoch " .. epoch)
     local share = lastResult.services["line:b"].sharePpm
     truthy(share >= previous, "entrant share must climb monotonically toward equilibrium")
     previous = share
@@ -2932,7 +3041,7 @@ test("economy v2 migration arms the first-settlement fare guard", function()
   state.version = 2
   state.params.alphaDownPm = 250
   local migrated = economy.migrate(state)
-  equal(migrated.version, 8)
+  equal(migrated.version, 9)
   equal(migrated.params.alphaDownPm, 500)
   equal(migrated.services["line:a"].lastFareCents, nil)
   -- The version-4 market step must be passenger-equivalent: same wait weight and
@@ -3335,7 +3444,8 @@ test("model town size is independent of the native crowd policy", function()
   -- The negative half, kept deliberately: this is precisely why summing native
   -- capacity into the economy was wrong, and why the boundary check forbids it.
   truthy(sums[1] > sums[2], "capacity sums do move with the crowd policy")
-  truthy(sums[2] > sums[3], "capacity sums keep moving with the crowd policy")
+  equal(sums[2], sums[3],
+    "both reduced modes keep one slot per building; recomputation policy distinguishes them")
   truthy(
     world.gravityDemand(sums[1], sums[1], 5000)
       > world.gravityDemand(sums[3], sums[3], 5000),
@@ -3659,7 +3769,7 @@ test("station boards aggregate model allocations per station group", function()
     "the per-line row still reports the whole service load")
 end)
 
-local function passengerPresentationEconomy(kind, allocation)
+local function passengerPresentationEconomy(kind, allocation, requested)
   local state = economy.newState()
   economy.upsertMarket(state, {
     cid = "market:presentation", kind = kind or "passenger", demand = 100,
@@ -3675,18 +3785,24 @@ local function passengerPresentationEconomy(kind, allocation)
     },
   })
   state.epoch = 1
-  state.lastResults = { markets = {
-    ["market:presentation"] = { services = {
-      ["line:presentation"] = { allocated = allocation or 65 },
+  state.scheduler.lastBoundaryGameTimeSeconds = 300
+  state.lastResults = { intervalSeconds = 300, boundaryGameTimeSeconds = 300, markets = {
+    ["market:presentation"] = { intervalSeconds = 300, services = {
+      ["line:presentation"] = {
+        allocated = allocation or 65,
+        requested = requested or allocation or 65,
+        capacityOverflow = math.max(0, (requested or allocation or 65) - (allocation or 65)),
+      },
     } },
   }, companies = {} }
   return state
 end
 
-local function passengerRelease(vehicleCid, round, stopIndex)
+local function passengerRelease(vehicleCid, round, stopIndex, releaseAtGameTime)
   return {
     type = "vehicle.sync_release", vehicleCid = vehicleCid,
     lineCid = "line:presentation", round = round, stopIndex = stopIndex,
+    releaseAtGameTime = releaseAtGameTime or 600,
   }
 end
 
@@ -3696,8 +3812,9 @@ test("passenger presentation conserves queues and loads across ordered releases"
   local ok, result = passengerPresentation.beginEpoch(state, economyState)
   truthy(ok, result)
   local line = state.lines["line:presentation"]
-  equal(line.waitingAToB, 32)
-  equal(line.waitingBToA, 33, "the odd passenger must stay in the ledger")
+  equal(line.waitingAToB, 0)
+  equal(line.waitingBToA, 0,
+    "the demand rate must not appear as an instantaneous settlement batch")
   equal(line.departuresPlanned, 1)
   equal(line.seatsPerVehicle, 40)
 
@@ -3759,6 +3876,27 @@ test("passenger presentation conserves queues and loads across ordered releases"
   equal(public.totals.waiting, waiting)
 end)
 
+test("passenger arrivals fill physical seats and leave capacity overflow waiting", function()
+  local economyState = passengerPresentationEconomy("passenger", 30, 45)
+  economyState.services["line:presentation"].metadata.seatsPerVehicle = 20
+  economyState.services["line:presentation"].headwaySeconds = 389
+  local state = passengerPresentation.newState()
+  truthy(passengerPresentation.beginEpoch(state, economyState))
+
+  local ok, result = passengerPresentation.applyRelease(state, economyState,
+    passengerRelease("vehicle:full", 1, 0, 689), { owner = "company:1" })
+  truthy(ok, result)
+  equal(result.boarded, 20, "a busy departure did not fill its twenty physical seats")
+  equal(result.capacity, 20)
+  equal(result.requested, 45)
+  equal(result.allocated, 30)
+  truthy(result.waitingAToB >= 8,
+    "capacity-constrained riders disappeared instead of remaining at the station")
+  equal(state.lines["line:presentation"].capacityOverflow, 15)
+  equal(state.lines["line:presentation"].generatedTotal,
+    result.generatedAToB + result.generatedBToA)
+end)
+
 test("passenger presentation carries backlog, invalidates edited routes, and excludes cargo", function()
   local economyState = passengerPresentationEconomy("passenger", 65)
   local state = passengerPresentation.newState()
@@ -3767,12 +3905,18 @@ test("passenger presentation carries backlog, invalidates edited routes, and exc
     passengerRelease("vehicle:one", 1, 0), { owner = "company:1" }))
 
   economyState.epoch = 2
+  economyState.scheduler.lastBoundaryGameTimeSeconds = 600
+  economyState.lastResults.boundaryGameTimeSeconds = 600
   economyState.lastResults.markets["market:presentation"].services
     ["line:presentation"].allocated = 20
+  economyState.lastResults.markets["market:presentation"].services
+    ["line:presentation"].requested = 20
+  economyState.lastResults.markets["market:presentation"].services
+    ["line:presentation"].capacityOverflow = 0
   truthy(passengerPresentation.beginEpoch(state, economyState))
   local line = state.lines["line:presentation"]
-  equal(line.waitingAToB, 10, "old queue plus new terminal demand was not carried")
-  equal(line.waitingBToA, 43)
+  equal(line.waitingAToB, 0)
+  equal(line.waitingBToA, 33, "the opposite-terminal backlog was not carried")
   equal(state.vehicles["vehicle:one"].aboard, 32,
     "settlement must not teleport a train empty")
 
@@ -3781,11 +3925,16 @@ test("passenger presentation carries backlog, invalidates edited routes, and exc
   }
   truthy(passengerPresentation.reconcileService(state, economyState, "line:presentation"))
   line = state.lines["line:presentation"]
-  equal(line.waitingAToB, 10)
-  equal(line.waitingBToA, 10)
-  equal(line.overflowTotal, 53, "edited-route queues must be accounted, not teleported")
+  equal(line.waitingAToB, 0)
+  equal(line.waitingBToA, 0)
+  equal(line.overflowTotal, 33, "edited-route queues must be accounted, not teleported")
   equal(state.vehicles["vehicle:one"].aboard, 0)
   equal(state.vehicles["vehicle:one"].discardedTotal, 32)
+  equal(line.discardedTotal, 32,
+    "edited-route onboard passengers were absent from the line ledger")
+  equal(line.boardedTotal,
+    line.alightedTotal + line.discardedTotal + state.vehicles["vehicle:one"].aboard,
+    "route editing broke passenger conservation")
 
   local cargoEconomy = passengerPresentationEconomy("cargo", 65)
   local cargoState = passengerPresentation.newState()
@@ -3806,10 +3955,22 @@ test("atomic vehicle sale batches retire every authored presentation entry", fun
     data = { targetCids = { "vehicle:batch:a", "vehicle:batch:b" } },
   }
   local passengerState = passengerPresentation.newState()
+  passengerState.lines["line:batch"] = {
+    boardedTotal = 15, alightedTotal = 0, discardedTotal = 0,
+  }
   passengerState.vehicles = {
-    ["vehicle:batch:a"] = { vehicleCid = "vehicle:batch:a" },
-    ["vehicle:batch:b"] = { vehicleCid = "vehicle:batch:b" },
-    ["vehicle:batch:keep"] = { vehicleCid = "vehicle:batch:keep" },
+    ["vehicle:batch:a"] = {
+      vehicleCid = "vehicle:batch:a", lineCid = "line:batch", aboard = 3,
+      boardedTotal = 3, alightedTotal = 0, discardedTotal = 0,
+    },
+    ["vehicle:batch:b"] = {
+      vehicleCid = "vehicle:batch:b", lineCid = "line:batch", aboard = 5,
+      boardedTotal = 5, alightedTotal = 0, discardedTotal = 0,
+    },
+    ["vehicle:batch:keep"] = {
+      vehicleCid = "vehicle:batch:keep", lineCid = "line:batch", aboard = 7,
+      boardedTotal = 7, alightedTotal = 0, discardedTotal = 0,
+    },
   }
   local passengerOk, passengerResult = passengerPresentation.onOperation(
     passengerState, economy.newState(), transaction, "company:1")
@@ -3818,6 +3979,12 @@ test("atomic vehicle sale batches retire every authored presentation entry", fun
   equal(passengerResult.vehicles["vehicle:batch:b"], nil)
   truthy(passengerResult.vehicles["vehicle:batch:keep"],
     "batch sale retired an unselected passenger vehicle")
+  equal(passengerResult.lines["line:batch"].discardedTotal, 8,
+    "batch sale silently lost passengers aboard the retired vehicles")
+  equal(passengerResult.lines["line:batch"].boardedTotal,
+    passengerResult.lines["line:batch"].discardedTotal
+      + passengerResult.vehicles["vehicle:batch:keep"].aboard,
+    "passenger sale did not preserve the line conservation equation")
 
   local cargoState = cargoPresentation.newState()
   cargoState.lines["line:batch"] = { discardedTotal = 4 }
@@ -3835,6 +4002,67 @@ test("atomic vehicle sale batches retire every authored presentation entry", fun
     "batch sale retired an unselected cargo vehicle")
   equal(cargoResult.lines["line:batch"].discardedTotal, 12,
     "batch sale did not account every retired onboard cargo unit")
+end)
+
+test("passenger reassignment retires the old trip before starting a fresh ledger", function()
+  local economyState = passengerPresentationEconomy("passenger", 65)
+  local state = passengerPresentation.newState()
+  state.lines["line:old"] = {
+    boardedTotal = 6, alightedTotal = 0, discardedTotal = 0,
+  }
+  state.vehicles["vehicle:moving"] = {
+    vehicleCid = "vehicle:moving", lineCid = "line:old", companyCid = "company:1",
+    capacity = 20, aboard = 6, lastRound = 1,
+    boardedTotal = 6, alightedTotal = 0, discardedTotal = 0,
+  }
+  local ok, result = passengerPresentation.onOperation(state, economyState, {
+    kind = "vehicle.assign",
+    data = { targetCid = "vehicle:moving", lineCid = "line:presentation" },
+  }, "company:1")
+  truthy(ok, result)
+  equal(result.lines["line:old"].discardedTotal, 6,
+    "reassignment did not account the old line's onboard passengers")
+  equal(result.lines["line:old"].boardedTotal,
+    result.lines["line:old"].alightedTotal + result.lines["line:old"].discardedTotal)
+  local vehicle = result.vehicles["vehicle:moving"]
+  equal(vehicle.lineCid, "line:presentation")
+  equal(vehicle.aboard, 0)
+  equal(vehicle.boardedTotal, 0)
+  equal(vehicle.alightedTotal, 0)
+  equal(vehicle.discardedTotal, 0)
+end)
+
+test("passenger schema migration recovers the historical sold-vehicle residue", function()
+  local migrated = passengerPresentation.migrate({
+    schemaVersion = 3, epoch = 4,
+    lines = {
+      ["line:legacy"] = {
+        boardedTotal = 1513, alightedTotal = 1498, discardedTotal = 0,
+      },
+      ["line:current"] = {
+        boardedTotal = 0, alightedTotal = 0, discardedTotal = 0,
+      },
+    },
+    vehicles = {
+      ["vehicle:active"] = {
+        lineCid = "line:legacy", aboard = 2, boardedTotal = 20,
+        alightedTotal = 18, discardedTotal = 0,
+      },
+      ["vehicle:reassigned"] = {
+        lineCid = "line:current", aboard = 0, boardedTotal = 0,
+        alightedTotal = 0, discardedTotal = 6,
+      },
+    },
+  })
+  equal(migrated.schemaVersion, 4)
+  equal(migrated.lines["line:legacy"].discardedTotal, 13,
+    "schema migration did not recover the exact unexplained passenger residue")
+  equal(migrated.lines["line:legacy"].boardedTotal,
+    migrated.lines["line:legacy"].alightedTotal
+      + migrated.lines["line:legacy"].discardedTotal
+      + migrated.vehicles["vehicle:active"].aboard)
+  equal(migrated.vehicles["vehicle:reassigned"].discardedTotal, 0,
+    "migration retained a previous line's discard count on a fresh vehicle ledger")
 end)
 
 test("passenger presentation aligns pre-ledger saves but rejects real-state drift", function()
@@ -3964,6 +4192,39 @@ test("cargo presentation conserves stock, vehicle load, delivery, and revenue", 
   equal(public.stations["station_group:source"].waiting, 0)
   equal(public.stations["station_group:sink"].delivered, 40,
     "destination station omitted completed cargo deliveries")
+end)
+
+test("deleting a freight line retires its authoritative transport cursor", function()
+  local economyState, freight = cargoPresentationFixture()
+  local lineCid = "line:freight:test"
+  freight.transportCursors[lineCid] = {
+    contractDigest = "1234abcd", sourceIndustryCid = "industry:source",
+    destinationIndustryCid = "industry:sink", destinationStockIndex = 0,
+    cargoType = "GRAIN", boardedUnits = 60, deliveredUnits = 40,
+  }
+  freight.totalTransported.GRAIN = 60
+  freight.totalDelivered.GRAIN = 40
+  local cargo = cargoPresentation.newState()
+  truthy(cargoPresentation.beginEpoch(cargo, economyState))
+  local worldState = {
+    freightIndustry = freight,
+    passengerPresentation = passengerPresentation.newState(),
+    cargoPresentation = cargo,
+  }
+  local ok, result = vehicleSyncPassengers.applyOperation(
+    worldState, economyState, {
+      kind = "line.delete", data = { targetCid = lineCid },
+    }, "company:1")
+  truthy(ok, result)
+  equal(result.freight.retired, true)
+  equal(worldState.freightIndustry.transportCursors[lineCid], nil,
+    "deleted cargo line retained its cumulative cursor")
+  equal(worldState.freightIndustry.totalTransported.GRAIN, 60,
+    "cursor retirement erased historical transported totals")
+  equal(worldState.freightIndustry.totalDelivered.GRAIN, 40,
+    "cursor retirement erased historical delivered totals")
+  equal(worldState.cargoPresentation.lines[lineCid].retired, true,
+    "cargo presentation did not retire beside the authoritative cursor")
 end)
 
 test("cargo presentation uses each heterogeneous consist's exact capacity", function()
@@ -4339,7 +4600,8 @@ test("agent presentation policy scales capacity deterministically per mode", fun
   -- Vanilla is an exact identity: no rounding, no floor, no surprises.
   equal(presentation.scaledCapacity(137, vanilla), 137)
   -- Skeleton keeps every populated building alive with at least one person.
-  equal(presentation.scaledCapacity(640, skeleton), 10)
+  equal(presentation.scaledCapacity(640, skeleton), 1,
+    "skeleton mode keeps exactly one native inhabitant per populated building")
   equal(presentation.scaledCapacity(30, skeleton), 1, "a small building keeps one inhabitant")
   equal(presentation.scaledCapacity(0, skeleton), 0, "an empty building stays empty")
   -- Empty removes the crowd entirely.
@@ -4391,7 +4653,7 @@ test("applying the agent policy verifies by readback and reports the outcome", f
   equal(outcome.verified, 1, "a readback that matches the target is the proof")
   equal(outcome.runtimeScalingWorks, true)
   equal(#outcome.errors, 0)
-  equal(sent[1].values[1], 10, "640 residents become 10 under the skeleton policy")
+  equal(sent[1].values[1], 1, "640 residents become one native decoration under skeleton policy")
   equal(worldState.agentPolicy.mode, "skeleton", "the outcome is recorded on world state")
 
   -- A build that ignores the write must be reported as such, not assumed.
@@ -4743,7 +5005,8 @@ test("cargo shares conserve demand and obey the fare-shock latch", function()
     result = economy.evaluateAll(state).markets["market:freight"]
     local total = result.outside
     for _, service in pairs(result.services) do total = total + service.allocated end
-    equal(total, result.demand, "cargo conservation broke at epoch " .. epoch)
+    equal(total + result.queued, result.demand,
+      "cargo conservation broke at epoch " .. epoch)
   end
   local settled = state.services["line:f1"].sharePpm
   truthy(settled > 0, "freight service failed to earn share")
@@ -5304,6 +5567,44 @@ test("file bridge signs, emits, verifies, and polls in sequence", function()
   truthy(restartOk, restartOutbound)
   equal(restartOutbound.local_seq, 3, "fresh script state overwrote an existing outbox sequence")
 
+  local network = bridge.newState({
+    protocol = 1, root = tempRoot, peerId = "player1",
+    sessionId = "test-session", startNetwork = true,
+  })
+  local heartbeatOk, heartbeatReason = bridge.emit(
+    network, "clock_health", { effectiveSpeed = 3 }, 10)
+  equal(heartbeatOk, false,
+    "a disconnected network bridge persisted replaceable clock telemetry")
+  truthy(tostring(heartbeatReason):find("coalesced", 1, true) ~= nil)
+  equal(network.nextOutSeq, 1,
+    "coalescing replaceable telemetry consumed the durable sequence space")
+  equal(network.coalesced, 1)
+  equal(network.coalescedByKind.clock_health, 1)
+
+  local durableOk, durable = bridge.emit(
+    network, "intent", { action = { type = "test.action" } }, 11)
+  truthy(durableOk, durable)
+  equal(durable.local_seq, 4,
+    "a disconnected bridge dropped or overwrote a durable action")
+  network.companion = {
+    connected = true, role = "host", status = "running", outboxCursor = 4,
+  }
+  local syncOk, sync = bridge.emit(
+    network, "vehicle_sync", { latest = true }, 12)
+  truthy(syncOk, sync)
+  equal(sync.local_seq, 5,
+    "replaceable vehicle telemetry did not resume after reconnection")
+
+  network.nextOutSeq = 300
+  network.companion.outboxCursor = 0
+  local overflowOk = bridge.emit(
+    network, "vehicle_sync", { overloaded = true }, 13)
+  equal(overflowOk, false,
+    "replaceable telemetry exceeded the bounded disconnected backlog")
+  equal(network.nextOutSeq, 300,
+    "bounded telemetry coalescing created a numbered queue gap")
+  equal(network.coalescedByKind.vehicle_sync, 1)
+
   local inbound = {
     protocol = 1,
     session = "test-session",
@@ -5336,6 +5637,102 @@ test("file bridge signs, emits, verifies, and polls in sequence", function()
   equal(state.received, 0, "recovery bridge kept the previous received count")
   equal(state.peerId, "player2")
   equal(state.sessionId, "recovered-session")
+end)
+
+test("file bridge uses the native asynchronous FIFO without simulation-thread files", function()
+  local priorConfigure = rawget(_G, "tpf2mp_native_bridge_configure")
+  local priorEmit = rawget(_G, "tpf2mp_native_bridge_emit")
+  local priorTake = rawget(_G, "tpf2mp_native_bridge_take")
+  local priorStatus = rawget(_G, "tpf2mp_native_bridge_status")
+  local emitted, inbound = {}, {
+    protocol = 1, session = "native-session", seq = 1, kind = "commit",
+    origin_peer = "player1", origin_local_seq = 41, tick = 12,
+    payload = { action = { type = "native.test" } },
+  }
+  inbound.checksum = hash.value(inbound)
+  tpf2mp_native_bridge_configure = function(root, nextOut, nextIn)
+    equal(root, tempRoot .. "/native-mock")
+    equal(nextOut, "1")
+    equal(nextIn, "1")
+    return "A1|41"
+  end
+  tpf2mp_native_bridge_emit = function(sequence, raw)
+    emitted[#emitted + 1] = { sequence = sequence, raw = raw }
+    return "A1"
+  end
+  local takeCount = 0
+  tpf2mp_native_bridge_take = function()
+    takeCount = takeCount + 1
+    if takeCount == 1 then return "I1|1|" .. json.encode(inbound) .. "\n" end
+    return nil
+  end
+  tpf2mp_native_bridge_status = function()
+    return '{"schemaVersion":1,"configured":true,"outboundQueued":0}'
+  end
+
+  local state = bridge.newState({
+    protocol = 1, root = tempRoot .. "/native-mock",
+    peerId = "player1", sessionId = "native-session",
+  })
+  local ok, envelope = bridge.emit(state, "intent", {
+    action = { type = "native.test" },
+  }, 12)
+  truthy(ok, envelope)
+  equal(envelope.local_seq, 41, "native configuration did not advance past durable residue")
+  equal(emitted[1].sequence, "41")
+  equal(json.decode(emitted[1].raw).checksum, envelope.checksum)
+  local received = bridge.poll(state, 4)
+  equal(#received, 1)
+  equal(received[1].payload.action.type, "native.test")
+  equal(state.nextInSeq, 2)
+  truthy(bridge.isNative(state))
+  local status = bridge.nativeStatus(state)
+  truthy(status.active and status.configured and status.outboundQueued == 0)
+
+  tpf2mp_native_bridge_configure = priorConfigure
+  tpf2mp_native_bridge_emit = priorEmit
+  tpf2mp_native_bridge_take = priorTake
+  tpf2mp_native_bridge_status = priorStatus
+end)
+
+test("performance runtime schedules idle work and exposes bounded timings", function()
+  local previousClock = rawget(_G, "tpf2mp_native_monotonic_us")
+  local current = 1000
+  tpf2mp_native_monotonic_us = function()
+    current = current + 100
+    return tostring(current)
+  end
+  local state = { tick = 0, probes = {} }
+  local runtime = performanceRuntime.new({ getState = function() return state end })
+  truthy(runtime.due("idle", 3), "first scheduled call must run")
+  equal(runtime.due("idle", 3), false, "same-tick idle work ran twice")
+  state.tick = 3
+  truthy(runtime.due("idle", 3), "scheduled work did not wake at its stride")
+  local invoked, value = runtime.run("measured", function() return "ok" end)
+  truthy(invoked)
+  equal(value, "ok")
+  equal(state.probes.performance.tasks.measured.calls, 1)
+  equal(state.probes.performance.tasks.measured.lastUs, 100)
+  runtime.setNativeBridge({ active = true, outboundQueued = 2 })
+  equal(state.probes.performance.nativeBridge.outboundQueued, 2)
+  equal(state.probes.performance.nativeBridge.sampleTick, 3)
+  tpf2mp_native_monotonic_us = previousClock
+end)
+
+test("performance runtime does not depend on the engine global unpack", function()
+  local previousUnpack = rawget(_G, "unpack")
+  unpack = nil
+  local state = { tick = 0, probes = {} }
+  local runtime = performanceRuntime.new({ getState = function() return state end })
+  local invoked, first, second, third, fourth = runtime.run(
+    "unpack-free", function(a, b, c) return a, b, nil, c end,
+    "alpha", nil, "omega")
+  unpack = previousUnpack
+  truthy(invoked)
+  equal(first, "alpha")
+  equal(second, nil)
+  equal(third, nil)
+  equal(fourth, "omega")
 end)
 
 for _, item in ipairs(tests) do

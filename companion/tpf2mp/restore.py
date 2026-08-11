@@ -13,11 +13,12 @@ no state patching, only proof that both peers restore the same boundary.
 A restore point is ready only when:
 
 1. the boundary converged (every required peer acknowledged the checkpoint);
-2. every required peer filed an ordered `recovery.save_receipt` for it,
+2. the checkpoint request binds two matching paused native-vehicle phase samples;
+3. every required peer filed an ordered `recovery.save_receipt` for it,
    attesting a paused world and naming the load-bearing save hashes;
-3. no ordered commit exists between the boundary and any peer's receipt, so
+4. no ordered commit exists between the boundary and any peer's receipt, so
    nothing happened after the checkpoint that the save would also contain;
-4. every peer's receipt agrees on the boundary's core digest and convergence
+5. every peer's receipt agrees on the boundary's core digest and convergence
    key, so they saved the same world rather than two similar ones.
 
 Failing any of these is reported as a reason, never silently downgraded. A
@@ -35,11 +36,11 @@ from typing import Any, Mapping
 from .bridge import atomic_write
 from .native_save import hash_load_bearing_save, sha256_file
 from .protocol import (
-    PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_action, verify,
+    PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_action,
+    validate_vehicle_phase_proof, verify,
 )
 from .restore_plan import (
     LEGACY_RESTORE_PLAN_VERSION,
-    PROFILE_RESTORE_PLAN_VERSION,
     RESTORE_PLAN_VERSION,
     validate_match_profile,
     verify_restore_plan,
@@ -96,6 +97,7 @@ def analyse_restore_points(
     converged: dict[int, dict[str, Any]] = {}
     receipts: dict[int, dict[str, list[dict[str, Any]]]] = {}
     convergence_conflicts: dict[int, list[str]] = {}
+    phase_proofs: dict[int, dict[str, Any]] = {}
     commit_seqs: list[int] = []
     peers: set[str] = set()
 
@@ -128,6 +130,14 @@ def analyse_restore_points(
                     )
                 elif previous is None or candidate["outcomeSeq"] > previous["outcomeSeq"]:
                     converged[boundary] = candidate
+        if action.get("type") == "network.checkpoint_request" and kind == "control":
+            boundary = int(record.get("seq", 0))
+            try:
+                phase_proofs[boundary] = validate_vehicle_phase_proof(
+                    action.get("vehiclePhaseProof")
+                )
+            except ProtocolError:
+                pass
         if action.get("type") == "recovery.save_receipt":
             if kind != "commit":
                 continue
@@ -211,6 +221,7 @@ def analyse_restore_points(
 
         points.append({
             **anchor,
+            "vehiclePhaseProof": phase_proofs.get(boundary),
             "receipts": {peer: filed[peer] for peer in sorted(filed)},
             "requiredPeers": list(expected),
             "ready": not reasons,
@@ -232,6 +243,7 @@ def build_restore_plan(
     boundary_seq: int | None = None,
     required_peers: tuple[str, ...] | None = None,
     match_profile: Mapping[str, Any] | None = None,
+    allow_legacy_unbound: bool = False,
 ) -> dict[str, Any]:
     """Signed instruction for returning both peers to one agreed boundary."""
 
@@ -247,7 +259,9 @@ def build_restore_plan(
                 + detail
             )
     else:
-        matches = [item for item in analysis["points"] if item["boundarySeq"] == int(boundary_seq)]
+        if not isinstance(boundary_seq, int) or isinstance(boundary_seq, bool):
+            raise ProtocolError("restore boundary must be an integer")
+        matches = [item for item in analysis["points"] if item["boundarySeq"] == boundary_seq]
         if not matches:
             raise ProtocolError(f"boundary {boundary_seq} is not an agreed checkpoint")
         point = matches[0]
@@ -257,14 +271,37 @@ def build_restore_plan(
             )
 
     boundary = int(point["boundarySeq"])
+    receipt_peers = set(point["receipts"])
+    required_receipt_peers = set(analysis["requiredPeers"])
+    if not receipt_peers or receipt_peers != required_receipt_peers:
+        raise ProtocolError("ready restore point has an incomplete receipt roster")
+    if not isinstance(allow_legacy_unbound, bool):
+        raise ProtocolError("legacy restore opt-in must be boolean")
+    if match_profile is None and not allow_legacy_unbound:
+        raise ProtocolError(
+            "policy-unbound legacy restore plan requires explicit opt-in"
+        )
+    if match_profile is not None and allow_legacy_unbound:
+        raise ProtocolError(
+            "legacy restore opt-in cannot be combined with a match-content profile"
+        )
     metadata_receipts = [
         bool(receipt.get("metadataSha256")) for receipt in point["receipts"].values()
     ]
     if any(metadata_receipts) and not all(metadata_receipts):
         raise ProtocolError("restore boundary mixes legacy and load-bearing save receipts")
+    all_metadata_receipts = bool(metadata_receipts) and all(metadata_receipts)
+    phase_proof = point.get("vehiclePhaseProof")
+    if match_profile is not None and not all_metadata_receipts:
+        raise ProtocolError(
+            "current restore plans require load-bearing metadata receipts from every peer"
+        )
+    if match_profile is not None and not isinstance(phase_proof, Mapping):
+        raise ProtocolError(
+            "current restore plans require a checkpoint-bound native vehicle phase proof"
+        )
     plan_version = (
-        RESTORE_PLAN_VERSION if match_profile is not None and all(metadata_receipts)
-        else PROFILE_RESTORE_PLAN_VERSION if match_profile is not None
+        RESTORE_PLAN_VERSION if match_profile is not None
         else LEGACY_RESTORE_PLAN_VERSION
     )
     if plan_version == RESTORE_PLAN_VERSION:
@@ -306,6 +343,7 @@ def build_restore_plan(
     }
     if match_profile is not None:
         plan["matchContentProfile"] = validate_match_profile(match_profile)
+        plan["vehiclePhaseProof"] = validate_vehicle_phase_proof(phase_proof)
     return sign(plan)
 
 
@@ -372,9 +410,11 @@ def write_restore_plan(
     session: str | None = None,
     boundary_seq: int | None = None,
     match_profile: Mapping[str, Any] | None = None,
+    allow_legacy_unbound: bool = False,
 ) -> dict[str, Any]:
     plan = build_restore_plan(
         audit_path, session, boundary_seq, match_profile=match_profile,
+        allow_legacy_unbound=allow_legacy_unbound,
     )
     output = Path(output_path).expanduser().resolve()
     atomic_write(output, (canonical_json(plan) + "\n").encode("utf-8"))

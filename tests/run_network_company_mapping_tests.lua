@@ -314,7 +314,9 @@ components.BASE_EDGE[95], components.BASE_EDGE_TRACK[95], components.PLAYER_OWNE
 components.ASSET_GROUP[98], components.ASSET_GROUP[99] = nil, nil
 components.PLAYER_OWNED[98], components.PLAYER_OWNED[99] = nil, nil
 
+local sequenceOffset = 0
 local function writeOrdered(seq, kind, originPeer, action, originLocalSeq)
+  seq = seq + sequenceOffset
   local envelope = {
     protocol = 1,
     session = "network-company-map",
@@ -336,6 +338,10 @@ local function writeCommit(seq, originPeer, action, originLocalSeq)
   return writeOrdered(seq, "commit", originPeer, action, originLocalSeq)
 end
 
+local function proposalId(peer, logicalSeq)
+  return "network-company-map:" .. tostring(peer) .. ":" .. tostring(logicalSeq + sequenceOffset)
+end
+
 local function writeConsensus(seq, record, authoritativeFinanceDelta)
   local completion = assert(record.completion, "network proposal did not emit a completion report")
   return writeOrdered(seq, "control", "player1", {
@@ -352,6 +358,7 @@ local function writeConsensus(seq, record, authoritativeFinanceDelta)
 end
 
 local function writeCheckpointConsensus(seq, saved, boundarySeq)
+  boundarySeq = boundarySeq + sequenceOffset
   local record = assert(saved.world.checkpointConsensus.byBoundary[tostring(boundarySeq)],
     "local checkpoint barrier is missing")
   assert(record.exported == true and record.convergenceKey and record.coreDigest,
@@ -499,7 +506,7 @@ transaction.transactionId = "proposal:" .. transaction.digest
 writeCommit(3, "player2", { type = "proposal.build", transaction = transaction })
 script.update()
 local queued = script.save()
-local record = queued.world.proposals.byId["network-company-map:player2:3"]
+local record = queued.world.proposals.byId[proposalId("player2", 3)]
 assert(record and record.status == "queued", "player2 proposal was not queued under its authoritative event ID")
 assert(record.companyCid == "company:2" and record.issuerPlayerId == 100
   and record.nativeOwnerPlayerId == 100,
@@ -629,7 +636,7 @@ local firstDeferredBuild = json.decode(json.encode(deferredEnvelope.payload.acti
 firstDeferredBuild.type = "proposal.build"
 writeCommit(6, "player2", firstDeferredBuild, deferredEnvelope.local_seq)
 script.update()
-local firstDeferredRecord = script.save().world.proposals.byId["network-company-map:player2:6"]
+local firstDeferredRecord = script.save().world.proposals.byId[proposalId("player2", 6)]
 assert(firstDeferredRecord and firstDeferredRecord.status == "queued",
   "ordered FIFO head was not queued for physical replay")
 components.BASE_NODE[501] = { position = { x = 200, y = 0, z = 0 } }
@@ -672,6 +679,19 @@ assert(secondDeferredEnvelope
   and secondDeferredEnvelope.payload.action.transaction.nodes[2].position.x == 340,
   "FIFO follower was overwritten, reordered, or emitted with stale geometry")
 
+-- The follower has now proved FIFO emission, but this fixture does not replay
+-- its physical graph. Close its real awaiting-order latch exactly as the host
+-- would before introducing the independent remote-proposal scenarios below.
+writeOrdered(9, "control", "player1", {
+  type = "network.intent_rejected",
+  originPeer = "player2",
+  originLocalSeq = secondDeferredEnvelope.local_seq,
+  actionType = "proposal.prepare",
+  errorCode = "fixture intentionally ends after FIFO emission",
+})
+script.update()
+sequenceOffset = 1
+
 -- Replay a host-owned proposal on player2. The command still issues through
 -- this machine's current player (100), while PlayerOwned must target the local
 -- native representative of canonical Company 1 (101). Conflating these two
@@ -699,7 +719,7 @@ remoteTransaction.transactionId = "proposal:" .. remoteTransaction.digest
 writeCommit(9, "player1", { type = "proposal.build", transaction = remoteTransaction })
 script.update()
 local remoteQueued = script.save()
-local remoteRecord = remoteQueued.world.proposals.byId["network-company-map:player1:9"]
+local remoteRecord = remoteQueued.world.proposals.byId[proposalId("player1", 9)]
 assert(remoteRecord and remoteRecord.status == "queued", "remote Company 1 proposal was not queued on player2")
 assert(remoteRecord.companyCid == "company:1" and remoteRecord.issuerPlayerId == 100,
   "remote proposal did not preserve player2's actual local command issuer")
@@ -776,7 +796,7 @@ assert(json.encode(upgradeTransaction):find('"nodes":{}', 1, true),
 writeCommit(12, "player1", { type = "proposal.build", transaction = upgradeTransaction })
 script.update()
 local upgradeQueuedState = script.save()
-local upgradeRecord = upgradeQueuedState.world.proposals.byId["network-company-map:player1:12"]
+local upgradeRecord = upgradeQueuedState.world.proposals.byId[proposalId("player1", 12)]
 assert(upgradeRecord and upgradeRecord.status == "queued",
   "zero-node remote track upgrade was not accepted into the canonical queue")
 assert(#upgradeRecord.transaction.nodes == 0 and upgradeRecord.localRefs[node0Cid] == 401
@@ -902,7 +922,7 @@ writeCommit(15, "player2", { type = "proposal.build", transaction = stationTrans
 script.update() -- ordered commit queues the transaction
 for _ = 1, 150 do script.update() end
 local delayedStationState = script.save()
-local delayedStationRecord = delayedStationState.world.proposals.byId["network-company-map:player2:15"]
+local delayedStationRecord = delayedStationState.world.proposals.byId[proposalId("player2", 15)]
 assert(delayedStationRecord and delayedStationRecord.status == "building-construction"
     and delayedStationState.world.proposals.failed == 0,
   "valid delayed station graph was failed at the legacy 120-tick cutoff")
@@ -924,7 +944,7 @@ for _, edge in ipairs(stationBuildFixture.edges) do
 end
 for _ = 1, 6 do script.update() end -- delayed graph plus three-tick stabilization
 local stationState = script.save()
-local stationRecord = stationState.world.proposals.byId["network-company-map:player2:15"]
+local stationRecord = stationState.world.proposals.byId[proposalId("player2", 15)]
 assert(stationRecord and stationRecord.status == "applied" and stationRecord.completionEmitted == true,
   "canonical station construction did not reach physical completion")
 local stationTransitionEvent
@@ -1002,7 +1022,7 @@ signalTransaction.digest = proposalCodec.digest(signalTransaction)
 signalTransaction.transactionId = "proposal:" .. signalTransaction.digest
 writeCommit(18, "player2", { type = "proposal.build", transaction = signalTransaction })
 script.update()
-local signalRecord = assert(script.save().world.proposals.byId["network-company-map:player2:18"])
+local signalRecord = assert(script.save().world.proposals.byId[proposalId("player2", 18)])
 components.BASE_NODE[8001] = { position = { x = 900, y = 0, z = 5 } }
 components.BASE_NODE[8002] = { position = { x = 950, y = 0, z = 5 } }
 components.BASE_EDGE[8003] = { node0 = 8001, node1 = 8002, objects = { { 8004, 2 } } }
@@ -1065,7 +1085,7 @@ depotBuildFixture = {
 writeCommit(21, "player2", { type = "proposal.build", transaction = depotTransaction })
 script.update()
 for _ = 1, 6 do script.update() end
-local depotRecord = assert(script.save().world.proposals.byId["network-company-map:player2:21"])
+local depotRecord = assert(script.save().world.proposals.byId[proposalId("player2", 21)])
 assert(depotRecord.status == "applied" and #depotRecord.result.outputs == 5,
   "portable depot did not bind construction, depot, and track graph outputs")
 local depotState = script.save()
@@ -1101,7 +1121,7 @@ assetBuildFixture = {
 writeCommit(24, "player2", { type = "proposal.build", transaction = assetTransaction })
 script.update()
 for _ = 1, 6 do script.update() end
-local assetRecord = assert(script.save().world.proposals.byId["network-company-map:player2:24"])
+local assetRecord = assert(script.save().world.proposals.byId[proposalId("player2", 24)])
 local assetCid = canonical.resolveCanonical(script.save().canonical, "asset", 8201)
 assert(assetRecord.status == "applied" and #assetRecord.result.outputs == 1 and assetCid,
   "ASSET_DEFAULT root was not completed canonically without a CONSTRUCTION component")
@@ -1127,7 +1147,7 @@ assetUpgradeTransaction.transactionId = "proposal:" .. assetUpgradeTransaction.d
 writeCommit(27, "player2", { type = "proposal.build", transaction = assetUpgradeTransaction })
 script.update()
 for _ = 1, 6 do script.update() end
-local assetUpgradeRecord = assert(script.save().world.proposals.byId["network-company-map:player2:27"])
+local assetUpgradeRecord = assert(script.save().world.proposals.byId[proposalId("player2", 27)])
 assert(assetUpgradeRecord.status == "applied" and assetUpgradeObserved
   and canonical.resolveLocal(script.save().canonical, assetCid) == 8201,
   "asset upgrade did not preserve the canonical ASSET_GROUP root")
@@ -1153,7 +1173,7 @@ bulldozeFixture = assetBuildFixture
 writeCommit(30, "player2", { type = "proposal.build", transaction = assetRemoveTransaction })
 script.update()
 for _ = 1, 6 do script.update() end
-local assetRemoveRecord = assert(script.save().world.proposals.byId["network-company-map:player2:30"])
+local assetRemoveRecord = assert(script.save().world.proposals.byId[proposalId("player2", 30)])
 assert(assetRemoveRecord.status == "applied"
   and canonical.resolveLocal(script.save().canonical, assetCid) == nil,
   "asset bulldoze did not retire its canonical ASSET_GROUP root")
@@ -1188,7 +1208,7 @@ stationUpgradeTransaction.transactionId = "proposal:" .. stationUpgradeTransacti
 writeCommit(33, "player2", { type = "proposal.build", transaction = stationUpgradeTransaction })
 script.update()
 for _ = 1, 6 do script.update() end
-local stationUpgradeRecord = assert(script.save().world.proposals.byId["network-company-map:player2:33"])
+local stationUpgradeRecord = assert(script.save().world.proposals.byId[proposalId("player2", 33)])
 assert(stationUpgradeRecord.status == "applied" and stationUpgradeObserved
   and canonical.resolveLocal(script.save().canonical, stationConstructionCid) == 600,
   "station module edit did not preserve its canonical construction identity")
@@ -1215,7 +1235,7 @@ local stationRemoveTransaction = {
   remove = { edges = removalEdges, nodes = removalNodes },
   constructions = {{
     slot = "construction:1", mode = "remove", adapter = "portable-construction",
-    kind = "construction", sourceCid = stationConstructionCid, collateral = {}, fileName = "",
+    kind = "station", sourceCid = stationConstructionCid, collateral = {}, fileName = "",
     transform = {}, params = {}, modules = {},
   }},
 }
@@ -1226,7 +1246,7 @@ stationBuildFixture.delayRemoval = true
 writeCommit(36, "player2", { type = "proposal.build", transaction = stationRemoveTransaction })
 script.update()
 for _ = 1, 6 do script.update() end
-local stationRemoveRecord = assert(script.save().world.proposals.byId["network-company-map:player2:36"])
+local stationRemoveRecord = assert(script.save().world.proposals.byId[proposalId("player2", 36)])
 assert(stationRemoveRecord.status == "building-construction"
   and canonical.resolveLocal(script.save().canonical, stationConstructionCid) == 600,
   "station bulldoze completed while generated topology was still retiring")
@@ -1241,7 +1261,7 @@ for _, edge in ipairs(stationBuildFixture.edges or {}) do
   components.PLAYER_OWNED[edge.id] = nil
 end
 for _ = 1, 6 do script.update() end
-stationRemoveRecord = assert(script.save().world.proposals.byId["network-company-map:player2:36"])
+stationRemoveRecord = assert(script.save().world.proposals.byId[proposalId("player2", 36)])
 local removedStationState = script.save()
 assert(stationRemoveRecord.status == "applied" and #stationRemoveRecord.result.outputs == 0
   and canonical.resolveLocal(removedStationState.canonical, stationConstructionCid) == nil
@@ -1278,7 +1298,7 @@ assert(proposalCodec.isRemovalOnly(removalOnlyTransaction),
 writeCommit(39, "player1", { type = "proposal.build", transaction = removalOnlyTransaction })
 script.update()
 local removalOnlyRecord = assert(
-  script.save().world.proposals.byId["network-company-map:player1:39"])
+  script.save().world.proposals.byId[proposalId("player1", 39)])
 assert(removalOnlyRecord.status == "queued" and removalOnlyRecord.localRefs[upgradedEdgeCid] == 403,
   "removal-only edge was not resolved into the physical proposal queue")
 components.BASE_EDGE[403] = nil
@@ -1521,14 +1541,15 @@ do
       fault = rejected.world.proposalConsensus.sessionFault,
       record = rejected.world.proposals.byId[proposalId],
     }))
-  assert(rejected.world.checkpointConsensus.byBoundary["45"]
-      and rejected.world.checkpointConsensus.byBoundary["45"].reason
+  local rejectionBoundary = tostring(45 + sequenceOffset)
+  assert(rejected.world.checkpointConsensus.byBoundary[rejectionBoundary]
+      and rejected.world.checkpointConsensus.byBoundary[rejectionBoundary].reason
         == "physical-rejection:" .. proposalId,
     "recoverable native rejection did not open a convergence checkpoint")
   writeCheckpointConsensus(46, rejected, 45)
   script.update()
   local recovered = script.save()
-  assert(recovered.world.checkpointConsensus.byBoundary["45"].status == "complete"
+  assert(recovered.world.checkpointConsensus.byBoundary[rejectionBoundary].status == "complete"
       and recovered.world.checkpointConsensus.sessionFault == nil,
     "recoverable native rejection did not close its convergence checkpoint")
 

@@ -177,21 +177,35 @@ function M.line(snapshot, localId)
   local mode = service and service.carrier
     and (string.lower(tostring(service.carrier)) .. (service.marketScope == "local" and " local" or ""))
     or (service and service.marketScope == "local" and "local" or nil)
-  local primary = string.format("%s%s | fare %s | %s | %s trip | every %s | capacity %d/h",
+  local seatsPerVehicle = tonumber(passengers and passengers.seatsPerVehicle) or 0
+  local intervalCapacity = tonumber(service and service.availableCapacity) or 0
+  local capacityText = seatsPerVehicle > 0
+    and string.format("%d seats/train | %d route seat-slots/5m",
+      seatsPerVehicle, intervalCapacity)
+    or string.format("%d route units/5m", intervalCapacity)
+  local primary = string.format("%s%s | fare %s | %s | %s trip | every %s | %s",
     tostring(name), mode and (" | " .. mode) or "",
     M.moneyCents(service and service.fareCents or 0), speed,
     minutes(service and service.journeySeconds), minutes(service and service.headwaySeconds),
-    tonumber(service and service.capacity) or 0)
+    capacityText)
   local townScale = service and service.modelTownSizeA and service.modelTownSizeB
     and string.format(" | model towns %d <-> %d",
       tonumber(service.modelTownSizeA) or 0, tonumber(service.modelTownSizeB) or 0) or ""
-  local secondary = string.format("%d %s demand/h | %d allocated, %d delivered + %d pending%s | share %s | %s net/5m (%s/h)",
+  local secondary = string.format("%d %s demand/h | 5m: %d requested, %d throughput%s | %d delivered + %d pending%s | load %s | share %s | %s net/5m (%s/h)",
     tonumber(service and service.hourlyMarketDemand) or 0,
-    units, tonumber((freight or passengers) and (freight or passengers).allocated
+    units,
+    tonumber(service and service.requested
+      or (freight or passengers) and (freight or passengers).requested
       or service and service.allocated) or 0,
+    tonumber((freight or passengers) and (freight or passengers).allocated
+      or service and service.allocated) or 0,
+    (service and (tonumber(service.capacityOverflow) or 0) > 0)
+      and string.format(" (%d queued by capacity)", tonumber(service.capacityOverflow) or 0)
+      or "",
     tonumber(service and service.delivered) or 0,
     tonumber(service and service.pendingDelivered) or 0,
     townScale,
+    percentPpm(service and service.loadPpm),
     percentPpm(service and service.sharePpm),
     M.moneyCents(service and service.netRevenueCents),
     M.moneyCents(service and service.projectedHourlyNetRevenueCents))
@@ -205,7 +219,7 @@ function M.line(snapshot, localId)
     secondary = secondary,
     tooltip = cargo
       and "Authoritative industry contract, synchronized cargo capacity, completed deliveries, and competitive accounting. Native cargo history is cosmetic."
-      or "The demand model values fare, journey time, waiting time, crowding, capacity, rival services, and the outside option. These figures replace native profit and transported history for competitive play.",
+      or "The demand model reports requested flow separately from throughput: requested chose this line, while route seat-slots are what the whole service can offer during the five-minute accounting interval. Each train still boards only its own physical seats. Queue storage is capped to the model's maximum-wait demand window; excess arrivals abandon. These figures replace native profit and transported history for competitive play.",
   }
 end
 
@@ -227,9 +241,9 @@ function M.station(snapshot, localId)
   end
   local lineParts = {}
   for _, line in ipairs(passenger and passenger.lines or {}) do
-    lineParts[#lineParts + 1] = string.format("%s %d waiting/%d this tick",
+    lineParts[#lineParts + 1] = string.format("%s %d waiting | %d requested/%d throughput",
       tostring(line.name or line.lineCid), tonumber(line.waiting) or 0,
-      tonumber(line.allocated) or 0)
+      tonumber(line.requested) or 0, tonumber(line.allocated) or 0)
   end
   for _, line in ipairs(freight and freight.lines or {}) do
     if line.role == "destination" then
@@ -245,10 +259,11 @@ function M.station(snapshot, localId)
   return {
     title = "TPF2MP AUTHORITATIVE STATION " .. tostring(cid or ""),
     primary = string.format(
-      "%s | %d passengers + %d cargo waiting | %d cargo delivered | %d passengers this 5m tick",
+      "%s | %d passengers + %d cargo waiting | %d cargo delivered | 5m: %d requested/%d throughput",
       tostring(item.name or cid), tonumber(passenger and passenger.waiting) or 0,
       tonumber(freight and freight.waiting) or 0,
       tonumber(freight and freight.delivered) or 0,
+      tonumber(passenger and passenger.requested) or 0,
       tonumber(passenger and passenger.throughput) or 0),
     secondary = #lineParts > 0 and table.concat(lineParts, " | ") or "No authored service",
     tooltip = "Exact synchronized passenger and cargo queues. Native station agents are cosmetic and hidden in multiplayer presentation.",
