@@ -10,7 +10,7 @@ Run from the repository root:
 
 ```powershell
 .\tools\run_tests.ps1
-.\tools\package_release.ps1 -Version 0.38.0-alpha
+.\tools\package_release.ps1 -Version 0.38.1-alpha
 ```
 
 The gate covers Lua/Python deterministic parity, proposal and operation codecs,
@@ -83,4 +83,3 @@ Do not advertise this build for public Internet play, untrusted opponents,
 arbitrary executable mods, host migration, more than two players, another game
 build, or automatic repair after native-world divergence. Those are later
 product gates, not hidden alpha promises.
-
