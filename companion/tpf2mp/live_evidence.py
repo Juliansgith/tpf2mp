@@ -65,6 +65,7 @@ def scan_live_audit(
     operation_outcomes: dict[int, dict[str, Any]] = {}
     expected_checkpoints: set[int] = set()
     faults: list[str] = []
+    action_counts: dict[str, int] = {}
 
     for message in messages:
         if str(message.get("session", "")) != selected_session:
@@ -83,6 +84,8 @@ def scan_live_audit(
             ordered[seq] = dict(message)
             action = message.get("payload", {}).get("action", {})
             action_type = action.get("type")
+            if isinstance(action_type, str):
+                action_counts[action_type] = action_counts.get(action_type, 0) + 1
             if action_type == "network.sync_fault":
                 faults.append(str(action.get("errorCode") or "network-sync-fault"))
             if kind == "commit":
@@ -237,6 +240,16 @@ def scan_live_audit(
         "session": selected_session,
         "audit": str(audit_path),
         "requiredPeers": list(peer_roster),
+        "actionCounts": dict(sorted(action_counts.items())),
+        "physicalOutcomes": {
+            "proposalPrepares": len(proposal_prepare_outcomes),
+            "proposalsSuccessful": sum(
+                value.get("success") is True for value in proposal_outcomes.values()
+            ),
+            "operationsSuccessful": sum(
+                value.get("success") is True for value in operation_outcomes.values()
+            ),
+        },
         "faults": sorted(set(faults)),
         "pending": {
             "proposalPrepares": pending_prepares,

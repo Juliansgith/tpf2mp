@@ -4,7 +4,7 @@ import copy
 from collections.abc import Mapping
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 BOOTSTRAP_SCHEMA_VERSION = 1
 MAX_AMOUNT = 1_000_000_000
 MAX_ACCUMULATOR = 1_000_000_000_000_000
@@ -32,6 +32,8 @@ def new_state() -> dict[str, Any]:
         "transportCursors": {},
         "totalTransported": {},
         "totalDelivered": {},
+        "retiredTransported": {},
+        "retiredDelivered": {},
         "lastTransport": None,
         "lastAdvance": None,
     }
@@ -91,6 +93,8 @@ def apply_bootstrap(
         "transportCursors": {},
         "totalTransported": {},
         "totalDelivered": {},
+        "retiredTransported": {},
+        "retiredDelivered": {},
         "lastTransport": None,
         "lastAdvance": None,
     })
@@ -265,6 +269,8 @@ def digest_view(state: Mapping[str, Any]) -> dict[str, Any]:
         "transportCursors": copy.deepcopy(state.get("transportCursors", {})),
         "totalTransported": copy.deepcopy(state.get("totalTransported", {})),
         "totalDelivered": copy.deepcopy(state.get("totalDelivered", {})),
+        "retiredTransported": copy.deepcopy(state.get("retiredTransported", {})),
+        "retiredDelivered": copy.deepcopy(state.get("retiredDelivered", {})),
         "lastAdvance": copy.deepcopy(state.get("lastAdvance")),
     }
     if state.get("lastTransport") is not None:

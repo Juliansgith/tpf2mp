@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import socket
 import threading
 import time
 
 from .bridge import GameBridge
-from .anchor_io import AnchorRequestStore, validate_anchor_state
+from .anchor_io import AnchorRequestStore
 from .industry_content import IndustryContentCoordinator
-from .protocol import ProtocolError, hello, validate_envelope
+from .protocol import ProtocolError
+from .client_session import run_client_session
 from .restore_plan_exchange import RestorePlanExchange
-from .transport import read_frame as _read_frame, send as _send
 
 class CommitClient:
     def __init__(
@@ -26,6 +25,11 @@ class CommitClient:
         self.stop = threading.Event()
         self.status = "starting"
         self.connected = False
+        self.socket_connected = False
+        self.synchronized = False
+        self.ever_synchronized = False
+        self.reconnects = 0
+        self.last_synchronized_host_seq: int | None = None
         self.last_error: str | None = None
         self.retry_attempts, self.retry_delay_seconds = 0, 0.0
         self._next_connection_error_log_at = 0.0
@@ -44,6 +48,10 @@ class CommitClient:
                 "role": "client",
                 "status": self.status,
                 "connected": self.connected,
+                "socketConnected": self.socket_connected,
+                "synchronized": self.synchronized,
+                "reconnects": self.reconnects,
+                "lastSynchronizedHostSeq": self.last_synchronized_host_seq,
                 "host": self.host,
                 "port": self.port,
                 "nextHostSeq": self.next_host_seq,
@@ -79,94 +87,7 @@ class CommitClient:
         return current
 
     def _session(self, poll_seconds: float) -> None:
-        sock = socket.create_connection((self.host, self.port), timeout=5)
-        sock.settimeout(None)
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        reader = sock.makefile("rb")
-        send_lock = threading.Lock()
-        _send(
-            sock,
-            hello(self.bridge.session, self.bridge.peer, self._last_commit(), self.match_fingerprint),
-            send_lock,
-        )
-        acknowledgement = _read_frame(reader)
-        validate_envelope(acknowledgement, self.bridge.session)
-        if acknowledgement.get("kind") != "hello_ack":
-            raise ProtocolError("host did not acknowledge handshake")
-        if self.match_fingerprint and acknowledgement.get("match_fingerprint") != self.match_fingerprint:
-            raise ProtocolError("host acknowledged a different match fingerprint")
-        self.connected = True
-        self.status = "connected"
-        self.last_error = None
-        self.retry_attempts = 0
-        self.retry_delay_seconds = 0.0
-        self.next_host_seq = int(acknowledgement.get("next_seq", 0))
-        self._write_status()
-        print(f"connected to {self.host}:{self.port}; next host sequence {acknowledgement.get('next_seq')}")
-        receiver_error: list[BaseException] = []
-        sent_pending: set[int] = set()
-
-        def receive() -> None:
-            try:
-                while not self.stop.is_set():
-                    message = _read_frame(reader)
-                    validate_envelope(message, self.bridge.session)
-                    if message.get("kind") in {"commit", "control"}:
-                        self.bridge.write_inbound(message)
-                    elif message.get("kind") == "anchor_state":
-                        self.anchor_state = validate_anchor_state(message)
-                    elif message.get("kind") == "restore_plan":
-                        self.restore_plan_exchange.accept(message)
-                    elif message.get("kind") == "receipt":
-                        if str(message.get("recipient")) != self.bridge.peer:
-                            raise ProtocolError("receipt was addressed to another peer")
-                        local_seq = int(message.get("local_seq", 0))
-                        if local_seq < 0:
-                            self.anchor_requests.record_receipt(
-                                local_seq, message.get("accepted") is True,
-                                str(message.get("reason") or "") or None,
-                            )
-                        else:
-                            self.bridge.acknowledge_outbound(local_seq)
-                        if not message.get("accepted"):
-                            print(f"host rejected local sequence {local_seq}: {message.get('reason')}")
-            except BaseException as exc:  # surfaced in the owning reconnect loop
-                receiver_error.append(exc)
-
-        thread = threading.Thread(target=receive, daemon=True)
-        thread.start()
-        try:
-            next_status = time.monotonic()
-            while not self.stop.is_set() and not receiver_error:
-                had_work = False
-                for local_seq, message in self.bridge.pending_outbound():
-                    if local_seq not in sent_pending:
-                        _send(sock, message, send_lock)
-                        sent_pending.add(local_seq)
-                        had_work = True
-                for message in self.anchor_requests.client_intents(self.anchor_state):
-                    local_seq = int(message["local_seq"])
-                    if local_seq not in sent_pending:
-                        _send(sock, message, send_lock)
-                        sent_pending.add(local_seq)
-                        had_work = True
-                if self.industry_content.refresh():
-                    had_work = True
-                if not had_work:
-                    time.sleep(poll_seconds)
-                if time.monotonic() >= next_status:
-                    self._write_status()
-                    next_status = time.monotonic() + 0.5
-            if receiver_error:
-                raise ConnectionError(str(receiver_error[0]))
-        finally:
-            self.connected = False
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            reader.close()
-            sock.close()
+        run_client_session(self, poll_seconds)
 
     def run(self, poll_seconds: float = 0.1, retry_seconds: float = 2.0) -> None:
         print(f"TPF2MP client peer={self.bridge.peer} session={self.bridge.session} bridge={self.bridge.root}")
@@ -180,6 +101,8 @@ class CommitClient:
                     if self.stop.is_set():
                         break
                     self.connected = False
+                    self.socket_connected = False
+                    self.synchronized = False
                     previous_error = self.last_error
                     self.last_error = str(exc)
                     self.retry_attempts += 1
@@ -206,4 +129,6 @@ class CommitClient:
         finally:
             self.stop.set()
             self.connected = False
+            self.socket_connected = False
+            self.synchronized = False
             self._write_status("stopped")

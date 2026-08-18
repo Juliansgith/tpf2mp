@@ -13,6 +13,7 @@ local stateSuccessNormalization = require "tpf2_mp/state_success_normalization"
 local restoreSessionIdentity = require "tpf2_mp/restore_session_identity"
 local stateRetention = require "tpf2_mp/state_retention"
 local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
+local resourceCompatibility = require "tpf2_mp/resource_compatibility"
 
 local M = {}
 
@@ -322,6 +323,7 @@ function M.new(cfg, versions)
       industryContent = industryContentRuntime.newProbe(),
       freightIndustry = freightIndustryModel.newProbe(),
       performance = { schemaVersion = 1, tasks = {}, scheduler = {} },
+      resourceCompatibility = resourceCompatibility.newProbe(),
       capture = {
         preCommitCount = 0,
         nativePreCommitCount = 0,
@@ -714,6 +716,8 @@ function M.migrate(saved, context)
   saved.probes.performance.schemaVersion = 1
   saved.probes.performance.tasks = saved.probes.performance.tasks or {}
   saved.probes.performance.scheduler = saved.probes.performance.scheduler or {}
+  saved.probes.resourceCompatibility = resourceCompatibility.migrate(
+    saved.probes.resourceCompatibility or defaults.probes.resourceCompatibility)
   saved.probes.networkAuthority = saved.probes.networkAuthority
     or util.deepCopy(defaults.probes.networkAuthority)
   saved.probes.networkCalendar = saved.probes.networkCalendar

@@ -19,6 +19,9 @@ from .freight import apply_transport as apply_freight_transport
 from .freight import new_state as new_freight_state
 from .cargo_checkpoint import validate_cargo_presentation
 from .freight_checkpoint import validate_freight_state
+from .transport_network import rebuild as rebuild_transport_network
+from .transport_network import rebuild_passenger as rebuild_passenger_network
+from .transport_network import pin_cargo_line, pin_moved_cargo
 
 CHECKPOINT_VERSION = 5
 SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, 3, 4, CHECKPOINT_VERSION}
@@ -775,7 +778,14 @@ def _refresh_market_demands(economy: dict[str, Any]) -> dict[str, Any]:
             computed = _gravity_demand(
                 first.get("size"), second.get("size"), metadata.get("corridorMeters")
             )
-            updated = max(previous, computed)
+            prior_network = _integer(metadata.get("networkDemand"), 0, 0, 1_000_000_000)
+            prior_direct = _integer(
+                metadata.get("directDemand"), max(0, previous - prior_network),
+                0, 1_000_000_000,
+            )
+            direct = max(prior_direct, computed)
+            metadata["directDemand"] = direct
+            updated = min(1_000_000_000, direct + prior_network)
             market["demand"] = updated
             metadata["townSizeA"], metadata["townSizeB"] = first["size"], second["size"]
             if updated != previous:
@@ -1657,6 +1667,7 @@ def _evaluate_all_v2(
         )
     if version >= 7:
         results["townGrowth"] = _advance_town_demand(economy, results)
+        results["townGrowth"]["network"] = rebuild_passenger_network(economy)
     economy["epoch"] = int(economy.get("epoch", 0)) + 1
     results["epoch"] = economy["epoch"]
     if scheduled_boundary is not None:
@@ -2125,6 +2136,7 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         if _economy_version(economy) >= 2:
             _upsert_market_v2(economy, action["market"])
             _upsert_service_v2(economy, action["service"])
+            rebuild_transport_network(economy)
             for vehicle_cid in sorted(action.get("vehicleCosts", {})):
                 cost = action["vehicleCosts"][vehicle_cid]
                 existing = economy.setdefault("vehicleCosts", {}).get(vehicle_cid)
@@ -2150,6 +2162,11 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
         else:
             _upsert_market(economy, action["market"])
             _upsert_service(economy, action["service"])
+    elif action_type == "vehicle.sync_release":
+        try:
+            pin_cargo_line(economy, str(action.get("lineCid", "")))
+        except ValueError as exc:
+            raise ProtocolError(str(exc)) from exc
     elif action_type == "fare.adjust":
         line_cid = str(action.get("lineCid", ""))
         service = economy.get("services", {}).get(line_cid)
@@ -2305,10 +2322,16 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
             delivery_value = action.get("deliverySnapshot")
             cargo_lines = delivery_value.get("cargoLines", {}) \
                 if isinstance(delivery_value, Mapping) \
-                and delivery_value.get("schemaVersion") == 2 else {}
+                and delivery_value.get("schemaVersion") in {2, 3} else {}
             apply_freight_transport(
                 freight_value, cargo_lines if isinstance(cargo_lines, Mapping) else {}
             )
+            try:
+                pin_moved_cargo(
+                    economy, cargo_lines if isinstance(cargo_lines, Mapping) else {}
+                )
+            except ValueError as exc:
+                raise ProtocolError(str(exc)) from exc
             scheduler_value = economy.get("scheduler")
             scheduler = scheduler_value if isinstance(scheduler_value, Mapping) else {}
             advance_freight(

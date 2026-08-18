@@ -101,7 +101,8 @@ class SynchronizationCoordinator:
         return self.host.clock_pause_acknowledged is True
 
     def pause_deadlines_protected(self) -> bool:
-        return self.pause.active()
+        reconnect = getattr(self.host, "reconnect", None)
+        return self.pause.active() or (reconnect is not None and reconnect.active())
 
     def _set_pause_acknowledged(
         self, paused: bool, generation: int, now: float | None = None
@@ -634,6 +635,10 @@ class SynchronizationCoordinator:
     def expire(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
         protected_clock_seq = self._refresh_quiescent_pause(now)
+        reconnect = getattr(self.host, "reconnect", None)
+        if reconnect is not None and reconnect.active(now):
+            self.vehicle.expire(now)
+            return
         for tracker in list(self.host.clock_controls.values()):
             if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
                 if int(tracker.get("commitSeq", -1)) == protected_clock_seq:

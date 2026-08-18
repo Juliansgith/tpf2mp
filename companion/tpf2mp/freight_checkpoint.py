@@ -48,15 +48,18 @@ def _add(target: dict[str, int], cargo: str, amount: int) -> None:
 
 
 def _empty_state(state: Mapping[str, Any]) -> dict[str, Any]:
-    for field in ("industries", "totalProduced", "totalConsumed", "transportCursors",
-                  "totalTransported", "totalDelivered"):
+    fields = ["industries", "totalProduced", "totalConsumed", "transportCursors",
+              "totalTransported", "totalDelivered"]
+    if state.get("schemaVersion") == 3:
+        fields += ["retiredTransported", "retiredDelivered"]
+    for field in fields:
         if not isinstance(state.get(field), Mapping) or state[field]:
             _fail("checkpoint unready freight state contains authored inventory")
     return dict(state)
 
 
 def validate_freight_state(value: Any) -> dict[str, Any]:
-    if not isinstance(value, Mapping) or value.get("schemaVersion") != 2 \
+    if not isinstance(value, Mapping) or value.get("schemaVersion") not in {2, 3} \
             or not isinstance(value.get("ready"), bool):
         _fail("checkpoint freight state header is invalid")
     state = dict(value)
@@ -138,10 +141,16 @@ def validate_freight_state(value: Any) -> dict[str, Any]:
     transported_sum, delivered_sum = {}, {}
     cursor_fields = {"contractDigest", "sourceIndustryCid", "destinationIndustryCid",
                      "destinationStockIndex", "cargoType", "boardedUnits", "deliveredUnits"}
+    multihop_fields = cursor_fields | {
+        "transportSchema", "pathDigest", "legIndex", "legCount", "sourceKind",
+        "destinationKind", "sourceStationGroupCid", "destinationStationGroupCid",
+    }
     for line_cid in sorted(cursors_value):
         cursor = cursors_value[line_cid]
         if not isinstance(line_cid, str) or not line_cid.startswith("line:") \
-                or not isinstance(cursor, Mapping) or set(cursor) != cursor_fields \
+                or not isinstance(cursor, Mapping) or frozenset(cursor) not in {
+                    frozenset(cursor_fields), frozenset(multihop_fields)
+                } \
                 or not isinstance(cursor["contractDigest"], str) \
                 or re.fullmatch(r"[0-9a-f]{8}", cursor["contractDigest"]) is None:
             _fail("checkpoint freight transport cursor is malformed")
@@ -150,19 +159,55 @@ def validate_freight_state(value: Any) -> dict[str, Any]:
         stock_index = _integer(cursor["destinationStockIndex"], 31)
         boarded, delivered = _integer(cursor["boardedUnits"], MAX_COUNT), \
             _integer(cursor["deliveredUnits"], MAX_COUNT)
-        if source == destination or cargo not in output_types.get(source, set()) \
-                or input_stocks.get(destination, {}).get(stock_index) != cargo \
+        transport_schema = cursor.get("transportSchema", 1)
+        multihop = transport_schema == 2
+        source_kind = cursor.get("sourceKind") if multihop else "industry"
+        destination_kind = cursor.get("destinationKind") if multihop else "industry"
+        if isinstance(transport_schema, bool) or not isinstance(transport_schema, int) \
+                or transport_schema not in {1, 2} \
+                or source == destination \
+                or source_kind == "industry" and cargo not in output_types.get(source, set()) \
+                or destination_kind == "industry" \
+                    and input_stocks.get(destination, {}).get(stock_index) != cargo \
                 or delivered > boarded:
             _fail("checkpoint freight transport cursor disagrees with industry recipes")
+        if multihop and (
+            not isinstance(cursor.get("pathDigest"), str)
+            or re.fullmatch(r"[0-9a-f]{8}", cursor["pathDigest"]) is None
+            or cursor.get("sourceKind") not in {"industry", "station"}
+            or cursor.get("destinationKind") not in {"industry", "station"}
+            or not isinstance(cursor.get("sourceStationGroupCid"), str)
+            or not isinstance(cursor.get("destinationStationGroupCid"), str)
+            or not isinstance(cursor.get("legIndex"), int)
+            or not isinstance(cursor.get("legCount"), int)
+            or not 0 <= cursor["legIndex"] < cursor["legCount"] <= 16
+        ):
+            _fail("checkpoint freight multi-hop cursor is malformed")
         _add(transported_sum, cargo, boarded)
-        _add(delivered_sum, cargo, delivered)
-    if _counters(state.get("totalTransported"), "transported totals") != transported_sum \
-            or _counters(state.get("totalDelivered"), "delivered totals") != delivered_sum:
+        if destination_kind == "industry":
+            _add(delivered_sum, cargo, delivered)
+    total_transported = _counters(state.get("totalTransported"), "transported totals")
+    total_delivered = _counters(state.get("totalDelivered"), "delivered totals")
+    retired_transported = _counters(
+        state.get("retiredTransported", {}), "retired transported totals"
+    ) if state["schemaVersion"] >= 3 else {}
+    retired_delivered = _counters(
+        state.get("retiredDelivered", {}), "retired delivered totals"
+    ) if state["schemaVersion"] >= 3 else {}
+    for cargo, amount in retired_transported.items():
+        _add(transported_sum, cargo, amount)
+    for cargo, amount in retired_delivered.items():
+        _add(delivered_sum, cargo, amount)
+    if total_transported != transported_sum or total_delivered != delivered_sum:
         _fail("checkpoint freight transport totals disagree with cursors")
     last = state.get("lastTransport")
     if last is not None:
-        if not isinstance(last, Mapping) or set(last) != {"lines", "boarded", "delivered"} \
-                or _integer(last["lines"], MAX_COUNT) > len(cursors_value):
+        line_count = _integer(last.get("lines"), MAX_COUNT) \
+            if isinstance(last, Mapping) else 0
+        if not isinstance(last, Mapping) or set(last) not in (
+                {"lines", "boarded", "delivered"},
+                {"lines", "boarded", "delivered", "transferred"}) \
+                or state["schemaVersion"] >= 3 and line_count > len(cursors_value):
             _fail("checkpoint last freight transport summary is malformed")
         for cargo, amount in _counters(last["boarded"], "last boarded").items():
             if amount > transported_sum.get(cargo, 0):

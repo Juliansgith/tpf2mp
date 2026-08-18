@@ -4,7 +4,8 @@ param(
     [string]$LocalModsPath,
     [string]$InstallRoot,
     [switch]$ResetBridge,
-    [switch]$SkipVerification
+    [switch]$SkipVerification,
+    [switch]$NoDesktopShortcut
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,6 +14,12 @@ $ErrorActionPreference = 'Stop'
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 $manifest = Test-Tpf2mpReleaseManifest $bundle
+if (Get-Process -Name TransportFever2 -ErrorAction SilentlyContinue) {
+    throw 'Close every Transport Fever 2 instance before installing or updating TPF2MP.'
+}
+if (Get-Process -Name tpf2mp -ErrorAction SilentlyContinue) {
+    throw 'Stop the active TPF2MP session/companion before installing or updating.'
+}
 $version = [string]$manifest.version
 if (-not $version -or $version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') {
     throw "Release manifest contains an unsafe version: $version"
@@ -22,6 +29,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $sourceMod 'mod.lua') -PathType Leaf
     throw "Bundle mod source is missing: $sourceMod"
 }
 
+$defaultInstallRoot = -not [bool]$InstallRoot
 if (-not $InstallRoot) {
     if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unavailable; pass -InstallRoot explicitly.' }
     $InstallRoot = Join-Path $env:LOCALAPPDATA 'TPF2MP'
@@ -49,6 +57,7 @@ $currentPath = Join-Path $install 'current.json'
 $currentStaging = Join-Path $install ('.current-' + [guid]::NewGuid().ToString('N') + '.json')
 $currentRollback = $null
 $currentInstalled = $false
+$entrypointTransactions = [Collections.Generic.List[object]]::new()
 $supportBackup = $null
 $supportInstalled = $false
 $modBackup = $null
@@ -84,6 +93,42 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "Post-install verification failed with exit code $LASTEXITCODE" }
     }
 
+    $entrypointSources = [ordered]@{}
+    if ($null -ne $manifest.PSObject.Properties['update']) {
+        $entrypointSources = [ordered]@{
+            'installed_entrypoint.ps1' = 'tools\installed_entrypoint.ps1'
+            'LAUNCH_TPF2MP.cmd' = 'tools\installed_command.cmd'
+            'UPDATE_TPF2MP.cmd' = 'tools\installed_command.cmd'
+            'VERIFY_TPF2MP.cmd' = 'tools\installed_command.cmd'
+            'UNINSTALL_TPF2MP.cmd' = 'tools\installed_command.cmd'
+        }
+    }
+    foreach ($entrypointName in $entrypointSources.Keys) {
+        $entrypointSource = Join-Path $versionRoot $entrypointSources[$entrypointName]
+        if (-not (Test-Path -LiteralPath $entrypointSource -PathType Leaf)) {
+            throw "Installed bundle is missing stable entrypoint source: $entrypointSource"
+        }
+        $entrypointTarget = Join-Path $install $entrypointName
+        $entrypointTemporary = Join-Path $install ('.entry-' + [guid]::NewGuid().ToString('N'))
+        $entrypointRollback = Join-Path $install ('.entry-rollback-' + [guid]::NewGuid().ToString('N'))
+        Copy-Item -LiteralPath $entrypointSource -Destination $entrypointTemporary -Force
+        $transaction = [pscustomobject]@{
+            target = $entrypointTarget
+            temporary = $entrypointTemporary
+            rollback = $entrypointRollback
+            priorExisted = Test-Path -LiteralPath $entrypointTarget -PathType Leaf
+            applied = $false
+        }
+        $entrypointTransactions.Add($transaction)
+        if ($transaction.priorExisted) {
+            [IO.File]::Replace($entrypointTemporary, $entrypointTarget, $entrypointRollback)
+        }
+        else {
+            Move-Item -LiteralPath $entrypointTemporary -Destination $entrypointTarget
+        }
+        $transaction.applied = $true
+    }
+
     $operationProperty = $manifest.PSObject.Properties['operationSchemaVersion']
     $current = [ordered]@{
         schemaVersion = 2
@@ -113,6 +158,19 @@ try {
 catch {
     $installError = $_
     $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+    for ($entrypointIndex = $entrypointTransactions.Count - 1; $entrypointIndex -ge 0; $entrypointIndex--) {
+        $transaction = $entrypointTransactions[$entrypointIndex]
+        if (-not $transaction.applied) { continue }
+        try {
+            if (Test-Path -LiteralPath $transaction.target -PathType Leaf) {
+                Remove-Item -LiteralPath $transaction.target -Force
+            }
+            if ($transaction.priorExisted -and (Test-Path -LiteralPath $transaction.rollback -PathType Leaf)) {
+                Move-Item -LiteralPath $transaction.rollback -Destination $transaction.target
+            }
+        }
+        catch { $rollbackErrors.Add("stable entrypoint $($transaction.target): $($_.Exception.Message)") }
+    }
     try {
         if ($currentInstalled -and (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
             Remove-Item -LiteralPath $currentPath -Force
@@ -154,12 +212,41 @@ finally {
     if ($committed -and $currentRollback -and (Test-Path -LiteralPath $currentRollback -PathType Leaf)) {
         Remove-Item -LiteralPath $currentRollback -Force -ErrorAction SilentlyContinue
     }
+    foreach ($transaction in $entrypointTransactions) {
+        foreach ($entrypointTemporary in @($transaction.temporary, $transaction.rollback)) {
+            if ($entrypointTemporary -and (Test-Path -LiteralPath $entrypointTemporary -PathType Leaf)) {
+                Remove-Item -LiteralPath $entrypointTemporary -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
+if ($defaultInstallRoot -and -not $NoDesktopShortcut `
+        -and (Test-Path -LiteralPath (Join-Path $install 'LAUNCH_TPF2MP.cmd') -PathType Leaf)) {
+    try {
+        $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+        if ($desktop) {
+            $shortcutPath = Join-Path $desktop 'TPF2MP Multiplayer.lnk'
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($shortcutPath)
+            $shortcut.TargetPath = Join-Path $install 'LAUNCH_TPF2MP.cmd'
+            $shortcut.WorkingDirectory = $install
+            $shortcut.Description = 'Launch TPF2MP trusted-LAN multiplayer'
+            $shortcut.Save()
+            Write-Host "Desktop shortcut: $shortcutPath"
+        }
+    }
+    catch { Write-Warning "Could not create the optional desktop shortcut: $($_.Exception.Message)" }
 }
 
 Write-Host "TPF2MP $version installed successfully."
 Write-Host "Game mod: $targetMod"
 Write-Host "Support bundle: $versionRoot"
-if (Test-Path -LiteralPath (Join-Path $versionRoot 'LAUNCH_TPF2MP.cmd')) {
+if (Test-Path -LiteralPath (Join-Path $install 'LAUNCH_TPF2MP.cmd') -PathType Leaf) {
+    Write-Host "Multiplayer launcher: $(Join-Path $install 'LAUNCH_TPF2MP.cmd')"
+    Write-Host "Update checker: $(Join-Path $install 'UPDATE_TPF2MP.cmd')"
+}
+elseif (Test-Path -LiteralPath (Join-Path $versionRoot 'LAUNCH_TPF2MP.cmd') -PathType Leaf) {
     Write-Host "Multiplayer launcher: $(Join-Path $versionRoot 'LAUNCH_TPF2MP.cmd')"
 }
 Write-Host "Bridge roots: $bridge"

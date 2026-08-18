@@ -4,6 +4,7 @@ local revenue = require "tpf2_mp/economy_revenue"
 local townDemand = require "tpf2_mp/economy_town_demand"
 local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
 local freightServiceBinding = require "tpf2_mp/freight_service_binding"
+local multihopNetwork = require "tpf2_mp/multihop_network"
 local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 
 local M = {}
@@ -772,7 +773,13 @@ function M.new(deps)
       and M.gravityDemand(capacityA, capacityB, corridorMeters)
       or util.clamp(math.max(100, math.floor((capacityA + capacityB) / 12)),
         M.SERVICE_FACTS.minDemand, M.SERVICE_FACTS.maxDemand)
-    if existingMarket then demand = math.max(util.integer(existingMarket.demand, 0), demand) end
+    if existingMarket then
+      local metadata = existingMarket.metadata or {}
+      local priorNetwork = math.max(0, util.integer(metadata.networkDemand, 0))
+      local priorDirect = math.max(0, util.integer(metadata.directDemand,
+        math.max(0, util.integer(existingMarket.demand, 0) - priorNetwork)))
+      demand = math.max(priorDirect, demand)
+    end
     economyModule.upsertMarket(economyState, {
       cid = marketCid,
       name = localPassenger and (nameOf(townA) .. " local passenger market")
@@ -784,6 +791,9 @@ function M.new(deps)
         townSizeA = capacityA, townSizeB = capacityB,
         corridorMeters = corridorMeters,
         marketScope = localPassenger and "local" or "corridor",
+        directDemand = demand,
+        networkDemand = existingMarket and existingMarket.metadata
+          and util.integer(existingMarket.metadata.networkDemand, 0) or 0,
       },
     })
 
@@ -844,11 +854,13 @@ function M.new(deps)
         vehicleUpkeepCoverageComplete = pricedVehicles == vehicles,
       },
     })
+    local network = multihopNetwork.rebuildPassenger(economyState)
     return true, {
       lineCid = lineCid, marketCid = marketCid, townA = townCidA, townB = townCidB,
       vehicleCount = vehicles, factsSource = factsSource,
       carrier = consistFacts and consistFacts.carrier or nil,
       marketScope = localPassenger and "local" or "corridor",
+      networkRouteCount = network.routeCount,
     }
   end
 

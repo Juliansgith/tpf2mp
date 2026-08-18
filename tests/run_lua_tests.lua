@@ -497,7 +497,7 @@ test("freight industries bootstrap, produce, consume, and migrate deterministica
     state, "industry:pre:a-farm", "GRAIN", 7)
   truthy(withdrawn)
   equal(remaining, 23)
-  equal(freightIndustryModel.digest(state), "f758bc34",
+  equal(freightIndustryModel.digest(state), "7fe9cd81",
     "Lua freight state diverged from the Python replay vector")
 
   local beforeMigration = freightIndustryModel.digest(state)
@@ -3388,9 +3388,14 @@ test("freight service binding authors a nearest compatible industry contract", f
   local service = economyState.services["line:event:cargo:1"]
   equal(service.capacity, 144,
     "heterogeneous fleet capacity was not prorated over fleet departures")
-  equal(service.metadata.cargoCapacityPerVehicle, 48)
-  equal(service.metadata.cargoCapacityByVehicleCid["vehicle:event:1"], 24)
-  equal(service.metadata.cargoCapacityByVehicleCid["vehicle:event:2"], 72)
+  equal(service.metadata.cargoAverageCapacityByType.GRAIN, 48)
+  equal(service.metadata.cargoCapacityByVehicleCid[
+    "vehicle:event:1"].GRAIN, 24)
+  equal(service.metadata.cargoCapacityByVehicleCid[
+    "vehicle:event:2"].GRAIN, 72)
+  equal(service.metadata.freightContractSchema, 2)
+  equal(service.metadata.freightLegIndex, 0)
+  equal(service.metadata.freightLegCount, 1)
   equal(service.metadata.destinationStockIndex, 0)
   equal(service.metadata.sourceStopIndex, 0)
   equal(service.metadata.destinationStopIndex, 1)
@@ -4115,21 +4120,20 @@ local function cargoPresentationFixture()
       ["line:freight:test"] = { allocated = 60 },
     } },
   } }
+  local sourceRecipe = freightFixture(
+    "industry:source", "industry/test_source.con", 60,
+    {}, { {} }, { { cargoType = "GRAIN", amount = 1 } }, {})
+  local sinkRecipe = freightFixture(
+    "industry:sink", "industry/test_sink.con", 60,
+    { { index = 0, cargoType = "GRAIN", stockType = "RECEIVING",
+        moreCapacity = 0 } },
+    { { { stockIndex = 0, cargoType = "GRAIN", amount = 1 } } }, {}, {})
+  local bootstrap = assert(freightIndustryModel.bootstrapAction(
+    "edc7a517", 0, { sourceRecipe, sinkRecipe }))
   local freight = freightIndustryModel.newState()
-  freight.ready = true
-  freight.industries = {
-    ["industry:source"] = {
-      recipe = { outputs = { { cargoType = "GRAIN", amount = 1 } } },
-      inputStock = {}, outputStock = { GRAIN = 100 },
-    },
-    ["industry:sink"] = {
-      recipe = { outputs = {}, inputs = {
-        { { stockIndex = 0, cargoType = "GRAIN", amount = 1 } },
-      } },
-      inputStock = { { index = 0, cargoType = "GRAIN", amount = 0 } },
-      outputStock = {},
-    },
-  }
+  truthy(freightIndustryModel.applyBootstrap(
+    freight, bootstrap, { ready = true, digest = "edc7a517" }))
+  freight.industries["industry:source"].outputStock.GRAIN = 100
   return economyState, freight
 end
 
@@ -4173,6 +4177,13 @@ test("cargo presentation conserves stock, vehicle load, delivery, and revenue", 
   equal(candidate.transportCursors["line:freight:test"].boardedUnits, 60)
   equal(candidate.transportCursors["line:freight:test"].deliveredUnits, 40)
   equal(snapshot.cargoLines["line:freight:test"].earnedRevenueCents, 40000000)
+
+  local unknownSchema = util.deepCopy(snapshot.cargoLines)
+  unknownSchema["line:freight:test"].transportSchema = 3
+  local invalid, invalidError = freightIndustryModel.applyTransportSnapshot(
+    util.deepCopy(freight), unknownSchema)
+  equal(invalid, false, "unknown freight transport schema was accepted")
+  truthy(tostring(invalidError):match("malformed"), invalidError)
 
   local evaluated = economy.evaluateAll(economyState, nil, snapshot)
   local result = evaluated.markets["market:freight:test"].services["line:freight:test"]
@@ -4223,6 +4234,16 @@ test("deleting a freight line retires its authoritative transport cursor", funct
     "cursor retirement erased historical transported totals")
   equal(worldState.freightIndustry.totalDelivered.GRAIN, 40,
     "cursor retirement erased historical delivered totals")
+  equal(worldState.freightIndustry.retiredTransported.GRAIN, 60,
+    "cursor retirement did not preserve transported history provenance")
+  equal(worldState.freightIndustry.retiredDelivered.GRAIN, 40,
+    "cursor retirement did not preserve delivered history provenance")
+  equal(worldState.freightIndustry.lastTransport, nil,
+    "cursor retirement retained an impossible active-line delta summary")
+  local migrated, migrationError = freightIndustryModel.migrate(
+    util.deepCopy(worldState.freightIndustry))
+  equal(migrationError, nil, "retired freight history did not survive strict migration")
+  equal(migrated.retiredTransported.GRAIN, 60)
   equal(worldState.cargoPresentation.lines[lineCid].retired, true,
     "cargo presentation did not retire beside the authoritative cursor")
 end)

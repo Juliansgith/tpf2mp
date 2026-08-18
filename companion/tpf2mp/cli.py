@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 
 from .audit_replay import replay
+from .alpha_acceptance import configure_cli as configure_alpha_cli
+from .alpha_acceptance import run_cli as run_alpha_cli
 from .bridge import GameBridge
 from .checkpoint import write_report as write_checkpoint_report
 from .freight_live_report import configure_cli as configure_freight_live_cli
@@ -69,6 +71,7 @@ def parser() -> argparse.ArgumentParser:
 
     configure_freight_live_cli(commands)
     configure_passenger_feeder_live_cli(commands)
+    configure_alpha_cli(commands)
 
     inspect = commands.add_parser("inspect", help="show bridge cursor and queue state")
     inspect.add_argument("--peer", default="player1")
@@ -200,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_freight_live_cli(args, replay)
         elif args.command == "passenger-feeder-live-report":
             return run_passenger_feeder_live_cli(args, replay)
+        elif args.command == "alpha-live-report":
+            return run_alpha_cli(args)
         elif args.command == "inspect":
             bridge_path = args.bridge or default_bridge(args.peer)
             game_bridge = GameBridge(bridge_path, args.session, args.peer)

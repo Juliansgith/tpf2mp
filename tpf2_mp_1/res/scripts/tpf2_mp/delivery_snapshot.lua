@@ -2,7 +2,7 @@ local util = require "tpf2_mp/util"
 
 local M = {}
 
-M.SCHEMA_VERSION = 2
+M.SCHEMA_VERSION = 3
 
 local function exactFields(value, fields)
   if type(value) ~= "table" then return false end
@@ -60,7 +60,7 @@ function M.validate(value)
     end
     return true, value
   end
-  if value.schemaVersion ~= M.SCHEMA_VERSION
+  if value.schemaVersion ~= 2 and value.schemaVersion ~= M.SCHEMA_VERSION
     or not exactFields(value, {
       "schemaVersion", "presentationEpoch", "passengerLines", "cargoLines" })
     or not exactInteger(value.presentationEpoch, 0, 1000000000)
@@ -76,10 +76,18 @@ function M.validate(value)
     end
   end
   for lineCid, row in pairs(value.cargoLines) do
-    if not validCid(lineCid, "line") or not exactFields(row, {
-        "contractDigest", "sourceIndustryCid", "destinationIndustryCid",
-        "destinationStockIndex", "cargoType", "boardedUnits",
-        "deliveredUnits", "earnedRevenueCents" })
+    local multihop = type(row) == "table" and row.transportSchema == 2
+    local fields = multihop and {
+      "transportSchema", "contractDigest", "pathDigest", "legIndex", "legCount",
+      "sourceKind", "destinationKind", "sourceIndustryCid", "destinationIndustryCid",
+      "sourceStationGroupCid", "destinationStationGroupCid", "destinationStockIndex",
+      "cargoType", "boardedUnits", "deliveredUnits", "earnedRevenueCents",
+    } or {
+      "contractDigest", "sourceIndustryCid", "destinationIndustryCid",
+      "destinationStockIndex", "cargoType", "boardedUnits",
+      "deliveredUnits", "earnedRevenueCents",
+    }
+    if not validCid(lineCid, "line") or not exactFields(row, fields)
       or type(row.contractDigest) ~= "string" or not row.contractDigest:match("^[0-9a-f]+$")
       or #row.contractDigest ~= 8
       or not validCid(row.sourceIndustryCid, "industry")
@@ -93,6 +101,16 @@ function M.validate(value)
       or row.deliveredUnits > row.boardedUnits
       or not exactInteger(row.earnedRevenueCents, 0, 1000000000000000) then
       return false, "cargo delivery snapshot line is invalid"
+    end
+    if multihop and (type(row.pathDigest) ~= "string"
+      or not row.pathDigest:match("^[0-9a-f]+$") or #row.pathDigest ~= 8
+      or not exactInteger(row.legIndex, 0, 15)
+      or not exactInteger(row.legCount, 1, 16) or row.legIndex >= row.legCount
+      or (row.sourceKind ~= "industry" and row.sourceKind ~= "station")
+      or (row.destinationKind ~= "industry" and row.destinationKind ~= "station")
+      or not validCid(row.sourceStationGroupCid, "station_group")
+      or not validCid(row.destinationStationGroupCid, "station_group")) then
+      return false, "multi-hop cargo delivery identity is invalid"
     end
   end
   return true, value

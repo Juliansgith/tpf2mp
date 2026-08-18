@@ -179,8 +179,8 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 30,
-  "state schema was not migrated to the departure-timed passenger queue version")
+assert(initialized.version == 31,
+  "state schema was not migrated to the multi-hop freight history version")
 assert(initialized.checkpoint.exports == 1 and initialized.checkpoint.lastError == nil,
   "match initialisation did not export a clean baseline checkpoint")
 assert(initialized.probes.networkAuthority.ready == true
@@ -255,7 +255,7 @@ assert(demo.economy.epoch == 0, "seeding a demo must not consume an authoritativ
 assert(demo.eventLog.items[2].seq == 2 and demo.eventLog.items[2].commitSeq == 2, "event ordering is wrong")
 assert(demo.bridge.nextOutSeq >= 4, "digest acknowledgements were not emitted")
 
-local firstDelivery = { schemaVersion = 2,
+local firstDelivery = { schemaVersion = 3,
   presentationEpoch = demo.world.passengerPresentation.epoch,
   passengerLines = {}, cargoLines = {} }
 local firstBoundary = economy.nextBoundary(demo.economy)
@@ -291,7 +291,7 @@ assert(settled.eventLog.items[3].postModelDigest ~= settled.eventLog.items[3].pr
   "settlement did not change the independently replayable model digest")
 assert(settled.match.status == "running", "match ended before its configured epoch limit")
 
-local secondDelivery = { schemaVersion = 2,
+local secondDelivery = { schemaVersion = 3,
   presentationEpoch = settled.world.passengerPresentation.epoch,
   passengerLines = {}, cargoLines = {} }
 local secondBoundary = economy.nextBoundary(settled.economy)

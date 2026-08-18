@@ -2,10 +2,11 @@ local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
 local revenue = require "tpf2_mp/economy_revenue"
 local validation = require "tpf2_mp/cargo_presentation_validation"
+local projectionModule = require "tpf2_mp/cargo_presentation_projection"
 
 local M = {}
 
-M.SCHEMA_VERSION = 1
+M.SCHEMA_VERSION = 2
 M.MAX_COUNT = 1000000000
 M.MAX_CENTS = revenue.ACCUMULATOR_LIMIT
 
@@ -35,12 +36,22 @@ local function cargoService(economyState, lineCid)
   local stops = metadata.stationGroupCids
   local sourceIndex = util.integer(metadata.sourceStopIndex, -1)
   local destinationIndex = util.integer(metadata.destinationStopIndex, -1)
-  if metadata.freightContractSchema ~= 1
+  local schema = util.integer(metadata.freightContractSchema, 0)
+  local sourceKind = schema == 1 and "industry" or metadata.sourceTransportKind
+  local destinationKind = schema == 1 and "industry" or metadata.destinationTransportKind
+  if (schema ~= 1 and schema ~= 2)
     or type(metadata.freightContractDigest) ~= "string"
     or type(metadata.sourceIndustryCid) ~= "string"
     or type(metadata.destinationIndustryCid) ~= "string"
     or type(metadata.cargoType) ~= "string"
     or type(metadata.destinationStockIndex) ~= "number"
+    or (sourceKind ~= "industry" and sourceKind ~= "station")
+    or (destinationKind ~= "industry" and destinationKind ~= "station")
+    or (schema == 2 and (type(metadata.freightPathDigest) ~= "string"
+      or util.integer(metadata.freightLegIndex, -1) < 0
+      or util.integer(metadata.freightLegCount, 0) < 1
+      or util.integer(metadata.freightLegIndex, -1)
+        >= util.integer(metadata.freightLegCount, 0)))
     or type(stops) ~= "table" or #stops < 2
     or sourceIndex < 0 or sourceIndex >= #stops
     or destinationIndex < 0 or destinationIndex >= #stops
@@ -61,7 +72,8 @@ local function resultAllocation(economyState, service)
 end
 
 function M.newState()
-  return { schemaVersion = M.SCHEMA_VERSION, epoch = 0, lines = {}, vehicles = {} }
+  return { schemaVersion = M.SCHEMA_VERSION, epoch = 0,
+    lines = {}, vehicles = {}, stationStock = {} }
 end
 
 function M.migrate(value)
@@ -70,7 +82,24 @@ function M.migrate(value)
   value.epoch = count(value.epoch)
   value.lines = type(value.lines) == "table" and value.lines or {}
   value.vehicles = type(value.vehicles) == "table" and value.vehicles or {}
+  value.stationStock = type(value.stationStock) == "table" and value.stationStock or {}
+  for stationCid, stocks in pairs(value.stationStock) do
+    if type(stationCid) ~= "string" or type(stocks) ~= "table" then
+      value.stationStock[stationCid] = nil
+    else
+      for cargoType, amount in pairs(stocks) do
+        if type(cargoType) ~= "string" then stocks[cargoType] = nil
+        else stocks[cargoType] = count(amount) end
+      end
+    end
+  end
   for _, line in pairs(value.lines) do
+    line.transportSchema = util.integer(line.transportSchema, 1)
+    line.pathDigest = line.pathDigest or line.contractDigest
+    line.legIndex = count(line.legIndex)
+    line.legCount = math.max(1, count(line.legCount))
+    line.sourceKind = line.sourceKind == "station" and "station" or "industry"
+    line.destinationKind = line.destinationKind == "station" and "station" or "industry"
     line.boardedTotal = count(line.boardedTotal)
     line.deliveredTotal = count(line.deliveredTotal)
     line.boardedThisEpoch = count(line.boardedThisEpoch)
@@ -88,6 +117,7 @@ function M.migrate(value)
 end
 
 local function routeIdentity(service, stops, metadata)
+  local schema = util.integer(metadata.freightContractSchema, 1)
   return {
     lineCid = service.lineCid,
     companyCid = service.companyCid,
@@ -101,6 +131,13 @@ local function routeIdentity(service, stops, metadata)
     destinationStationGroupCid = metadata.destinationStationGroupCid,
     sourceStopIndex = util.integer(metadata.sourceStopIndex, -1),
     destinationStopIndex = util.integer(metadata.destinationStopIndex, -1),
+    transportSchema = schema,
+    pathDigest = schema == 2 and metadata.freightPathDigest
+      or metadata.freightContractDigest,
+    legIndex = schema == 2 and util.integer(metadata.freightLegIndex, 0) or 0,
+    legCount = schema == 2 and util.integer(metadata.freightLegCount, 1) or 1,
+    sourceKind = schema == 2 and metadata.sourceTransportKind or "industry",
+    destinationKind = schema == 2 and metadata.destinationTransportKind or "industry",
     stops = util.deepCopy(stops),
   }
 end
@@ -111,7 +148,10 @@ local function newLine(service, stops, metadata, epoch, previous)
   identity.routeDigest = hash.value(identity.stops)
   identity.allocated = resultAllocation(nil, service)
   identity.boardedThisEpoch = 0
-  identity.capacityPerVehicle = count(metadata.cargoCapacityPerVehicle)
+  identity.capacityPerVehicle = count(
+    metadata.cargoAverageCapacityByType
+      and metadata.cargoAverageCapacityByType[metadata.cargoType]
+      or metadata.cargoCapacityPerVehicle)
   identity.boardedTotal = count(previous and previous.boardedTotal)
   identity.deliveredTotal = count(previous and previous.deliveredTotal)
   identity.earnedRevenueCents = cents(previous and previous.earnedRevenueCents)
@@ -141,7 +181,10 @@ local function ensureLine(state, economyState, lineCid, resetEpoch)
   local identity = routeIdentity(service, stops, metadata)
   for key, value in pairs(identity) do line[key] = value end
   line.routeDigest = hash.value(stops)
-  line.capacityPerVehicle = count(metadata.cargoCapacityPerVehicle)
+  line.capacityPerVehicle = count(
+    metadata.cargoAverageCapacityByType
+      and metadata.cargoAverageCapacityByType[metadata.cargoType]
+      or metadata.cargoCapacityPerVehicle)
   line.retired = false
   line.allocated = resultAllocation(economyState, service)
   if resetEpoch or line.epoch ~= epoch then
@@ -204,9 +247,13 @@ local function vehicleRecord(state, service, metadata, action, owner)
     existing = nil
   end
   local exactCapacities = metadata.cargoCapacityByVehicleCid or {}
-  local exactCapacity = count(exactCapacities[action.vehicleCid])
+  local exactValue = exactCapacities[action.vehicleCid]
+  if type(exactValue) == "table" then exactValue = exactValue[metadata.cargoType] end
+  local exactCapacity = count(exactValue)
   if exactCapacities[action.vehicleCid] == nil then
-    exactCapacity = count(metadata.cargoCapacityPerVehicle)
+    exactCapacity = count(metadata.cargoAverageCapacityByType
+      and metadata.cargoAverageCapacityByType[metadata.cargoType]
+      or metadata.cargoCapacityPerVehicle)
   end
   local record = existing or {
     vehicleCid = action.vehicleCid, lineCid = action.lineCid,
@@ -269,7 +316,8 @@ local function unsettledReservations(state, freightState, sourceCid, cargoType)
   local total = 0
   local cursors = freightState and freightState.transportCursors or {}
   for lineCid, line in pairs(state.lines) do
-    if line.sourceIndustryCid == sourceCid and line.cargoType == cargoType then
+    if line.sourceKind == "industry"
+      and line.sourceIndustryCid == sourceCid and line.cargoType == cargoType then
       local cursor = cursors[lineCid] or {}
       total = add(total, math.max(0,
         count(line.boardedTotal) - count(cursor.boardedUnits)))
@@ -278,7 +326,28 @@ local function unsettledReservations(state, freightState, sourceCid, cargoType)
   return total
 end
 
+local function stationAmount(state, stationCid, cargoType)
+  local station = state.stationStock and state.stationStock[stationCid] or nil
+  return count(station and station[cargoType])
+end
+
+local function addStationStock(state, stationCid, cargoType, amount)
+  state.stationStock[stationCid] = state.stationStock[stationCid] or {}
+  state.stationStock[stationCid][cargoType] = add(
+    state.stationStock[stationCid][cargoType], amount)
+end
+
+local function removeStationStock(state, stationCid, cargoType, amount)
+  local available = stationAmount(state, stationCid, cargoType)
+  if amount > available then return false end
+  state.stationStock[stationCid][cargoType] = available - amount
+  return true
+end
+
 local function availableOutput(state, freightState, line)
+  if line.sourceKind == "station" then
+    return stationAmount(state, line.sourceStationGroupCid, line.cargoType)
+  end
   local industry = freightState and freightState.industries
     and freightState.industries[line.sourceIndustryCid] or nil
   local stock = industry and industry.outputStock or nil
@@ -316,7 +385,7 @@ function M.applyRelease(value, economyState, freightState, action, bindingMetada
     return false, "cargo vehicle round is not sequential"
   end
 
-  local delivered = 0
+  local delivered, transferred = 0, 0
   if stopIndex == line.destinationStopIndex and vehicle.aboard > 0 then
     delivered = vehicle.aboard
     local earned = revenue.modelDeliveryCents(
@@ -331,6 +400,11 @@ function M.applyRelease(value, economyState, freightState, action, bindingMetada
     vehicle.boardedFareCents, vehicle.boardedDistanceMeters = nil, nil
     line.deliveredTotal = add(line.deliveredTotal, delivered)
     line.earnedRevenueCents = addCents(line.earnedRevenueCents, earned)
+    if line.destinationKind == "station" then
+      addStationStock(state, line.destinationStationGroupCid,
+        line.cargoType, delivered)
+      transferred = delivered
+    end
   end
 
   local boarded = 0
@@ -339,6 +413,10 @@ function M.applyRelease(value, economyState, freightState, action, bindingMetada
     local free = math.max(0, count(vehicle.capacity) - count(vehicle.aboard))
     boarded = math.min(quota, free, availableOutput(state, freightState, line))
     if boarded > 0 then
+      if line.sourceKind == "station" and not removeStationStock(
+          state, line.sourceStationGroupCid, line.cargoType, boarded) then
+        return false, "cargo transfer station stock changed during boarding"
+      end
       vehicle.aboard = add(vehicle.aboard, boarded)
       vehicle.boardedTotal = add(vehicle.boardedTotal, boarded)
       vehicle.boardedFareCents = service.fareCents
@@ -354,7 +432,7 @@ function M.applyRelease(value, economyState, freightState, action, bindingMetada
   vehicle.lastStationGroupCid = stops[stopIndex + 1]
   return true, {
     cargo = true, cargoType = line.cargoType,
-    boarded = boarded, delivered = delivered,
+    boarded = boarded, delivered = delivered, transferred = transferred,
     aboard = vehicle.aboard, capacity = vehicle.capacity,
     availableAtSource = availableOutput(state, freightState, line),
     earnedRevenueCents = line.earnedRevenueCents,
@@ -389,152 +467,12 @@ function M.onOperation(value, economyState, transaction, companyCid)
   return true, state
 end
 
-local function optional(record, key, value)
-  if value ~= nil then record[key] = value end
-end
-
-function M.digestView(value)
-  local state = M.migrate(value)
-  local lines = {}
-  for _, lineCid in ipairs(util.sortedKeys(state.lines)) do
-    local item = state.lines[lineCid]
-    lines[#lines + 1] = {
-      lineCid = lineCid, companyCid = item.companyCid, marketCid = item.marketCid,
-      contractDigest = item.contractDigest,
-      sourceIndustryCid = item.sourceIndustryCid,
-      destinationIndustryCid = item.destinationIndustryCid,
-      destinationStockIndex = util.integer(item.destinationStockIndex, 0),
-      cargoType = item.cargoType,
-      sourceStationGroupCid = item.sourceStationGroupCid,
-      destinationStationGroupCid = item.destinationStationGroupCid,
-      sourceStopIndex = count(item.sourceStopIndex),
-      destinationStopIndex = count(item.destinationStopIndex),
-      stops = util.deepCopy(item.stops or {}), routeDigest = item.routeDigest,
-      epoch = count(item.epoch), allocated = count(item.allocated),
-      boardedThisEpoch = count(item.boardedThisEpoch),
-      capacityPerVehicle = count(item.capacityPerVehicle),
-      boardedTotal = count(item.boardedTotal),
-      deliveredTotal = count(item.deliveredTotal),
-      earnedRevenueCents = cents(item.earnedRevenueCents),
-      discardedTotal = count(item.discardedTotal), retired = item.retired == true,
-    }
-  end
-  local vehicles = {}
-  for _, vehicleCid in ipairs(util.sortedKeys(state.vehicles)) do
-    local item = state.vehicles[vehicleCid]
-    local record = {
-      vehicleCid = vehicleCid, lineCid = item.lineCid, companyCid = item.companyCid,
-      capacity = count(item.capacity), aboard = count(item.aboard),
-      lastRound = count(item.lastRound), boardedTotal = count(item.boardedTotal),
-      deliveredTotal = count(item.deliveredTotal),
-      earnedRevenueCents = cents(item.earnedRevenueCents),
-      discardedTotal = count(item.discardedTotal),
-    }
-    optional(record, "boardedEpoch", item.boardedEpoch and count(item.boardedEpoch))
-    optional(record, "lastStopIndex", item.lastStopIndex and count(item.lastStopIndex))
-    optional(record, "lastStationGroupCid", item.lastStationGroupCid)
-    optional(record, "boardedFareCents", item.boardedFareCents and count(item.boardedFareCents))
-    optional(record, "boardedDistanceMeters",
-      item.boardedDistanceMeters and count(item.boardedDistanceMeters))
-    vehicles[#vehicles + 1] = record
-  end
-  return { schemaVersion = M.SCHEMA_VERSION, epoch = state.epoch,
-    lines = lines, vehicles = vehicles }
-end
-
-function M.economySnapshot(value)
-  local state = M.migrate(value)
-  local lines = {}
-  for _, lineCid in ipairs(util.sortedKeys(state.lines)) do
-    local line = state.lines[lineCid]
-    lines[lineCid] = {
-      contractDigest = line.contractDigest,
-      sourceIndustryCid = line.sourceIndustryCid,
-      destinationIndustryCid = line.destinationIndustryCid,
-      destinationStockIndex = util.integer(line.destinationStockIndex, 0),
-      cargoType = line.cargoType,
-      boardedUnits = count(line.boardedTotal),
-      deliveredUnits = count(line.deliveredTotal),
-      earnedRevenueCents = cents(line.earnedRevenueCents),
-    }
-  end
-  return { schemaVersion = M.SCHEMA_VERSION, presentationEpoch = state.epoch, lines = lines }
-end
-
-local function nameOf(registry, cid, fallback)
-  local binding = registry and registry.byCanonical and registry.byCanonical[cid] or nil
-  return binding and binding.metadata and binding.metadata.name or fallback or cid,
-    binding and tonumber(binding.localId) or nil
-end
-
-function M.publicView(value, economyState, freightState, registry)
-  local state = M.migrate(value)
-  local result = { schemaVersion = M.SCHEMA_VERSION, epoch = state.epoch,
-    lines = {}, stations = {}, vehicles = {}, localVehicles = {}, localStations = {},
-    totals = { waiting = 0, aboard = 0, capacity = 0, boarded = 0,
-      delivered = 0, discarded = 0, earnedRevenueCents = 0 } }
-  for _, lineCid in ipairs(util.sortedKeys(state.lines)) do
-    local item = util.deepCopy(state.lines[lineCid])
-    local service = economyState and economyState.services and economyState.services[lineCid] or {}
-    item.name, item.localId = nameOf(registry, lineCid, service.name)
-    item.sourceIndustryName = nameOf(registry,
-      item.sourceIndustryCid, item.sourceIndustryCid)
-    item.destinationIndustryName = nameOf(registry,
-      item.destinationIndustryCid, item.destinationIndustryCid)
-    item.availableAtSource = availableOutput(state, freightState, item)
-    item.waiting = math.min(item.availableAtSource,
-      math.max(0, count(item.allocated) - count(item.boardedThisEpoch)))
-    result.lines[lineCid] = item
-    result.totals.waiting = add(result.totals.waiting, item.waiting)
-    result.totals.boarded = add(result.totals.boarded, item.boardedTotal)
-    result.totals.delivered = add(result.totals.delivered, item.deliveredTotal)
-    result.totals.discarded = add(result.totals.discarded, item.discardedTotal)
-    result.totals.earnedRevenueCents = addCents(
-      result.totals.earnedRevenueCents, item.earnedRevenueCents)
-    local stationName, localStationId = nameOf(
-      registry, item.sourceStationGroupCid, item.sourceStationGroupCid)
-    local station = result.stations[item.sourceStationGroupCid] or {
-      stationGroupCid = item.sourceStationGroupCid, name = stationName,
-      localId = localStationId, waiting = 0, delivered = 0, lines = {},
-    }
-    station.waiting = add(station.waiting, item.waiting)
-    station.lines[#station.lines + 1] = {
-      lineCid = lineCid, name = item.name, companyCid = item.companyCid,
-      cargoType = item.cargoType, waiting = item.waiting, delivered = 0,
-      role = "source",
-    }
-    result.stations[item.sourceStationGroupCid] = station
-    if localStationId then result.localStations[tostring(localStationId)] = item.sourceStationGroupCid end
-
-    local destinationName, localDestinationId = nameOf(
-      registry, item.destinationStationGroupCid, item.destinationStationGroupCid)
-    local destination = result.stations[item.destinationStationGroupCid] or {
-      stationGroupCid = item.destinationStationGroupCid, name = destinationName,
-      localId = localDestinationId, waiting = 0, delivered = 0, lines = {},
-    }
-    destination.delivered = add(destination.delivered, item.deliveredTotal)
-    destination.lines[#destination.lines + 1] = {
-      lineCid = lineCid, name = item.name, companyCid = item.companyCid,
-      cargoType = item.cargoType, waiting = 0,
-      delivered = item.deliveredTotal, role = "destination",
-    }
-    result.stations[item.destinationStationGroupCid] = destination
-    if localDestinationId then
-      result.localStations[tostring(localDestinationId)] = item.destinationStationGroupCid
-    end
-  end
-  for _, vehicleCid in ipairs(util.sortedKeys(state.vehicles)) do
-    local item = util.deepCopy(state.vehicles[vehicleCid])
-    item.name, item.localId = nameOf(registry, vehicleCid, vehicleCid)
-    local line = state.lines[item.lineCid]
-    item.cargoType = line and line.cargoType or nil
-    item.lineName = result.lines[item.lineCid] and result.lines[item.lineCid].name or item.lineCid
-    result.vehicles[vehicleCid] = item
-    if item.localId then result.localVehicles[tostring(item.localId)] = vehicleCid end
-    result.totals.aboard = add(result.totals.aboard, item.aboard)
-    result.totals.capacity = add(result.totals.capacity, item.capacity)
-  end
-  return result
-end
+local projection = projectionModule.new({
+  schemaVersion = M.SCHEMA_VERSION, migrate = M.migrate,
+  count = count, cents = cents, add = add, addCents = addCents,
+  availableOutput = availableOutput,
+})
+M.digestView, M.economySnapshot, M.publicView = projection.digestView,
+  projection.economySnapshot, projection.publicView
 
 return M

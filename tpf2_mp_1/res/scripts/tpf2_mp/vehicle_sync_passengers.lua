@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 local passengerPresentation = require "tpf2_mp/passenger_presentation"
 local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
+local multihopNetwork = require "tpf2_mp/multihop_network"
 
 local M = {}
 
@@ -30,9 +31,14 @@ function M.applyRelease(worldState, economyState, vehicleSync, action, metadata)
   if not cargoApplied then
     return false, "cargo presentation rejected vehicle release: " .. tostring(cargoResult)
   end
+  local pinned, pinResult = multihopNetwork.pinCargoLine(
+    economyState, action.lineCid)
+  if not pinned then
+    return false, "cargo path pin rejected vehicle release: " .. tostring(pinResult)
+  end
   worldState.passengerPresentation = presentation
   worldState.cargoPresentation = cargo
-  return true, { passenger = result, cargo = cargoResult }
+  return true, { passenger = result, cargo = cargoResult, freightPath = pinResult }
 end
 
 function M.applyOperation(worldState, economyState, transaction, companyCid)

@@ -65,6 +65,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         "vehiclePhaseDivergenceStreak": host.vehicle_phase_divergence_streak,
         "vehiclePhaseState": host.vehicle_phase_state,
         **host.synchronization.status(),
+        **host.reconnect.status(),
         **host.restore_session.status(),
         **host.anchor.status(),
         **host.anchor_preparation.status(),

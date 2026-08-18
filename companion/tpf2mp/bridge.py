@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import errno
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator, Mapping
@@ -34,7 +35,13 @@ def _sequence(path: Path) -> int:
 
 def atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    # Status can be refreshed by the socket receiver while the owning loop is
+    # publishing its cadence sample. A PID-only temporary name lets those two
+    # writers delete/replace each other's file on Windows. They may race on
+    # the replace (last complete status wins), but never on the temporary.
+    temporary = path.with_name(
+        f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+    )
     with temporary.open("wb") as handle:
         handle.write(data)
         handle.flush()

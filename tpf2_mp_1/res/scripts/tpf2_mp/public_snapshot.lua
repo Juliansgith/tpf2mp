@@ -7,6 +7,9 @@ local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local economyPublicView = require "tpf2_mp/economy_public_view"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
 local capturePublicView = require "tpf2_mp/capture_public_view"
+local multihopNetwork = require "tpf2_mp/multihop_network"
+local resourceCompatibility = require "tpf2_mp/resource_compatibility"
+local alphaReadiness = require "tpf2_mp/alpha_readiness"
 
 local M = {}
 
@@ -87,6 +90,8 @@ function M.new(env)
       freightIndustry = util.deepCopy(currentState().probes.freightIndustry),
       performance = util.deepCopy(currentState().probes.performance),
       serviceRegistration = util.deepCopy(currentState().probes.serviceRegistration),
+      resourceCompatibility = resourceCompatibility.publicView(
+        currentState().probes.resourceCompatibility),
       freightMilestone = util.deepCopy(currentState().probes.freightMilestone),
       passengerMilestone = util.deepCopy(currentState().probes.passengerMilestone),
       lastError = currentState().probes.lastError,
@@ -123,7 +128,7 @@ function M.new(env)
       currentState().world.freightIndustry,
       currentState().canonical)
     local economyPresentation = economyPublicView.build(currentState(), cid)
-    return {
+    local snapshot = {
       version = currentState().version,
       tick = currentState().tick,
       initialized = currentState().initialized,
@@ -151,6 +156,8 @@ function M.new(env)
       -- the digested authored passenger ledger.
       passengerPresentation = passengerView,
       cargoPresentation = cargoView,
+      transportNetwork = multihopNetwork.publicView(
+        currentState().economy, currentState().canonical),
       economyPresentation = economyPresentation,
       stationBoards = passengerView.stations,
       autonomyFrozen = currentState().world.autonomyFrozen,
@@ -263,6 +270,8 @@ function M.new(env)
       lastResult = util.deepCopy(currentState().lastResult),
       lastError = currentState().lastError,
     }
+    snapshot.alphaReadiness = alphaReadiness.evaluate(snapshot)
+    return snapshot
   end
   
 

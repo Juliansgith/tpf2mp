@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local multihopNetwork = require "tpf2_mp/multihop_network"
 
 local M = {}
 
@@ -33,6 +34,11 @@ function M.prepare(state, world, economy, passengerPresentation,
   if action.market and action.service then
     economy.upsertMarket(economyCandidate, action.market)
     economy.upsertService(economyCandidate, action.service)
+    -- The ordered action carries the newly observed native line facts. Route
+    -- effects can touch every existing leg, so deterministically rebuild the
+    -- complete authored graph on both peers instead of trusting an origin-only
+    -- preview of just action.service.
+    multihopNetwork.rebuild(economyCandidate)
     applyVehicleCosts(economyCandidate, economy, action.vehicleCosts)
     result = {
       lineCid = action.lineCid, marketCid = action.market.cid,

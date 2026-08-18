@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local transportManager = require "tpf2_mp/gui_transport_manager"
 
 local M = {}
 
@@ -11,29 +12,6 @@ local function compactResult(value)
   if value.mobilityDigest then return "mobility=" .. tostring(value.mobilityDigest) end
   if value.structuralDigest then return "world=" .. tostring(value.structuralDigest) end
   return "table"
-end
-
-local function cargoProof(snapshot)
-  local cargo = snapshot.cargoPresentation or {}
-  local totals = cargo.totals or {}
-  local cursors = snapshot.deliveryCursors or {}
-  local active, settled, revenue = 0, 0, 0
-  for lineCid, line in pairs(cargo.lines or {}) do
-    if type(line) == "table" and line.retired ~= true then
-      active = active + 1
-      local cursor = cursors[lineCid]
-      if type(cursor) == "table" then
-        settled = settled + math.max(0, tonumber(cursor.deliveredCargo) or 0)
-        revenue = revenue + math.max(0, tonumber(cursor.earnedRevenueCents) or 0)
-      end
-    end
-  end
-  return active,
-    math.max(0, tonumber(totals.waiting) or 0),
-    math.max(0, tonumber(totals.aboard) or 0),
-    math.max(0, tonumber(totals.capacity) or 0),
-    math.max(0, tonumber(totals.delivered) or 0),
-    settled, revenue
 end
 
 local function milestoneStatus(probe)
@@ -117,6 +95,10 @@ function M.render(gui, snapshot, options)
       .. " | vehicle " .. tostring(gui.selectedVehicleId or "-")
       .. " | depot " .. tostring(gui.selectedDepotId or "-"),
   }
+  if transportManager.append(lines, gui, snapshot) then
+    gui.details:setText(table.concat(lines, "\n"))
+    return
+  end
   if snapshot.networkMode == "network" then
     local endpoint = companion.role == "host"
       and (tostring(companion.bind or "?") .. ":" .. tostring(companion.port or "?"))
@@ -166,7 +148,8 @@ function M.render(gui, snapshot, options)
       tonumber(freight.outputUnits) or 0,
       tostring(localFreight.status or "waiting-for-content"))
     local cargoLines, waitingCargo, aboardCargo, cargoCapacity,
-      deliveredCargo, settledCargo, settledCargoRevenue = cargoProof(snapshot)
+      deliveredCargo, settledCargo, settledCargoRevenue =
+        transportManager.cargoProof(snapshot)
     lines[#lines + 1] = string.format(
       "Cargo proof: %d active lines | %d waiting | %d/%d aboard | %d delivered | %d settled / $%.2f",
       cargoLines, waitingCargo, aboardCargo, cargoCapacity, deliveredCargo,
@@ -603,6 +586,8 @@ function M.render(gui, snapshot, options)
   lines[#lines + 1] = "Implemented multiplayer slice: canonical roads/tracks/signals, portable depot/construction/asset build and removal, modular station placement/edit/removal, plus host-ordered line and portable vehicle operations. Unsupported opaque mod callbacks fail closed; non-rail carriers and host-owned autonomous simulation remain live-proof gates."
   gui.details:setText(table.concat(lines, "\n"))
 end
+
+M.managerButtons = transportManager.buttons
 
 
 return M

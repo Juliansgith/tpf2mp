@@ -5,6 +5,7 @@ local flow = require "tpf2_mp/economy_flow"
 local revenue = require "tpf2_mp/economy_revenue"
 local difficulty = require "tpf2_mp/economy_difficulty"
 local townDemand = require "tpf2_mp/economy_town_demand"
+local multihopNetwork = require "tpf2_mp/multihop_network"
 
 local M = {}
 
@@ -488,6 +489,7 @@ end
 function M.removeService(state, lineCid)
   state.services[lineCid] = nil
   if state.deliveryCursors then state.deliveryCursors[lineCid] = nil end
+  multihopNetwork.rebuild(state)
 end
 
 function M.setFare(state, lineCid, fareCents)
@@ -650,6 +652,10 @@ function M.evaluateAll(state, boundaryGameTimeSeconds, deliverySnapshot)
   end
   if util.integer(state.version, 1) >= 7 then
     results.townGrowth = townDemand.advance(state, results)
+    -- Through demand depends on the endpoint town sizes. Recompute it after
+    -- authored growth so A-B benefits immediately from destinations reached
+    -- through B, while retaining the same deterministic graph on every peer.
+    results.townGrowth.network = multihopNetwork.rebuildPassenger(state)
   end
   state.epoch = (state.epoch or 0) + 1
   results.epoch = state.epoch

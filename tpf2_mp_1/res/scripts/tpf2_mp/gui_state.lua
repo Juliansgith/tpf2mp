@@ -11,6 +11,7 @@ function M.new()
   selectedVehicleId = nil,
   selectedDepotId = nil,
   routeDraft = {},
+  managerView = "overview",
   selectedEntityId = nil,
   selectedEntityKind = nil,
   snapshot = nil,

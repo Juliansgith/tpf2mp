@@ -143,6 +143,7 @@ function M.new(env)
       or actionType == "match.finish" or actionType == "probe.mobility"
       or actionType == "probe.structural"
       or actionType == "recovery.resume" or actionType == "town.develop"
+      or actionType == "vehicle.sync_release"
       or actionType == "content.industry_attest"
       or actionType == "freight.industry_bootstrap"
       or actionType == "freight.milestone"

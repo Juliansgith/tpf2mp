@@ -1,6 +1,21 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-11 (Europe/Amsterdam), prototype `0.37.0-alpha`, state schema `30`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `1`, freight-industry schema `2`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+Last updated: 2026-08-18 (Europe/Amsterdam), prototype `0.38.0-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+
+[Playable-alpha code closure](ALPHA_CODE_CLOSURE_2026-08-18.md) records the
+bounded reconnect fence and backlog handshake, in-game Alpha Status, strict
+core/playable/full-alpha evidence profiles, release/onboarding integration,
+automated proof, and the one remaining physical two-computer gate.
+
+[Multi-hop transport and compatibility manager](MULTIHOP_TRANSPORT_AND_COMPATIBILITY_MANAGER_2026-08-18.md)
+records the carrier-neutral graph, connecting passenger demand, real cargo
+transfer inventory, operational path pinning, deleted-line history, generic
+named-resource compatibility inventory, manager UX, and exact automated proof.
+
+[Live multi-hop, compatibility, and UX checklist](LIVE_MULTIHOP_COMPATIBILITY_UX_CHECKLIST_2026-08-18.md)
+is the ordered fresh two-process acceptance run for passenger connections,
+destination-gated cargo, physical transfer, path stability, vanilla/mod
+resources, the manager views, and save/reload.
 
 [Live active-train restore phase](LIVE_ACTIVE_TRAIN_RESTORE_PHASE_2026-08-11.md)
 records the early native-world load freeze, strict v6 route-phase/station-round
@@ -517,7 +532,7 @@ Full details: [CANONICAL_PROPOSAL_REPLAY_2026-08-02.md](CANONICAL_PROPOSAL_REPLA
 
 ### Peer mapping and physical completion consensus
 
-State schema 30 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, departure-timed passenger queues, exact cargo queues, per-vehicle loads, completed revenue/deliveries, save-owned difficulty, canonical model-town populations/growth residuals, five-minute rate residuals, authored physical town-development progress, both peers' loaded-industry content attestations, and canonical freight recipe/stock/production/transport ledgers. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-5 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content/live binding/transport conservation faults closed.
+State schema 31 maps pre-existing shared-save assets to authoritative canonical owners, persists canonical accounts, departure-timed passenger queues, exact cargo queues and transfer-station stock, per-vehicle loads, completed revenue/deliveries, save-owned difficulty, canonical model-town populations/growth residuals, connecting passenger routes, pinned multi-leg freight paths, five-minute rate residuals, authored physical town-development progress, both peers' loaded-industry content attestations, and canonical freight recipe/stock/production/active-plus-retired transport ledgers. It retains construction/asset/edge-object manifests, shared-clock/train-release authority, departure-slot reservations, and receipt-bound restore state. Public base nodes/edges can be rebound lazily by exact canonical geometry. Construction still requires unanimous no-mutation prepare acknowledgements, matching physical completion, authoritative canonical finance, and a format-5 checkpoint before later gameplay can commit. Post-build mismatch, missing-peer timeout, native failure, an unchanged upgrade postcondition, or incompatible freight content/live binding/transport conservation faults closed.
 
 [OPERATIONAL_CAPTURE_LAB_2026-08-02.md](OPERATIONAL_CAPTURE_LAB_2026-08-02.md)
 defines and records the separate populated-play investigation path. Two

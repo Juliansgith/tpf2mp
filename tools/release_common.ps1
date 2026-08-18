@@ -164,6 +164,24 @@ function Test-Tpf2mpReleaseManifest {
     if ([string]$manifest.companionVersion -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
         throw 'Release manifest companionVersion is missing or invalid.'
     }
+    $updateProperty = $manifest.PSObject.Properties['update']
+    if ($null -ne $updateProperty) {
+        $update = $updateProperty.Value
+        if ([string]$update.provider -ne 'github-releases') {
+            throw 'Release manifest update provider is unsupported.'
+        }
+        $repository = [string]$update.repository
+        $repositoryParts = @($repository -split '/')
+        if ($repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' `
+                -or $repositoryParts.Count -ne 2 `
+                -or $repositoryParts[0] -in @('.', '..') `
+                -or $repositoryParts[1] -in @('.', '..')) {
+            throw 'Release manifest update repository is invalid.'
+        }
+        if ([string]$update.channel -notin @('alpha', 'stable')) {
+            throw 'Release manifest update channel is invalid.'
+        }
+    }
     $files = @($manifest.files)
     if ($files.Count -eq 0) { throw 'Release manifest contains no files.' }
     $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
@@ -206,6 +224,16 @@ function Test-Tpf2mpReleaseManifest {
             'tools/uninstall.ps1', 'docs/README.md', 'QUICK_START.md')) {
         if (-not $recorded.Contains($required)) {
             throw "Required release file is absent from the manifest: $required"
+        }
+    }
+    if ($null -ne $updateProperty) {
+        foreach ($required in @(
+                'UPDATE_TPF2MP.cmd', 'tools/update_release.ps1', 'tools/update_common.ps1',
+                'tools/github_release_common.ps1',
+                'tools/installed_entrypoint.ps1', 'tools/installed_command.cmd')) {
+            if (-not $recorded.Contains($required)) {
+                throw "Update-capable release is missing required file: $required"
+            }
         }
     }
     # Packaged PowerShell entrypoints may share same-bundle helpers through a

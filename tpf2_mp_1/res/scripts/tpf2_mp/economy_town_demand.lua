@@ -92,7 +92,12 @@ function M.refreshMarkets(state)
       -- Population growth and a newly discovered shorter route may enlarge a
       -- market. Re-registration or an incomplete legacy baseline may never
       -- silently destroy demand players already invested against.
-      local updated = math.max(previous, computed)
+      local priorNetwork = bounded(metadata.networkDemand, 0, 0, 1000000000)
+      local priorDirect = bounded(metadata.directDemand,
+        math.max(0, previous - priorNetwork), 0, 1000000000)
+      local direct = math.max(priorDirect, computed)
+      metadata.directDemand = direct
+      local updated = math.min(1000000000, direct + priorNetwork)
       market.demand = updated
       metadata.townSizeA, metadata.townSizeB = first.size, second.size
       market.metadata = metadata

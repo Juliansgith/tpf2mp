@@ -8,6 +8,7 @@ from decimal import Decimal, localcontext, ROUND_HALF_UP
 from typing import Any, Mapping
 
 from .aboard_milestone_protocol import AboardMilestoneError, validate as validate_aboard_milestone
+from .freight_action_protocol import validate_delivery_rows, validate_registration
 from .line_registration_protocol import validate_metadata as validate_line_metadata
 from .recovery_receipt_protocol import validation_error as receipt_validation_error
 from .vehicle_phase_proof import VehiclePhaseProofError, normalise as normalise_vehicle_phase_proof
@@ -1364,42 +1365,9 @@ def validate_action(action: Any) -> dict[str, Any]:
         ) or len(set(service_vehicle_values)) != len(service_vehicle_values):
             raise ProtocolError("line.register service vehicleCids are invalid")
         service_vehicles = set(service_vehicle_values)
-        if isinstance(service_metadata, dict) \
-                and service_metadata.get("freightContractSchema") is not None:
-            if service_metadata.get("freightContractSchema") != 1 \
-                    or not isinstance(service_metadata.get("freightContractDigest"), str) \
-                    or not re.fullmatch(
-                        r"[0-9a-f]{8}", service_metadata["freightContractDigest"]
-                    ) \
-                    or not _operation_cid(
-                        service_metadata.get("sourceIndustryCid"), "industry"
-                    ) \
-                    or not _operation_cid(
-                        service_metadata.get("destinationIndustryCid"), "industry"
-                    ) \
-                    or service_metadata["sourceIndustryCid"] \
-                    == service_metadata["destinationIndustryCid"] \
-                    or not isinstance(service_metadata.get("cargoType"), str) \
-                    or not re.fullmatch(
-                        r"[A-Z][A-Z0-9_]{0,127}", service_metadata["cargoType"]
-                    ):
-                raise ProtocolError("line.register freight contract identity is invalid")
-            capacities = service_metadata.get("cargoCapacityByVehicleCid")
-            if not isinstance(capacities, dict) or set(capacities) != service_vehicles:
-                raise ProtocolError("line.register freight vehicle capacities are incomplete")
-            if any(
-                isinstance(value, bool) or not isinstance(value, int)
-                or not 0 <= value <= 1_000_000_000
-                for value in capacities.values()
-            ):
-                raise ProtocolError("line.register freight vehicle capacity is invalid")
-            fleet_capacity = sum(capacities.values())
-            average_capacity = fleet_capacity // len(service_vehicle_values) \
-                if service_vehicle_values else 0
-            if fleet_capacity <= 0 \
-                    or service_metadata.get("cargoFleetCapacity") != fleet_capacity \
-                    or service_metadata.get("cargoCapacityPerVehicle") != average_capacity:
-                raise ProtocolError("line.register freight fleet capacity is inconsistent")
+        if isinstance(service_metadata, dict):
+            validate_registration(service_metadata, service_vehicle_values,
+                                  service_vehicles, _operation_cid, ProtocolError)
         for vehicle_cid, record in vehicle_costs.items():
             if not _operation_cid(vehicle_cid, "vehicle") or vehicle_cid not in service_vehicles:
                 raise ProtocolError("line.register vehicleCosts contains an unrelated vehicle")
@@ -1431,7 +1399,7 @@ def validate_action(action: Any) -> dict[str, Any]:
             raise ProtocolError("economy.settle requires a non-negative accounting boundary")
         delivery = action.get("deliverySnapshot")
         if delivery is not None:
-            if not isinstance(delivery, dict) or delivery.get("schemaVersion") not in {1, 2}:
+            if not isinstance(delivery, dict) or delivery.get("schemaVersion") not in {1, 2, 3}:
                 raise ProtocolError("economy.settle delivery snapshot is malformed")
             presentation_epoch = delivery.get("presentationEpoch")
             if isinstance(presentation_epoch, bool) or not isinstance(presentation_epoch, int) \
@@ -1460,33 +1428,7 @@ def validate_action(action: Any) -> dict[str, Any]:
                         or isinstance(earned, bool) or not isinstance(earned, int) \
                         or not 0 <= earned <= 1_000_000_000_000_000:
                     raise ProtocolError("economy.settle passenger delivery values are invalid")
-            for line_cid, row in cargo_lines.items():
-                expected = {
-                    "contractDigest", "sourceIndustryCid", "destinationIndustryCid",
-                    "destinationStockIndex", "cargoType", "boardedUnits",
-                    "deliveredUnits", "earnedRevenueCents",
-                }
-                if not _operation_cid(line_cid, "line") or not isinstance(row, dict) \
-                        or set(row) != expected:
-                    raise ProtocolError("economy.settle cargo delivery line is malformed")
-                if not isinstance(row["contractDigest"], str) \
-                        or not re.fullmatch(r"[0-9a-f]{8}", row["contractDigest"]) \
-                        or not _operation_cid(row["sourceIndustryCid"], "industry") \
-                        or not _operation_cid(row["destinationIndustryCid"], "industry") \
-                        or row["sourceIndustryCid"] == row["destinationIndustryCid"] \
-                        or not isinstance(row["cargoType"], str) \
-                        or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", row["cargoType"]):
-                    raise ProtocolError("economy.settle cargo delivery identity is invalid")
-                for field, maximum in (("destinationStockIndex", 31),
-                                       ("boardedUnits", 1_000_000_000),
-                                       ("deliveredUnits", 1_000_000_000),
-                                       ("earnedRevenueCents", 1_000_000_000_000_000)):
-                    value = row[field]
-                    if isinstance(value, bool) or not isinstance(value, int) \
-                            or not 0 <= value <= maximum:
-                        raise ProtocolError("economy.settle cargo delivery values are invalid")
-                if row["deliveredUnits"] > row["boardedUnits"]:
-                    raise ProtocolError("economy.settle cargo delivered more than was boarded")
+            validate_delivery_rows(cargo_lines, _operation_cid, ProtocolError)
     if action_type == "world.freeze" and not isinstance(action.get("freeze"), bool):
         raise ProtocolError("world.freeze requires a boolean freeze value")
     if action_type == "match.initialise" and "rules" in action:

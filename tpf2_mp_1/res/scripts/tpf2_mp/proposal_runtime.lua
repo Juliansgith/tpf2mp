@@ -9,6 +9,7 @@ local proposalCollateralRuntime = require "tpf2_mp/proposal_collateral_runtime"
 local proposalBindingRuntime = require "tpf2_mp/proposal_binding_runtime"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 local networkFinanceHousekeepingModule = require "tpf2_mp/network_finance_housekeeping"
+local resourceCompatibility = require "tpf2_mp/resource_compatibility"
 
 local M = {}
 
@@ -35,6 +36,7 @@ function M.new(deps)
   local inspectCreatedEdges = assert(deps.inspectCreatedEdges, "inspectCreatedEdges dependency is required")
   local nodePosition = assert(deps.nodePosition, "nodePosition dependency is required")
   local applyCommitted = assert(deps.applyCommitted, "applyCommitted dependency is required")
+  local observeProposal = deps.observeProposal or resourceCompatibility.observer(getState)
   local networkFinanceHousekeeping = networkFinanceHousekeepingModule.new({ getState = getState })
 
   -- Transport Fever replaces the persisted table during script.load. This
@@ -522,6 +524,11 @@ function M.new(deps)
       return false, "proposal issuer balance is unavailable"
     end
     state.world.proposals.byId[eventId] = record
+    if type(observeProposal) == "function" then
+      -- The manager is diagnostic and must never become a second authority
+      -- gate after codec validation and peer resource preflight succeeded.
+      pcall(observeProposal, transaction)
+    end
     if state.networkMode == "network" then
       state.world.proposalConsensus.byId[eventId] = {
         proposalId = eventId,

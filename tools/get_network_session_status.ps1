@@ -71,6 +71,14 @@ else {
             -and @($nativeStatus.luaStates | Where-Object { $_.commandObserverRegistered -eq $true }).Count -gt 0
         networkStatus = if ($companionStatus) { $companionStatus.status } else { 'unavailable' }
         connected = if ($companionStatus -and $companionStatus.PSObject.Properties['connected']) { $companionStatus.connected } else { $false }
+        synchronized = if ($companionStatus -and $companionStatus.PSObject.Properties['synchronized']) {
+            $companionStatus.synchronized
+        } elseif ($companionStatus -and $companionStatus.role -eq 'host') {
+            $companionStatus.connected
+        } else { $false }
+        reconnect = if ($companionStatus -and $companionStatus.PSObject.Properties['reconnect']) {
+            $companionStatus.reconnect
+        } else { $null }
         connectedPeers = $connectedPeers
         nextCommitSeq = if ($companionStatus -and $companionStatus.PSObject.Properties['nextCommitSeq']) { $companionStatus.nextCommitSeq } else { $null }
         lastCommitSeq = if ($companionStatus -and $companionStatus.PSObject.Properties['lastCommitSeq']) { $companionStatus.lastCommitSeq } else { $null }

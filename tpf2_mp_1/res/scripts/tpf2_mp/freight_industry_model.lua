@@ -3,11 +3,12 @@ local json = require "tpf2_mp/json"
 local util = require "tpf2_mp/util"
 local freightTransportSettlement = require "tpf2_mp/freight_transport_settlement"
 local freightTransportValidation = require "tpf2_mp/freight_transport_validation"
+local freightTransportRetirement = require "tpf2_mp/freight_transport_retirement"
 local freightIndustryPublic = require "tpf2_mp/freight_industry_public"
 
 local M = {
   SCHEMA_VERSION = 1,
-  STATE_SCHEMA_VERSION = 2,
+  STATE_SCHEMA_VERSION = 3,
   MAX_INDUSTRIES = 2048,
   MAX_RECIPE_ITEMS = 32,
   MAX_AMOUNT = 1000000000,
@@ -289,6 +290,8 @@ function M.newState()
     transportCursors = {},
     totalTransported = {},
     totalDelivered = {},
+    retiredTransported = {},
+    retiredDelivered = {},
     lastTransport = nil,
     lastAdvance = nil,
     migrationError = nil,
@@ -357,6 +360,8 @@ function M.applyBootstrap(state, action, content)
   state.transportCursors = {}
   state.totalTransported = {}
   state.totalDelivered = {}
+  state.retiredTransported = {}
+  state.retiredDelivered = {}
   state.lastTransport = nil
   state.lastAdvance = nil
   return true, M.digestView(state)
@@ -486,7 +491,7 @@ function M.withdrawOutput(state, cid, cargoType, amount)
 end
 
 M.applyTransportSnapshot = freightTransportSettlement.apply
-M.retireTransportLine = freightTransportSettlement.retireLine
+M.retireTransportLine = freightTransportRetirement.retireLine
 
 function M.digestView(state)
   state = type(state) == "table" and state or M.newState()
@@ -517,6 +522,8 @@ function M.digestView(state)
     transportCursors = util.deepCopy(state.transportCursors or {}),
     totalTransported = util.deepCopy(state.totalTransported or {}),
     totalDelivered = util.deepCopy(state.totalDelivered or {}),
+    retiredTransported = util.deepCopy(state.retiredTransported or {}),
+    retiredDelivered = util.deepCopy(state.retiredDelivered or {}),
     lastTransport = util.deepCopy(state.lastTransport),
     lastAdvance = util.deepCopy(state.lastAdvance),
     migrationError = state.migrationError,
@@ -577,6 +584,8 @@ function M.migrate(value)
   result.transportCursors = transport.transportCursors
   result.totalTransported = transport.totalTransported
   result.totalDelivered = transport.totalDelivered
+  result.retiredTransported = transport.retiredTransported
+  result.retiredDelivered = transport.retiredDelivered
   result.lastTransport = transport.lastTransport
   result.lastAdvance = util.deepCopy(value.lastAdvance)
   return result

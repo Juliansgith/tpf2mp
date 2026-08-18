@@ -14,10 +14,28 @@ function M.validate(state, economyState, freightState, vehicleSync, deps)
   if type(state) ~= "table" or state.schemaVersion ~= deps.schemaVersion
     or not exactCount(state.epoch, maxCount)
     or state.epoch ~= util.integer(economyState and economyState.epoch, -1)
-    or type(state.lines) ~= "table" or type(state.vehicles) ~= "table" then
+    or type(state.lines) ~= "table" or type(state.vehicles) ~= "table"
+    or type(state.stationStock) ~= "table" then
     return false, "cargo presentation save header is invalid"
   end
-  local aboardByLine = {}
+  for stationCid, stocks in pairs(state.stationStock) do
+    if type(stationCid) ~= "string" or not stationCid:match("^station_group:")
+      or type(stocks) ~= "table" then
+      return false, "cargo transfer station stock identity is invalid"
+    end
+    for cargoType, amount in pairs(stocks) do
+      if type(cargoType) ~= "string" or not cargoType:match("^[A-Z][A-Z0-9_]*$")
+        or not exactCount(amount, maxCount) then
+        return false, "cargo transfer station stock is invalid"
+      end
+    end
+  end
+  local aboardByLine, transferBalance = {}, {}
+  local function transfer(stationCid, cargoType, delta)
+    transferBalance[stationCid] = transferBalance[stationCid] or {}
+    transferBalance[stationCid][cargoType] =
+      (transferBalance[stationCid][cargoType] or 0) + delta
+  end
   for vehicleCid, vehicle in pairs(state.vehicles) do
     local line = type(vehicle) == "table" and state.lines[vehicle.lineCid] or nil
     local sync = vehicleSync and vehicleSync.vehicles
@@ -68,6 +86,13 @@ function M.validate(state, economyState, freightState, vehicleSync, deps)
       or not exactCount(line.deliveredTotal, maxCount)
       or not exactCount(line.discardedTotal, maxCount)
       or not exactCount(line.earnedRevenueCents, maxCents)
+      or (line.transportSchema ~= 1 and line.transportSchema ~= 2)
+      or type(line.pathDigest) ~= "string"
+      or not exactCount(line.legIndex, 15)
+      or not exactCount(line.legCount, 16) or line.legCount < 1
+      or line.legIndex >= line.legCount
+      or (line.sourceKind ~= "industry" and line.sourceKind ~= "station")
+      or (line.destinationKind ~= "industry" and line.destinationKind ~= "station")
       or line.boardedThisEpoch > line.allocated
       or line.boardedThisEpoch > line.boardedTotal
       or line.boardedTotal ~= line.deliveredTotal + line.discardedTotal
@@ -88,7 +113,16 @@ function M.validate(state, economyState, freightState, vehicleSync, deps)
         or line.destinationStationGroupCid ~= metadata.destinationStationGroupCid
         or line.sourceStopIndex ~= util.integer(metadata.sourceStopIndex, -1)
         or line.destinationStopIndex ~= util.integer(metadata.destinationStopIndex, -1)
-        or line.capacityPerVehicle ~= count(metadata.cargoCapacityPerVehicle)
+        or line.transportSchema ~= util.integer(metadata.freightContractSchema, 1)
+        or line.pathDigest ~= (metadata.freightPathDigest
+          or metadata.freightContractDigest)
+        or line.legIndex ~= util.integer(metadata.freightLegIndex, 0)
+        or line.legCount ~= util.integer(metadata.freightLegCount, 1)
+        or line.sourceKind ~= (metadata.sourceTransportKind or "industry")
+        or line.destinationKind ~= (metadata.destinationTransportKind or "industry")
+        or line.capacityPerVehicle ~= count(metadata.cargoAverageCapacityByType
+          and metadata.cargoAverageCapacityByType[metadata.cargoType]
+          or metadata.cargoCapacityPerVehicle)
         or hash.value(line.stops) ~= hash.value(stops)
         or line.routeDigest ~= hash.value(stops) then
         return false, "cargo presentation line disagrees with its service: "
@@ -102,10 +136,23 @@ function M.validate(state, economyState, freightState, vehicleSync, deps)
       or cursor.destinationIndustryCid ~= line.destinationIndustryCid
       or cursor.destinationStockIndex ~= line.destinationStockIndex
       or cursor.cargoType ~= line.cargoType
+      or (line.transportSchema == 2 and (cursor.transportSchema ~= 2
+        or cursor.pathDigest ~= line.pathDigest
+        or cursor.legIndex ~= line.legIndex or cursor.legCount ~= line.legCount
+        or cursor.sourceKind ~= line.sourceKind
+        or cursor.destinationKind ~= line.destinationKind
+        or cursor.sourceStationGroupCid ~= line.sourceStationGroupCid
+        or cursor.destinationStationGroupCid ~= line.destinationStationGroupCid))
       or util.integer(cursor.boardedUnits, 0) > line.boardedTotal
       or util.integer(cursor.deliveredUnits, 0) > line.deliveredTotal) then
       return false, "cargo presentation line disagrees with freight transport: "
         .. tostring(lineCid)
+    end
+    if line.destinationKind == "station" then
+      transfer(line.destinationStationGroupCid, line.cargoType, line.deliveredTotal)
+    end
+    if line.sourceKind == "station" then
+      transfer(line.sourceStationGroupCid, line.cargoType, -line.boardedTotal)
     end
     local payment = economyState and economyState.deliveryCursors
       and economyState.deliveryCursors[lineCid] or nil
@@ -115,6 +162,21 @@ function M.validate(state, economyState, freightState, vehicleSync, deps)
       or payment.earnedRevenueCents > line.earnedRevenueCents) then
       return false, "cargo presentation line disagrees with economy settlement: "
         .. tostring(lineCid)
+    end
+  end
+  local stations = {}
+  for stationCid in pairs(state.stationStock) do stations[stationCid] = true end
+  for stationCid in pairs(transferBalance) do stations[stationCid] = true end
+  for stationCid in pairs(stations) do
+    local cargoTypes, stored = {}, state.stationStock[stationCid] or {}
+    for cargoType in pairs(stored) do cargoTypes[cargoType] = true end
+    for cargoType in pairs(transferBalance[stationCid] or {}) do cargoTypes[cargoType] = true end
+    for cargoType in pairs(cargoTypes) do
+      local expected = (transferBalance[stationCid] or {})[cargoType] or 0
+      if expected < 0 or (stored[cargoType] or 0) ~= expected then
+        return false, "cargo transfer inventory disagrees with cumulative leg movement: "
+          .. tostring(stationCid) .. "/" .. tostring(cargoType)
+      end
     end
   end
   return true, state

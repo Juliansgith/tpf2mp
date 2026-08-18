@@ -14,11 +14,18 @@ def _add(left: Any, right: Any) -> int:
 
 
 def _identity(row: Mapping[str, Any]) -> tuple[Any, ...]:
-    return (
+    base = (
         row.get("contractDigest"), row.get("sourceIndustryCid"),
         row.get("destinationIndustryCid"), row.get("destinationStockIndex"),
         row.get("cargoType"),
     )
+    if row.get("transportSchema") == 2:
+        return base + (
+            2, row.get("pathDigest"), row.get("legIndex"), row.get("legCount"),
+            row.get("sourceKind"), row.get("destinationKind"),
+            row.get("sourceStationGroupCid"), row.get("destinationStationGroupCid"),
+        )
+    return base
 
 
 def _output_matches(industry: Mapping[str, Any], cargo_type: str) -> bool:
@@ -74,6 +81,10 @@ def apply_transport(state: dict[str, Any], cargo_lines: Mapping[str, Any]) -> di
         source_cid, destination_cid = row.get("sourceIndustryCid"), row.get("destinationIndustryCid")
         cargo_type, stock_index = row.get("cargoType"), row.get("destinationStockIndex")
         boarded, delivered = row.get("boardedUnits"), row.get("deliveredUnits")
+        transport_schema = row.get("transportSchema", 1)
+        multihop = transport_schema == 2
+        source_kind = row.get("sourceKind") if multihop else "industry"
+        destination_kind = row.get("destinationKind") if multihop else "industry"
         if not isinstance(line_cid, str) or not line_cid.startswith("line:") \
                 or not isinstance(row.get("contractDigest"), str) \
                 or re.fullmatch(r"[0-9a-f]{8}", row["contractDigest"]) is None \
@@ -85,65 +96,93 @@ def apply_transport(state: dict[str, Any], cargo_lines: Mapping[str, Any]) -> di
                 or not 0 <= stock_index < 32 \
                 or isinstance(boarded, bool) or not isinstance(boarded, int) \
                 or isinstance(delivered, bool) or not isinstance(delivered, int) \
-                or not 0 <= delivered <= boarded <= MAX_COUNT:
+                or not 0 <= delivered <= boarded <= MAX_COUNT \
+                or isinstance(transport_schema, bool) \
+                or not isinstance(transport_schema, int) \
+                or transport_schema not in {1, 2} \
+                or multihop and (
+                    not isinstance(row.get("pathDigest"), str)
+                    or re.fullmatch(r"[0-9a-f]{8}", row["pathDigest"]) is None
+                    or isinstance(row.get("legIndex"), bool)
+                    or not isinstance(row.get("legIndex"), int)
+                    or isinstance(row.get("legCount"), bool)
+                    or not isinstance(row.get("legCount"), int)
+                    or not 0 <= row["legIndex"] < row["legCount"] <= 16
+                    or source_kind not in {"industry", "station"}
+                    or destination_kind not in {"industry", "station"}
+                    or not isinstance(row.get("sourceStationGroupCid"), str)
+                    or not isinstance(row.get("destinationStationGroupCid"), str)
+                ):
             raise ProtocolError("freight transport row is malformed")
         source, destination = industries.get(source_cid), industries.get(destination_cid)
-        if not isinstance(source, dict) or not _output_matches(source, cargo_type):
+        if source_kind == "industry" and (
+            not isinstance(source, dict) or not _output_matches(source, cargo_type)
+        ):
             raise ProtocolError(f"freight transport source does not produce {cargo_type}")
-        if not isinstance(destination, dict):
+        if destination_kind == "industry" and not isinstance(destination, dict):
             raise ProtocolError("freight transport destination is unknown")
-        destination_stock = _input_stock(destination, stock_index, cargo_type)
-        if destination_stock is None:
+        destination_stock = _input_stock(destination, stock_index, cargo_type) \
+            if destination_kind == "industry" else None
+        if destination_kind == "industry" and destination_stock is None:
             raise ProtocolError(f"freight transport destination stock does not accept {cargo_type}")
         cursor_value = cursors_value.get(line_cid)
         if cursor_value is not None and not isinstance(cursor_value, dict):
             raise ProtocolError("freight transport cursor is malformed")
         cursor = cursor_value if isinstance(cursor_value, dict) else {
-            "contractDigest": row.get("contractDigest"),
-            "sourceIndustryCid": source_cid, "destinationIndustryCid": destination_cid,
-            "destinationStockIndex": stock_index, "cargoType": cargo_type,
-            "boardedUnits": 0, "deliveredUnits": 0,
+            key: copy.deepcopy(value) for key, value in row.items()
+            if key not in {"boardedUnits", "deliveredUnits", "earnedRevenueCents"}
         }
+        if cursor_value is None:
+            cursor["boardedUnits"], cursor["deliveredUnits"] = 0, 0
         if cursor_value is not None and _identity(cursor) != _identity(row):
             raise ProtocolError("freight transport contract changed after movement")
         prior_boarded, prior_delivered = int(cursor["boardedUnits"]), int(cursor["deliveredUnits"])
         if boarded < prior_boarded or delivered < prior_delivered:
             raise ProtocolError("freight transport cursor moved backwards")
         boarded_delta, delivered_delta = boarded - prior_boarded, delivered - prior_delivered
-        key = (source_cid, cargo_type)
-        aggregate[key] = aggregate.get(key, 0) + boarded_delta
-        available = max(0, int(source.get("outputStock", {}).get(cargo_type, 0)))
-        if aggregate[key] > available:
-            raise ProtocolError("freight transport aggregate exceeds source output stock")
+        if source_kind == "industry":
+            key = (source_cid, cargo_type)
+            aggregate[key] = aggregate.get(key, 0) + boarded_delta
+            available = max(0, int(source.get("outputStock", {}).get(cargo_type, 0)))
+            if aggregate[key] > available:
+                raise ProtocolError("freight transport aggregate exceeds source output stock")
         staged[line_cid] = (
-            source, destination_stock, cursor, boarded_delta, delivered_delta,
+            source if source_kind == "industry" else None,
+            destination_stock, cursor, boarded_delta, delivered_delta,
             cursor_value is not None or boarded > 0 or delivered > 0,
+            source_kind, destination_kind,
         )
 
-    summary: dict[str, Any] = {"lines": 0, "boarded": {}, "delivered": {}}
+    summary: dict[str, Any] = {
+        "lines": 0, "boarded": {}, "delivered": {}, "transferred": {}
+    }
     for line_cid in sorted(staged):
         row = cargo_lines[line_cid]
-        source, destination_stock, cursor, boarded_delta, delivered_delta, persist_cursor = \
+        source, destination_stock, cursor, boarded_delta, delivered_delta, persist_cursor, \
+            source_kind, destination_kind = \
             staged[line_cid]
         cargo_type = str(row["cargoType"])
-        source["outputStock"][cargo_type] = int(source["outputStock"].get(cargo_type, 0)) \
-            - boarded_delta
-        destination_stock["amount"] = _add(destination_stock.get("amount"), delivered_delta)
+        if source_kind == "industry":
+            source["outputStock"][cargo_type] = int(source["outputStock"].get(cargo_type, 0)) \
+                - boarded_delta
+        if destination_kind == "industry":
+            destination_stock["amount"] = _add(destination_stock.get("amount"), delivered_delta)
         cursor["boardedUnits"], cursor["deliveredUnits"] = row["boardedUnits"], row["deliveredUnits"]
         if persist_cursor:
             cursors_value[line_cid] = cursor
         total_transported[cargo_type] = _add(
             total_transported.get(cargo_type), boarded_delta
         )
-        total_delivered[cargo_type] = _add(
-            total_delivered.get(cargo_type), delivered_delta
-        )
+        if destination_kind == "industry":
+            total_delivered[cargo_type] = _add(
+                total_delivered.get(cargo_type), delivered_delta
+            )
         if persist_cursor:
             summary["lines"] += 1
         summary["boarded"][cargo_type] = _add(summary["boarded"].get(cargo_type), boarded_delta)
-        summary["delivered"][cargo_type] = _add(
-            summary["delivered"].get(cargo_type), delivered_delta
-        )
+        target = summary["delivered"] if destination_kind == "industry" \
+            else summary["transferred"]
+        target[cargo_type] = _add(target.get(cargo_type), delivered_delta)
     state["transportCursors"] = cursors_value
     state["totalTransported"] = total_transported
     state["totalDelivered"] = total_delivered

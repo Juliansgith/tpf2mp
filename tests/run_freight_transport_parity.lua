@@ -59,6 +59,28 @@ local snapshots = {
       boardedUnits = 10, deliveredUnits = 0, earnedRevenueCents = 0,
     },
   },
+  {
+    ["line:freight:transfer-in"] = {
+      contractDigest = "a1b2c3d4", sourceIndustryCid = identity.sourceIndustryCid,
+      destinationIndustryCid = identity.destinationIndustryCid,
+      destinationStockIndex = identity.destinationStockIndex, cargoType = identity.cargoType,
+      boardedUnits = 5, deliveredUnits = 5, earnedRevenueCents = 5000000,
+      transportSchema = 2, pathDigest = "deadbeef", legIndex = 0, legCount = 2,
+      sourceKind = "industry", destinationKind = "station",
+      sourceStationGroupCid = "station_group:pre:source",
+      destinationStationGroupCid = "station_group:pre:transfer",
+    },
+    ["line:freight:transfer-out"] = {
+      contractDigest = "b1c2d3e4", sourceIndustryCid = identity.sourceIndustryCid,
+      destinationIndustryCid = identity.destinationIndustryCid,
+      destinationStockIndex = identity.destinationStockIndex, cargoType = identity.cargoType,
+      boardedUnits = 5, deliveredUnits = 5, earnedRevenueCents = 5000000,
+      transportSchema = 2, pathDigest = "deadbeef", legIndex = 1, legCount = 2,
+      sourceKind = "station", destinationKind = "industry",
+      sourceStationGroupCid = "station_group:pre:transfer",
+      destinationStationGroupCid = "station_group:pre:sink",
+    },
+  },
 }
 local steps = {}
 for epoch, snapshot in ipairs(snapshots) do

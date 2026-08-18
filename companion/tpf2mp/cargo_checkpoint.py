@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
 from .protocol import ProtocolError, checksum
+from .cargo_transfer_checkpoint import validate_conservation, validate_stock
 
-MAX_COUNT = 1_000_000_000
-MAX_CENTS = 1_000_000_000_000_000
+MAX_COUNT, MAX_CENTS = 1_000_000_000, 1_000_000_000_000_000
 
 
 def _mapping(value: Any, label: str) -> dict[str, Any]:
@@ -42,8 +43,9 @@ def validate_cargo_presentation(
     model: Mapping[str, Any],
 ) -> dict[str, Any]:
     presentation = _mapping(value, "cargo presentation")
-    if set(presentation) != {"schemaVersion", "epoch", "lines", "vehicles"} \
-            or presentation.get("schemaVersion") != 1:
+    schema = presentation.get("schemaVersion")
+    if schema not in {1, 2} or set(presentation) != ({"schemaVersion", "epoch", "lines", "vehicles"}
+            | ({"stationStock"} if schema == 2 else set())):
         raise ProtocolError("checkpoint cargo presentation header is invalid")
     epoch = _integer(presentation["epoch"], "cargo presentation epoch")
     economy = model.get("economy") if isinstance(model.get("economy"), Mapping) else {}
@@ -54,6 +56,12 @@ def validate_cargo_presentation(
         if isinstance(model.get("freightIndustry"), Mapping) else {}
     cursors = freight.get("transportCursors") \
         if isinstance(freight.get("transportCursors"), Mapping) else {}
+    station_stock: dict[str, dict[str, Any]] = {}
+    if schema == 2:
+        station_stock = validate_stock(
+            presentation["stationStock"], _mapping, _cid, _integer,
+            ProtocolError, MAX_COUNT,
+        )
 
     line_fields = {
         "lineCid", "companyCid", "marketCid", "contractDigest",
@@ -64,6 +72,11 @@ def validate_cargo_presentation(
         "boardedTotal", "deliveredTotal", "earnedRevenueCents", "discardedTotal",
         "retired",
     }
+    if schema == 2:
+        line_fields |= {
+            "transportSchema", "pathDigest", "legIndex", "legCount",
+            "sourceKind", "destinationKind",
+        }
     lines: dict[str, dict[str, Any]] = {}
     previous: str | None = None
     for raw in _array(presentation["lines"], "cargo lines"):
@@ -96,7 +109,19 @@ def validate_cargo_presentation(
         if not isinstance(item["contractDigest"], str) or len(item["contractDigest"]) != 8 \
                 or any(char not in "0123456789abcdef" for char in item["contractDigest"]):
             raise ProtocolError("checkpoint cargo contract digest is invalid")
-        if not isinstance(item["cargoType"], str) or not item["cargoType"]:
+        if schema == 2:
+            if item["transportSchema"] not in {1, 2} \
+                    or not isinstance(item["pathDigest"], str) \
+                    or len(item["pathDigest"]) != 8 \
+                    or any(char not in "0123456789abcdef" for char in item["pathDigest"]) \
+                    or item["sourceKind"] not in {"industry", "station"} \
+                    or item["destinationKind"] not in {"industry", "station"}:
+                raise ProtocolError("checkpoint cargo path identity is invalid")
+            leg_index = _integer(item["legIndex"], "cargo leg index", 15)
+            leg_count = _integer(item["legCount"], "cargo leg count", 16)
+            if not 1 <= leg_count or leg_index >= leg_count: raise ProtocolError("checkpoint cargo leg range is invalid")
+        if not isinstance(item["cargoType"], str) \
+                or re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", item["cargoType"]) is None:
             raise ProtocolError("checkpoint cargo type is invalid")
         for field in ("destinationStockIndex", "allocated", "boardedThisEpoch",
                       "capacityPerVehicle", "boardedTotal", "deliveredTotal", "discardedTotal"):
@@ -122,6 +147,16 @@ def validate_cargo_presentation(
                     or service.get("marketCid") != expected["marketCid"] \
                     or any(metadata.get(key) != expected[key] for key in expected if key not in {"companyCid", "marketCid"}):
                 raise ProtocolError("checkpoint cargo line disagrees with its economy service")
+            if schema == 2 and (
+                metadata.get("freightContractSchema", 1) != item["transportSchema"]
+                or metadata.get("freightPathDigest", metadata.get("freightContractDigest"))
+                    != item["pathDigest"]
+                or metadata.get("freightLegIndex", 0) != item["legIndex"]
+                or metadata.get("freightLegCount", 1) != item["legCount"]
+                or metadata.get("sourceTransportKind", "industry") != item["sourceKind"]
+                or metadata.get("destinationTransportKind", "industry") != item["destinationKind"]
+            ):
+                raise ProtocolError("checkpoint cargo line disagrees with its multi-hop path")
         cursor = cursors.get(line_cid)
         if isinstance(cursor, Mapping) and (
             cursor.get("contractDigest") != item["contractDigest"]
@@ -133,6 +168,18 @@ def validate_cargo_presentation(
             or int(cursor.get("deliveredUnits", 0)) > item["deliveredTotal"]
         ):
             raise ProtocolError("checkpoint cargo line disagrees with its freight cursor")
+        if schema == 2 and isinstance(cursor, Mapping) \
+                and item["transportSchema"] == 2 and (
+                    cursor.get("transportSchema") != 2
+                    or cursor.get("pathDigest") != item["pathDigest"]
+                    or cursor.get("legIndex") != item["legIndex"]
+                    or cursor.get("legCount") != item["legCount"]
+                    or cursor.get("sourceKind") != item["sourceKind"]
+                    or cursor.get("destinationKind") != item["destinationKind"]
+                    or cursor.get("sourceStationGroupCid") != item["sourceStationGroupCid"]
+                    or cursor.get("destinationStationGroupCid") != item["destinationStationGroupCid"]
+                ):
+            raise ProtocolError("checkpoint cargo line disagrees with its multi-hop cursor")
 
     required_vehicle = {
         "vehicleCid", "lineCid", "companyCid", "capacity", "aboard", "lastRound",
@@ -195,4 +242,6 @@ def validate_cargo_presentation(
         if line["boardedTotal"] != line["deliveredTotal"] \
                 + line["discardedTotal"] + aboard_by_line[line_cid]:
             raise ProtocolError("checkpoint cargo line conservation is invalid")
+    if schema == 2:
+        validate_conservation(station_stock, lines, ProtocolError)
     return presentation

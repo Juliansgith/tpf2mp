@@ -8,6 +8,20 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'network_common.ps1')
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
+$bundleVersion = 'development'
+try {
+    $bundleManifestPath = Join-Path $bundle 'release-manifest.json'
+    if (Test-Path -LiteralPath $bundleManifestPath -PathType Leaf) {
+        $bundleVersion = [string](Get-Content -LiteralPath $bundleManifestPath -Raw | ConvertFrom-Json).version
+    }
+    elseif (Test-Path -LiteralPath (Join-Path $bundle 'companion\tpf2mp\__init__.py') -PathType Leaf) {
+        $versionMatch = [regex]::Match(
+            (Get-Content -LiteralPath (Join-Path $bundle 'companion\tpf2mp\__init__.py') -Raw),
+            '__version__\s*=\s*["'']([^"'']+)["'']')
+        if ($versionMatch.Success) { $bundleVersion = $versionMatch.Groups[1].Value }
+    }
+}
+catch { $bundleVersion = 'unknown' }
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -32,7 +46,7 @@ $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
 
 $title = New-Object Windows.Forms.Label
-$title.Text = 'TPF2MP  /  MULTIPLAYER'
+$title.Text = "TPF2MP $bundleVersion  /  MULTIPLAYER"
 $title.Font = New-Object Drawing.Font('Segoe UI Semibold', 18)
 $title.ForeColor = $textColor
 $title.Location = New-Object Drawing.Point(24, 18)
@@ -45,6 +59,18 @@ $subtitle.ForeColor = $muted
 $subtitle.Location = New-Object Drawing.Point(27, 56)
 $subtitle.Size = New-Object Drawing.Size(790, 30)
 $form.Controls.Add($subtitle)
+
+$updateButton = New-Object Windows.Forms.Button
+$updateButton.Text = 'CHECK / INSTALL UPDATE'
+$updateButton.Location = New-Object Drawing.Point(642, 15)
+$updateButton.Size = New-Object Drawing.Size(184, 36)
+$updateButton.FlatStyle = 'Flat'
+$updateButton.FlatAppearance.BorderSize = 1
+$updateButton.FlatAppearance.BorderColor = $accent
+$updateButton.BackColor = [Drawing.Color]::FromArgb(38, 104, 89)
+$updateButton.ForeColor = $textColor
+$updateButton.Cursor = [Windows.Forms.Cursors]::Hand
+$form.Controls.Add($updateButton)
 
 $settingsPanel = New-Object Windows.Forms.Panel
 $settingsPanel.Location = New-Object Drawing.Point(24, 92)
@@ -173,7 +199,7 @@ Style-LauncherButton $openButton
 $form.Controls.Add($openButton)
 
 $evidenceButton = New-Object Windows.Forms.Button
-$evidenceButton.Text = 'Collect evidence'
+$evidenceButton.Text = 'CHECK PLAYABLE ALPHA'
 $evidenceButton.Location = New-Object Drawing.Point(359, 420)
 $evidenceButton.Size = New-Object Drawing.Size(165, 34)
 Style-LauncherButton $evidenceButton
@@ -346,6 +372,7 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
     $archiveButton.Enabled = $false
     $restoreButton.Enabled = $false
     $latestRestoreButton.Enabled = $false
+    $updateButton.Enabled = $false
     $statusLabel.Text = "$Name running..."
     Append-LauncherLog "Started $Name (PID $($script:worker.Id))."
 }
@@ -370,6 +397,21 @@ function Get-ValidatedInputs([bool]$RequireSave = $false) {
 $newSessionButton.Add_Click({
     Clear-RestorePlanSelection
     $sessionBox.Text = 'match-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+})
+
+$updateButton.Add_Click({
+    try {
+        if (Get-Process -Name TransportFever2 -ErrorAction SilentlyContinue) {
+            throw 'Close Transport Fever 2 before installing an update.'
+        }
+        $scriptPath = Join-Path $PSScriptRoot 'update_release.ps1'
+        if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
+            throw 'This development bundle does not include the release updater.'
+        }
+        Start-LauncherWorker $scriptPath @('-BundleRoot', $bundle) 'release-update'
+        Append-LauncherLog 'The updater will use your own GitHub authentication if this repository is private.'
+    }
+    catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot update') | Out-Null }
 })
 $browseButton.Add_Click({
     $dialog = New-Object Windows.Forms.OpenFileDialog
@@ -544,8 +586,11 @@ $evidenceButton.Add_Click({
         $bridgeBase = Join-Path ([IO.Path]::GetTempPath()) "tpf2mp_bridge\$session"
         $collectPeer = if ((Test-Path -LiteralPath (Join-Path $bridgeBase 'player1') -PathType Container) `
             -and (Test-Path -LiteralPath (Join-Path $bridgeBase 'player2') -PathType Container)) { 'both' } else { $script:lastPeer }
-        Start-LauncherWorker (Join-Path $PSScriptRoot 'collect_live_evidence.ps1') `
-            @('-Session', $session, '-Peer', $collectPeer, '-BundleRoot', $bundle) 'collect-evidence'
+        if ($collectPeer -ne 'both') {
+            throw 'The playable-alpha check requires both peer bridges on this computer. On two PCs, collect both bridge bundles on the host before analysis.'
+        }
+        Start-LauncherWorker (Join-Path $PSScriptRoot 'run_alpha_live_acceptance.ps1') `
+            @('-Session', $session, '-Profile', 'playable', '-BundleRoot', $bundle) 'playable-alpha-check'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot collect evidence') | Out-Null }
 })
@@ -596,6 +641,7 @@ $timer.Add_Tick({
             $archiveButton.Enabled = $true
             $restoreButton.Enabled = $true
             $latestRestoreButton.Enabled = $true
+            $updateButton.Enabled = $true
         }
     }
     try {

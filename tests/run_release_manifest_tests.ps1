@@ -16,11 +16,18 @@ $requiredFiles = @(
     'tools/install_release.ps1',
     'tools/verify_install.ps1',
     'tools/uninstall.ps1',
+    'tools/release_common.ps1',
+    'tools/update_release.ps1',
+    'tools/update_common.ps1',
+    'tools/github_release_common.ps1',
+    'tools/installed_entrypoint.ps1',
+    'tools/installed_command.cmd',
     'tools/fixture-entrypoint.ps1',
     'tools/fixture-dependency.ps1',
     'tools/fixture-transitive.ps1',
     'docs/README.md',
-    'QUICK_START.md'
+    'QUICK_START.md',
+    'UPDATE_TPF2MP.cmd'
 )
 New-Item -ItemType Directory -Force -Path $bundle | Out-Null
 foreach ($relative in $requiredFiles) {
@@ -31,6 +38,10 @@ foreach ($relative in $requiredFiles) {
 [IO.File]::WriteAllText(
     (Join-Path $bundle 'tools\fixture-entrypoint.ps1'),
     ". (Join-Path `$PSScriptRoot 'fixture-dependency.ps1')",
+    [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText(
+    (Join-Path $bundle 'tools\update_release.ps1'),
+    ". (Join-Path `$PSScriptRoot 'release_common.ps1')`n. (Join-Path `$PSScriptRoot 'update_common.ps1')`n. (Join-Path `$PSScriptRoot 'github_release_common.ps1')",
     [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText(
     (Join-Path $bundle 'tools\fixture-dependency.ps1'),
@@ -50,17 +61,22 @@ foreach ($relative in $requiredFiles | Sort-Object) {
 $baseline = [pscustomobject][ordered]@{
     format = 2
     name = 'TPF2MP Competitive Prototype'
-    version = '0.37.0-alpha'
-    modMinorVersion = 37
-    stateSchemaVersion = 29
+    version = '0.38.0-alpha'
+    modMinorVersion = 38
+    stateSchemaVersion = 31
     checkpointSchemaVersion = 5
     proposalSchemaVersion = 5
     operationSchemaVersion = 4
     passengerPresentationSchemaVersion = 2
-    cargoPresentationSchemaVersion = 1
-    deliverySchemaVersion = 2
-    freightIndustrySchemaVersion = 2
-    companionVersion = '0.11.0'
+    cargoPresentationSchemaVersion = 2
+    deliverySchemaVersion = 3
+    freightIndustrySchemaVersion = 3
+    companionVersion = '0.38.0-alpha'
+    update = [pscustomobject][ordered]@{
+        provider = 'github-releases'
+        repository = 'Juliansgith/tpf2mp'
+        channel = 'alpha'
+    }
     source = [pscustomobject][ordered]@{
         commit = '0123456789abcdef0123456789abcdef01234567'
         dirty = $false
@@ -94,7 +110,7 @@ function Assert-ManifestRejected {
 
 Write-FixtureManifest $baseline
 $valid = Test-Tpf2mpReleaseManifest $bundle
-if ([string]$valid.version -ne '0.37.0-alpha' -or @($valid.files).Count -ne $requiredFiles.Count) {
+if ([string]$valid.version -ne '0.38.0-alpha' -or @($valid.files).Count -ne $requiredFiles.Count) {
     throw 'Valid release manifest did not round-trip.'
 }
 if ([int]$valid.format -ne 2 -or [string]$valid.source.commit -ne $baseline.source.commit `
@@ -115,6 +131,7 @@ $legacy = Copy-FixtureManifest
 $legacy.format = 1
 $legacy.PSObject.Properties.Remove('source')
 $legacy.PSObject.Properties.Remove('operationSchemaVersion')
+$legacy.PSObject.Properties.Remove('update')
 Write-FixtureManifest $legacy
 $legacyValid = Test-Tpf2mpReleaseManifest $bundle
 if ([int]$legacyValid.format -ne 1) { throw 'Legacy format-1 release manifest was not accepted.' }
@@ -135,6 +152,18 @@ Assert-ManifestRejected 'an invalid source commit' {
 Assert-ManifestRejected 'a non-boolean source dirty flag' {
     param($value)
     $value.source.dirty = 'false'
+}
+Assert-ManifestRejected 'an unsupported update provider' {
+    param($value)
+    $value.update.provider = 'git-clone'
+}
+Assert-ManifestRejected 'an unsafe update repository' {
+    param($value)
+    $value.update.repository = '../private-key'
+}
+Assert-ManifestRejected 'an unsupported update channel' {
+    param($value)
+    $value.update.channel = 'nightly'
 }
 
 Assert-ManifestRejected 'a missing schema version' {
@@ -170,6 +199,10 @@ Assert-ManifestRejected 'an invalid size' {
 Assert-ManifestRejected 'a missing required binary' {
     param($value)
     $value.files = @($value.files | Where-Object { $_.path -ne 'bin/tpf2mp.exe' })
+}
+Assert-ManifestRejected 'an omitted update entrypoint' {
+    param($value)
+    $value.files = @($value.files | Where-Object { $_.path -ne 'UPDATE_TPF2MP.cmd' })
 }
 Assert-ManifestRejected 'an omitted transitive PowerShell dot-source dependency' {
     param($value)

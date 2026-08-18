@@ -38,6 +38,18 @@ try {
     & $lua (Join-Path $projectRoot 'tests\run_lua_tests.lua') $projectRoot $temporary
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed with exit code $LASTEXITCODE" }
 
+    & $lua (Join-Path $projectRoot 'tests\run_transport_network_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Transport-network tests failed with exit code $LASTEXITCODE" }
+
+    & $lua (Join-Path $projectRoot 'tests\run_alpha_readiness_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Alpha-readiness tests failed with exit code $LASTEXITCODE" }
+
+    $transportParity = Join-Path $temporary 'transport-network-parity.json'
+    & $lua (Join-Path $projectRoot 'tests\run_transport_network_parity.lua') $projectRoot $transportParity
+    if ($LASTEXITCODE -ne 0) { throw "Lua transport-network parity generation failed with exit code $LASTEXITCODE" }
+    & $python (Join-Path $projectRoot 'tests\check_transport_network_parity.py') $projectRoot $transportParity
+    if ($LASTEXITCODE -ne 0) { throw "Cross-language transport-network parity failed with exit code $LASTEXITCODE" }
+
     $economyParity = Join-Path $temporary 'economy-v2-v3-parity.json'
     & $lua (Join-Path $projectRoot 'tests\run_economy_parity_vectors.lua') $projectRoot $economyParity
     if ($LASTEXITCODE -ne 0) { throw "Lua economy parity vector generation failed with exit code $LASTEXITCODE" }
@@ -134,9 +146,17 @@ try {
     }
     Write-Host "PowerShell syntax: $($powerShellFiles.Count) files passed"
 
+    & (Join-Path $projectRoot 'tests\run_cmd_entrypoint_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'CMD entrypoint quoting tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_release_manifest_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Release manifest validation tests failed' }
+
+    & (Join-Path $projectRoot 'tests\run_release_update_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Release update safety tests failed' }
 
     & (Join-Path $projectRoot 'tests\run_release_install_transaction_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary

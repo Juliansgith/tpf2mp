@@ -497,10 +497,11 @@ def consensus_checkpoint(
     payload["checkpointVersion"] = 5
     payload["stateVersion"] = 29
     payload["model"]["freightIndustry"] = {
-        "schemaVersion": 2, "ready": False,
+        "schemaVersion": 3, "ready": False,
         "bootstrapEpoch": 0, "productionEpoch": 0,
         "industries": {}, "totalProduced": {}, "totalConsumed": {},
         "transportCursors": {}, "totalTransported": {}, "totalDelivered": {},
+        "retiredTransported": {}, "retiredDelivered": {},
     }
     payload["vehicleSynchronization"]["schemaVersion"] = 4
     payload["vehicleSynchronization"]["cargoPresentation"] = {
@@ -1874,7 +1875,7 @@ class FreightIndustryTests(unittest.TestCase):
         self.assertEqual(
             withdraw_freight_output(state, "industry:pre:a-farm", "GRAIN", 7), 23
         )
-        self.assertEqual(checksum(freight_digest_view(state)), "f758bc34")
+        self.assertEqual(checksum(freight_digest_view(state)), "7fe9cd81")
 
         duplicate = freight_industry(
             "industry:pre:duplicate", "mod/duplicate.con", 60,
@@ -1923,6 +1924,7 @@ class FreightIndustryTests(unittest.TestCase):
         summary = apply_freight_transport(state, {"line:freight:test": row})
         self.assertEqual(summary, {
             "lines": 1, "boarded": {"GRAIN": 40}, "delivered": {"GRAIN": 25},
+            "transferred": {},
         })
         self.assertEqual(
             state["industries"]["industry:pre:a-farm"]["outputStock"]["GRAIN"], 60,
@@ -1953,6 +1955,13 @@ class FreightIndustryTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "malformed"):
             apply_freight_transport(malformed, {"line:freight:new": bad})
         self.assertEqual(canonical_json(malformed), before)
+
+        unknown_schema = {**row, "transportSchema": 3}
+        with self.assertRaisesRegex(ProtocolError, "malformed"):
+            apply_freight_transport(
+                json.loads(json.dumps(state)),
+                {"line:freight:unknown-schema": unknown_schema},
+            )
 
     def test_portable_replay_and_host_checkpoint_track_bootstrap(self) -> None:
         action = freight_bootstrap()

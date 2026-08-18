@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.37.0-alpha',
+    [string]$Version = '0.38.0-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -119,6 +119,8 @@ if ($LASTEXITCODE -ne 0) { throw "Packaged companion recovery verification smoke
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion freight report smoke test failed with exit code $LASTEXITCODE" }
 & (Join-Path $companionDist 'tpf2mp.exe') passenger-feeder-live-report --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion passenger-feeder report smoke test failed with exit code $LASTEXITCODE" }
+& (Join-Path $companionDist 'tpf2mp.exe') alpha-live-report --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Packaged companion alpha report smoke test failed with exit code $LASTEXITCODE" }
 
 $releaseName = "TPF2MP-$Version"
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $dist $releaseName))
@@ -154,10 +156,13 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'native\third_party\minhook\LICEN
 
 $toolNames = @(
     'release_common.ps1', 'install_release.ps1', 'verify_install.ps1', 'uninstall.ps1',
+    'update_common.ps1', 'github_release_common.ps1', 'update_release.ps1',
+    'installed_entrypoint.ps1', 'installed_command.cmd',
     'new_match_manifest.ps1', 'new_recovery_plan.ps1',
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
     'network_common.ps1', 'native_load_common.ps1', 'start_network_session.ps1', 'stop_network_session.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
+    'analyze_alpha_live_evidence.ps1', 'run_alpha_live_acceptance.ps1',
     'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
     'analyze_feeder_live_evidence.ps1', 'start_feeder_live_acceptance.ps1',
     'multiplayer_launcher.ps1',
@@ -176,9 +181,12 @@ foreach ($name in $toolNames) {
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_install.cmd') -Destination (Join-Path $releaseRoot 'INSTALL_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_verify.cmd') -Destination (Join-Path $releaseRoot 'VERIFY_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_uninstall.cmd') -Destination (Join-Path $releaseRoot 'UNINSTALL_TPF2MP.cmd')
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_update.cmd') -Destination (Join-Path $releaseRoot 'UPDATE_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination (Join-Path $releaseRoot 'LAUNCH_TPF2MP.cmd')
 $documentNames = @(
-    'README.md', 'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
+    'README.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
+    'DISTRIBUTION_AND_UPDATES.md',
+    'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
     'tpf2-competitive-multiplayer-concept.md', 'tpf2-competitive-multiplayer-technical-plan.md',
     'multiplayer-companies-audit.md'
 )
@@ -193,9 +201,16 @@ $quickStart = @'
 
 This is an alpha research build, not finished Internet multiplayer.
 
-Install from PowerShell:
+Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 
     powershell -ExecutionPolicy Bypass -File .\tools\install_release.ps1
+
+The installer creates stable Launch and Update commands under
+`%LOCALAPPDATA%\TPF2MP` and, on a normal install, a desktop launcher shortcut.
+`UPDATE_TPF2MP.cmd` checks versioned GitHub Releases, verifies the release ZIP
+and its internal manifest, and installs it transactionally. A private repository
+uses the player's own GitHub CLI/Git Credential Manager login or
+`TPF2MP_GITHUB_TOKEN`; no shared repository key is included.
 
 Then double-click `LAUNCH_TPF2MP.cmd`. Its Host / Join buttons fingerprint the
 game, mod, binaries, and selected save; configure the peer and session; start
@@ -232,13 +247,17 @@ Useful commands:
     .\tools\analyze_freight_live_evidence.ps1 -Session match-1 -RequireStage settled
     .\tools\start_feeder_live_acceptance.ps1 -Carrier ROAD
     .\tools\analyze_feeder_live_evidence.ps1 -Session match-1 -RequireStage settled
+    .\tools\run_alpha_live_acceptance.ps1 -Session match-1 -Profile alpha
     .\tools\new_recovery_plan.ps1 -AuditPath "$env:TEMP\tpf2mp_bridge\player1\audit\match-1.ndjson" -Session match-1
     .\tools\archive_recovery_save.ps1 -Session match-1 -Peer player1 -SavePath C:\saves\match.sav
     .\tools\get_network_session_status.ps1 -Session match-1 -Peer player1
     .\tools\uninstall.ps1
 
-Read `docs\README.md` and `docs\REMAINING_FROM_BRIEF.md` for implemented and
-unfinished boundaries before testing.
+Read `docs\ALPHA_QUICK_START.md` first. `docs\DISTRIBUTION_AND_UPDATES.md`
+documents the stable installed commands and private/public release updater.
+`docs\ALPHA_RELEASE_CHECKLIST.md` is
+the exact machine-checkable release gate; `docs\REMAINING_FROM_BRIEF.md` keeps
+the broader post-alpha product backlog.
 
 Host sessions automatically watch for a later stable native save after an
 all-peer checkpoint and archive it against a verified recovery plan. This is a
@@ -274,6 +293,11 @@ $releaseManifest = [ordered]@{
     freightIndustrySchemaVersion = $freightIndustrySchemaVersion
     companionVersion = $companionVersion
     builtAtUtc = [DateTime]::UtcNow.ToString('o')
+    update = [ordered]@{
+        provider = 'github-releases'
+        repository = 'Juliansgith/tpf2mp'
+        channel = 'alpha'
+    }
     source = [ordered]@{
         commit = $sourceCommit
         dirty = $sourceDirty
@@ -289,6 +313,9 @@ $releaseManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path
 $archive = Join-Path $dist ($releaseName + '.zip')
 if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
 Compress-Archive -LiteralPath $releaseRoot -DestinationPath $archive -CompressionLevel Optimal
+$archiveHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+$sidecar = $archive + '.sha256'
+[IO.File]::WriteAllText($sidecar, "$archiveHash  $([IO.Path]::GetFileName($archive))`n", [Text.UTF8Encoding]::new($false))
 
 if (-not $SkipPackageInstallTest) {
     $testRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot ('runtime\package-install-test-' + [guid]::NewGuid().ToString('N'))))
@@ -296,7 +323,14 @@ if (-not $SkipPackageInstallTest) {
     $testSupport = Join-Path $testRoot 'support'
     New-Item -ItemType Directory -Force -Path $testMods | Out-Null
     try {
-        & (Join-Path $releaseRoot 'tools\install_release.ps1') -BundleRoot $releaseRoot -LocalModsPath $testMods -InstallRoot $testSupport
+        $previousNoPause = $env:TPF2MP_NO_PAUSE
+        $env:TPF2MP_NO_PAUSE = '1'
+        try {
+            & (Join-Path $releaseRoot 'INSTALL_TPF2MP.cmd') `
+                -LocalModsPath $testMods -InstallRoot $testSupport -NoDesktopShortcut
+            if ($LASTEXITCODE -ne 0) { throw "Packaged INSTALL_TPF2MP.cmd failed with exit code $LASTEXITCODE" }
+        }
+        finally { $env:TPF2MP_NO_PAUSE = $previousNoPause }
         & (Join-Path $releaseRoot 'tools\verify_install.ps1') -BundleRoot $releaseRoot -LocalModsPath $testMods -GameExecutable $game -StrictNative
         & (Join-Path $releaseRoot 'tools\uninstall.ps1') -LocalModsPath $testMods -InstallRoot $testSupport
         if (Test-Path -LiteralPath (Join-Path $testMods 'tpf2_mp_1')) { throw 'Package uninstall self-test left the mod active.' }
@@ -308,5 +342,6 @@ if (-not $SkipPackageInstallTest) {
 
 Write-Host "Release directory: $releaseRoot"
 Write-Host "Release archive: $archive"
+Write-Host "Release checksum: $sidecar"
 Write-Host "Files: $($fileRecords.Count)"
 Write-Host "Source: $sourceCommit ($(if ($sourceDirty) { 'dirty development build' } else { 'clean' }))"

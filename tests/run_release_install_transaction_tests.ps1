@@ -11,7 +11,7 @@ $bundle = Join-Path $caseRoot 'bundle'
 $installRoot = Join-Path $caseRoot 'support'
 $modsRoot = Join-Path $caseRoot 'Steam\userdata\12345\1066780\local\mods'
 $targetMod = Join-Path $modsRoot 'tpf2_mp_1'
-$versionRoot = Join-Path $installRoot 'versions\0.37.0-alpha'
+$versionRoot = Join-Path $installRoot 'versions\0.38.0-alpha'
 $currentPath = Join-Path $installRoot 'current.json'
 
 New-Item -ItemType Directory -Force -Path `
@@ -28,7 +28,11 @@ New-Item -ItemType Directory -Force -Path `
 [IO.File]::WriteAllText((Join-Path $bundle 'bin\native\tpf2mp_hook_build35924.dll'), 'fixture', [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $bundle 'docs\README.md'), 'fixture', [Text.UTF8Encoding]::new($false))
 [IO.File]::WriteAllText((Join-Path $bundle 'QUICK_START.md'), 'fixture', [Text.UTF8Encoding]::new($false))
-foreach ($name in @('install_release.ps1', 'verify_install.ps1', 'uninstall.ps1', 'release_common.ps1')) {
+Copy-Item -LiteralPath (Join-Path $ProjectRoot 'UPDATE_TPF2MP.cmd') -Destination (Join-Path $bundle 'UPDATE_TPF2MP.cmd')
+foreach ($name in @(
+        'install_release.ps1', 'verify_install.ps1', 'uninstall.ps1', 'release_common.ps1',
+        'update_release.ps1', 'update_common.ps1', 'github_release_common.ps1',
+        'installed_entrypoint.ps1', 'installed_command.cmd')) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\$name") -Destination (Join-Path $bundle "tools\$name")
 }
 
@@ -44,17 +48,22 @@ foreach ($file in Get-ChildItem -LiteralPath $bundle -File -Recurse | Sort-Objec
 $manifest = [pscustomobject][ordered]@{
     format = 2
     name = 'TPF2MP Competitive Prototype'
-    version = '0.37.0-alpha'
-    modMinorVersion = 37
-    stateSchemaVersion = 29
+    version = '0.38.0-alpha'
+    modMinorVersion = 38
+    stateSchemaVersion = 31
     checkpointSchemaVersion = 5
     proposalSchemaVersion = 5
     operationSchemaVersion = 4
     passengerPresentationSchemaVersion = 2
-    cargoPresentationSchemaVersion = 1
-    deliverySchemaVersion = 2
-    freightIndustrySchemaVersion = 2
-    companionVersion = '0.11.0'
+    cargoPresentationSchemaVersion = 2
+    deliverySchemaVersion = 3
+    freightIndustrySchemaVersion = 3
+    companionVersion = '0.38.0-alpha'
+    update = [pscustomobject][ordered]@{
+        provider = 'github-releases'
+        repository = 'Juliansgith/tpf2mp'
+        channel = 'alpha'
+    }
     source = [pscustomobject][ordered]@{
         commit = 'fedcba9876543210fedcba9876543210fedcba98'
         dirty = $false
@@ -104,6 +113,12 @@ if (@(Get-ChildItem -LiteralPath $modsRoot -Force | Where-Object {
 if (@(Get-ChildItem -LiteralPath (Join-Path $installRoot 'backups') -Force).Count -gt 0) {
     throw 'Failed install left a detached prior bundle in backups after rollback.'
 }
+foreach ($name in @('installed_entrypoint.ps1', 'LAUNCH_TPF2MP.cmd', 'UPDATE_TPF2MP.cmd',
+        'VERIFY_TPF2MP.cmd', 'UNINSTALL_TPF2MP.cmd')) {
+    if (Test-Path -LiteralPath (Join-Path $installRoot $name)) {
+        throw "Failed install left stable entrypoint residue: $name"
+    }
+}
 
 & (Join-Path $ProjectRoot 'tools\install_release.ps1') `
     -BundleRoot $bundle -InstallRoot $installRoot -LocalModsPath $modsRoot -SkipVerification
@@ -119,6 +134,12 @@ if ([int]$installedCurrent.schemaVersion -ne 2 `
 if ((Get-Content -LiteralPath (Join-Path $versionRoot 'tpf2_mp_1\mod.lua') -Raw) -ne 'new-mod' `
         -or (Get-Content -LiteralPath (Join-Path $targetMod 'mod.lua') -Raw) -ne 'new-mod') {
     throw 'Successful install did not commit identical support and active mod copies.'
+}
+foreach ($name in @('installed_entrypoint.ps1', 'LAUNCH_TPF2MP.cmd', 'UPDATE_TPF2MP.cmd',
+        'VERIFY_TPF2MP.cmd', 'UNINSTALL_TPF2MP.cmd')) {
+    if (-not (Test-Path -LiteralPath (Join-Path $installRoot $name) -PathType Leaf)) {
+        throw "Successful install did not publish stable entrypoint: $name"
+    }
 }
 $successfulBackups = @(Get-ChildItem -LiteralPath (Join-Path $installRoot 'backups') -Directory)
 if ($successfulBackups.Count -ne 2 `

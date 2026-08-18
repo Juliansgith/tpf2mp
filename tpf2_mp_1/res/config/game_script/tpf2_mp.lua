@@ -57,12 +57,11 @@ local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registrati
 local stateRetention = require "tpf2_mp/state_retention"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 30
+local STATE_VERSION = 31
 local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
 local function config() return runtimeConfig.read() end
 local setDifference = util.setDifference
-
 local function newState()
   return stateSchema.new(config(), {
     stateVersion = STATE_VERSION,
@@ -3032,6 +3031,7 @@ local function ensureWindow()
     { "Cycle Company", function() return { type = "company.cycle" } end },
     { "Reconcile Turn", function() return { type = "company.reconcile" } end },
   })
+  addRow(rootLayout, guiView.managerButtons(gui))
   if config().developerEconomyControls then
     addRow(rootLayout, {
       { "Seed Demo Market (Dev)", function() return { type = "economy.seed_demo" } end },
@@ -3163,7 +3163,6 @@ end
 local function installMultiplayerEntryPoints()
   return guiEntryPointsModule.install(gui, ensureWindow)
 end
-
 local guiEventRuntime = guiEventRuntimeModule.new({
   getState = function() return state end,
   gui = gui,

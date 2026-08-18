@@ -1,10 +1,11 @@
 local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
 local revenue = require "tpf2_mp/economy_revenue"
+local multihop = require "tpf2_mp/multihop_network"
 
 local M = {}
 
-M.SCHEMA_VERSION = 1
+M.SCHEMA_VERSION = 2
 M.CATCHMENT_METERS = 500
 
 local function positionDistance(from, to)
@@ -80,82 +81,45 @@ local function destinationRows(freightState, endpointId, endpointPosition, deps)
   return result
 end
 
-local function candidateKey(value)
-  return table.concat({ value.sourceIndustryCid, value.destinationIndustryCid,
-    value.cargoType, tostring(value.destinationStockIndex),
-    tostring(value.sourceStopIndex) }, "|")
-end
-
-local function orientation(freightState, groups, sourceIndex, destinationIndex, accepted, deps)
-  local sourcePosition = deps.positionOfEntity(groups[sourceIndex + 1])
-  local destinationPosition = deps.positionOfEntity(groups[destinationIndex + 1])
-  if not sourcePosition or not destinationPosition then return {} end
-  local sources = sourceRows(freightState, accepted, groups[sourceIndex + 1], sourcePosition, deps)
-  local destinations = destinationRows(
-    freightState, groups[destinationIndex + 1], destinationPosition, deps)
-  local result = {}
-  for _, source in ipairs(sources) do
-    for _, destination in ipairs(destinations) do
-      if source.cid ~= destination.cid and source.cargoType == destination.cargoType then
-        result[#result + 1] = {
-          schemaVersion = M.SCHEMA_VERSION,
-          sourceIndustryCid = source.cid,
-          destinationIndustryCid = destination.cid,
-          destinationStockIndex = destination.stockIndex,
-          cargoType = source.cargoType,
-          sourceStationGroupCid = deps.stationGroupCids[sourceIndex + 1],
-          destinationStationGroupCid = deps.stationGroupCids[destinationIndex + 1],
-          sourceStopIndex = sourceIndex,
-          destinationStopIndex = destinationIndex,
-          sourceCatchmentMeters = source.distance,
-          destinationCatchmentMeters = destination.distance,
-          sourceRatePerHour = source.outputRate,
-          destinationRatePerHour = destination.inputRate,
-          vehicleCapacity = source.vehicleCapacity,
-          score = source.distance + destination.distance,
+local function endpointFacts(freightState, groups, stationGroupCids, accepted, deps)
+  local facts = {}
+  for groupIndex = 1, #groups do
+    local groupId = groups[groupIndex]
+    local position = deps.positionOfEntity(groupId)
+    if position then
+      local sources, destinations = {}, {}
+      for _, source in ipairs(sourceRows(
+          freightState, accepted, groupId, position, deps)) do
+        sources[#sources + 1] = {
+          industryCid = source.cid, cargoType = source.cargoType,
+          distanceMeters = source.distance, ratePerHour = source.outputRate,
         }
       end
+      for _, destination in ipairs(destinationRows(
+          freightState, groupId, position, deps)) do
+        destinations[#destinations + 1] = {
+          industryCid = destination.cid, cargoType = destination.cargoType,
+          stockIndex = destination.stockIndex,
+          distanceMeters = destination.distance,
+          ratePerHour = destination.inputRate,
+        }
+      end
+      table.sort(sources, function(a, b)
+        return table.concat({ a.cargoType, a.industryCid }, "|")
+          < table.concat({ b.cargoType, b.industryCid }, "|")
+      end)
+      table.sort(destinations, function(a, b)
+        return table.concat({ a.cargoType, a.industryCid, tostring(a.stockIndex) }, "|")
+          < table.concat({ b.cargoType, b.industryCid, tostring(b.stockIndex) }, "|")
+      end)
+      facts[#facts + 1] = {
+        stationGroupCid = stationGroupCids[groupIndex],
+        stopIndex = groupIndex - 1,
+        sources = sources, destinations = destinations,
+      }
     end
   end
-  return result
-end
-
-local function chooseContract(freightState, groups, accepted, deps)
-  local candidates = orientation(freightState, groups, 0, #groups - 1, accepted, deps)
-  for _, candidate in ipairs(orientation(
-      freightState, groups, #groups - 1, 0, accepted, deps)) do
-    candidates[#candidates + 1] = candidate
-  end
-  table.sort(candidates, function(a, b)
-    if a.score ~= b.score then return a.score < b.score end
-    return candidateKey(a) < candidateKey(b)
-  end)
-  if #candidates == 0 then
-    return nil, "cargo endpoints have no compatible source/destination industries within "
-      .. tostring(M.CATCHMENT_METERS) .. " m"
-  end
-  local selected = util.deepCopy(candidates[1])
-  selected.score = nil
-  selected.contractDigest = hash.value({
-    schemaVersion = selected.schemaVersion,
-    sourceIndustryCid = selected.sourceIndustryCid,
-    destinationIndustryCid = selected.destinationIndustryCid,
-    destinationStockIndex = selected.destinationStockIndex,
-    cargoType = selected.cargoType,
-    sourceStationGroupCid = selected.sourceStationGroupCid,
-    destinationStationGroupCid = selected.destinationStationGroupCid,
-    sourceStopIndex = selected.sourceStopIndex,
-    destinationStopIndex = selected.destinationStopIndex,
-  })
-  return selected, #candidates
-end
-
-local function industryName(freightState, cid, deps)
-  local localId = deps.resolveLocal(deps.registry, cid)
-  local named = localId and deps.nameOf(localId) or nil
-  if type(named) == "string" and named ~= "" then return named end
-  local industry = freightState.industries and freightState.industries[cid] or nil
-  return industry and industry.recipe and industry.recipe.resourceName or cid
+  return facts
 end
 
 function M.register(params)
@@ -179,31 +143,17 @@ function M.register(params)
     positionOfEntity = params.positionOfEntity,
     nameOf = params.nameOf,
   }
-  local contract, alternatives = chooseContract(
-    freightState, params.groups, accepted, deps)
-  if not contract then return false, alternatives end
-
-  local marketCid = "market:freight:" .. hash.value({
-    contract.sourceIndustryCid, contract.destinationIndustryCid,
-    contract.cargoType, contract.destinationStockIndex,
-  })
-  local demand = math.max(1, math.min(
-    contract.sourceRatePerHour, contract.destinationRatePerHour))
-  local sourceName = industryName(freightState, contract.sourceIndustryCid, deps)
-  local destinationName = industryName(freightState, contract.destinationIndustryCid, deps)
-  local existingMarket = params.economyState.markets[marketCid]
-  if existingMarket then demand = math.max(util.integer(existingMarket.demand, 0), demand) end
+  local facts = endpointFacts(freightState, params.groups,
+    params.stationGroupCids, accepted, deps)
+  local marketCid = "market:freight-leg:" .. hash.value({ params.lineCid })
   params.economyModule.upsertMarket(params.economyState, {
     cid = marketCid,
-    name = sourceName .. " -> " .. destinationName .. " (" .. contract.cargoType .. ")",
+    name = params.nameOf(params.lineId) .. " cargo leg",
     kind = "cargo",
-    demand = demand,
+    demand = 0,
     metadata = {
-      sourceIndustryCid = contract.sourceIndustryCid,
-      destinationIndustryCid = contract.destinationIndustryCid,
-      destinationStockIndex = contract.destinationStockIndex,
-      cargoType = contract.cargoType,
       corridorMeters = params.computed and params.computed.distanceMeters or nil,
+      networkStatus = "awaiting-compatible-path",
     },
   })
 
@@ -211,17 +161,27 @@ function M.register(params)
     and params.computed.departuresPerHourPerDirection or 0
   local exactCapacities, fleetCapacity = {}, 0
   for _, vehicleCid in ipairs(params.vehicleCids) do
-    local capacity = math.max(0, util.integer(
-      byVehicle[vehicleCid] and byVehicle[vehicleCid][contract.cargoType], 0))
-    exactCapacities[vehicleCid] = capacity
-    fleetCapacity = fleetCapacity + capacity
+    local capacities = {}
+    for cargoType, capacity in pairs(byVehicle[vehicleCid] or {}) do
+      capacities[cargoType] = math.max(0, util.integer(capacity, 0))
+      fleetCapacity = fleetCapacity + capacities[cargoType]
+    end
+    exactCapacities[vehicleCid] = capacities
   end
   if fleetCapacity <= 0 then
-    return false, "selected cargo contract has no exact assigned consist capacity"
+    return false, "cargo line has no exact assigned consist capacity"
   end
-  local averageCapacity = math.floor(fleetCapacity / math.max(1, params.vehicles))
-  local hourlyCapacity = params.vehicles > 0
-    and math.floor(fleetCapacity * departures / params.vehicles) or 0
+  local hourlyCapacityByType, averageCapacityByType = {}, {}
+  for cargoType in pairs(accepted) do
+    local total = 0
+    for _, vehicleCid in ipairs(params.vehicleCids) do
+      total = total + math.max(0, util.integer(
+        exactCapacities[vehicleCid] and exactCapacities[vehicleCid][cargoType], 0))
+    end
+    averageCapacityByType[cargoType] = math.floor(total / math.max(1, params.vehicles))
+    hourlyCapacityByType[cargoType] = params.vehicles > 0
+      and math.floor(total * departures / params.vehicles) or 0
+  end
   local prior = params.economyState.services[params.lineCid]
   params.economyModule.upsertService(params.economyState, {
     lineCid = params.lineCid,
@@ -232,31 +192,20 @@ function M.register(params)
     journeySeconds = params.computed.journeySeconds,
     fareCents = prior and prior.fareCents
       or revenue.defaultFareCents(params.computed.distanceMeters, "cargo"),
-    capacity = hourlyCapacity,
+    capacity = 0,
     quality = math.max(20, 120 - math.max(0, #params.groups - 2) * 10),
     annualVehicleUpkeepCents = params.annualVehicleUpkeepCents,
     metadata = {
-      freightContractSchema = M.SCHEMA_VERSION,
-      freightContractDigest = contract.contractDigest,
-      sourceIndustryCid = contract.sourceIndustryCid,
-      destinationIndustryCid = contract.destinationIndustryCid,
-      destinationStockIndex = contract.destinationStockIndex,
-      cargoType = contract.cargoType,
-      sourceStationGroupCid = contract.sourceStationGroupCid,
-      destinationStationGroupCid = contract.destinationStationGroupCid,
-      sourceStopIndex = contract.sourceStopIndex,
-      destinationStopIndex = contract.destinationStopIndex,
-      sourceCatchmentMeters = contract.sourceCatchmentMeters,
-      destinationCatchmentMeters = contract.destinationCatchmentMeters,
-      sourceRatePerHour = contract.sourceRatePerHour,
-      destinationRatePerHour = contract.destinationRatePerHour,
-      cargoCapacityPerVehicle = averageCapacity,
-      cargoFleetCapacity = fleetCapacity,
+      freightNetworkSchema = 1,
+      cargoEndpointFacts = facts,
+      cargoCapacityByType = util.deepCopy(accepted),
       cargoCapacityByVehicleCid = exactCapacities,
-      contractAlternatives = alternatives,
+      cargoAverageCapacityByType = averageCapacityByType,
+      cargoHourlyCapacityByType = hourlyCapacityByType,
       vehicleCount = params.vehicles,
       carrier = params.consistFacts.carrier,
-      factsSource = "computed-freight-contract",
+      factsSource = "computed-cargo-network-leg",
+      networkStatus = "awaiting-compatible-path",
       distanceMeters = params.computed.distanceMeters,
       topSpeedKmh = params.computed.topSpeedKmh,
       cruiseSpeedKmh = params.computed.cruiseSpeedKmh,
@@ -266,18 +215,32 @@ function M.register(params)
       vehicleCids = util.deepCopy(params.vehicleCids),
       pricedVehicleCount = params.pricedVehicles,
       vehicleUpkeepCoverageComplete = params.pricedVehicles == params.vehicles,
+      -- Once a route enters operation, its identity is part of three ledgers.
+      -- Preserve the path pin through harmless re-registration (for example a
+      -- consist/headway update); the network planner may only select that same
+      -- path until the line itself is deleted and recreated.
+      freightPinnedPathDigest = prior and prior.metadata
+        and prior.metadata.freightPinnedPathDigest or nil,
     },
   })
+  local network = multihop.rebuild(params.economyState)
+  local registered = params.economyState.services[params.lineCid]
+  local metadata = registered and registered.metadata or {}
   return true, {
     lineCid = params.lineCid,
     marketCid = marketCid,
     vehicleCount = params.vehicles,
-    factsSource = "computed-freight-contract",
-    cargoType = contract.cargoType,
-    sourceIndustryCid = contract.sourceIndustryCid,
-    destinationIndustryCid = contract.destinationIndustryCid,
-    destinationStockIndex = contract.destinationStockIndex,
-    contractDigest = contract.contractDigest,
+    factsSource = metadata.factsSource or "computed-cargo-network-leg",
+    networkStatus = metadata.networkStatus,
+    cargoType = metadata.cargoType,
+    sourceIndustryCid = metadata.sourceIndustryCid,
+    destinationIndustryCid = metadata.destinationIndustryCid,
+    destinationStockIndex = metadata.destinationStockIndex,
+    contractDigest = metadata.freightContractDigest,
+    pathDigest = metadata.freightPathDigest,
+    legIndex = metadata.freightLegIndex,
+    legCount = metadata.freightLegCount,
+    network = network,
   }
 end
 

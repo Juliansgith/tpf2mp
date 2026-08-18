@@ -3452,7 +3452,7 @@ do
       and digestView.passengerPresentation.vehicles[1].vehicleCid
         == "vehicle:event:test:1"
       and digestView.passengerPresentation.vehicles[1].lastRound == 1
-      and digestView.cargoPresentation.schemaVersion == 1,
+      and digestView.cargoPresentation.schemaVersion == 2,
     "prompt vehicle release/presentation ledgers are absent from the convergence view")
   transportVehicle.state, current.tick = 1, 5
   runtime.update()

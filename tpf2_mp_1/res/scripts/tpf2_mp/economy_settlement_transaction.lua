@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local multihopNetwork = require "tpf2_mp/multihop_network"
 
 local M = {}
 
@@ -26,6 +27,9 @@ function M.prepare(state, economy, passengerPresentation,
   local freightCandidate, freightSummary = freightRuntime.settlementCandidate(
     state, results, delivery, economyCandidate.scheduler.epochSeconds)
   if not freightCandidate then return nil, freightSummary end
+  local pinned, pinResult = multihopNetwork.pinMovedCargo(
+    economyCandidate, delivery.cargoLines)
+  if not pinned then return nil, pinResult end
 
   local passengerCandidate = util.deepCopy(state.world.passengerPresentation)
   local passengerOk, passengerResult = passengerPresentation.beginEpoch(
@@ -42,6 +46,7 @@ function M.prepare(state, economy, passengerPresentation,
     cargoPresentation = cargoResult,
     results = results,
     freightSummary = freightSummary,
+    freightPathPins = pinResult,
   }
 end
 

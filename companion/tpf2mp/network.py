@@ -27,6 +27,8 @@ from .mobility_telemetry import unsafe_vehicle_details, vehicle_phase_details
 from .synchronization import SynchronizationCoordinator
 from .restore_session import RestoreSessionCoordinator
 from .restore_plan_exchange import RestorePlanExchange
+from .reconnect import ReconnectCoordinator
+from .peer_session import serve_peer
 from .protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -35,7 +37,7 @@ from .protocol import (
     validate_envelope,
 )
 from .client import CommitClient
-from .transport import ConnectedPeer, read_frame as _read_frame, send as _send
+from .transport import ConnectedPeer, send as _send
 HOST_AUTHORITY_ACTIONS = {
     "match.initialise",
     "match.finish",
@@ -117,6 +119,7 @@ class CommitHost(HostIntentMixin):
         self.checkpoint_consensus = self.consensus.checkpoints
         self.clock_controls = self.consensus.clock_controls
         self.synchronization = SynchronizationCoordinator(self)
+        self.reconnect = ReconnectCoordinator(self)
         self.restore_session = RestoreSessionCoordinator(self, restore_plan)
         self.anchor = AnchorCoordinator(self)
         self.anchor_preparation = AnchorPreparationCoordinator(self)
@@ -1174,7 +1177,10 @@ class CommitHost(HostIntentMixin):
     def _expire_proposals(self) -> None:
         now = time.monotonic()
         with self.order_lock:
+            reconnect_protected = self.reconnect.expire(now)
             self.synchronization.expire(now)
+            if reconnect_protected:
+                return
             for tracker in self.proposal_prepares.values():
                 if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
                     missing = sorted(set(tracker["requiredPeers"]) - set(tracker["acks"]))
@@ -1388,95 +1394,12 @@ class CommitHost(HostIntentMixin):
                             item.sock.close()
                         except OSError:
                             pass
+            for peer_name in failed:
+                with self.order_lock:
+                    self.reconnect.disconnected(peer_name, "broadcast-failed")
 
     def _serve_peer(self, conn: socket.socket, address: tuple[str, int]) -> None:
-        peer_name: str | None = None
-        reader = conn.makefile("rb")
-        try:
-            greeting = _read_frame(reader)
-            validate_envelope(greeting, self.bridge.session)
-            if greeting.get("kind") != "hello":
-                raise ProtocolError("first client frame must be hello")
-            peer_name = str(greeting.get("peer", ""))
-            if not peer_name or peer_name == self.bridge.peer:
-                raise ProtocolError("client peer id is empty or conflicts with host")
-            if peer_name not in self.required_peers:
-                raise ProtocolError(f"peer {peer_name} is not in the pinned match roster")
-            if self.match_fingerprint and greeting.get("match_fingerprint") != self.match_fingerprint:
-                raise ProtocolError("match fingerprint differs from the host")
-            connected = ConnectedPeer(peer_name, conn, threading.Lock())
-            with self.peers_lock:
-                old = self.peers.pop(peer_name, None)
-                if old:
-                    old.sock.close()
-                self.peers[peer_name] = connected
-            acknowledgement = sign(
-                {
-                    "protocol": PROTOCOL_VERSION,
-                    "session": self.bridge.session,
-                    "kind": "hello_ack",
-                    "peer": self.bridge.peer,
-                    "next_seq": self.next_seq,
-                    "match_fingerprint": self.match_fingerprint,
-                }
-            )
-            _send(conn, acknowledgement, connected.send_lock)
-            last_commit = int(greeting.get("last_commit_seq", 0))
-            for seq in sorted(self.commits):
-                if seq > last_commit:
-                    _send(conn, self.commits[seq], connected.send_lock)
-            restore_plan_message = self.restore_plan_exchange.published_message(force=True)
-            if restore_plan_message: _send(conn, restore_plan_message, connected.send_lock)
-            print(f"client {peer_name} connected from {address[0]}:{address[1]}")
-            while not self.stop.is_set():
-                message = _read_frame(reader)
-                validate_envelope(message, self.bridge.session)
-                if str(message.get("peer")) != peer_name:
-                    raise ProtocolError("connected peer changed identity")
-                accepted, reason, commit_seq = True, None, None
-                try:
-                    if message.get("kind") == "intent":
-                        commit = self._commit(message)
-                        commit_seq = commit and commit.get("seq")
-                    else:
-                        self._record_non_intent(message)
-                except ProtocolError as exc:
-                    accepted, reason = False, str(exc)
-                    rejection = None
-                    if int(message.get("local_seq", 0)) > 0:
-                        rejection = self._reject_intent(message, reason)
-                    commit_seq = rejection and rejection.get("seq")
-                    print(f"rejected {peer_name} local sequence {message.get('local_seq')}: {reason}")
-                receipt = sign(
-                    {
-                        "protocol": PROTOCOL_VERSION,
-                        "session": self.bridge.session,
-                        "kind": "receipt",
-                        "peer": self.bridge.peer,
-                        "recipient": peer_name,
-                        "local_seq": int(message.get("local_seq", 0)),
-                        "accepted": accepted,
-                        "reason": reason,
-                        "commit_seq": commit_seq,
-                    }
-                )
-                _send(conn, receipt, connected.send_lock)
-        except AuditUnavailable as exc:
-            self._enter_audit_fault(exc)
-            if not self.stop.is_set():
-                print(f"AUTHORITY AUDIT FAULT while serving {peer_name or address}: {exc}")
-        except (ConnectionError, OSError, ProtocolError) as exc:
-            if not self.stop.is_set():
-                print(f"client {peer_name or address} disconnected: {exc}")
-        finally:
-            with self.peers_lock:
-                if peer_name and self.peers.get(peer_name) and self.peers[peer_name].sock is conn:
-                    self.peers.pop(peer_name, None)
-            try:
-                reader.close()
-                conn.close()
-            except OSError:
-                pass
+        serve_peer(self, conn, address)
 
     def _accept_loop(self, listener: socket.socket) -> None:
         while not self.stop.is_set():

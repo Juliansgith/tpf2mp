@@ -1,11 +1,17 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-11 for prototype `0.37.0-alpha`, state schema `30`,
+Last updated: 2026-08-18 for prototype `0.38.0-alpha`, state schema `31`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
-cargo-presentation schema `1`, freight-industry schema `2`, edge proposal
+cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.17.0`.
 
 ## Executive status
+
+The implementation is code-complete for the deliberately restricted
+`trusted-lan-two-player-alpha` profile. “Code-complete” here means every
+advertised alpha capability has a fail-closed authority path and automated
+verification; it does not replace the final physical two-computer and
+clean-machine acceptance run in `ALPHA_RELEASE_CHECKLIST.md`.
 
 TPF2MP contains two usable but differently mature modes:
 
@@ -32,13 +38,38 @@ TPF2MP contains two usable but differently mature modes:
   Model headway remains a demand input; registered and ordinary lines now both
   use a short guarded physical release after every peer arrives. The prompt
   path has exact two-process proof, and human
-  speed-3 play recovered after deliberately delaying one peer. The rest
-  of the newly captured vehicle lifecycle needs live proof; stock multi-sale,
-  broader complex topology, scripted callbacks,
-  autonomous drift, and a two-computer session remain open.
+  speed-3 play recovered after deliberately delaying one peer. A bounded
+  reconnect fence now pauses immediately, removes a lost peer from readiness,
+  replays its complete ordered backlog before `sync_ready`, resets protected
+  deadlines, and faults closed after 120 seconds. The newly captured vehicle
+  lifecycle, stock multi-sale, broader topology/resource manager, multi-hop
+  passenger/cargo, and recovery stress are code-complete but still need the
+  single combined two-computer alpha receipt. Opaque scripted callbacks remain
+  explicitly outside the profile.
 
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
+
+The Multiplayer panel now includes a fail-closed **Alpha Status** view. The
+companion's `alpha-live-report` produces `core`, `playable`, and `alpha`
+verdicts from converged checkpoints and both companion statuses. The strongest
+profile requires construction, operations, economy, multiple vehicles, town
+development, passenger transfers, conserved cargo transfers, one recovered
+disconnect, and a matching current restore plan; a missing receipt is a failed
+gate rather than prose judgment.
+
+Prototype 0.38 adds one deterministic carrier-neutral service graph. Passenger
+connections now add through-demand to every used corridor, including
+interchanges at intermediate stops. Cargo refuses to ship without a reachable
+compatible consumer, then moves through conserved authoritative station stock
+over up to four legs; only final industry delivery enters final-delivery totals
+and revenue. Unused paths may replan, while the first ordered vehicle release
+pins the whole operating path. State 31/freight schema 3 retires deleted line
+cursors into compact lifetime-history maps. The Multiplayer panel now exposes
+Routes / Transfers and a bounded Compatibility inventory for the exact named
+road, track, model, construction, and module resources admitted by portable
+replay. Lua/Python route/state parity and focused behavior tests pass; the
+fresh ordinary-UI two-process checklist remains open.
 
 Prototype 0.29 additionally serializes a topology edit and every obstructing
 construction removal into one atomic native BuildProposal. Offline integration
@@ -786,10 +817,10 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   - 132 core Lua tests and 108 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 130 mod Lua and 9 investigation/tool Lua syntax checks;
-  - 52 PowerShell syntax checks;
+  - 141 mod Lua and 9 investigation/tool Lua syntax checks;
+  - 54 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 172 Python protocol/network/checkpoint/recovery/report tests;
+  - 179 Python protocol/network/checkpoint/recovery/report tests;
   - functional first-fault watcher/real-bundle fixtures, including the
     already-exited-game ordering case and the automatic-save READY-poll race;
   - a synthetic byte-exact host publication -> player2 receipt-bound archive ->
