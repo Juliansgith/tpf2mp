@@ -1,6 +1,6 @@
 # What remains from the TPF2MP brief
 
-Last updated: 2026-08-18 after prototype `0.38.1-alpha`, state schema `31`,
+Last updated: 2026-08-18 after prototype `0.38.2-alpha`, state schema `31`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, populated two-process convergence,

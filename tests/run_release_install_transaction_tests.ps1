@@ -147,4 +147,22 @@ if ($successfulBackups.Count -ne 2 `
     throw 'Successful replacement did not retain both recoverable prior-install backups.'
 }
 
-Write-Host 'PASS release install rolls back verification failure and commits provenance atomically on success'
+# Releases 0.38.0 and 0.38.1 passed named tokens through array splatting. A
+# newer installer must accept that exact historical binding once so those
+# versions can bootstrap into the fixed updater without a manual reinstall.
+$legacyInstallRoot = Join-Path $caseRoot 'legacy updater support'
+$legacyModsRoot = Join-Path $caseRoot 'legacy updater Steam\userdata\12345\1066780\local\mods'
+$legacyArguments = @(
+    '-BundleRoot', $bundle,
+    '-InstallRoot', $legacyInstallRoot,
+    '-LocalModsPath', $legacyModsRoot,
+    '-SkipVerification', '-NoDesktopShortcut'
+)
+& (Join-Path $ProjectRoot 'tools\install_release.ps1') @legacyArguments
+$legacyCurrent = Get-Content -LiteralPath (Join-Path $legacyInstallRoot 'current.json') -Raw | ConvertFrom-Json
+if ([string]$legacyCurrent.version -ne '0.38.0-alpha' `
+        -or (Get-Content -LiteralPath (Join-Path $legacyModsRoot 'tpf2_mp_1\mod.lua') -Raw) -ne 'new-mod') {
+    throw 'Legacy array-splatted updater arguments did not bootstrap the corrected installer.'
+}
+
+Write-Host 'PASS release install rolls back failures, commits provenance, and accepts the bounded legacy updater handoff'

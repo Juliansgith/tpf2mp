@@ -1,5 +1,7 @@
 # TPF2MP 0.38.1-alpha
 
+> Superseded by `0.38.2-alpha`. The automatic updater in this build discovers and verifies a newer release but fails its Windows PowerShell 5.1 installer handoff. Install or update directly to `0.38.2-alpha`.
+
 This is the first updater-distributed build of the restricted TPF2MP trusted-LAN alpha.
 
 ## Included

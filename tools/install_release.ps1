@@ -5,11 +5,46 @@ param(
     [string]$InstallRoot,
     [switch]$ResetBridge,
     [switch]$SkipVerification,
-    [switch]$NoDesktopShortcut
+    [switch]$NoDesktopShortcut,
+    [Parameter(ValueFromRemainingArguments = $true)][object[]]$LegacyArguments
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release_common.ps1')
+
+# 0.38.0/0.38.1 array-splatted the named installer arguments. Windows
+# PowerShell 5.1 binds those tokens positionally, so a corrected release must
+# understand that one historical shape long enough to update the updater
+# itself. Keep the grammar exact and fail closed for every other residue.
+$legacyTail = @($LegacyArguments | Where-Object { $null -ne $_ })
+if ($BundleRoot -ceq '-BundleRoot' -and $InstallRoot -ceq '-InstallRoot' `
+        -and $legacyTail.Count -ge 1) {
+    $legacyBundleRoot = [string]$LocalModsPath
+    $legacyInstallRoot = [string]$legacyTail[0]
+    $LocalModsPath = $null
+    $seenLegacy = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    $index = 1
+    while ($index -lt $legacyTail.Count) {
+        $token = [string]$legacyTail[$index]
+        if (-not $seenLegacy.Add($token)) { throw "Duplicate legacy installer argument: $token" }
+        switch -CaseSensitive ($token) {
+            '-LocalModsPath' {
+                if ($index + 1 -ge $legacyTail.Count) { throw 'Legacy -LocalModsPath has no value.' }
+                $LocalModsPath = [string]$legacyTail[$index + 1]
+                $index += 2
+            }
+            '-ResetBridge' { $ResetBridge = $true; $index += 1 }
+            '-SkipVerification' { $SkipVerification = $true; $index += 1 }
+            '-NoDesktopShortcut' { $NoDesktopShortcut = $true; $index += 1 }
+            default { throw "Unexpected legacy installer argument: $token" }
+        }
+    }
+    $BundleRoot = $legacyBundleRoot
+    $InstallRoot = $legacyInstallRoot
+}
+elseif ($legacyTail.Count -gt 0) {
+    throw 'Unexpected positional installer arguments.'
+}
 
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot

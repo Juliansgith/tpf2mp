@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-18 (Europe/Amsterdam), prototype `0.38.1-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+Last updated: 2026-08-18 (Europe/Amsterdam), prototype `0.38.2-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+
+[Updater installer handoff regression](UPDATER_INSTALLER_HANDOFF_2026-08-18.md)
+records the real `0.38.0-alpha` update failure, the Windows PowerShell 5.1
+array-splat root cause, the bounded bootstrap compatibility in `0.38.2-alpha`,
+and the new end-to-end install-path coverage.
 
 [Playable-alpha code closure](ALPHA_CODE_CLOSURE_2026-08-18.md) records the
 bounded reconnect fence and backlog handshake, in-game Alpha Status, strict

@@ -19,6 +19,7 @@ Assert-VersionOrder '0.38.0-alpha' '0.38.0-alpha.2'
 Assert-VersionOrder '0.38.0-alpha.2' '0.38.0-alpha.10'
 Assert-VersionOrder '0.38.0-alpha.10' '0.38.0-beta'
 Assert-VersionOrder '0.38.0-beta' '0.38.0'
+Assert-VersionOrder '0.38.1-alpha' '0.38.2-alpha'
 Assert-VersionOrder '0.38.0' '0.39.0-alpha'
 if ((Compare-Tpf2mpSemanticVersion 'v0.38.0-alpha+build.1' '0.38.0-alpha+build.9') -ne 0) {
     throw 'Semantic build metadata unexpectedly affected precedence.'
@@ -147,6 +148,29 @@ function New-MinimalUpdateBundle([string]$Root, [string]$Version, [string]$Commi
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
         [IO.File]::WriteAllText($path, "fixture:$relative", [Text.UTF8Encoding]::new($false))
     }
+    $installer = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)][string]$BundleRoot,
+    [Parameter(Mandatory = $true)][string]$InstallRoot,
+    [string]$LocalModsPath
+)
+$resolvedInstall = [IO.Path]::GetFullPath($InstallRoot)
+New-Item -ItemType Directory -Force -Path $resolvedInstall | Out-Null
+$receipt = [ordered]@{
+    bundleRoot = [IO.Path]::GetFullPath($BundleRoot)
+    installRoot = $resolvedInstall
+    localModsPath = if ($LocalModsPath) { [IO.Path]::GetFullPath($LocalModsPath) } else { $null }
+} | ConvertTo-Json -Compress
+[IO.File]::WriteAllText(
+    (Join-Path $resolvedInstall 'update-install-receipt.json'),
+    $receipt,
+    [Text.UTF8Encoding]::new($false))
+'@
+    [IO.File]::WriteAllText(
+        (Join-Path $Root 'tools\install_release.ps1'),
+        $installer,
+        [Text.UTF8Encoding]::new($false))
     $records = @()
     foreach ($relative in $paths | Sort-Object) {
         $path = Join-Path $Root ($relative -replace '/', '\')
@@ -194,4 +218,23 @@ if (-not ($checkOutput -join "`n").Contains('0.39.0-alpha is a verified local up
     throw 'End-to-end local update check did not verify the newer release archive.'
 }
 
-Write-Host 'PASS semantic update selection, integrity metadata, sidecars, safe extraction, ZIP traversal refusal, and end-to-end local update check'
+$installedRoot = Join-Path $caseRoot 'installed-root'
+$installedMods = Join-Path $caseRoot 'installed mods'
+$installOutput = @(& (Join-Path $ProjectRoot 'tools\update_release.ps1') `
+    -BundleRoot $currentFixture -InstallRoot $installedRoot -LocalModsPath $installedMods `
+    -ArchivePath $nextZip -ExpectedSha256 $nextHash 6>&1)
+if (-not ($installOutput -join "`n").Contains('0.38.0-alpha -> 0.39.0-alpha')) {
+    throw 'End-to-end local update did not complete its installer handoff.'
+}
+$installReceiptPath = Join-Path $installedRoot 'update-install-receipt.json'
+if (-not (Test-Path -LiteralPath $installReceiptPath -PathType Leaf)) {
+    throw 'End-to-end local update did not invoke the packaged installer.'
+}
+$installReceipt = Get-Content -LiteralPath $installReceiptPath -Raw | ConvertFrom-Json
+if ([IO.Path]::GetFullPath([string]$installReceipt.installRoot) -ne [IO.Path]::GetFullPath($installedRoot) `
+        -or [IO.Path]::GetFullPath([string]$installReceipt.localModsPath) -ne [IO.Path]::GetFullPath($installedMods) `
+        -or (Split-Path -Leaf ([string]$installReceipt.bundleRoot)) -ne 'TPF2MP-0.39.0-alpha') {
+    throw 'Updater did not pass exact named paths to the packaged installer.'
+}
+
+Write-Host 'PASS semantic update selection, integrity metadata, sidecars, safe extraction, ZIP traversal refusal, and end-to-end local update/install handoff'

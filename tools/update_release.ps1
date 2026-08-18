@@ -142,9 +142,12 @@ try {
         exit 0
     }
 
-    $arguments = @('-BundleRoot', $newBundle, '-InstallRoot', $install)
-    if ($LocalModsPath) { $arguments += @('-LocalModsPath', $LocalModsPath) }
-    & (Join-Path $newBundle 'tools\install_release.ps1') @arguments
+    $installArguments = @{
+        BundleRoot = $newBundle
+        InstallRoot = $install
+    }
+    if ($LocalModsPath) { $installArguments.LocalModsPath = $LocalModsPath }
+    & (Join-Path $newBundle 'tools\install_release.ps1') @installArguments
     if ($LASTEXITCODE -ne 0) { throw "Update installer failed with exit code $LASTEXITCODE." }
     Write-Host "TPF2MP updated successfully: $currentVersion -> $newVersion"
 }
