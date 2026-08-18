@@ -1,5 +1,4 @@
 local util = require "tpf2_mp/util"
-
 local M = {}
 
 function M.new(deps)
@@ -72,9 +71,11 @@ function M.new(deps)
         state.bridge.lastError = message
       end)
     end
-    local clockOk = protected("clock.update", deps.networkClock.update, function(message)
-      state.world.networkClock.lastError = message
-    end)
+    local clockOk = true; if type(deps.networkClock.needsUpdate) ~= "function" or deps.networkClock.needsUpdate() then
+      clockOk = protected("clock.update", deps.networkClock.update, function(message)
+        state.world.networkClock.lastError = message
+      end)
+    end
     local economyClockOk = protected(
       "economy-clock.update", deps.economyClock.update,
       function(message) state.probes.lastError = message end)
@@ -84,10 +85,12 @@ function M.new(deps)
         state.probes.vehicleSync.lastError = message
       end)
     end
-    local deferredOk = protected("network-intent.deferred", deps.processDeferred,
-      function(message)
+    local deferredOk = true
+    if type(deps.hasDeferred) ~= "function" or deps.hasDeferred() then
+      deferredOk = protected("network-intent.deferred", deps.processDeferred, function(message)
         state.lastError = "deferred multiplayer physical-action processing failed: " .. message
       end)
+    end
     local contentOk = true
     if not restoreFenced and performance.due("industry-content.maintain", contentStride()) then
       contentOk = protected("industry-content.maintain", deps.industryContent.maintain,

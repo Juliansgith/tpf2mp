@@ -1963,6 +1963,7 @@ local operationalTelemetry = operationalTelemetryModule.new({
 })
 M.autonomySnapshot, M.clockSnapshot = operationalTelemetry.autonomySnapshot,
   operationalTelemetry.clockSnapshot
+M.gameTimeSeconds = operationalTelemetry.gameTimeSeconds
 M.journalSnapshot, M.operationalSnapshot = operationalTelemetry.journalSnapshot,
   operationalTelemetry.operationalSnapshot
 

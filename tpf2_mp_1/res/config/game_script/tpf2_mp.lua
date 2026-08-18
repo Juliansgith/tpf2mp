@@ -96,18 +96,13 @@ local applyCommitted
 -- Raw captures are never portable match state and deliberately never enter
 -- saves or core digests; each is canonicalized only when it reaches the head.
 local MAX_DEFERRED_NETWORK_INTENTS = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS
-local networkIntentController
-local networkClock
-local economyClock
-local vehicleSync
-local freezeNetworkGame
-local freezeNetworkCalendar
+local networkIntentController, networkClock, economyClock, vehicleSync
+local freezeNetworkGame, freezeNetworkCalendar
 -- Automatic line registration is defined beside its handler but referenced by
 -- the operation runtime constructed earlier, and it submits intents through a
 -- controller built later still.
 local autoRegisterLineFor
 local submitIntent
-
 local diagnosticLog = require("tpf2_mp/diagnostic_log").new(STATE_VERSION)
 
 local nativeHookStatus = nativeHook.status
@@ -163,8 +158,6 @@ local function configureNativeAuthority(mode)
   }
   return statusReady, message
 end
-
-
 local function migrate(saved)
   return stateSchema.migrate(saved, {
     newState = newState,
@@ -197,8 +190,7 @@ local checkpointRuntime = checkpointRuntimeModule.new({
   checkpointVersion = CHECKPOINT_VERSION,
   eventRecordVersion = EVENT_RECORD_VERSION,
 })
-local authoredDigest = checkpointRuntime.authoredDigest
-local coreDigest = checkpointRuntime.coreDigest
+local authoredDigest, coreDigest, digestPair = checkpointRuntime.authoredDigest, checkpointRuntime.coreDigest, checkpointRuntime.digestPair
 local trimEvents = checkpointRuntime.trimEvents
 local emitCheckpoint = checkpointRuntime.emitCheckpoint
 local exportCheckpointBarrier = checkpointRuntime.exportCheckpointBarrier
@@ -229,6 +221,7 @@ local publicSnapshot = publicSnapshotModule.new({
   accountOf = function(playerId) return accountOf and accountOf(playerId) or nil end,
   coreDigest = coreDigest,
   authoredDigest = authoredDigest,
+  digestPair = digestPair,
   deferredNetworkIntents = function()
     return networkIntentController and networkIntentController.deferredIntents() or {}
   end,
@@ -268,6 +261,7 @@ local researchReport = researchReportModule.new({
   nativeHookStatus = nativeHookStatus,
   authoredDigest = authoredDigest,
   coreDigest = coreDigest,
+  digestPair = digestPair,
   publicSnapshot = publicSnapshot,
   accountOf = accountOf,
   emit = function(report, tick)
@@ -2726,8 +2720,7 @@ applyCommitted = function(action, actor, commitSeq)
   local authoritySeq = tonumber(commitSeq)
   local identitySeq = authoritySeq or logSeq
   local eventId = string.format("%s:%s:%d", state.bridge.sessionId, tostring(actor or state.bridge.peerId), identitySeq)
-  local before = coreDigest()
-  local beforeModel = authoredDigest()
+  local before, beforeModel = digestPair()
   local handler = handlers[action.type]
   local success, result
   if not handler then
@@ -2753,8 +2746,7 @@ applyCommitted = function(action, actor, commitSeq)
       end
     end
   end
-  local after = coreDigest()
-  local afterModel = authoredDigest()
+  local after, afterModel = digestPair()
   local event = {
     seq = logSeq,
     commitSeq = authoritySeq,
@@ -2919,6 +2911,7 @@ economyClock = economyClockRuntimeModule.new({
   submitIntent = submitIntent,
   localWorkState = networkIntentController.localWorkState,
   diagnosticLog = diagnosticLog,
+  gameTimeSeconds = world.gameTimeSeconds,
 })
 
 vehicleSync = vehicleSyncRuntimeModule.new({
@@ -2936,7 +2929,7 @@ local networkPump = networkPumpRuntimeModule.new({
   getState = function() return state end, config = config, bridge = bridge,
   consumeBridge = consumeBridge, networkClock = networkClock,
   economyClock = economyClock, vehicleSync = vehicleSync,
-  processDeferred = processDeferredNetworkIntent,
+  processDeferred = processDeferredNetworkIntent, hasDeferred = networkIntentController.hasDeferred,
   industryContent = industryContentRuntime, freightIndustry = freightIndustryRuntime,
   world = world, localWorkState = networkIntentController.localWorkState,
   submitIntent = submitIntent, performance = performanceRuntime,
@@ -2949,6 +2942,7 @@ local validationRuntime = validationRuntimeModule.new({
   diagnosticLog = diagnosticLog,
   coreDigest = coreDigest,
   authoredDigest = authoredDigest,
+  digestPair = digestPair,
   exportResearch = function() return handlers["probe.export_research"]() end,
   balanceOf = function(playerId) return balanceOf(playerId) end,
   proposalResourceName = proposalResourceName,
@@ -3193,6 +3187,7 @@ local operationalCaptureRuntime = operationalCaptureRuntimeModule.new({
   activeCompany = activeCompany,
   authoredDigest = authoredDigest,
   coreDigest = coreDigest,
+  digestPair = digestPair,
   nativeHookStatus = nativeHookStatus,
   applyCommitted = function(...) return applyCommitted(...) end,
 })
@@ -3239,7 +3234,7 @@ local guiLoadRuntime = guiLoadRuntimeModule.new({
   setState = function(value) state = value end,
   isEngineThread = isEngineThread, resetTransientRuntime = resetTransientRuntime,
   config = config, activeCompany = activeCompany,
-  publicSnapshot = publicSnapshot, renderGui = renderGui,
+  publicSnapshot = publicSnapshot, renderGui = renderGui, resetReplayWork = guiEventRuntime.resetReplayWork,
 })
 
 local script = {
@@ -3260,7 +3255,6 @@ local script = {
       state.lastError = authorityError
     end
   end,
-
   update = function()
     if not isEngineThread() then return end
     state.tick = (state.tick or 0) + 1
@@ -3299,13 +3293,15 @@ local script = {
     local manualBootstrapOk, manualBootstrapError = xpcall(
       networkClock.maintainManualBootstrap, debug.traceback)
     if not manualBootstrapOk then state.probes.lastError = tostring(manualBootstrapError) end
-    local validator = config().networkAutoValidate
-      and runAutomatedNetworkValidation or runAutomatedValidation
-    local validationOk, validationError = xpcall(validator, debug.traceback)
-    if not validationOk then validationFail(validationError) end
-    local operationalOk, operationalError = xpcall(maintainOperationalCapture, debug.traceback)
-    if not operationalOk then state.probes.operational.lastError = tostring(operationalError) end
     local cfg = config()
+    if cfg.networkAutoValidate or cfg.autoValidate then
+      local validator = cfg.networkAutoValidate and runAutomatedNetworkValidation or runAutomatedValidation
+      local validationOk, validationError = xpcall(validator, debug.traceback)
+      if not validationOk then validationFail(validationError) end
+    end
+    if cfg.operationalCapture then
+      local operationalOk, operationalError = xpcall(maintainOperationalCapture, debug.traceback); if not operationalOk then state.probes.operational.lastError = tostring(operationalError) end
+    end
     if state.tick % cfg.updateStride == 0 then
       bridge.pollCompanionStatus(state.bridge)
       local nativeSaveOk, nativeSaveError = xpcall(
@@ -3352,7 +3348,6 @@ local script = {
       pumpNetworkBridge(true)
     end
   end,
-
   save = function()
     return state
   end,

@@ -13,6 +13,7 @@ function M.new(deps)
   local activeCompany = assert(deps.activeCompany, "active company provider is required")
   local publicSnapshot = assert(deps.publicSnapshot, "snapshot projector is required")
   local renderGui = assert(deps.renderGui, "GUI renderer is required")
+  local resetReplayWork = deps.resetReplayWork or function() end
 
   local function load(saved)
     local engineThread = isEngineThread()
@@ -23,6 +24,7 @@ function M.new(deps)
       or type(saved) ~= "table" or saved.version ~= stateVersion
     local nextState = needsMigration and migrate(saved) or saved
     setState(nextState)
+    resetReplayWork()
     if engineThread then resetTransientRuntime(); return nextState end
     if config().networkAutoValidate then return nextState end
 

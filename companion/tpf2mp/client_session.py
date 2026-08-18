@@ -65,7 +65,7 @@ def run_client_session(client: Any, poll_seconds: float) -> None:
     receiver = threading.Thread(target=receive, daemon=True)
     receiver.start()
     try:
-        next_status = time.monotonic()
+        next_status = next_anchor_poll = next_content_poll = time.monotonic()
         synchronize_deadline = time.monotonic() + 120.0
         while not client.stop.is_set() and not receiver_error:
             had_work = False
@@ -75,21 +75,26 @@ def run_client_session(client: Any, poll_seconds: float) -> None:
                         send(sock, message, send_lock)
                         sent_pending.add(local_seq)
                         had_work = True
-                for message in client.anchor_requests.client_intents(client.anchor_state):
-                    local_seq = int(message["local_seq"])
-                    if local_seq not in sent_pending:
-                        send(sock, message, send_lock)
-                        sent_pending.add(local_seq)
+                now = time.monotonic()
+                if now >= next_anchor_poll:
+                    for message in client.anchor_requests.client_intents(client.anchor_state):
+                        local_seq = int(message["local_seq"])
+                        if local_seq not in sent_pending:
+                            send(sock, message, send_lock)
+                            sent_pending.add(local_seq)
+                            had_work = True
+                    next_anchor_poll = now + 0.5
+                if now >= next_content_poll:
+                    if client.industry_content.refresh():
                         had_work = True
-                if client.industry_content.refresh():
-                    had_work = True
+                    next_content_poll = now + 1.0
             elif time.monotonic() >= synchronize_deadline:
                 raise ConnectionError("host backlog synchronization timed out")
             if not had_work:
                 time.sleep(poll_seconds)
             if time.monotonic() >= next_status:
                 client._write_status()
-                next_status = time.monotonic() + 0.5
+                next_status = time.monotonic() + 1.0
         if receiver_error:
             raise ConnectionError(str(receiver_error[0]))
     finally:

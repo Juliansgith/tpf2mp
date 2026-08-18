@@ -5,6 +5,7 @@ import time
 from typing import Any, Callable, Mapping
 
 from .protocol import ProtocolError, validate_vehicle_schedule
+from .consensus_registry_index import TrackerRegistryIndex
 
 
 # Actions that either need all-peer evidence or immediately open a checkpoint.
@@ -36,6 +37,7 @@ class ConsensusTrackers:
         self.operations: dict[int, dict[str, Any]] = {}
         self.checkpoints: dict[int, dict[str, Any]] = {}
         self.clock_controls: dict[int, dict[str, Any]] = {}
+        self.registry_index = TrackerRegistryIndex()
 
     def track_prepare(self, commit: Mapping[str, Any]) -> dict[str, Any]:
         seq = int(commit["seq"])
@@ -146,21 +148,22 @@ class ConsensusTrackers:
             self.checkpoints[key] = tracker
         return tracker
 
-    @staticmethod
-    def pending(registry: Mapping[int, dict[str, Any]]) -> dict[str, Any] | None:
-        for seq in sorted(registry):
-            tracker = registry[seq]
-            if tracker.get("status") == "pending":
-                return tracker
-        return None
+    def pending(self, registry: Mapping[int, dict[str, Any]]) -> dict[str, Any] | None:
+        return self.registry_index.pending(registry)
+
+    def pending_items(
+        self, registry: Mapping[int, dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return self.registry_index.pending_items(registry)
+
+    def status_counts(
+        self, registry: Mapping[int, dict[str, Any]], statuses: tuple[str, ...]
+    ) -> dict[str, int]:
+        return self.registry_index.counts(registry, statuses)
 
     def pending_clock_seq(self) -> int | None:
-        pending = [
-            seq
-            for seq, tracker in self.clock_controls.items()
-            if tracker.get("status") == "pending"
-        ]
-        return min(pending) if pending else None
+        tracker = self.pending(self.clock_controls)
+        return int(tracker["commitSeq"]) if tracker else None
 
 
 def clock_health_payload(payload: Any) -> dict[str, Any]:

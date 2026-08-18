@@ -40,6 +40,7 @@ ValidationResult ValidatePinnedModule(HMODULE module);
 std::filesystem::path CurrentExecutablePath();
 std::filesystem::path NativeStatusDirectory();
 std::filesystem::path NativeStatusPath(DWORD process_id);
-bool AtomicWriteUtf8(const std::filesystem::path& path, const std::string& value, std::string& error);
+bool AtomicWriteUtf8(const std::filesystem::path& path, const std::string& value,
+                     std::string& error, bool durable = true);
 
 } // namespace tpf2mp

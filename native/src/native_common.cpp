@@ -310,7 +310,8 @@ std::filesystem::path NativeStatusPath(const DWORD process_id) {
   return NativeStatusDirectory() / ("status-" + std::to_string(process_id) + ".json");
 }
 
-bool AtomicWriteUtf8(const std::filesystem::path& path, const std::string& value, std::string& error) {
+bool AtomicWriteUtf8(const std::filesystem::path& path, const std::string& value,
+                     std::string& error, const bool durable) {
   std::error_code ec;
   std::filesystem::create_directories(path.parent_path(), ec);
   if (ec) {
@@ -331,7 +332,9 @@ bool AtomicWriteUtf8(const std::filesystem::path& path, const std::string& value
       return false;
     }
   }
-  if (!MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+  const DWORD move_flags = MOVEFILE_REPLACE_EXISTING |
+      (durable ? MOVEFILE_WRITE_THROUGH : 0);
+  if (!MoveFileExW(temporary.c_str(), path.c_str(), move_flags)) {
     error = "cannot atomically replace status file: Win32 " + std::to_string(GetLastError());
     DeleteFileW(temporary.c_str());
     return false;

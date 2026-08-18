@@ -34,6 +34,7 @@ class AnchorRequestStore:
         self.results = bridge.state_dir / "anchor_results"
         self.requests.mkdir(parents=True, exist_ok=True)
         self.results.mkdir(parents=True, exist_ok=True)
+        self._status_cache: dict[str, Any] | None = None
 
     def _read(self, path: Path) -> dict[str, Any]:
         try:
@@ -91,6 +92,7 @@ class AnchorRequestStore:
             self._result_path(request_id),
             (canonical_json(result) + "\n").encode("utf-8"),
         )
+        self._status_cache = None
 
     def pending(self) -> Iterator[dict[str, Any]]:
         for path in sorted(self.requests.glob("*.json")):
@@ -243,6 +245,8 @@ class AnchorRequestStore:
         return False
 
     def status(self) -> dict[str, Any]:
+        if self._status_cache is not None:
+            return dict(self._status_cache)
         accepted: set[int] = set()
         pending = 0
         last_error: str | None = None
@@ -257,8 +261,9 @@ class AnchorRequestStore:
                 pending += 1
             elif result.get("error"):
                 last_error = str(result["error"])
-        return {
+        self._status_cache = {
             "localAnchorsFiled": sorted(value for value in accepted if value > 0),
             "pendingAnchorRequests": pending,
             "lastAnchorRequestError": last_error,
         }
+        return dict(self._status_cache)

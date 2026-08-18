@@ -3,8 +3,8 @@ local world = require "tpf2_mp/world"
 local authoredText = require "tpf2_mp/gui_authoritative_text"
 
 local M = {}
-local TOOLBAR_STRIDE = 15
-local WINDOW_SCAN_STRIDE = 600
+local TOOLBAR_STRIDE = 60
+local WINDOW_SCAN_STRIDE = 1800
 local EVENT_DEFER_FRAMES = 3
 local REPEATED_EVENT_STRIDE = 120
 local MAX_WINDOW_ITEMS = 192
@@ -103,9 +103,16 @@ local function rewriteNativeEntityWindow(window, kind)
 end
 
 local function projectToolbar(gui, snapshot, force)
-  local projection = authoredText.toolbar(snapshot)
   gui.stockPresentation = gui.stockPresentation or {}
   local status = gui.stockPresentation
+  local snapshotTick = tonumber(snapshot.tick) or -1
+  local projection = status.toolbarSource == snapshot
+    and status.toolbarSourceTick == snapshotTick and status.toolbarSourceProjection or nil
+  if not projection then
+    projection = authoredText.toolbar(snapshot)
+    status.toolbarSource, status.toolbarSourceTick = snapshot, snapshotTick
+    status.toolbarSourceProjection = projection
+  end
   local projectionKey = table.concat({
     tostring(projection.earningsLabel), tostring(projection.earnings),
     tostring(projection.transportedPassengers), tostring(projection.transportedCargo),

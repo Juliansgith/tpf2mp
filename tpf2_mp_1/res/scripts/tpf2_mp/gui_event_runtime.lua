@@ -911,6 +911,8 @@ function M.new(deps)
   local sendToEngine = guiReplayRuntime.sendToEngine
   local processGuiProposalQueue = guiReplayRuntime.processProposalQueue
   local processGuiOperationQueue = guiReplayRuntime.processOperationQueue
+  local proposalWorkPending = guiReplayRuntime.proposalWorkPending
+  local operationWorkPending = guiReplayRuntime.operationWorkPending
   local function guiCapabilityProbe()
     local command = api and api.cmd or {}
     local systems = api and api.engine and api.engine.system or {}
@@ -1129,8 +1131,10 @@ function M.new(deps)
       if not gui.entryPointsInstalled and gui.frames % 60 == 0 then
         pcall(installMultiplayerEntryPoints)
       end
-      local captureOk, captureError = pcall(processVehicleCaptures)
-      if not captureOk then gui.lastError = tostring(captureError) end
+      if #gui.pendingVehicleCaptures > 0 then
+        local captureOk, captureError = pcall(processVehicleCaptures)
+        if not captureOk then gui.lastError = tostring(captureError) end
+      end
       local speedOk, speedError = pcall(gui.processSuppressedNativeGameSpeedCapture)
       if not speedOk then gui.lastError = tostring(speedError) end
       local lineOk, lineError = pcall(gui.processSuppressedNativeLineCommandCapture)
@@ -1138,12 +1142,18 @@ function M.new(deps)
       local nativeVehicleOk, nativeVehicleError =
         pcall(gui.processSuppressedNativeVehicleCommandCapture)
       if not nativeVehicleOk then gui.lastError = tostring(nativeVehicleError) end
-      local buildCaptureOk, buildCaptureError = pcall(processSuppressedNativeBuildCapture, false)
-      if not buildCaptureOk then gui.lastError = tostring(buildCaptureError) end
-      local proposalOk, proposalWork = pcall(processGuiProposalQueue)
-      if not proposalOk then gui.lastError = tostring(proposalWork) end
+      if gui.pendingNetworkBuildPreview or gui.pendingNetworkBuildExact
+        or gui.pendingNetworkBuildSuppression then
+        local buildCaptureOk, buildCaptureError = pcall(processSuppressedNativeBuildCapture, false)
+        if not buildCaptureOk then gui.lastError = tostring(buildCaptureError) end
+      end
+      local proposalOk, proposalWork = true, false
+      if proposalWorkPending() then
+        proposalOk, proposalWork = pcall(processGuiProposalQueue)
+        if not proposalOk then gui.lastError = tostring(proposalWork) end
+      end
       local operationOk, operationWork = true, false
-      if proposalOk and not proposalWork then
+      if proposalOk and not proposalWork and operationWorkPending() then
         operationOk, operationWork = pcall(processGuiOperationQueue)
         if not operationOk then gui.lastError = tostring(operationWork) end
       end
@@ -1439,6 +1449,7 @@ function M.new(deps)
     update = guiUpdate,
     handleEvent = guiHandleEvent,
     capabilityProbe = guiCapabilityProbe,
+    resetReplayWork = guiReplayRuntime.resetWork,
   }
 end
 

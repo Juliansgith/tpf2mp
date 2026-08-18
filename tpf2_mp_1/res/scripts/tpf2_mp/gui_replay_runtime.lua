@@ -4,6 +4,7 @@ local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
 local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 local proposalRejectionSnapshot = require "tpf2_mp/gui_proposal_rejection_snapshot"
+local replayWorkIndex = require "tpf2_mp/gui_replay_work_index"
 
 local M = {}
 
@@ -30,6 +31,7 @@ function M.new(deps)
     __newindex = function(_, key, value) getState()[key] = value end,
   })
   local proposalCost
+  local proposalWork, operationWork = replayWorkIndex.new(), replayWorkIndex.new()
 
   proposalCost = function(param)
     if type(param) ~= "table" and type(param) ~= "userdata" then return nil end
@@ -226,9 +228,9 @@ function M.new(deps)
     -- or future caller exposes another queued record, do not overlap its native
     -- replay with the proposal whose builder userdata is being quarantined.
     if gui.proposalReplayQuarantine then return true end
-    local proposals = state and state.world and state.world.proposals and state.world.proposals.byId or {}
-    for _, proposalId in ipairs(util.sortedKeys(proposals)) do
-      local record = proposals[proposalId]
+    local proposals = state and state.world and state.world.proposals or {}
+    for _, proposalId in ipairs(proposalWork.candidates(proposals, gui.proposalIssued)) do
+      local record = (proposals.byId or {})[proposalId]
       if type(record) == "table" and record.status == "queued" and not gui.proposalIssued[proposalId] then
         gui.proposalIssued[proposalId] = true
         -- Construction builds/upgrades and standalone bulldozes use the engine
@@ -421,10 +423,9 @@ function M.new(deps)
       sendToEngine("operation.result", payload)
       return true
     end
-    local operations = state and state.world and state.world.operations
-      and state.world.operations.byId or {}
-    for _, operationId in ipairs(util.sortedKeys(operations)) do
-      local record = operations[operationId]
+    local operations = state and state.world and state.world.operations or {}
+    for _, operationId in ipairs(operationWork.candidates(operations, gui.operationIssued)) do
+      local record = (operations.byId or {})[operationId]
       if type(record) == "table" and record.status == "queued"
         and not gui.operationIssued[operationId] then
         gui.operationIssued[operationId] = true
@@ -628,6 +629,18 @@ function M.new(deps)
     sendToEngine = sendToEngine,
     processProposalQueue = processGuiProposalQueue,
     processOperationQueue = processGuiOperationQueue,
+    proposalWorkPending = function()
+      if #gui.pendingProposalCaptures > 0 or #gui.proposalResults > 0
+        or gui.proposalReplayQuarantine then return true end
+      local proposals = state and state.world and state.world.proposals or {}
+      return #proposalWork.candidates(proposals, gui.proposalIssued) > 0
+    end,
+    operationWorkPending = function()
+      if #gui.pendingOperationCaptures > 0 or #gui.operationResults > 0 then return true end
+      local operations = state and state.world and state.world.operations or {}
+      return #operationWork.candidates(operations, gui.operationIssued) > 0
+    end,
+    resetWork = function() proposalWork.reset(); operationWork.reset() end,
   }
 end
 

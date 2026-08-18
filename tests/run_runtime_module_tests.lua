@@ -3248,8 +3248,10 @@ do
     companyOrder = { "company:1" },
     economy = model,
     finance = financeModule.newState(),
+    canonical = canonicalModule.newState(),
     world = {
       autonomyFrozen = true,
+      vehicleSync = {},
       townDevelopment = {
         schemaVersion = 1, enabled = true,
         points = { ["town:digest"] = 7 },
@@ -3266,6 +3268,9 @@ do
   })
   local original = util.deepCopy(model)
   local baseline = runtime.authoredDigest()
+  local pairedCore, pairedModel = runtime.digestPair()
+  assert(pairedModel == baseline and pairedCore == runtime.coreDigest(),
+    "shared digest projection changed the canonical checkpoint values")
   current.world.townDevelopment.points["town:digest"] = 8
   assert(runtime.authoredDigest() ~= baseline,
     "authored digest hides town-development point remainder")
@@ -3521,7 +3526,7 @@ do
 end
 
 do
-  local gameTime, busy = 159, false
+  local gameTime, gameTimeReads, busy = 159, 0, false
   local submitted, diagnostics = {}, {}
   local current = {
     initialized = true,
@@ -3544,7 +3549,13 @@ do
     diagnosticLog = function(kind, payload)
       diagnostics[#diagnostics + 1] = { kind = kind, payload = util.deepCopy(payload) }
     end,
-    clockSnapshot = function() return { time = gameTime } end,
+    gameTimeSeconds = function()
+      gameTimeReads = gameTimeReads + 1
+      return gameTime
+    end,
+    clockSnapshot = function()
+      error("full diagnostic clock snapshot entered the economy hot path")
+    end,
   })
   local ok, reason = runtime.update()
   assert(ok == false and reason == "not-due" and #submitted == 0,
@@ -3586,6 +3597,8 @@ do
     "a client attempted to author an economy settlement")
   assert(diagnostics[1] and diagnostics[1].kind == "economy-clock-submit",
     "automatic economy submission was not observable")
+  assert(gameTimeReads == 5,
+    "economy scheduler did not use one host-only scalar clock read per active update")
 end
 
 do

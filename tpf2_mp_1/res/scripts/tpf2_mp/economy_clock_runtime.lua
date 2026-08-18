@@ -8,7 +8,14 @@ function M.new(deps)
   local submitIntent = assert(deps.submitIntent, "submitIntent dependency is required")
   local localWorkState = assert(deps.localWorkState, "localWorkState dependency is required")
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
-  local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
+  local gameTimeSeconds = deps.gameTimeSeconds
+  if type(gameTimeSeconds) ~= "function" then
+    local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
+    gameTimeSeconds = function()
+      local observed = clockSnapshot() or {}
+      return tonumber(observed.time)
+    end
+  end
   local pending
 
   local function reset() pending = nil end
@@ -35,8 +42,7 @@ function M.new(deps)
       return false, "peer-disconnected"
     end
     local boundary = tonumber(scheduler.nextBoundaryGameTimeSeconds)
-    local observed = clockSnapshot() or {}
-    local gameTime = tonumber(observed.time)
+    local gameTime = tonumber(gameTimeSeconds())
     if not boundary or not gameTime or gameTime + 1e-9 < boundary then
       return false, "not-due"
     end

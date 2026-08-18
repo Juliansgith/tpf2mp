@@ -2001,6 +2001,38 @@ class FreightIndustryTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_replaceable_status_skips_storage_flush_but_durable_writes_keep_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = GameBridge(Path(directory), "status-io", "player1")
+            with mock.patch("tpf2mp.bridge.os.fsync") as flush:
+                bridge.write_status({"status": "running"})
+                flush.assert_not_called()
+                atomic_write(Path(directory) / "durable.json", b"{}\n")
+                self.assertEqual(flush.call_count, 1)
+
+    def test_inbound_commit_index_scans_once_then_advances_incrementally(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = GameBridge(Path(directory), "inbound-index", "player2")
+
+            def commit(sequence: int) -> dict:
+                return sign({
+                    "protocol": 1, "session": "inbound-index", "seq": sequence,
+                    "kind": "commit", "origin_peer": "player1",
+                    "origin_local_seq": sequence, "tick": sequence,
+                    "payload": {"action": {"type": "world.freeze", "freeze": True}},
+                })
+
+            bridge.write_inbound(commit(1))
+            with mock.patch.object(
+                bridge._inbound_index, "_scan", wraps=bridge._inbound_index._scan
+            ) as scan:
+                for _ in range(50):
+                    self.assertEqual(bridge.last_contiguous_commit_sequence(), 1)
+                self.assertEqual(scan.call_count, 1)
+                bridge.write_inbound(commit(2))
+                self.assertEqual(bridge.last_contiguous_commit_sequence(), 2)
+                self.assertEqual(scan.call_count, 1)
+
     def test_atomic_write_retries_transient_replace_denial(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "companion_status.json"

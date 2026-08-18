@@ -225,6 +225,20 @@ function M.new(deps)
     return true
   end
 
+  function networkClock.needsUpdate()
+    if state.networkMode ~= "network" or nativeRearmPending then
+      return nativeRearmPending
+    end
+    local current = state.world.networkClock or {}
+    local startup, calendar = current.startupPause, state.probes.networkCalendar
+    return type(startup) ~= "table" or startup.requested ~= true
+      or startup.confirmed ~= true or type(calendar) ~= "table"
+      or calendar.requested ~= true or calendar.frozen ~= true
+      or (type(current.rendezvous) == "table"
+        and current.rendezvous.reachedEmitted ~= true
+        and current.rendezvous.status ~= "faulted")
+  end
+
   function networkClock.apply(action)
     if state.networkMode ~= "network" then return false, "ordered clock control is network-only" end
     local requested = util.integer(action and action.requestedSpeed, -1)

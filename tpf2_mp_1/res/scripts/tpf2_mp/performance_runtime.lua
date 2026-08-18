@@ -1,7 +1,7 @@
 local util = require "tpf2_mp/util"
 
 local M = {}
-local SAMPLE_LIMIT = 128
+local SAMPLE_LIMIT, MEASURE_STRIDE, WARMUP_MEASUREMENTS = 128, 8, 4
 
 local function pack(...)
   return { n = select("#", ...), ... }
@@ -78,29 +78,33 @@ function M.new(deps)
 
   function runtime.run(name, callable, ...)
     assert(type(callable) == "function", "measured task must be callable")
-    local arguments, started = pack(...), nowMicroseconds()
-    local outcome = pack(xpcall(function()
-      return callable(unpackValues(arguments, 1, arguments.n))
-    end, debug.traceback))
-    local finished = nowMicroseconds()
     local task = probe().tasks[name] or {
-      calls = 0, failures = 0, totalUs = 0, lastUs = 0, maxUs = 0,
-      p50Us = 0, p95Us = 0,
+      calls = 0, measuredCalls = 0, failures = 0, totalUs = 0,
+      lastUs = 0, maxUs = 0, p50Us = 0, p95Us = 0,
+      sampleStride = MEASURE_STRIDE,
     }
     probe().tasks[name] = task
     task.calls = task.calls + 1
+    local measure = task.calls <= WARMUP_MEASUREMENTS
+      or task.calls % MEASURE_STRIDE == 0
+    local arguments, started = pack(...), measure and nowMicroseconds() or nil
+    local outcome = pack(xpcall(function()
+      return callable(unpackValues(arguments, 1, arguments.n))
+    end, debug.traceback))
+    local finished = measure and nowMicroseconds() or nil
     if outcome[1] ~= true then task.failures = task.failures + 1 end
     if started and finished and finished >= started then
       local elapsed = math.floor(finished - started + 0.5)
+      task.measuredCalls = (task.measuredCalls or 0) + 1
       task.lastUs = elapsed
       task.totalUs = task.totalUs + elapsed
       task.maxUs = math.max(task.maxUs, elapsed)
-      task.averageUs = math.floor(task.totalUs / task.calls + 0.5)
+      task.averageUs = math.floor(task.totalUs / task.measuredCalls + 0.5)
       samples[name] = samples[name] or {}
       local values = samples[name]
       values[#values + 1] = elapsed
       if #values > SAMPLE_LIMIT then table.remove(values, 1) end
-      if task.calls <= 4 or task.calls % 16 == 0 then
+      if task.measuredCalls <= 4 or task.measuredCalls % 16 == 0 then
         task.p50Us = percentile(values, 1, 2)
         task.p95Us = percentile(values, 95, 100)
         task.sampleCount = #values

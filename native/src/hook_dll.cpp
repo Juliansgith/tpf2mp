@@ -331,7 +331,7 @@ std::string StatusJson() {
 void WriteStatusFiles() {
   const auto json = StatusJson();
   std::string error;
-  if (!tpf2mp::AtomicWriteUtf8(tpf2mp::NativeStatusPath(GetCurrentProcessId()), json, error)) {
+  if (!tpf2mp::AtomicWriteUtf8(tpf2mp::NativeStatusPath(GetCurrentProcessId()), json, error, false)) {
     StateLock lock;
     g_last_error = error;
     return;
@@ -339,7 +339,7 @@ void WriteStatusFiles() {
   // latest.json is intentionally only a convenience for single-process local
   // testing. The PID-specific file is authoritative when multiple instances run.
   std::string ignored;
-  tpf2mp::AtomicWriteUtf8(tpf2mp::NativeStatusDirectory() / "latest.json", json, ignored);
+  tpf2mp::AtomicWriteUtf8(tpf2mp::NativeStatusDirectory() / "latest.json", json, ignored, false);
 }
 
 bool IsInterestingBinding(const char* key) {
@@ -812,7 +812,7 @@ void DetourCommandListSwap(void* owner, void* raw_output) {
       }
     }
   }
-  RequestStatusWrite();
+  if (batch_count != 0 || !valid_layout || unknown_tags != 0) RequestStatusWrite();
 }
 
 void DetourApplyCommand(void* context, void* command) {
@@ -1280,7 +1280,7 @@ DWORD WINAPI Worker(void*) {
     tpf2mp::async_bridge::Global().Pump();
     static ULONGLONG last_status_write = 0;
     const auto now = GetTickCount64();
-    if (g_status_dirty.load(std::memory_order_acquire) && now - last_status_write >= 250) {
+    if (g_status_dirty.load(std::memory_order_acquire) && now - last_status_write >= 1000) {
       g_status_dirty.store(false, std::memory_order_release); WriteStatusFiles();
       last_status_write = now;
     }

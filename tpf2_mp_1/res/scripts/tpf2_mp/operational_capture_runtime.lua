@@ -13,6 +13,9 @@ function M.new(deps)
   local activeCompany = assert(deps.activeCompany, "activeCompany dependency is required")
   local authoredDigest = assert(deps.authoredDigest, "authoredDigest dependency is required")
   local coreDigest = assert(deps.coreDigest, "coreDigest dependency is required")
+  local digestPair = type(deps.digestPair) == "function" and deps.digestPair or function()
+    return coreDigest(), authoredDigest()
+  end
   local nativeHookStatus = assert(deps.nativeHookStatus, "nativeHookStatus dependency is required")
   local applyCommitted = assert(deps.applyCommitted, "applyCommitted dependency is required")
 
@@ -58,9 +61,10 @@ function M.new(deps)
     -- Keep the configured/runtime verdict beside the native population. A low
     -- person count alone is not proof that construction scaling ran.
     runtime.agentPolicy = util.deepCopy(state.probes.agentPolicy)
+    local coreValue, modelValue = digestPair()
     runtime.digests = {
-      model = authoredDigest(),
-      core = coreDigest(),
+      model = modelValue,
+      core = coreValue,
       structural = runtime.structural and runtime.structural.digest or nil,
       mobility = runtime.mobility and runtime.mobility.digest or nil,
       autonomy = runtime.autonomy and runtime.autonomy.digest or nil,

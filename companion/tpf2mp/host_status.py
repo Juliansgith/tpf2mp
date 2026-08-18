@@ -14,12 +14,11 @@ def write_host_status(host: Any, status: str | None = None) -> None:
     pending_prepare = host._pending_prepare()
     pending_operation = host._pending_operation()
     pending_checkpoint = host._pending_checkpoint()
-    checkpoint_counts = {"pending": 0, "complete": 0, "faulted": 0}
-    for tracker in host.checkpoint_consensus.values():
-        tracker_status = str(tracker.get("status", "pending"))
-        if tracker_status in checkpoint_counts:
-            checkpoint_counts[tracker_status] += 1
+    checkpoint_counts = host.consensus.status_counts(
+        host.checkpoint_consensus, ("pending", "complete", "faulted")
+    )
     restore_plan_message = host.restore_plan_exchange.published_message()
+    anchor_readiness = host.anchor.readiness()
     receipt_readiness = host.anchor.readiness(receipt=True)
     host.bridge.write_status({
         "role": "host",
@@ -67,7 +66,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         **host.synchronization.status(),
         **host.reconnect.status(),
         **host.restore_session.status(),
-        **host.anchor.status(),
+        **host.anchor.status(anchor_readiness),
         **host.anchor_preparation.status(),
         **host.anchor_requests.status(),
         **host.restore_plan_exchange.status(),
@@ -75,7 +74,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         **host.industry_content_consensus.status(),
     })
     host._broadcast(anchor_state_message(
-        host.bridge.session, host.bridge.peer, host.anchor.readiness(),
+        host.bridge.session, host.bridge.peer, anchor_readiness,
         host.anchor_preparation.status(), receipt_readiness,
         paused_heartbeat_required=host.clock_effective_speed == 0,
     ))

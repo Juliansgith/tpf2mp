@@ -37,6 +37,9 @@ function M.new(env)
     "research-report public account providers are required")
   assert(type(env.emit) == "function", "research-report emitter is required")
   local researchSnapshot = env.researchSnapshot or world.researchSnapshot
+  local digestPair = type(env.digestPair) == "function" and env.digestPair or function()
+    return env.coreDigest(), env.authoredDigest()
+  end
 
   local function build()
     local state = env.getState()
@@ -61,8 +64,7 @@ function M.new(env)
     report.validation = util.deepCopy(state.validation)
     report.checkpoint = util.deepCopy(state.checkpoint)
     report.match = util.deepCopy(state.match)
-    report.modelDigest = env.authoredDigest()
-    report.coreDigest = env.coreDigest()
+    report.coreDigest, report.modelDigest = digestPair()
     report.passengerPresentation = passengerPresentation.digestView(
       state.world.passengerPresentation)
     report.passengerPresentationDigest = hash.value(report.passengerPresentation)

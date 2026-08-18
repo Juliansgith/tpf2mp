@@ -112,6 +112,19 @@ function M.new(deps)
     return result
   end
 
+  -- The host economy scheduler needs only this scalar on every running
+  -- update.  Building the full clock/date diagnostic snapshot there used to
+  -- query both native clocks and allocate a date table five times per second.
+  local function gameTimeSeconds()
+    local interface = game and game.interface or {}
+    if not util.isCallable(interface.getGameTime) then return nil end
+    local ok, value = pcall(interface.getGameTime)
+    if not ok or (type(value) ~= "table" and type(value) ~= "userdata") then
+      return nil
+    end
+    return tonumber(safeField(value, "time"))
+  end
+
   local function journalScalars(value, path, output, budget, depth, seen)
     if budget.remaining <= 0 or depth > 6 then return end
     local valueType = type(value)
@@ -189,6 +202,7 @@ function M.new(deps)
   return {
     autonomySnapshot = autonomySnapshot,
     clockSnapshot = clockSnapshot,
+    gameTimeSeconds = gameTimeSeconds,
     journalSnapshot = journalSnapshot,
     operationalSnapshot = operationalSnapshot,
   }

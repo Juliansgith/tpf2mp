@@ -43,6 +43,8 @@ local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
 local validationConstruction = require "tpf2_mp/validation_construction"
 local performanceRuntime = require "tpf2_mp/performance_runtime"
+local guiReplayWorkIndex = require "tpf2_mp/gui_replay_work_index"
+local activeRecordIndex = require "tpf2_mp/active_record_index"
 
 local tests, passed = {}, 0
 
@@ -5754,6 +5756,66 @@ test("performance runtime does not depend on the engine global unpack", function
   equal(second, nil)
   equal(third, nil)
   equal(fourth, "omega")
+end)
+
+test("performance sampling removes hot-path clock observer overhead", function()
+  local previousClock = rawget(_G, "tpf2mp_native_monotonic_us")
+  local reads = 0
+  tpf2mp_native_monotonic_us = function()
+    reads = reads + 1
+    return tostring(reads * 100)
+  end
+  local state = { tick = 0, probes = {} }
+  local runtime = performanceRuntime.new({ getState = function() return state end })
+  for _ = 1, 20 do truthy(runtime.run("sampled", function() return true end)) end
+  local task = state.probes.performance.tasks.sampled
+  equal(task.calls, 20)
+  equal(task.measuredCalls, 6, "profiler did not use warmup-plus-strided sampling")
+  equal(reads, 12, "profiler still called the native clock around every task")
+  equal(task.averageUs, 100)
+  tpf2mp_native_monotonic_us = previousClock
+end)
+
+test("GUI replay work index does not sort an unchanged idle history", function()
+  local index = guiReplayWorkIndex.new()
+  local container = { queued = 0, byId = {
+    ["proposal:b"] = { status = "applied" },
+    ["proposal:a"] = { status = "failed" },
+  } }
+  local issued = {}
+  for _ = 1, 100 do equal(#index.candidates(container, issued), 0) end
+  equal(index.status().rebuilds, 1, "idle GUI history was repeatedly re-sorted")
+  container.byId["proposal:c"] = { status = "queued" }
+  container.queued = 1
+  equal(index.candidates(container, issued)[1], "proposal:c")
+  issued["proposal:c"] = true
+  equal(#index.candidates(container, issued), 0)
+  container.byId["proposal:0"] = { status = "queued" }
+  container.queued = 2
+  equal(index.candidates(container, issued)[1], "proposal:0",
+    "new replay work did not preserve sorted selection")
+  equal(index.status().rebuilds, 3)
+end)
+
+test("engine active-record indexes sleep after proving an idle queue", function()
+  local index = activeRecordIndex.new(function(record)
+    return type(record) == "table" and record.status == "active"
+  end)
+  local container = { queued = 0, byId = { old = { status = "complete" } } }
+  for _ = 1, 100 do equal(#index.candidates(container), 0) end
+  equal(index.status().scans, 1, "idle engine records were scanned every update")
+  container.byId.fresh = { status = "active" }
+  container.queued = 1
+  equal(index.candidates(container)[1], "fresh")
+  container.byId.fresh.status = "complete"
+  equal(#index.candidates(container), 0)
+  local scans = index.status().scans
+  for _ = 1, 100 do equal(#index.candidates(container), 0) end
+  equal(index.status().scans, scans)
+  container.byId.old.status = "active"
+  index.invalidate()
+  equal(index.candidates(container)[1], "old",
+    "an explicit same-generation transition was not discovered")
 end)
 
 for _, item in ipairs(tests) do

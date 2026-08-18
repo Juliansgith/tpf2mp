@@ -10,6 +10,7 @@ from typing import Any, Iterator, Mapping
 
 from .protocol import ProtocolError, canonical_json, decode_line, validate_envelope
 from .audit_log import AuditLog, AuditUnavailable
+from .commit_index import InboundCommitIndex
 
 
 _ATOMIC_REPLACE_ATTEMPTS = 50
@@ -33,7 +34,7 @@ def _sequence(path: Path) -> int:
         return -1
 
 
-def atomic_write(path: Path, data: bytes) -> None:
+def atomic_write(path: Path, data: bytes, *, durable: bool = True) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     # Status can be refreshed by the socket receiver while the owning loop is
     # publishing its cadence sample. A PID-only temporary name lets those two
@@ -44,8 +45,9 @@ def atomic_write(path: Path, data: bytes) -> None:
     )
     with temporary.open("wb") as handle:
         handle.write(data)
-        handle.flush()
-        os.fsync(handle.fileno())
+        if durable:
+            handle.flush()
+            os.fsync(handle.fileno())
     # Build 35924 polls companion_status.json from Lua. On Windows that reader
     # can briefly open the old file without FILE_SHARE_DELETE, making an
     # otherwise atomic os.replace fail with access denied/sharing violation.
@@ -83,6 +85,7 @@ class GameBridge:
         self.status_path = self.state_dir / "companion_status.json"
         self.outbox_ephemeral_retention = _EPHEMERAL_OUTBOX_RETENTION
         self.outbox_pruned_through = 0
+        self._inbound_index = InboundCommitIndex(self.inbox, self.session)
         self.outbox_cursor = self._load_cursor()
 
     def _load_cursor(self) -> int:
@@ -178,20 +181,17 @@ class GameBridge:
         if path.exists():
             if path.read_bytes() != payload:
                 raise ProtocolError(f"conflicting inbound commit at sequence {seq}")
+            self._inbound_index.remember(seq)
             return path
         atomic_write(path, payload)
+        self._inbound_index.remember(seq)
         return path
 
     def existing_commit_sequences(self) -> set[int]:
-        result: set[int] = set()
-        for path in self.inbox.glob("*.json"):
-            try:
-                message = decode_line(path.read_bytes())
-                if message.get("session") == self.session and message.get("kind") in {"commit", "control"}:
-                    result.add(int(message["seq"]))
-            except (OSError, KeyError, TypeError, ValueError, ProtocolError):
-                continue
-        return result
+        return self._inbound_index.sequences()
+
+    def last_contiguous_commit_sequence(self) -> int:
+        return self._inbound_index.last_contiguous()
 
     def write_status(self, values: Mapping[str, Any]) -> Path:
         """Publish replaceable launcher/UI health without entering the commit log."""
@@ -205,5 +205,6 @@ class GameBridge:
         atomic_write(
             self.status_path,
             (canonical_json(status) + "\n").encode("utf-8"),
+            durable=False,
         )
         return self.status_path

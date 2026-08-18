@@ -1181,23 +1181,23 @@ class CommitHost(HostIntentMixin):
             self.synchronization.expire(now)
             if reconnect_protected:
                 return
-            for tracker in self.proposal_prepares.values():
-                if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
+            for tracker in self.consensus.pending_items(self.proposal_prepares):
+                if now >= float(tracker["deadline"]):
                     missing = sorted(set(tracker["requiredPeers"]) - set(tracker["acks"]))
                     code = "proposal-prepare-timeout:" + ",".join(missing)
                     self._emit_prepare_rejection_locked(tracker, code)
-            for tracker in self.proposal_consensus.values():
-                if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
+            for tracker in self.consensus.pending_items(self.proposal_consensus):
+                if now >= float(tracker["deadline"]):
                     missing = sorted(set(tracker["requiredPeers"]) - set(tracker["completions"]))
                     code = "proposal-completion-timeout:" + ",".join(missing)
                     self._emit_proposal_outcome_locked(tracker, False, code)
-            for tracker in self.operation_consensus.values():
-                if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
+            for tracker in self.consensus.pending_items(self.operation_consensus):
+                if now >= float(tracker["deadline"]):
                     missing = sorted(set(tracker["requiredPeers"]) - set(tracker["completions"]))
                     code = "operation-completion-timeout:" + ",".join(missing)
                     self._emit_operation_outcome_locked(tracker, False, code)
-            for tracker in self.checkpoint_consensus.values():
-                if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
+            for tracker in self.consensus.pending_items(self.checkpoint_consensus):
+                if now >= float(tracker["deadline"]):
                     missing = sorted(set(tracker["requiredPeers"]) - set(tracker["checkpoints"]))
                     code = "checkpoint-consensus-timeout:" + ",".join(missing)
                     self._emit_checkpoint_outcome_locked(tracker, False, code)

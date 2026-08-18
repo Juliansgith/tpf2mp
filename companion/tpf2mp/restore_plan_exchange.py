@@ -21,6 +21,7 @@ class RestorePlanExchange:
         self.published_path = bridge.state_dir / "published_restore_plan.json"
         self.received_path = bridge.state_dir / "received_restore_plan.json"
         self.last_published_checksum: str | None = None
+        self._published_signature: tuple[int, int] | None = None
         self.last_received_checksum: str | None = None
         self.last_error: str | None = None
 
@@ -40,7 +41,17 @@ class RestorePlanExchange:
 
     def published_message(self, force: bool = False) -> dict[str, Any] | None:
         if not self.published_path.is_file():
+            self._published_signature = None
             return None
+        try:
+            info = self.published_path.stat()
+            signature = (info.st_size, info.st_mtime_ns)
+        except OSError as exc:
+            self.last_error = f"cannot inspect restore plan exchange file: {exc}"
+            return None
+        if not force and signature == self._published_signature:
+            return None
+        self._published_signature = signature
         try:
             plan = self._read_verified(self.published_path)
         except ProtocolError as exc:

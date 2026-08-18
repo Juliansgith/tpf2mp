@@ -131,9 +131,11 @@ class SynchronizationCoordinator:
         with self.host.peers_lock:
             return peer in self.host.peers
 
-    def _refresh_quiescent_pause(self, now: float) -> int | None:
+    def _refresh_quiescent_pause(
+        self, now: float, pending_clock_controls: list[dict[str, Any]]
+    ) -> int | None:
         protected_seq, changed = self.pause.refresh_quiescent(
-            self.host.clock_controls.values(),
+            pending_clock_controls,
             self.host.clock_health,
             now,
             self._peer_companion_connected,
@@ -634,13 +636,18 @@ class SynchronizationCoordinator:
 
     def expire(self, now: float | None = None) -> None:
         now = time.monotonic() if now is None else now
-        protected_clock_seq = self._refresh_quiescent_pause(now)
+        pending_clock_controls = self.host.consensus.pending_items(
+            self.host.clock_controls
+        )
+        protected_clock_seq = self._refresh_quiescent_pause(
+            now, pending_clock_controls
+        )
         reconnect = getattr(self.host, "reconnect", None)
         if reconnect is not None and reconnect.active(now):
             self.vehicle.expire(now)
             return
-        for tracker in list(self.host.clock_controls.values()):
-            if tracker.get("status") == "pending" and now >= float(tracker["deadline"]):
+        for tracker in pending_clock_controls:
+            if now >= float(tracker["deadline"]):
                 if int(tracker.get("commitSeq", -1)) == protected_clock_seq:
                     continue
                 tracker["status"] = "faulted"

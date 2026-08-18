@@ -10,6 +10,7 @@ local proposalBindingRuntime = require "tpf2_mp/proposal_binding_runtime"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 local networkFinanceHousekeepingModule = require "tpf2_mp/network_finance_housekeeping"
 local resourceCompatibility = require "tpf2_mp/resource_compatibility"
+local activeRecordIndex = require "tpf2_mp/active_record_index"
 
 local M = {}
 
@@ -58,6 +59,17 @@ function M.new(deps)
   }
 
   local setDifference = util.setDifference
+  local financeWork = activeRecordIndex.new(function(record)
+    return type(record) == "table" and record.status == "awaiting-finance"
+      and type(record.pendingFinance) == "table"
+  end)
+  local constructionWork = activeRecordIndex.new(function(record)
+    return type(record) == "table" and type(record.transaction) == "table"
+      and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+      and not proposalCodec.isTopologyConstructionRemoval(record.transaction)
+      and (record.status == "queued"
+        or (record.status == "building-construction" and record.constructionPending))
+  end)
 
   local function routeProposalFinance(record, observation)
     local companyCid = record.companyCid
@@ -575,7 +587,7 @@ function M.new(deps)
   end
   
   local function processPendingProposalFinances()
-    for _, proposalId in ipairs(util.sortedKeys(state.world.proposals.byId or {})) do
+    for _, proposalId in ipairs(financeWork.candidates(state.world.proposals)) do
       local record = state.world.proposals.byId[proposalId]
       local pending = type(record) == "table" and record.pendingFinance or nil
       if record.status == "awaiting-finance" and type(pending) == "table"
@@ -633,6 +645,7 @@ function M.new(deps)
   end
   
   local function finaliseCanonicalProposal(payload)
+    financeWork.invalidate()
     payload = type(payload) == "table" and payload or {}
     local proposalId = tostring(payload.proposalId or "")
     local record = state.world.proposals.byId[proposalId]
@@ -1400,7 +1413,7 @@ function M.new(deps)
   end
   
   local function processCanonicalConstructionProposals()
-    for _, proposalId in ipairs(util.sortedKeys(state.world.proposals.byId or {})) do
+    for _, proposalId in ipairs(constructionWork.candidates(state.world.proposals)) do
       local record = state.world.proposals.byId[proposalId]
       if type(record) == "table" and record.transaction
         and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION

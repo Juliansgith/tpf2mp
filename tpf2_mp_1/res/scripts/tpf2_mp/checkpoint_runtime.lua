@@ -118,12 +118,32 @@ function M.new(env)
   local function authoredDigest()
     return hash.value(authoredStateSnapshot())
   end
+
+  local function coreView(model, canonicalView, vehicleSynchronization)
+    -- The core projection is the authored projection plus two top-level
+    -- convergence surfaces.  A shallow top-level copy is sufficient because
+    -- hashing is read-only; rebuilding the complete authored tree here used
+    -- to duplicate every market, service, ledger and freight table whenever
+    -- callers needed both digests.
+    local result = {}
+    for key, value in pairs(model) do result[key] = value end
+    result.canonical = canonicalView
+    result.vehicleSynchronization = vehicleSynchronization
+    return result
+  end
+
+  local function digestPair()
+    local model = authoredStateSnapshot()
+    local canonicalView = canonical.digestView(currentState().canonical)
+    local vehicleSynchronization = vehicleSyncRuntime.digestView(currentState().world)
+    return hash.value(coreView(model, canonicalView, vehicleSynchronization)),
+      hash.value(model)
+  end
   
   local function coreStateSnapshot()
-    local result = authoredStateSnapshot()
-    result.canonical = canonical.digestView(currentState().canonical)
-    result.vehicleSynchronization = vehicleSyncRuntime.digestView(currentState().world)
-    return result
+    local model = authoredStateSnapshot()
+    return coreView(model, canonical.digestView(currentState().canonical),
+      vehicleSyncRuntime.digestView(currentState().world))
   end
   
   local function coreDigest()
@@ -249,7 +269,7 @@ function M.new(env)
       canonicalDigest = hash.value(canonicalView),
       vehicleSynchronization = vehicleSynchronization,
       vehicleSynchronizationDigest = hash.value(vehicleSynchronization),
-      coreDigest = coreDigest(),
+      coreDigest = hash.value(coreView(model, canonicalView, vehicleSynchronization)),
       financial = financial,
       financialDigest = hash.value(financial),
       structuralDigest = structuralDigest,
@@ -371,6 +391,7 @@ function M.new(env)
   return {
     authoredDigest = authoredDigest,
     coreDigest = coreDigest,
+    digestPair = digestPair,
     trimEvents = trimEvents,
     emitCheckpoint = emitCheckpoint,
     exportCheckpointBarrier = exportCheckpointBarrier,

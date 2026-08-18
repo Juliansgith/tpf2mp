@@ -17,6 +17,7 @@ function M.new(deps)
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
   local coreDigest = assert(deps.coreDigest, "coreDigest dependency is required")
   local authoredDigest = assert(deps.authoredDigest, "authoredDigest dependency is required")
+  local digestPair = type(deps.digestPair) == "function" and deps.digestPair or function() return coreDigest(), authoredDigest() end
   local exportResearch = assert(deps.exportResearch, "exportResearch dependency is required")
   local balanceOf = assert(deps.balanceOf, "balanceOf dependency is required")
   local proposalResourceName = assert(deps.proposalResourceName, "proposalResourceName dependency is required")
@@ -72,6 +73,7 @@ function M.new(deps)
   end
   
   local function validationEmitResult()
+    local digest, modelDigest = digestPair()
     return bridge.emit(state.bridge, "validation", {
       kind = state.validation.kind,
       sessionId = state.bridge.sessionId,
@@ -84,8 +86,8 @@ function M.new(deps)
       checks = util.deepCopy(state.validation.checks),
       values = util.deepCopy(state.validation.values),
       error = state.validation.error,
-      digest = coreDigest(),
-      modelDigest = authoredDigest(),
+      digest = digest,
+      modelDigest = modelDigest,
       structuralDigest = state.probes.structural and state.probes.structural.digest or nil,
       mobilityDigest = state.probes.mobility and state.probes.mobility.digest or nil,
       companion = util.deepCopy(state.bridge.companion),

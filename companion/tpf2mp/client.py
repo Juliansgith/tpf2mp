@@ -80,11 +80,7 @@ class CommitClient:
         )
 
     def _last_commit(self) -> int:
-        sequences = self.bridge.existing_commit_sequences()
-        current = 0
-        while current + 1 in sequences:
-            current += 1
-        return current
+        return self.bridge.last_contiguous_commit_sequence()
 
     def _session(self, poll_seconds: float) -> None:
         run_client_session(self, poll_seconds)

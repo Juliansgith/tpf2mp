@@ -467,6 +467,7 @@ function M.new(deps)
     submit = submitIntent,
     scheduleFollowup = followups.schedule, cancelLineRegistration = followups.cancelLineRegistration,
     processDeferred = processDeferredNetworkIntent,
+    hasDeferred = function() return #deferredNetworkIntents > 0 or followups.count() > 0 end,
     consume = consumeBridge,
     pendingBarrierReason = networkPendingBarrierReason,
     raiseOriginResidueFault = raiseOriginResidueFault,

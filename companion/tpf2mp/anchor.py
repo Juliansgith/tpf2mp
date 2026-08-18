@@ -19,6 +19,7 @@ from typing import Any, Mapping
 
 from .native_save import hash_load_bearing_save
 from .protocol import ProtocolError
+from .anchor_history import AnchorHistoryIndex
 
 
 class AnchorCoordinator:
@@ -31,6 +32,7 @@ class AnchorCoordinator:
         self.filed: dict[int, str] = {}
         self.last_reason: str | None = None
         self.last_receipt: dict[str, Any] | None = None
+        self.history = AnchorHistoryIndex(host)
 
     # -- readiness -----------------------------------------------------
 
@@ -102,14 +104,7 @@ class AnchorCoordinator:
         return pending
 
     def _checkpoint_outcome_seq(self, boundary_seq: int) -> int:
-        outcome_seq = 0
-        for seq, message in self.host.commits.items():
-            action = (message.get("payload") or {}).get("action") or {}
-            if action.get("type") == "network.checkpoint_outcome" \
-                    and int(action.get("boundarySeq", 0)) == int(boundary_seq) \
-                    and action.get("success") is True:
-                outcome_seq = max(outcome_seq, int(seq))
-        return outcome_seq
+        return self.history.checkpoint_outcome(boundary_seq)
 
     def paused_game_time_skew(self) -> float | None:
         """Return raw all-peer game-time skew at a fresh paused generation.
@@ -190,13 +185,7 @@ class AnchorCoordinator:
         outcome_seq = self._checkpoint_outcome_seq(boundary_seq)
         if outcome_seq == 0:
             return False
-        for seq, message in self.host.commits.items():
-            if int(seq) <= outcome_seq or message.get("kind") != "commit":
-                continue
-            action = (message.get("payload") or {}).get("action") or {}
-            if action.get("type") != "recovery.save_receipt":
-                return True
-        return False
+        return self.history.work_after(outcome_seq)
 
     # -- filing --------------------------------------------------------
 
@@ -245,14 +234,8 @@ class AnchorCoordinator:
         return {"filed": True, **receipt}
 
     def _filed_receipt(self, boundary: int, peer: str) -> dict[str, Any] | None:
-        for message in self.host.commits.values():
-            action = (message.get("payload") or {}).get("action") or {}
-            if action.get("type") == "recovery.save_receipt" \
-                    and message.get("origin_peer") == peer \
-                    and int(action.get("boundarySeq", 0)) == int(boundary):
-                if isinstance(action.get("saveSha256"), str):
-                    return dict(action)
-        return None
+        receipt = self.history.receipt(boundary, peer)
+        return dict(receipt[1]) if receipt else None
 
     def validate_receipt(
         self, action: Mapping[str, Any], origin_peer: str
@@ -280,12 +263,9 @@ class AnchorCoordinator:
         for field, expected in comparisons.items():
             if action.get(field) != expected:
                 raise ProtocolError(f"save receipt {field} does not match the READY boundary")
-        for message in self.host.commits.values():
-            existing = (message.get("payload") or {}).get("action") or {}
-            if existing.get("type") != "recovery.save_receipt" \
-                    or message.get("origin_peer") != origin_peer \
-                    or int(existing.get("boundarySeq", 0)) != int(action["boundarySeq"]):
-                continue
+        receipt = self.history.receipt(int(action["boundarySeq"]), origin_peer)
+        if receipt:
+            message, existing = receipt
             if existing != dict(action):
                 raise ProtocolError("peer filed conflicting receipts for one boundary")
             return message
@@ -293,15 +273,9 @@ class AnchorCoordinator:
 
     # -- status --------------------------------------------------------
 
-    def status(self) -> dict[str, Any]:
-        state = self.readiness()
-        locally_filed = {
-            int(action.get("boundarySeq", 0))
-            for message in self.host.commits.values()
-            for action in [(message.get("payload") or {}).get("action") or {}]
-            if action.get("type") == "recovery.save_receipt"
-            and message.get("origin_peer") == self.host.bridge.peer
-        }
+    def status(self, state: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        state = dict(state) if state is not None else self.readiness()
+        locally_filed = self.history.filed_by_local_peer()
         return {
             "anchorReady": state["ready"],
             "anchorBoundarySeq": state["boundarySeq"],
@@ -315,21 +289,4 @@ class AnchorCoordinator:
 
     def restorable(self) -> list[int]:
         """Uniform receipt boundaries every required peer attested, newest last."""
-
-        by_boundary: dict[int, dict[str, bool]] = {}
-        for message in self.host.commits.values():
-            action = (message.get("payload") or {}).get("action") or {}
-            if action.get("type") != "recovery.save_receipt":
-                continue
-            boundary = int(action.get("boundarySeq", 0))
-            peer = str(message.get("origin_peer") or "")
-            if boundary > 0 and peer:
-                by_boundary.setdefault(boundary, {})[peer] = bool(
-                    action.get("metadataSha256")
-                )
-        required = set(self.host.required_peers)
-        return sorted(
-            boundary for boundary, receipts in by_boundary.items()
-            if required <= set(receipts)
-            and len({receipts[peer] for peer in required}) == 1
-        )
+        return self.history.restorable(self.host.required_peers)

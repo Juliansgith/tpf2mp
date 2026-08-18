@@ -28,7 +28,7 @@ def run_host(host: Any, poll_seconds: float = 0.1) -> None:
     )
     print(f"match fingerprint={host.match_fingerprint or 'UNVERIFIED'}")
     host._write_status("running")
-    next_status = time.monotonic()
+    next_status = next_anchor_poll = next_content_poll = time.monotonic()
     try:
         while not host.stop.is_set():
             if host.audit_failure.is_set():
@@ -50,16 +50,21 @@ def run_host(host: Any, poll_seconds: float = 0.1) -> None:
                     print(f"rejected local game sequence {local_seq}: {exc}")
                 host.bridge.acknowledge_outbound(local_seq)
                 had_work = True
-            if host.anchor_requests.process_host(host.anchor):
-                had_work = True
+            now = time.monotonic()
+            if now >= next_anchor_poll:
+                if host.anchor_requests.process_host(host.anchor):
+                    had_work = True
+                next_anchor_poll = now + 0.5
             host._expire_proposals()
             if host.anchor_preparation.maintain():
                 had_work = True
-            if host.industry_content.refresh():
-                had_work = True
-            if time.monotonic() >= next_status:
+            if now >= next_content_poll:
+                if host.industry_content.refresh():
+                    had_work = True
+                next_content_poll = now + 1.0
+            if now >= next_status:
                 host._write_status()
-                next_status = time.monotonic() + 0.5
+                next_status = now + 1.0
             if not had_work:
                 time.sleep(poll_seconds)
     except AuditUnavailable as exc:

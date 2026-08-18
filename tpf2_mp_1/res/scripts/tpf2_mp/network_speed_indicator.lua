@@ -6,7 +6,7 @@ local BUTTON_IDS = {
   "menu.speedButton2",
   "menu.speedButton3",
 }
-local INSPECTION_STRIDE_FRAMES = 3
+local INSPECTION_STRIDE_FRAMES = 30
 
 -- Transport Fever 2 exposes three running-speed buttons.  The fastest stock
 -- button is native speed 4; native speed 3 is a valid adaptive cap but shares

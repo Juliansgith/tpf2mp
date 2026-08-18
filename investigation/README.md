@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-18 (Europe/Amsterdam), prototype `0.38.2-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+Last updated: 2026-08-19 (Europe/Amsterdam), prototype `0.38.2-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+
+[Behavior-preserving runtime performance pass](NON_GAMEPLAY_RUNTIME_PERFORMANCE_2026-08-19.md)
+records the host scalar economy clock, shared digest projections, indexed idle
+workers and histories, sampled instrumentation, replaceable-status I/O policy,
+GUI stable paths, preserved gameplay invariants, and tomorrow's fresh-pair gate.
 
 [Updater installer handoff regression](UPDATER_INSTALLER_HANDOFF_2026-08-18.md)
 records the real `0.38.0-alpha` update failure, the Windows PowerShell 5.1

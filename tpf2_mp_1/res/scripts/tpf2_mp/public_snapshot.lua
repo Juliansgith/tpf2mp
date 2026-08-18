@@ -22,6 +22,9 @@ function M.new(env)
     "native account providers are required")
   assert(type(env.coreDigest) == "function" and type(env.authoredDigest) == "function",
     "snapshot digest providers are required")
+  local digestPair = type(env.digestPair) == "function" and env.digestPair or function()
+    return env.coreDigest(), env.authoredDigest()
+  end
   assert(type(env.deferredNetworkIntents) == "function" and type(env.networkIntentAwaitingOrder) == "function",
     "deferred-intent providers are required")
   local maxDeferredNetworkIntents = env.maxDeferredNetworkIntents or 32
@@ -128,6 +131,7 @@ function M.new(env)
       currentState().world.freightIndustry,
       currentState().canonical)
     local economyPresentation = economyPublicView.build(currentState(), cid)
+    local snapshotCoreDigest, snapshotModelDigest = digestPair()
     local snapshot = {
       version = currentState().version,
       tick = currentState().tick,
@@ -261,8 +265,8 @@ function M.new(env)
       checkpoint = util.deepCopy(currentState().checkpoint),
       recovery = util.deepCopy(currentState().recovery),
       canonicalCount = util.tableCount(currentState().canonical.byCanonical),
-      digest = env.coreDigest(),
-      modelDigest = env.authoredDigest(),
+      digest = snapshotCoreDigest,
+      modelDigest = snapshotModelDigest,
       probes = publicProbes,
       validation = util.deepCopy(currentState().validation),
       recentEvents = recent,

@@ -12,9 +12,11 @@ function M.new(deps)
   assert(type(deps) == "table" and type(deps.getState) == "function", "vehicle sync runtime state provider is required")
   local getState = deps.getState
   local diagnosticLog = assert(deps.diagnosticLog, "diagnostic logger is required")
+  -- processVehicle already has one outer protected boundary. Keeping another
+  -- pcall around every component and every userdata field multiplied the hot
+  -- path by six for each moving train without adding fault containment.
   local component = deps.component or function(localId, componentType)
-    local ok, value = pcall(api.engine.getComponent, localId, componentType)
-    return ok and value or nil
+    return api.engine.getComponent(localId, componentType)
   end
   local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
   local commandFactory = deps.commandFactory or util.commandFactory
@@ -36,13 +38,7 @@ function M.new(deps)
     __newindex = function(_, key, value) getState()[key] = value end,
   })
   local localVehicles = {}
-  local canonicalVehicleCids = nil
-
-  local function safeField(value, key)
-    if value == nil then return nil end
-    local ok, result = pcall(function() return value[key] end)
-    return ok and result or nil
-  end
+  local canonicalVehicleCids, canonicalVehicleRevision = nil, nil
 
   local function probe()
     state.probes.vehicleSync = state.probes.vehicleSync or {
@@ -52,8 +48,12 @@ function M.new(deps)
   end
 
   local function vehicleCids()
-    if canonicalVehicleCids ~= nil then return canonicalVehicleCids end
+    local revision = math.max(0, util.integer(state.canonical.revisions, 0))
+    if canonicalVehicleCids ~= nil and canonicalVehicleRevision == revision then
+      return canonicalVehicleCids
+    end
     canonicalVehicleCids = {}
+    canonicalVehicleRevision = revision
     local telemetry = probe()
     telemetry.canonicalScans = math.max(0, util.integer(telemetry.canonicalScans, 0)) + 1
     local keys = util.sortedKeys(state.canonical.byCanonical or {})
@@ -165,7 +165,7 @@ function M.new(deps)
     return true
   end
 
-  local function release(binding, record, localId, transportVehicle, observed)
+  local function release(binding, record, localId, nativeUserStopped)
     local metadata = binding.metadata or {}
     if metadata.userStopped == true then
       record.phase = "await-departure"
@@ -174,7 +174,7 @@ function M.new(deps)
       report(binding, record, "released", "canonical-manual-stop-retained")
       return true
     end
-    if safeField(transportVehicle, "userStopped") ~= true then
+    if nativeUserStopped ~= true then
       record.phase = "await-departure"
       record.lastReportTick = nil
       record.releaseReportPending = true
@@ -206,7 +206,13 @@ function M.new(deps)
     if not localId or not types.TRANSPORT_VEHICLE then return false end
     local vehicle = component(localId, types.TRANSPORT_VEHICLE)
     if not vehicle then return false end
-    local nativeLine = tonumber(safeField(vehicle, "line"))
+    -- Read the engine-owned component once inside processVehicle's protected
+    -- call. These four scalar reads describe one coherent observation and
+    -- avoid a separate protected closure allocation for every field.
+    local nativeLine = tonumber(vehicle.line)
+    local nativeState = tonumber(vehicle.state)
+    local stopIndex = tonumber(vehicle.stopIndex)
+    local nativeUserStopped = vehicle.userStopped
     local declaredLine = binding.metadata and binding.metadata.lineCid or nil
     local observedLine = nativeLine and canonical.resolveCanonical(state.canonical, "line", nativeLine) or nil
     if declaredLine and observedLine and declaredLine ~= observedLine then return false end
@@ -214,8 +220,6 @@ function M.new(deps)
     if type(lineCid) ~= "string" or lineCid == "" then return false end
     local lineLocalId = tonumber(canonical.resolveLocal(state.canonical, lineCid))
     if lineLocalId and nativeLine ~= lineLocalId then return false end
-    local nativeState = tonumber(safeField(vehicle, "state"))
-    local stopIndex = tonumber(safeField(vehicle, "stopIndex"))
     stopIndex = stopIndex and math.floor(stopIndex) or nil
     local entry = vehicleSyncState.authoritativeEntry(state.world, binding.canonicalId)
     local lastRound = entry and math.max(0, util.integer(entry.lastAuthorizedRound, 0)) or 0
@@ -265,12 +269,12 @@ function M.new(deps)
       and record.round <= lastRound and not record.departedSinceRelease
       and record.phase == "unknown-terminal" then
       record.round = lastRound
-      record.phase = safeField(vehicle, "userStopped") == true
+      record.phase = nativeUserStopped == true
         and "release-armed" or "await-departure"
     elseif record.phase == "unknown-terminal" then
       if entry and entry.lineCid == lineCid and entry.stopIndex == stopIndex and lastRound > 0 then
         record.round = lastRound
-        record.phase = safeField(vehicle, "userStopped") == true
+        record.phase = nativeUserStopped == true
           and "release-armed" or "await-departure"
       else
         record.round = lastRound + 1
@@ -286,10 +290,10 @@ function M.new(deps)
         report(binding, record, "held", "canonical-stop-held-retry")
       end
     elseif record.phase == "release-armed" then
-      local gameTime, _, observed = now()
+      local gameTime = now()
       local due = entry and (entry.releaseWhilePaused == true
         or gameTime >= tonumber(entry.releaseAtGameTime or math.huge))
-      if due then return release(binding, record, localId, vehicle, observed) end
+      if due then return release(binding, record, localId, nativeUserStopped) end
     elseif record.phase == "await-departure" and record.releaseReportPending
       and (not record.lastReportTick or state.tick - record.lastReportTick >= 60) then
       report(binding, record, "released", "canonical-stop-release-retry")
@@ -310,6 +314,7 @@ function M.new(deps)
     if transaction.kind == "vehicle.buy" or transaction.kind == "vehicle.sell"
       or transaction.kind == "vehicle.sell_batch" then
       canonicalVehicleCids = nil
+      canonicalVehicleRevision = nil
     end
     local sync = state.world.vehicleSync
     local function applyPassengerOperation()
@@ -385,6 +390,7 @@ function M.new(deps)
   function runtime.reset()
     localVehicles = {}
     canonicalVehicleCids = nil
+    canonicalVehicleRevision = nil
   end
 
   function runtime.localState()
