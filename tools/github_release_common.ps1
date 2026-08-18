@@ -50,3 +50,15 @@ function New-Tpf2mpGitHubHeaders {
     if ($Token) { $headers.Authorization = "Bearer $Token" }
     return $headers
 }
+
+function Read-Tpf2mpReleaseNotesText {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $resolved = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Release notes are missing: $resolved"
+    }
+    # Get-Content returns a provider-adapted PSObject in Windows PowerShell 5.1.
+    # ConvertTo-Json then serializes PSPath/PSDrive metadata instead of a JSON
+    # string, which GitHub rejects. The .NET read returns an unadorned string.
+    return [IO.File]::ReadAllText($resolved)
+}

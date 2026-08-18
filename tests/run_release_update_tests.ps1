@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $ProjectRoot 'tools\update_common.ps1')
+. (Join-Path $ProjectRoot 'tools\github_release_common.ps1')
 
 function Assert-VersionOrder([string]$Older, [string]$Newer) {
     if ((Compare-Tpf2mpSemanticVersion $Older $Newer) -ge 0 `
@@ -82,6 +83,15 @@ if (-not $missingIntegrityRejected) { throw 'Update selection accepted an asset 
 
 $caseRoot = Join-Path $TemporaryRoot 'release-update'
 New-Item -ItemType Directory -Force -Path $caseRoot | Out-Null
+$notesPath = Join-Path $caseRoot 'release notes.md'
+$notesExpected = "# Notes`r`n`r`nExact body."
+[IO.File]::WriteAllText($notesPath, $notesExpected, [Text.UTF8Encoding]::new($false))
+$notesBody = [ordered]@{ body = [string](Read-Tpf2mpReleaseNotesText $notesPath) } | ConvertTo-Json
+$notesRoundTrip = $notesBody | ConvertFrom-Json
+if ([string]$notesRoundTrip.body -cne $notesExpected `
+        -or $notesBody -match 'PSPath|PSDrive|Provider') {
+    throw 'Release notes did not serialize as one exact JSON string.'
+}
 $sidecar = Join-Path $caseRoot 'fixture.zip.sha256'
 $expectedHash = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
 [IO.File]::WriteAllText($sidecar, "$expectedHash  fixture.zip`n", [Text.UTF8Encoding]::new($false))

@@ -64,8 +64,7 @@ try {
     $notes = "TPF2MP $($semanticVersion.text)"
     if ($ReleaseNotesPath) {
         $resolvedNotes = Resolve-Tpf2mpFullPath $ReleaseNotesPath
-        if (-not (Test-Path -LiteralPath $resolvedNotes -PathType Leaf)) { throw "Release notes are missing: $resolvedNotes" }
-        $notes = Get-Content -LiteralPath $resolvedNotes -Raw
+        $notes = Read-Tpf2mpReleaseNotesText $resolvedNotes
     }
     $token = Get-Tpf2mpGitHubToken -NoCredentialPrompt:$NoCredentialPrompt
     if (-not $token) {
@@ -77,7 +76,7 @@ try {
         tag_name = $tag
         target_commitish = $head
         name = "TPF2MP $($semanticVersion.text)"
-        body = $notes
+        body = [string]$notes
         draft = $true
         prerelease = @($semanticVersion.prerelease).Count -gt 0
         generate_release_notes = $false
