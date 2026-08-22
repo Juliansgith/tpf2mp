@@ -5,7 +5,7 @@ local M = {}
 function M.new()
   local cache = { keys = {}, one = {} }
 
-  local function candidates(container, issued)
+  local function candidates(container, issued, accepts)
     container = container or {}
     local byId, generation = container.byId or {}, tonumber(container.queued)
     -- Current saves expose the monotonic queued generation. Unversioned test
@@ -20,7 +20,8 @@ function M.new()
     while cache.index <= #cache.keys do
       local id = cache.keys[cache.index]
       local record = byId[id]
-      if type(record) == "table" and record.status == "queued" and not issued[id] then
+      if type(record) == "table" and record.status == "queued" and not issued[id]
+        and (type(accepts) ~= "function" or accepts(record)) then
         cache.one[1] = id
         return cache.one
       end

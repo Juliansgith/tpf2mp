@@ -1,4 +1,5 @@
 local M = {}
+local constructionDeltaAttestation = require "tpf2_mp/construction_delta_attestation"
 
 function M.new(deps)
   local componentEntitySet = assert(deps.componentEntitySet, "component-set reader is required")
@@ -14,14 +15,10 @@ function M.new(deps)
     return true
   end
 
-  local function capture(types, issuerPlayerId, nativeOwnerPlayerId)
+  local function capture(types, issuerPlayerId, nativeOwnerPlayerId, expanded)
     local sets = {}
-    for _, descriptor in ipairs({
-      { name = "edges", component = types.BASE_EDGE, required = true },
-      { name = "nodes", component = types.BASE_NODE, required = true },
-      { name = "constructions", component = types.CONSTRUCTION, required = false },
-      { name = "assets", component = types.ASSET_GROUP, required = false },
-    }) do
+    for _, descriptor in ipairs(
+        constructionDeltaAttestation.captureDescriptors(types, expanded)) do
       if descriptor.component ~= nil then
         local values, captureError = componentEntitySet(descriptor.component)
         if not values then return nil, captureError end
@@ -35,15 +32,15 @@ function M.new(deps)
     return {
       sets = sets,
       issuerBalance = balanceOf(issuerPlayerId),
-      nativeOwnerBalance = balanceOf(nativeOwnerPlayerId),
+      nativeOwnerBalance = balanceOf(nativeOwnerPlayerId), expanded = expanded == true,
     }
   end
 
   local function unchanged(before, types, issuerPlayerId, nativeOwnerPlayerId)
-    local after = capture(types, issuerPlayerId, nativeOwnerPlayerId)
+    local after = capture(types, issuerPlayerId, nativeOwnerPlayerId, before.expanded)
     if not after or before.issuerBalance ~= after.issuerBalance
       or before.nativeOwnerBalance ~= after.nativeOwnerBalance then return false end
-    for _, name in ipairs({ "edges", "nodes", "constructions", "assets" }) do
+    for name in pairs(before.sets or {}) do
       if not sameEntitySet(before.sets[name], after.sets[name]) then return false end
     end
     return true

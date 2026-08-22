@@ -61,7 +61,8 @@ $subtitle.Size = New-Object Drawing.Size(790, 30)
 $form.Controls.Add($subtitle)
 
 $updateButton = New-Object Windows.Forms.Button
-$updateButton.Text = 'CHECK / INSTALL UPDATE'
+$sourceTreeLauncher = -not (Test-Path -LiteralPath (Join-Path $bundle 'release-manifest.json') -PathType Leaf)
+$updateButton.Text = if ($sourceTreeLauncher) { 'UPDATE INSTALLED RELEASE' } else { 'CHECK / INSTALL UPDATE' }
 $updateButton.Location = New-Object Drawing.Point(642, 15)
 $updateButton.Size = New-Object Drawing.Size(184, 36)
 $updateButton.FlatStyle = 'Flat'
@@ -409,6 +410,9 @@ $updateButton.Add_Click({
             throw 'This development bundle does not include the release updater.'
         }
         Start-LauncherWorker $scriptPath @('-BundleRoot', $bundle) 'release-update'
+        if ($sourceTreeLauncher) {
+            Append-LauncherLog 'Source-tree launcher: updating the installed signed release; Git working files are left unchanged.'
+        }
         Append-LauncherLog 'The updater will use your own GitHub authentication if this repository is private.'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot update') | Out-Null }
@@ -472,7 +476,7 @@ $hostButton.Add_Click({
             '-BindAddress', '0.0.0.0', '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
         if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
-        Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session.ps1') $args 'host-launch'
+        Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session_retry.ps1') $args 'host-launch'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot host') | Out-Null }
 })
@@ -490,7 +494,7 @@ $joinButton.Add_Click({
             '-Port', $input.Port, '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
         if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
-        Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session.ps1') $args 'join-launch'
+        Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session_retry.ps1') $args 'join-launch'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot join') | Out-Null }
 })

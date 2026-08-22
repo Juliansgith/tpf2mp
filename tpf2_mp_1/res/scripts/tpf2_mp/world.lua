@@ -1554,11 +1554,26 @@ function M.structuralSnapshot(registry, worldState, companies)
       owner = M.logicalOwnerOf(worldState, companies or {}, depotId),
     }
   end
+  -- Exact typed construction replay can expose its generated entity IDs to the
+  -- GUI before Build 35924 makes every generated component safe to touch from
+  -- the engine game-script thread.  Keep those already-attested objects out of
+  -- the discovery path: M.kindOf would otherwise probe the fresh CONSTRUCTION
+  -- userdata and terminate the script environment rather than raise a Lua
+  -- error.  Their existence is still checked below and all ordinary/unbound
+  -- ownership-bearing entities remain exhaustively discovered.
+  local nativeReadUnsafe = {}
+  for _, binding in pairs(registry.byCanonical or {}) do
+    if binding.metadata and binding.metadata.nativeReadUnsafe == true then
+      nativeReadUnsafe[tostring(binding.localId)] = true
+    end
+  end
   -- A probe is deliberately exhaustive: bind every ownership-bearing object so
   -- tracks, station sub-entities, signals, and edge objects cannot hide outside
   -- the canonical snapshot merely because a GUI event omitted them.
   for _, entityId in ipairs(M.listAllPlayerOwned()) do
-    M.bindExisting(registry, entityId, M.kindOf(entityId), { name = nameOf(entityId) })
+    if not nativeReadUnsafe[tostring(entityId)] then
+      M.bindExisting(registry, entityId, M.kindOf(entityId), { name = nameOf(entityId) })
+    end
   end
   table.sort(towns, function(a, b) return tostring(a.cid) < tostring(b.cid) end)
   table.sort(lines, function(a, b) return tostring(a.cid) < tostring(b.cid) end)
@@ -1566,6 +1581,8 @@ function M.structuralSnapshot(registry, worldState, companies)
   table.sort(depots, function(a, b) return tostring(a.cid) < tostring(b.cid) end)
   for _, cid in ipairs(util.sortedKeys(registry.byCanonical)) do
     local binding = registry.byCanonical[cid]
+    local metadata = binding.metadata or {}
+    local attestedNativeRead = metadata.nativeReadUnsafe == true
     local exists = true
     if api.engine.entityExists then
       local ok, result = pcall(api.engine.entityExists, binding.localId)
@@ -1573,18 +1590,26 @@ function M.structuralSnapshot(registry, worldState, companies)
     else
       exists = safeEntity(binding.localId) ~= nil or component(binding.localId, api.type.ComponentType[binding.kind and string.upper(binding.kind) or ""]) ~= nil
     end
-    local owner
-    if exists and api.type.ComponentType.PLAYER_OWNED then
+    local owner = attestedNativeRead
+      and ((worldState and worldState.logicalOwners
+          and worldState.logicalOwners[tostring(binding.localId)]) or metadata.owner)
+      or nil
+    if exists and not attestedNativeRead and api.type.ComponentType.PLAYER_OWNED then
       local owned = component(binding.localId, api.type.ComponentType.PLAYER_OWNED)
       local playerId = owned and (owned.player or owned.playerEntity)
       owner = M.logicalOwnerOf(worldState, companies or {}, binding.localId)
         or (playerId and canonical.resolveCanonical(registry, "company", playerId) or nil)
     end
+    local fingerprint
+    if exists then
+      fingerprint = attestedNativeRead and metadata.fingerprint
+        or M.fingerprint(binding.localId, binding.kind)
+    end
     objects[#objects + 1] = {
       cid = cid,
       kind = binding.kind,
       exists = exists,
-      fingerprint = exists and M.fingerprint(binding.localId, binding.kind) or nil,
+      fingerprint = fingerprint,
       owner = owner,
     }
   end

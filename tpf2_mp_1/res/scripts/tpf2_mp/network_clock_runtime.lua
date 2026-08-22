@@ -356,6 +356,7 @@ function M.new(deps)
     })
   end
 
+
   networkClock.freezeCalendar = freezeNetworkCalendar
   networkClock.freezeGame = freezeNetworkGame
   networkClock.reset = function()

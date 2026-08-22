@@ -11,6 +11,7 @@ local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 local guiVehicleCaptureRuntimeModule = require "tpf2_mp/gui_vehicle_capture_runtime"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
+local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_scheduler"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "GUI event runtime dependencies are required")
@@ -30,6 +31,7 @@ function M.new(deps)
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
   local projectNetworkSpeedIndicator = assert(
     deps.projectNetworkSpeedIndicator, "projectNetworkSpeedIndicator dependency is required")
+  local networkSpeedIndicatorDue = deps.networkSpeedIndicatorDue or function() return true end
   local EVENT_ID = tostring(deps.eventId or "tpf2mp")
   local SCRIPT_FILE = tostring(deps.scriptFile or "tpf2_mp.lua")
   local setDifference = util.setDifference
@@ -1053,10 +1055,19 @@ function M.new(deps)
       return true
   end
 
+  local nativeCaptureScheduler = guiNativeCaptureSchedulerModule.new({
+    gui = gui,
+    speed = gui.processSuppressedNativeGameSpeedCapture,
+    line = gui.processSuppressedNativeLineCommandCapture,
+    vehicle = gui.processSuppressedNativeVehicleCommandCapture,
+  })
+
   local function guiUpdate()
       gui.frames = gui.frames + 1
-      local indicatorOk, indicatorError = pcall(projectNetworkSpeedIndicator)
-      if not indicatorOk then gui.lastError = tostring(indicatorError) end
+      if networkSpeedIndicatorDue() then
+        local indicatorOk, indicatorError = pcall(projectNetworkSpeedIndicator, true)
+        if not indicatorOk then gui.lastError = tostring(indicatorError) end
+      end
       local currentConfig = config()
       if gui.awaitingManualHandoff and currentConfig.networkManualHandoff then
         -- Ignore validator-era suppression counters so a human action cannot be
@@ -1108,12 +1119,7 @@ function M.new(deps)
         end
       end
       if currentConfig.networkAutoValidate then
-        local speedOk, speedError = pcall(gui.processSuppressedNativeGameSpeedCapture)
-        if not speedOk then gui.lastError = tostring(speedError) end
-        local lineOk, lineError = pcall(gui.processSuppressedNativeLineCommandCapture)
-        if not lineOk then gui.lastError = tostring(lineError) end
-        local vehicleOk, vehicleError = pcall(gui.processSuppressedNativeVehicleCommandCapture)
-        if not vehicleOk then gui.lastError = tostring(vehicleError) end
+        nativeCaptureScheduler.poll()
         local captureOk, captureWork = pcall(processSuppressedNativeBuildCapture, false)
         if not captureOk then gui.lastError = tostring(captureWork) end
         local proposalOk, proposalWork = pcall(processGuiProposalQueue)
@@ -1135,13 +1141,7 @@ function M.new(deps)
         local captureOk, captureError = pcall(processVehicleCaptures)
         if not captureOk then gui.lastError = tostring(captureError) end
       end
-      local speedOk, speedError = pcall(gui.processSuppressedNativeGameSpeedCapture)
-      if not speedOk then gui.lastError = tostring(speedError) end
-      local lineOk, lineError = pcall(gui.processSuppressedNativeLineCommandCapture)
-      if not lineOk then gui.lastError = tostring(lineError) end
-      local nativeVehicleOk, nativeVehicleError =
-        pcall(gui.processSuppressedNativeVehicleCommandCapture)
-      if not nativeVehicleOk then gui.lastError = tostring(nativeVehicleError) end
+      nativeCaptureScheduler.poll()
       if gui.pendingNetworkBuildPreview or gui.pendingNetworkBuildExact
         or gui.pendingNetworkBuildSuppression then
         local buildCaptureOk, buildCaptureError = pcall(processSuppressedNativeBuildCapture, false)

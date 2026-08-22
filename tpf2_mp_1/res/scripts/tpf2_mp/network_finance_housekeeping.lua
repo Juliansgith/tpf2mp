@@ -31,7 +31,16 @@ function M.new(deps)
   assert(type(deps) == "table" and type(deps.getState) == "function",
     "network finance housekeeping state provider is required")
   local getState = deps.getState
-  return function()
+  local function due()
+    local state = getState()
+    if state.networkMode ~= "network" or state.initialized ~= true then return false end
+    local ledger = state.finance and state.finance.networkAccounts or nil
+    if type(ledger) ~= "table" or ledger.initialized ~= true then return true end
+    local reconciliation = ledger.reconciliation or {}
+    return reconciliation.nextHousekeepingTick == nil
+      or state.tick >= util.integer(reconciliation.nextHousekeepingTick, state.tick)
+  end
+  local function maintain()
     local state = getState()
     if state.networkMode ~= "network" or state.initialized ~= true then return true end
     local ledger = finance.ensureNetworkAccounts(state.finance)
@@ -63,6 +72,7 @@ function M.new(deps)
     if not ok then return false, type(result) == "table" and result.error or result end
     return true, result
   end
+  return maintain, due
 end
 
 return M

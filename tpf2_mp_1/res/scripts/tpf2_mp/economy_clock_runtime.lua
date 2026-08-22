@@ -1,5 +1,6 @@
 local util = require "tpf2_mp/util"
 local world = require "tpf2_mp/world"
+local economyClockPolicy = require "tpf2_mp/economy_clock_policy"
 
 local M = {}
 
@@ -11,10 +12,7 @@ function M.new(deps)
   local gameTimeSeconds = deps.gameTimeSeconds
   if type(gameTimeSeconds) ~= "function" then
     local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
-    gameTimeSeconds = function()
-      local observed = clockSnapshot() or {}
-      return tonumber(observed.time)
-    end
+    gameTimeSeconds = function() return tonumber((clockSnapshot() or {}).time) end
   end
   local pending
 
@@ -80,6 +78,8 @@ function M.new(deps)
     return true, result
   end
 
-  return { update = update, reset = reset }
+  return { update = update, reset = reset, needsUpdate = function()
+    return economyClockPolicy.needsUpdate(getState(), pending)
+  end }
 end
 return M

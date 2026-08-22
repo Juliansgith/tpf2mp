@@ -21,6 +21,7 @@ namespace {
 constexpr std::uint64_t kMinimumSequence = 1;
 constexpr std::uint64_t kMaximumSequence = 999999999999ULL;
 constexpr std::uint64_t kInboxPollMilliseconds = 10;
+constexpr std::uint64_t kMaximumIdleInboxPollMilliseconds = 50;
 constexpr std::uint64_t kWriteRetryMilliseconds = 100;
 constexpr std::size_t kPumpBatch = 32;
 
@@ -64,6 +65,12 @@ bool IsScopedRoot(const std::filesystem::path& value) {
   const auto allowed = Fold(std::filesystem::temp_directory_path() / "tpf2mp_bridge");
   if (root.size() <= allowed.size() || root.compare(0, allowed.size(), allowed) != 0) return false;
   return root[allowed.size()] == L'\\' || root[allowed.size()] == L'/';
+}
+
+bool FileExists(const std::filesystem::path& path) {
+  const DWORD attributes = GetFileAttributesW(path.c_str());
+  return attributes != INVALID_FILE_ATTRIBUTES
+      && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
 std::string FileName(const std::uint64_t sequence) {
@@ -211,6 +218,7 @@ struct AsyncFileBridge::Impl {
   std::filesystem::path root;
   std::uint64_t next_out{kMinimumSequence};
   std::uint64_t next_read{kMinimumSequence};
+  std::filesystem::path next_inbox_path;
   std::deque<Item> outbound;
   std::deque<Item> inbound;
   std::size_t outbound_bytes{};
@@ -221,6 +229,7 @@ struct AsyncFileBridge::Impl {
   std::uint64_t taken{};
   std::uint64_t rejected{};
   std::uint64_t last_inbox_poll{};
+  std::uint64_t inbox_poll_milliseconds{kInboxPollMilliseconds};
   std::uint64_t next_write_retry{};
   std::string last_error;
 };
@@ -259,7 +268,9 @@ bool AsyncFileBridge::Configure(const std::filesystem::path& requested_root,
     impl_->root = root;
     impl_->next_out = requested_out;
     impl_->next_read = requested_in;
+    impl_->next_inbox_path = root / "game_inbox" / FileName(requested_in);
     impl_->last_error.clear();
+    impl_->inbox_poll_milliseconds = kInboxPollMilliseconds;
     impl_->configured = true;
   } else {
     // A Lua save/load can recreate its wrapper while this process-owned queue
@@ -272,10 +283,11 @@ bool AsyncFileBridge::Configure(const std::filesystem::path& requested_root,
       impl_->inbound.clear();
       impl_->inbound_bytes = 0;
       impl_->next_read = requested_in;
+      impl_->next_inbox_path = root / "game_inbox" / FileName(requested_in);
     }
   }
   while (impl_->next_out <= kMaximumSequence &&
-         std::filesystem::exists(impl_->root / "game_outbox" / FileName(impl_->next_out))) {
+         FileExists(impl_->root / "game_outbox" / FileName(impl_->next_out))) {
     ++impl_->next_out;
   }
   if (impl_->next_out > kMaximumSequence) {
@@ -300,6 +312,8 @@ bool AsyncFileBridge::Enqueue(const std::uint64_t sequence, std::string bytes,
   } else {
     impl_->outbound_bytes += bytes.size();
     impl_->outbound.push_back(Item{sequence, std::move(bytes)});
+    impl_->inbox_poll_milliseconds = kInboxPollMilliseconds;
+    impl_->last_inbox_poll = 0;
     ++impl_->next_out;
     ++impl_->accepted;
     error.clear();
@@ -334,7 +348,7 @@ void AsyncFileBridge::Pump() {
       }
       std::string error;
       bool written = false;
-      if (std::filesystem::exists(path)) {
+      if (FileExists(path)) {
         error = "refusing to overwrite an existing numbered outbox message";
       } else {
         written = AtomicWriteUtf8(path, item.bytes, error);
@@ -356,7 +370,7 @@ void AsyncFileBridge::Pump() {
     const auto now = GetTickCount64();
     {
       BridgeLock lock(impl_->lock);
-      if (!impl_->configured || now - impl_->last_inbox_poll < kInboxPollMilliseconds) return;
+      if (!impl_->configured || now - impl_->last_inbox_poll < impl_->inbox_poll_milliseconds) return;
       impl_->last_inbox_poll = now;
     }
     for (std::size_t count = 0; count < kPumpBatch; ++count) {
@@ -367,9 +381,14 @@ void AsyncFileBridge::Pump() {
         if (impl_->inbound.size() >= impl_->limits.message_count ||
             impl_->inbound_bytes >= impl_->limits.queued_bytes) break;
         sequence = impl_->next_read;
-        path = impl_->root / "game_inbox" / FileName(sequence);
+        path = impl_->next_inbox_path;
       }
-      if (!std::filesystem::exists(path)) break;
+      if (!FileExists(path)) {
+        BridgeLock lock(impl_->lock);
+        impl_->inbox_poll_milliseconds = std::min(
+            kMaximumIdleInboxPollMilliseconds, impl_->inbox_poll_milliseconds + 5);
+        break;
+      }
       std::string bytes, error;
       if (!ReadBounded(path, impl_->limits.message_bytes, bytes, error)) {
         BridgeLock lock(impl_->lock);
@@ -380,8 +399,10 @@ void AsyncFileBridge::Pump() {
       if (sequence != impl_->next_read) continue;
       if (impl_->inbound_bytes + bytes.size() > impl_->limits.queued_bytes) break;
       impl_->inbound_bytes += bytes.size();
+      impl_->inbox_poll_milliseconds = kInboxPollMilliseconds;
       impl_->inbound.push_back(Item{sequence, std::move(bytes)});
       ++impl_->next_read;
+      impl_->next_inbox_path = impl_->root / "game_inbox" / FileName(impl_->next_read);
       ++impl_->read;
       impl_->last_error.clear();
     }
@@ -404,6 +425,7 @@ std::string AsyncFileBridge::StatusJson() const {
          << ",\"root\":\"" << JsonEscape(WideToUtf8(impl_->root.wstring())) << "\""
          << ",\"nextOutSeq\":" << impl_->next_out
          << ",\"nextReadSeq\":" << impl_->next_read
+         << ",\"inboxPollMs\":" << impl_->inbox_poll_milliseconds
          << ",\"outboundQueued\":" << impl_->outbound.size()
          << ",\"inboundQueued\":" << impl_->inbound.size()
          << ",\"queuedBytes\":" << (impl_->outbound_bytes + impl_->inbound_bytes)
@@ -423,12 +445,14 @@ void AsyncFileBridge::Reset() {
   BridgeLock lock(impl_->lock);
   impl_->configured = false;
   impl_->root.clear();
+  impl_->next_inbox_path.clear();
   impl_->next_out = impl_->next_read = kMinimumSequence;
   impl_->outbound.clear();
   impl_->inbound.clear();
   impl_->outbound_bytes = impl_->inbound_bytes = 0;
   impl_->accepted = impl_->written = impl_->read = impl_->taken = impl_->rejected = 0;
   impl_->last_inbox_poll = impl_->next_write_retry = 0;
+  impl_->inbox_poll_milliseconds = kInboxPollMilliseconds;
   impl_->last_error.clear();
 }
 

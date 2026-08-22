@@ -4,6 +4,8 @@ param(
     [int]$WorldReadyTimeoutSeconds = 180,
     [int]$ProbeTimeoutSeconds = 120,
     [switch]$CapabilityOnly,
+    [switch]$ExactConstructionTest,
+    [switch]$ExactStationTest,
     [switch]$BuildGateTest,
     [switch]$CommandGateTest,
     [switch]$TrackBuildTest,
@@ -165,9 +167,9 @@ function Invoke-ProbeLogicalClick($Payload, [string]$Label) {
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 
 try {
-    $exclusiveModeCount = @($CapabilityOnly, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest, $VehiclePurchaseTest, $VehicleLifecycleTest, $IndustrySchemaTest).Where({ $_ }).Count
+    $exclusiveModeCount = @($CapabilityOnly, $ExactConstructionTest, $ExactStationTest, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest, $VehiclePurchaseTest, $VehicleLifecycleTest, $IndustrySchemaTest).Where({ $_ }).Count
     if ($exclusiveModeCount -gt 1) {
-        throw '-CapabilityOnly, -BuildGateTest, -CommandGateTest, -TrackBuildTest, -SignalTest, -SignalGuiCaptureTest, -OwnershipTransferTest, -ProposalOwnershipTest, -StationUpgradeCodecTest, -VehiclePurchaseTest, -VehicleLifecycleTest, and -IndustrySchemaTest are mutually exclusive.'
+        throw 'The supported-API probe mode switches are mutually exclusive.'
     }
     if (($BuildGateTest -or $CommandGateTest) -and -not $NativeHook) {
         throw '-BuildGateTest and -CommandGateTest require -NativeHook.'
@@ -205,6 +207,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\hash.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\canonical.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Destination $libraryTarget
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\construction_proposal_materializer.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_vehicle_postcondition.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua') -Destination $libraryTarget
@@ -247,6 +250,10 @@ try {
     Invoke-GameInput -InputAction 'custom-stage' `
         -InputCommand $(if ($CapabilityOnly) {
             "require('tpf2_mp_probe/live_console_probe').capabilities()"
+        } elseif ($ExactConstructionTest) {
+            "require('tpf2_mp_probe/live_console_probe').runExactConstructionTest()"
+        } elseif ($ExactStationTest) {
+            "require('tpf2_mp_probe/live_console_probe').runExactStationTest()"
         } elseif ($BuildGateTest) {
             "require('tpf2_mp_probe/live_console_probe').runGateTest()"
         } elseif ($CommandGateTest) {
@@ -281,6 +288,10 @@ try {
     Invoke-GameInput -InputAction 'toggle-console'
     Write-Host $(if ($CapabilityOnly) {
         'Issued the isolated capability probe.'
+    } elseif ($ExactConstructionTest) {
+        'Issued one exact typed ConstructionEntity BuildProposal in the isolated disposable world.'
+    } elseif ($ExactStationTest) {
+        'Issued one exact typed stock modular-station BuildProposal in the isolated disposable world.'
     } elseif ($BuildGateTest) {
         'Issued the native BuildProposal gate/authorization test in the isolated disposable world.'
     } elseif ($CommandGateTest) {
@@ -349,7 +360,11 @@ try {
     $probeDeadline = (Get-Date).AddSeconds($ProbeTimeoutSeconds)
     while ((Get-Date) -lt $probeDeadline -and -not $process.HasExited) {
         $capabilitiesLine = Find-LatestMarker -Event 'capabilities'
-        $probeLine = Find-LatestMarker -Event $(if ($BuildGateTest) {
+        $probeLine = Find-LatestMarker -Event $(if ($ExactConstructionTest) {
+            'exact-construction-complete'
+        } elseif ($ExactStationTest) {
+            'exact-station-construction-complete'
+        } elseif ($BuildGateTest) {
             'gate-test-complete'
         } elseif ($CommandGateTest) {
             'command-gate-test-complete'
@@ -523,6 +538,10 @@ finally {
         capturedAt = (Get-Date).ToString('o')
         mode = if ($CapabilityOnly) {
             'capability-only'
+        } elseif ($ExactConstructionTest) {
+            'exact-construction'
+        } elseif ($ExactStationTest) {
+            'exact-station-construction'
         } elseif ($BuildGateTest) {
             'build-gate'
         } elseif ($CommandGateTest) {

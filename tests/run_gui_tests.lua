@@ -562,7 +562,11 @@ end
 assert(retainedLineVisible,
   "line-manager event did not retain its line for panel registration controls")
 
-game.config.tpf2mp.operationalCapture = true
+local baseGuiConfig = game.config.tpf2mp
+local operationalGuiConfig = {}
+for key, value in pairs(baseGuiConfig) do operationalGuiConfig[key] = value end
+operationalGuiConfig.operationalCapture = true
+game.config.tpf2mp = operationalGuiConfig
 local operationalLine = script.guiHandleEvent("lineManager", "update", {
   lineEntity = 700,
   stops = { { stationEntity = 901 }, { stationEntity = 902 } },
@@ -582,7 +586,7 @@ assert(operationalGuiEvent.param.observedEntityIds[1] == 700
   and operationalGuiEvent.param.observedEntityIds[2] == 901
   and operationalGuiEvent.param.observedEntityIds[3] == 902,
   "operational GUI mutation capture lost referenced entity IDs")
-game.config.tpf2mp.operationalCapture = false
+game.config.tpf2mp = baseGuiConfig
 
 local function proposalCaptureEvents()
   local result = {}
@@ -1293,6 +1297,21 @@ assert(replayRuntime.processProposalQueue() == true
 -- Schema 7 normally belongs to the engine-thread construction helper, except
 -- when its construction removal is collateral to topology. That exact native
 -- proposal must cross the ordinary GUI BuildProposal route atomically.
+replayState.world.proposals.byId["gui-helper-upgrade"] = {
+  proposalId = "gui-helper-upgrade",
+  status = "queued",
+  transaction = {
+    schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+    nodes = {}, edges = {},
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = {}, nodes = {} },
+    constructions = { { mode = "upgrade" } },
+  },
+  localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
+}
+assert(replayRuntime.processProposalQueue() == false
+    and replayGui.proposalReplayQuarantine == nil,
+  "helper-owned construction upgrade leaked into GUI BuildProposal replay")
 replayState.world.proposals.byId["gui-topology-collateral"] = {
   proposalId = "gui-topology-collateral",
   status = "queued",

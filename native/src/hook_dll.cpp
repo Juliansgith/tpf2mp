@@ -545,6 +545,18 @@ int NativeTakeSuppressedVehicleCommand(lua_State* state) {
   return 1;
 }
 
+int NativeSuppressedPendingMask(lua_State* state) {
+  std::uint32_t mask = 0;
+  {
+    StateLock lock;
+    if (!g_suppressed_game_speeds.empty()) mask |= 1;
+    if (!g_suppressed_line_commands.empty() || g_suppressed_line_command_drops_reported < g_suppressed_line_command_dropped) mask |= 2;
+    if (!g_suppressed_vehicle_commands.empty() || g_suppressed_vehicle_command_drops_reported < g_suppressed_vehicle_command_dropped) mask |= 4;
+  }
+  if (mask == 0) return 0; const auto text = std::to_string(mask);
+  g_lua_pushlstring(state, text.data(), text.size()); return 1;
+}
+
 void RegisterNativeFunction(lua_State* state, const char* name, LuaCFunction function) {
   g_lua_pushlstring(state, name, std::strlen(name));
   g_lua_pushcclosure(state, function, 0);
@@ -563,22 +575,14 @@ void RegisterNativeApi(lua_State* state) {
   RegisterNativeFunction(state, "tpf2mp_native_status", NativeStatus);
   tpf2mp::async_bridge::RegisterLuaApi(state, g_lua_pushlstring, g_lua_tolstring, g_lua_gettop, g_lua_pushcclosure, g_lua_rawset);
   tpf2mp::launcher::RegisterBootstrapApi(state, g_lua_pushlstring, g_lua_pushcclosure, g_lua_rawset, g_lua_rawgeti, g_lua_insert, g_lua_callk, g_lua_gettop, g_lua_settop);
-  RegisterNativeFunction(state, "tpf2mp_native_mark_context", NativeMarkContext);
-  RegisterNativeFunction(state, "tpf2mp_native_enable_build_gate", NativeEnableBuildGate);
-  RegisterNativeFunction(state, "tpf2mp_native_disable_build_gate", NativeDisableBuildGate);
-  RegisterNativeFunction(state, "tpf2mp_native_authorize_build", NativeAuthorizeBuild);
-  RegisterNativeFunction(state, "tpf2mp_native_enable_command_gate", NativeEnableCommandGate);
-  RegisterNativeFunction(state, "tpf2mp_native_disable_command_gate", NativeDisableCommandGate);
-  RegisterNativeFunction(state, "tpf2mp_native_authorize_command", NativeAuthorizeCommand);
-  RegisterNativeFunction(state, "tpf2mp_native_revoke_command", NativeRevokeCommand);
-  RegisterNativeFunction(state, "tpf2mp_native_set_command_observer", NativeSetCommandObserver);
-  RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_game_speed", NativeTakeSuppressedGameSpeed);
-  RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_line_command", NativeTakeSuppressedLineCommand);
-  RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_vehicle_command", NativeTakeSuppressedVehicleCommand);
-  // 0.11 names the actual contract: an unauthorised vanilla line command is
-  // decoded, allowed to complete locally so its stock UI callback remains
-  // valid, and then consumed for canonical peer replay.  Keep the old symbol
-  // for 0.10 mod-script compatibility during rolling development installs.
+  RegisterNativeFunction(state, "tpf2mp_native_mark_context", NativeMarkContext); RegisterNativeFunction(state, "tpf2mp_native_enable_build_gate", NativeEnableBuildGate);
+  RegisterNativeFunction(state, "tpf2mp_native_disable_build_gate", NativeDisableBuildGate); RegisterNativeFunction(state, "tpf2mp_native_authorize_build", NativeAuthorizeBuild);
+  RegisterNativeFunction(state, "tpf2mp_native_enable_command_gate", NativeEnableCommandGate); RegisterNativeFunction(state, "tpf2mp_native_disable_command_gate", NativeDisableCommandGate);
+  RegisterNativeFunction(state, "tpf2mp_native_authorize_command", NativeAuthorizeCommand); RegisterNativeFunction(state, "tpf2mp_native_revoke_command", NativeRevokeCommand);
+  RegisterNativeFunction(state, "tpf2mp_native_set_command_observer", NativeSetCommandObserver); RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_game_speed", NativeTakeSuppressedGameSpeed);
+  RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_line_command", NativeTakeSuppressedLineCommand); RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_vehicle_command", NativeTakeSuppressedVehicleCommand);
+  RegisterNativeFunction(state, "tpf2mp_native_suppressed_pending_mask", NativeSuppressedPendingMask);
+  // Keep the old optimistic-line symbol for rolling-development compatibility.
   RegisterNativeFunction(state, "tpf2mp_native_take_line_command", NativeTakeSuppressedLineCommand);
   g_lua_settop(state, -2); // pop the global table; restore caller stack
   g_native_registration = false;
@@ -873,11 +877,8 @@ void DetourApplyCommand(void* context, void* command) {
       }
     }
   }
-  // Keep the in-process status exact on every call, but do not wake the
-  // atomic JSON writer thousands of times per second. Queue-swap events also
-  // wake it once per batch.
-  g_status_dirty.store(true, std::memory_order_release);
-  if (wake_status_writer && g_status_event != nullptr) SetEvent(g_status_event);
+  // Preserve the final burst counter; only the expensive wake-up is sampled.
+  g_status_dirty.store(true, std::memory_order_release); if (wake_status_writer && g_status_event != nullptr) SetEvent(g_status_event);
 }
 
 bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {

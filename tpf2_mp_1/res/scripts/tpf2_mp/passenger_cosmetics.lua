@@ -104,8 +104,10 @@ function M.sample(existing)
   return result
 end
 
-function M.applyDesiredCounts(existing, presentationView)
-  local result = M.sample(existing)
+function M.applyDesiredCounts(existing, presentationView, options)
+  options = type(options) == "table" and options or {}
+  local result = options.sampleNative == false
+    and (type(existing) == "table" and existing or M.newProbe()) or M.sample(existing)
   result.requestedAboard = presentationView and presentationView.totals
     and math.max(0, util.integer(presentationView.totals.aboard, 0)) or 0
   result.requestedWaiting = presentationView and presentationView.totals

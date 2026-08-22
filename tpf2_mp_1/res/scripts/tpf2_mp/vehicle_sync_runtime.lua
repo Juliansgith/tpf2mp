@@ -18,7 +18,14 @@ function M.new(deps)
   local component = deps.component or function(localId, componentType)
     return api.engine.getComponent(localId, componentType)
   end
-  local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
+  local gameTimeSeconds = deps.gameTimeSeconds
+  if type(gameTimeSeconds) ~= "function" then
+    local clockSnapshot = deps.clockSnapshot or world.clockSnapshot
+    gameTimeSeconds = function()
+      local observed = clockSnapshot() or {}
+      return tonumber(observed.time)
+    end
+  end
   local commandFactory = deps.commandFactory or util.commandFactory
   local sendCommand = deps.sendCommand or util.sendCommand
   local authorizeCommand = deps.authorizeCommand or function(tag)
@@ -38,7 +45,7 @@ function M.new(deps)
     __newindex = function(_, key, value) getState()[key] = value end,
   })
   local localVehicles = {}
-  local canonicalVehicleCids, canonicalVehicleRevision = nil, nil
+  local canonicalVehicleCids
 
   local function probe()
     state.probes.vehicleSync = state.probes.vehicleSync or {
@@ -48,12 +55,8 @@ function M.new(deps)
   end
 
   local function vehicleCids()
-    local revision = math.max(0, util.integer(state.canonical.revisions, 0))
-    if canonicalVehicleCids ~= nil and canonicalVehicleRevision == revision then
-      return canonicalVehicleCids
-    end
+    if canonicalVehicleCids ~= nil then return canonicalVehicleCids end
     canonicalVehicleCids = {}
-    canonicalVehicleRevision = revision
     local telemetry = probe()
     telemetry.canonicalScans = math.max(0, util.integer(telemetry.canonicalScans, 0)) + 1
     local keys = util.sortedKeys(state.canonical.byCanonical or {})
@@ -70,8 +73,7 @@ function M.new(deps)
   end
 
   local function now()
-    local observed = clockSnapshot() or {}
-    return tonumber(observed.time) or 0, tonumber(observed.gameSpeed), observed
+    return tonumber(gameTimeSeconds()) or 0
   end
 
   local function report(binding, record, reportState, detail)
@@ -314,7 +316,6 @@ function M.new(deps)
     if transaction.kind == "vehicle.buy" or transaction.kind == "vehicle.sell"
       or transaction.kind == "vehicle.sell_batch" then
       canonicalVehicleCids = nil
-      canonicalVehicleRevision = nil
     end
     local sync = state.world.vehicleSync
     local function applyPassengerOperation()
@@ -390,7 +391,6 @@ function M.new(deps)
   function runtime.reset()
     localVehicles = {}
     canonicalVehicleCids = nil
-    canonicalVehicleRevision = nil
   end
 
   function runtime.localState()

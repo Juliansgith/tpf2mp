@@ -16,6 +16,7 @@ from typing import Any, Iterator, Mapping
 from .anchor_state import anchor_state_message, validate_anchor_state
 from .bridge import GameBridge, atomic_write
 from .native_save import hash_load_bearing_save
+from .json_file_index import JsonFileIndex
 from .protocol import (
     PROTOCOL_VERSION,
     ProtocolError,
@@ -34,11 +35,15 @@ class AnchorRequestStore:
         self.results = bridge.state_dir / "anchor_results"
         self.requests.mkdir(parents=True, exist_ok=True)
         self.results.mkdir(parents=True, exist_ok=True)
+        self._request_index = JsonFileIndex(self.requests)
+        self._result_index = JsonFileIndex(self.results)
+        self._next_client_seq: int | None = None
+        self._pending_by_seq: dict[int, str] = {}
         self._status_cache: dict[str, Any] | None = None
 
     def _read(self, path: Path) -> dict[str, Any]:
         try:
-            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            value = self._request_index.read(path, encoding="utf-8-sig")
         except (OSError, json.JSONDecodeError) as exc:
             raise ProtocolError(f"cannot read anchor request {path.name}: {exc}") from exc
         expected = {
@@ -74,7 +79,7 @@ class AnchorRequestStore:
     def _result(self, request_id: str) -> dict[str, Any] | None:
         path = self._result_path(request_id)
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            value = self._result_index.read(path)
             return value if isinstance(value, dict) else None
         except (OSError, json.JSONDecodeError):
             return None
@@ -88,14 +93,16 @@ class AnchorRequestStore:
             **dict(value),
             "updatedAtUnixMs": int(time.time() * 1000),
         }
+        path = self._result_path(request_id)
         atomic_write(
-            self._result_path(request_id),
+            path,
             (canonical_json(result) + "\n").encode("utf-8"),
         )
+        self._result_index.invalidate(path)
         self._status_cache = None
 
     def pending(self) -> Iterator[dict[str, Any]]:
-        for path in sorted(self.requests.glob("*.json")):
+        for path in self._request_index.paths():
             request_id = path.stem
             valid_id = len(request_id) == 32 and all(
                 character in "0123456789abcdef" for character in request_id
@@ -160,16 +167,20 @@ class AnchorRequestStore:
         return changed
 
     def _allocate_client_seq(self) -> int:
-        used = []
-        for path in self.results.glob("*.json"):
-            try:
-                value = json.loads(path.read_text(encoding="utf-8"))
-                sequence = value.get("localSeq")
-                if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence < 0:
-                    used.append(sequence)
-            except (OSError, json.JSONDecodeError):
-                continue
-        return min(used, default=0) - 1
+        if self._next_client_seq is None:
+            used = []
+            for path in self._result_index.paths():
+                try:
+                    value = self._result_index.read(path)
+                    sequence = value.get("localSeq")
+                    if isinstance(sequence, int) and not isinstance(sequence, bool) and sequence < 0:
+                        used.append(sequence)
+                except (OSError, json.JSONDecodeError):
+                    continue
+            self._next_client_seq = min(used, default=0) - 1
+        result = self._next_client_seq
+        self._next_client_seq -= 1
+        return result
 
     def client_intents(self, anchor_state: Mapping[str, Any] | None) -> Iterator[dict[str, Any]]:
         if not isinstance(anchor_state, Mapping):
@@ -178,6 +189,9 @@ class AnchorRequestStore:
             result = self._result(request["requestId"])
             if result and result.get("status") == "pending" \
                     and isinstance(result.get("intent"), dict):
+                sequence = result.get("localSeq")
+                if isinstance(sequence, int) and not isinstance(sequence, bool):
+                    self._pending_by_seq[sequence] = request["requestId"]
                 yield dict(result["intent"])
                 continue
             if not self._matches_state(request, anchor_state):
@@ -223,26 +237,31 @@ class AnchorRequestStore:
                 "intent": intent,
                 "error": None,
             })
+            self._pending_by_seq[local_seq] = request["requestId"]
             yield intent
 
     def record_receipt(self, local_seq: int, accepted: bool, reason: str | None) -> bool:
-        for path in self.results.glob("*.json"):
-            try:
-                result = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            if result.get("status") != "pending" or result.get("localSeq") != local_seq:
-                continue
-            self._write_result(str(result["requestId"]), {
-                "status": "accepted" if accepted else "rejected",
-                "boundarySeq": result.get("boundarySeq"),
-                "saveSha256": result.get("saveSha256"),
-                "metadataSha256": result.get("metadataSha256"),
-                "localSeq": local_seq,
-                "error": None if accepted else str(reason or "host rejected receipt")[:1024],
-            })
-            return True
-        return False
+        request_id = self._pending_by_seq.get(local_seq)
+        if request_id is None:
+            for path in self._result_index.paths():
+                result = self._result(path.stem)
+                if result and result.get("status") == "pending" \
+                        and result.get("localSeq") == local_seq:
+                    request_id = path.stem
+                    break
+        result = request_id and self._result(request_id)
+        if not result or result.get("status") != "pending":
+            return False
+        self._write_result(request_id, {
+            "status": "accepted" if accepted else "rejected",
+            "boundarySeq": result.get("boundarySeq"),
+            "saveSha256": result.get("saveSha256"),
+            "metadataSha256": result.get("metadataSha256"),
+            "localSeq": local_seq,
+            "error": None if accepted else str(reason or "host rejected receipt")[:1024],
+        })
+        self._pending_by_seq.pop(local_seq, None)
+        return True
 
     def status(self) -> dict[str, Any]:
         if self._status_cache is not None:
@@ -250,9 +269,9 @@ class AnchorRequestStore:
         accepted: set[int] = set()
         pending = 0
         last_error: str | None = None
-        for path in self.results.glob("*.json"):
+        for path in self._result_index.paths():
             try:
-                result = json.loads(path.read_text(encoding="utf-8"))
+                result = self._result_index.read(path)
             except (OSError, json.JSONDecodeError):
                 continue
             if result.get("status") == "accepted":

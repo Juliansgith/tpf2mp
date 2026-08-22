@@ -3,7 +3,7 @@ local world = require "tpf2_mp/world"
 local authoredText = require "tpf2_mp/gui_authoritative_text"
 
 local M = {}
-local TOOLBAR_STRIDE = 60
+local TOOLBAR_STRIDE = 600
 local WINDOW_SCAN_STRIDE = 1800
 local EVENT_DEFER_FRAMES = 3
 local REPEATED_EVENT_STRIDE = 120
@@ -109,9 +109,11 @@ local function projectToolbar(gui, snapshot, force)
   local projection = status.toolbarSource == snapshot
     and status.toolbarSourceTick == snapshotTick and status.toolbarSourceProjection or nil
   if not projection then
-    projection = authoredText.toolbar(snapshot)
+    local company = authoredText.company(snapshot)
+    projection = authoredText.toolbar(snapshot, company)
     status.toolbarSource, status.toolbarSourceTick = snapshot, snapshotTick
     status.toolbarSourceProjection = projection
+    status.toolbarSourceCompany = company
   end
   local projectionKey = table.concat({
     tostring(projection.earningsLabel), tostring(projection.earnings),
@@ -121,12 +123,13 @@ local function projectToolbar(gui, snapshot, force)
   }, "\31")
   if force ~= true and status.toolbarProjected == true
     and status.toolbarProjectionKey == projectionKey then return true end
+  local company = status.toolbarSourceCompany or authoredText.company(snapshot)
   local changed = 0
   if setText(byId("gameInfo.earningsComp.earningsText"), projection.earningsLabel) then changed = changed + 1 end
   local earnings = byId("gameInfo.earningsComp.earnings")
   if setText(earnings, projection.earnings) then
     changed = changed + 1
-    local positive = tonumber(authoredText.company(snapshot).netRevenueCents) >= 0
+    local positive = tonumber(company.netRevenueCents) >= 0
     invoke(earnings, "setStyleClassList", { positive and "positive" or "negative" })
   end
   local passenger = byId("gameInfo.passengerComp.numPassenger")
@@ -139,7 +142,7 @@ local function projectToolbar(gui, snapshot, force)
   end
   if setText(byId("menu.financesButton.number"), projection.accountNumber) then changed = changed + 1 end
   setText(byId("menu.financesButton.label"), "TPF2MP account")
-  setTooltip(byId("menu.financesButton"), authoredText.company(snapshot).tooltip)
+  setTooltip(byId("menu.financesButton"), company.tooltip)
   status.toolbarProjected = changed >= 3
   status.toolbarProjectionKey = projectionKey
   return status.toolbarProjected
@@ -275,6 +278,7 @@ function M.handleEvent(gui, snapshot, id, name, param)
   end
   status.lastEventKey, status.lastEventFrame = eventKey, frame
   status.dirty, status.refreshAfterFrame = true, frame + EVENT_DEFER_FRAMES
+  status.toolbarProjected = false
   return false
 end
 
@@ -293,7 +297,8 @@ function M.update(gui, snapshot, force)
     return false
   end
   local toolbar = status.toolbarProjected == true
-  if force or frame - (status.lastToolbarFrame or -TOOLBAR_STRIDE) >= TOOLBAR_STRIDE then
+  if force or status.toolbarProjected ~= true or status.toolbarSource ~= snapshot
+    or frame - (status.lastToolbarFrame or -TOOLBAR_STRIDE) >= TOOLBAR_STRIDE then
     status.lastToolbarFrame = frame
     toolbar = projectToolbar(gui, snapshot, force)
   end
@@ -313,6 +318,20 @@ function M.update(gui, snapshot, force)
     status.lastError = not ok and tostring(errorMessage) or nil
   end
   return toolbar
+end
+
+function M.due(gui, snapshot, force)
+  snapshot = snapshot or {}
+  if force == true then return true end
+  if snapshot.initialized ~= true then return false end
+  local status = gui.stockPresentation or {}
+  local frame = tonumber(gui.frames) or 0
+  if status.toolbarProjected ~= true or status.toolbarSource ~= snapshot
+    or frame - (status.lastToolbarFrame or -TOOLBAR_STRIDE) >= TOOLBAR_STRIDE then return true end
+  local refreshAfter = tonumber(status.refreshAfterFrame) or -1
+  if frame < refreshAfter then return false end
+  return status.dirty == true
+    or frame - (status.lastScanFrame or -WINDOW_SCAN_STRIDE) >= WINDOW_SCAN_STRIDE
 end
 
 return M

@@ -4,6 +4,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
+local validationStationModule = require "tpf2_mp/validation_station_proposal"
 local validationClockModule = require "tpf2_mp/validation_clock"
 local validationContentGate = require "tpf2_mp/validation_content_gate"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
@@ -356,6 +357,16 @@ function M.new(deps)
     checkpoint = networkValidationCheckpoint,
     beginSoak = networkValidationBeginSoak,
   })
+  local stationValidation = validationStationModule.new({
+    getState = getState, transition = validationTransition, check = validationCheck,
+    submit = networkValidationSubmit, checkpoint = networkValidationCheckpoint,
+    resourceName = proposalResourceName,
+    finish = function(boundarySeq)
+      state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)
+      if config().townDevelopment then townDevelopmentValidation.begin(boundarySeq)
+      else networkValidationBeginSoak(boundarySeq) end
+    end,
+  })
 
   local function runAutomatedNetworkValidation()
     local validation = state.validation
@@ -622,13 +633,9 @@ function M.new(deps)
       end)
       if not agreed then return end
       validationCheck("client-origin-post-proposal-checkpoint-consensus", agreed.success == true, agreed)
-      state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)
-      if config().townDevelopment then
-        townDevelopmentValidation.begin(agreed.boundarySeq)
-      else
-        networkValidationBeginSoak(agreed.boundarySeq)
-      end
+      stationValidation.begin()
 
+    elseif stationValidation.maintain(stage) then
     elseif townDevelopmentValidation.maintain(stage) then
     elseif stage == "soak-structural-drift" then
       if state.tick - validation.values.soakStartTick < config().networkSoakTicks then return end

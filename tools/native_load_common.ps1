@@ -92,9 +92,57 @@ function Copy-Tpf2mpPinnedStartingSave {
             Destination = [IO.Path]::ChangeExtension($destinationSave, '.jpg')
         }
     }
-    foreach ($copy in $copies) {
-        if (Test-Path -LiteralPath $copy.Destination) {
-            throw "Refusing to overwrite pinned starting-save file: $($copy.Destination)"
+
+    # A launcher attempt can fail after pinning but before any gameplay bytes
+    # enter the bridge (for example, an intermittent native Load Game manager
+    # hang).  Retrying that exact role/session/save must be idempotent, while a
+    # partial or different residue must still fail closed.
+    $expectedPaths = @($copies | ForEach-Object { [IO.Path]::GetFullPath([string]$_.Destination) })
+    $existingManaged = @(
+        Get-ChildItem -LiteralPath $destinationRoot -File -Filter 'starting-world.*' `
+            -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }
+    )
+    if ($existingManaged.Count -gt 0) {
+        $unexpected = New-Object System.Collections.Generic.List[string]
+        foreach ($candidate in $existingManaged) {
+            $expected = $false
+            foreach ($expectedPath in $expectedPaths) {
+                if ([string]::Equals($expectedPath, $candidate, [StringComparison]::OrdinalIgnoreCase)) {
+                    $expected = $true
+                    break
+                }
+            }
+            if (-not $expected) { $unexpected.Add($candidate) }
+        }
+        if ($unexpected.Count -gt 0) {
+            throw "Pinned starting-save residue contains an unexpected file: $($unexpected[0])"
+        }
+        foreach ($copy in $copies) {
+            if (-not (Test-Path -LiteralPath $copy.Destination -PathType Leaf)) {
+                throw "Pinned starting-save residue is incomplete: $($copy.Destination)"
+            }
+            $sourceHash = (Get-FileHash -LiteralPath $copy.Source -Algorithm SHA256).Hash
+            $destinationHash = (Get-FileHash -LiteralPath $copy.Destination -Algorithm SHA256).Hash
+            if ($sourceHash -ne $destinationHash) {
+                throw "Pinned starting-save residue differs from the requested save: $($copy.Destination)"
+            }
+        }
+        $files = @($copies | ForEach-Object {
+            $item = Get-Item -LiteralPath $_.Destination
+            [pscustomobject][ordered]@{
+                path = $item.FullName
+                name = $item.Name
+                bytes = [int64]$item.Length
+                sha256 = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+        })
+        return [pscustomobject][ordered]@{
+            schemaVersion = 1
+            sourceSave = $source.save
+            savePath = $destinationSave
+            copiedAtUtc = [DateTime]::UtcNow.ToString('o')
+            reused = $true
+            files = $files
         }
     }
     $created = New-Object System.Collections.Generic.List[string]
@@ -123,6 +171,7 @@ function Copy-Tpf2mpPinnedStartingSave {
             sourceSave = $source.save
             savePath = $destinationSave
             copiedAtUtc = [DateTime]::UtcNow.ToString('o')
+            reused = $false
             files = $files
         }
     }
@@ -690,7 +739,8 @@ function Invoke-Tpf2mpPinnedSaveLoad {
         [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer,
         [Parameter(Mandatory = $true)][string]$ExpectedSaveBaseName,
         [Parameter(Mandatory = $true)][string]$EvidenceDirectory,
-        [ValidateRange(30, 600)][int]$TimeoutSeconds = 180
+        [ValidateRange(30, 600)][int]$TimeoutSeconds = 180,
+        [ValidateRange(5, 120)][int]$PageTransitionTimeoutSeconds = 45
     )
     New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
     $load = Wait-Tpf2mpMenuStage $GameProcess $BridgePath $Session $Peer `
@@ -727,12 +777,16 @@ function Invoke-Tpf2mpPinnedSaveLoad {
         else { [DateTime]::MinValue }
         $clickedAt = Get-Date
         $retryEligible = $false
-        while ((Get-Date) -lt $loadDeadline) {
+        $pageChanged = $false
+        $pageTransitionDeadline = (Get-Date).AddSeconds($PageTransitionTimeoutSeconds)
+        if ($pageTransitionDeadline -gt $loadDeadline) { $pageTransitionDeadline = $loadDeadline }
+        while ((Get-Date) -lt $pageTransitionDeadline) {
             [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $GameProcess `
                 -Context 'while opening the native Load Game page')
             $status = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
             if ($status -and $status.error) { throw "Menu bootstrap failed: $($status.error)" }
             if ($status -and [string]$status.stage -ne 'ready-to-click-load-game') {
+                $pageChanged = $true
                 break
             }
             $statusAdvanced = (Test-Path -LiteralPath $menuStatusPath -PathType Leaf) `
@@ -746,6 +800,10 @@ function Invoke-Tpf2mpPinnedSaveLoad {
                 break
             }
             Start-Sleep -Milliseconds 100
+        }
+        if (-not $retryEligible -and -not $pageChanged `
+                -and (Get-Date) -ge $pageTransitionDeadline) {
+            throw "Native Load Game page did not open within $PageTransitionTimeoutSeconds seconds after click attempt $loadAttempt."
         }
         if (-not $retryEligible) { break }
     }

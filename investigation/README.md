@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-19 (Europe/Amsterdam), prototype `0.38.2-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.3-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
 
 [Behavior-preserving runtime performance pass](NON_GAMEPLAY_RUNTIME_PERFORMANCE_2026-08-19.md)
 records the host scalar economy clock, shared digest projections, indexed idle
@@ -581,6 +581,7 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [EXACT_CONSTRUCTION_REPLAY_AND_LATENCY_2026-08-22.md](EXACT_CONSTRUCTION_REPLAY_AND_LATENCY_2026-08-22.md) - typed `SimpleProposal.ConstructionEntity` discovery, debit-driven exact `BuildProposal` replay, strict GUI delta attestation, crash-safe canonical construction identity, 273/436 ms native measurements, passing two-process station checkpoint/soak evidence, and the remaining connected/landscaped human gate.
 - [NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md](NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md) - exact-build native asynchronous bridge, measured engine scheduler, compact telemetry/GUI projections, exact one-person-per-building skeleton mode, localhost CCD isolation, complete offline proof, and the next-launch live performance gate.
 - [CHECKPOINT_VEHICLE_OWNER_AND_RUNTIME_PERFORMANCE_2026-08-09.md](CHECKPOINT_VEHICLE_OWNER_AND_RUNTIME_PERFORMANCE_2026-08-09.md) - boundary-29 ownerless pre-existing-train checkpoint fault, strict save migration/producer repair, host hot-loop audit, four runtime optimizations, full regression proof, and the controlled live performance gate.
 - [AUTOMATIC_SETTLEMENT_BARRIER_AND_CARGO_MILESTONE_2026-08-09.md](AUTOMATIC_SETTLEMENT_BARRIER_AND_CARGO_MILESTONE_2026-08-09.md) - disconnect-safe automatic settlements, restart/32-boundary pressure proof, and a one-time host-ordered cargo-aboard evidence checkpoint.

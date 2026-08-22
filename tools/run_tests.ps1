@@ -200,7 +200,56 @@ try {
     try { [void](Assert-Tpf2mpSessionId ('x' * 65)) }
     catch { $overlongRefused = $_.Exception.Message -match '1-64 characters' }
     if (-not $overlongRefused) { throw 'Launcher accepted an overlong session identity.' }
-    Write-Host 'PASS launcher process identity boundaries and status array encoding'
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
+    try {
+        $listener.Start()
+        $listenerPort = [int](($listener.LocalEndpoint).Port)
+        $owners = @()
+        for ($attempt = 0; $attempt -lt 10 -and $owners.Count -eq 0; $attempt++) {
+            $owners = @(Get-Tpf2mpTcpListenerOwners -Port $listenerPort)
+            if ($owners.Count -eq 0) { Start-Sleep -Milliseconds 100 }
+        }
+        if ($owners.Count -eq 0) { throw 'Launcher port owner discovery missed a live listener.' }
+        $occupiedRefused = $false
+        try { Assert-Tpf2mpHostPortAvailable -Port $listenerPort -Session 'port-test' }
+        catch { $occupiedRefused = $_.Exception.Message -match 'already occupied' }
+        if (-not $occupiedRefused) { throw 'Launcher accepted an already occupied host port.' }
+    }
+    finally { $listener.Stop() }
+    $previousLocalAppData = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = Join-Path $temporary 'session-state-localappdata'
+        $stateSession = 'atomic-state-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+        $stateValue = [ordered]@{ schemaVersion = 1; status = 'starting'; revision = 0 }
+        $atomicStatePath = Write-Tpf2mpSessionState $stateSession player1 $stateValue
+        for ($revision = 1; $revision -le 25; $revision++) {
+            $stateValue.status = 'running'
+            $stateValue.revision = $revision
+            [void](Write-Tpf2mpSessionState $stateSession player1 $stateValue)
+            $readState = Read-Tpf2mpSessionState $stateSession player1
+            if (-not $readState -or [int]$readState.revision -ne $revision) {
+                throw "Atomic session-state publication lost revision $revision."
+            }
+        }
+        $sharedReader = [IO.FileStream]::new(
+            $atomicStatePath, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+            ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+        )
+        try {
+            $stateValue.status = 'ready'
+            $stateValue.revision = 26
+            [void](Write-Tpf2mpSessionState $stateSession player1 $stateValue)
+        }
+        finally { $sharedReader.Dispose() }
+        $readState = Read-Tpf2mpSessionState $stateSession player1
+        $stateRoot = Split-Path -Parent $atomicStatePath
+        if (-not $readState -or $readState.status -ne 'ready' -or [int]$readState.revision -ne 26 `
+                -or @(Get-ChildItem -LiteralPath $stateRoot -File -Filter '.session-state.*.tmp').Count -ne 0) {
+            throw 'Atomic session-state reader/writer boundary failed.'
+        }
+    }
+    finally { $env:LOCALAPPDATA = $previousLocalAppData }
+    Write-Host 'PASS launcher process, port, session, and status boundaries'
 
     $profileA = Write-Tpf2mpMatchContentProfile -Path (Join-Path $temporary 'profile-a.json') `
         -AgentMode skeleton -TownDevelopment $false
@@ -342,8 +391,33 @@ return { ["tpf2_mp.lua"] = { companies = {
     [IO.File]::WriteAllBytes($nativeSource, [byte[]](1, 2, 3, 4, 5))
     [IO.File]::WriteAllText($nativeSource + '.lua', 'function data() return {} end', [Text.UTF8Encoding]::new($false))
     $pinned = Copy-Tpf2mpPinnedStartingSave $nativeSource (Join-Path $temporary 'native-load\pinned')
-    if (-not (Test-Path -LiteralPath $pinned.savePath -PathType Leaf) -or @($pinned.files).Count -ne 2) {
+    if (-not (Test-Path -LiteralPath $pinned.savePath -PathType Leaf) `
+            -or @($pinned.files).Count -ne 2 -or $pinned.reused -ne $false) {
         throw 'Pinned starting-save copy test failed.'
+    }
+    $repinned = Copy-Tpf2mpPinnedStartingSave $nativeSource (Join-Path $temporary 'native-load\pinned')
+    if ($repinned.reused -ne $true -or $repinned.savePath -ne $pinned.savePath `
+            -or @($repinned.files).Count -ne 2) {
+        throw 'Exact pinned starting-save retry was not idempotent.'
+    }
+    $differentPinRoot = Join-Path $temporary 'native-load\different-pin'
+    $differentPin = Copy-Tpf2mpPinnedStartingSave $nativeSource $differentPinRoot
+    [IO.File]::AppendAllText($differentPin.savePath + '.lua', '-- changed', [Text.UTF8Encoding]::new($false))
+    $differentPinRefused = $false
+    try { [void](Copy-Tpf2mpPinnedStartingSave $nativeSource $differentPinRoot) }
+    catch { $differentPinRefused = $_.Exception.Message -match 'differs from the requested save' }
+    if (-not $differentPinRefused) {
+        throw 'Different pinned starting-save residue did not fail closed.'
+    }
+    $incompletePinRoot = Join-Path $temporary 'native-load\incomplete-pin'
+    New-Item -ItemType Directory -Force -Path $incompletePinRoot | Out-Null
+    Copy-Item -LiteralPath $nativeSource `
+        -Destination (Join-Path $incompletePinRoot 'starting-world.sav')
+    $incompletePinRefused = $false
+    try { [void](Copy-Tpf2mpPinnedStartingSave $nativeSource $incompletePinRoot) }
+    catch { $incompletePinRefused = $_.Exception.Message -match 'residue is incomplete' }
+    if (-not $incompletePinRefused) {
+        throw 'Incomplete pinned starting-save residue did not fail closed.'
     }
     $staged = New-Tpf2mpStagedStartingSave -SourceSave $pinned.savePath `
         -SaveDirectory $nativeSaveRoot -Session 'native-load-test' -Peer player1

@@ -406,7 +406,11 @@ tpf2mp_native_status = savedNativeStatus
 -- and validation progress must not leak across session IDs.
 local priorNetworkSave = util.deepCopy(automaticallyFinished)
 priorNetworkSave.bridge.sessionId = "older-network-session"
-game.config.tpf2mp.sessionId = "engine-test-new-session"
+local originalRuntimeConfig = game.config.tpf2mp
+local replacementRuntimeConfig = {}
+for key, value in pairs(originalRuntimeConfig) do replacementRuntimeConfig[key] = value end
+replacementRuntimeConfig.sessionId = "engine-test-new-session"
+game.config.tpf2mp = replacementRuntimeConfig
 script.load(priorNetworkSave)
 local freshSession = script.save()
 assert(freshSession.initialized == false and freshSession.match.status == "setup",
@@ -420,5 +424,5 @@ assert(freshSession.bridge.sessionId == "engine-test-new-session"
     == "launcher-new-network-session-over-prior-network-save"
   and freshSession.world.networkClock.startupPause.requested == false,
   "new network session did not record its physical-world-only bootstrap")
-game.config.tpf2mp.sessionId = "engine-test"
+game.config.tpf2mp = originalRuntimeConfig
 print("PASS game-script intent/commit/persistence integration")

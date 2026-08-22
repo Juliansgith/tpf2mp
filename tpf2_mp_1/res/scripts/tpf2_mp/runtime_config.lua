@@ -225,4 +225,77 @@ function M.read(options)
   }
 end
 
+-- Process environment, mod parameters, and the launcher identity are immutable
+-- for one game-script VM.  Only three one-way launcher markers can change
+-- after load.  Rebuilding the complete configuration on every engine/GUI
+-- update used to perform dozens of getenv calls and up to three file opens per
+-- call.  This reader retains the exact configuration table and samples only
+-- those sticky markers at a bounded call cadence.
+function M.newReader(options)
+  options = type(options) == "table" and options or {}
+  local stride = math.max(1, util.integer(options.dynamicStride, 30))
+  local readConfig = options.readConfig or function() return M.read() end
+  local emptySource = {}
+  local sourceIdentity = options.sourceIdentity or function()
+    return game and game.config and game.config.tpf2mp or emptySource
+  end
+  local markerExists = options.bridgeMarkerExists or bridgeMarkerExists
+  local markerValue = options.bridgeMarkerValue or bridgeMarkerValue
+  local cached, cachedSource, validationRequested
+  local callsUntilRefresh = 0
+  local stats = { reads = 0, dynamicRefreshes = 0, markerReads = 0 }
+
+  local function rebuild(source)
+    cached, cachedSource = readConfig(), source
+    validationRequested = cached.networkAutoValidate == true
+      or cached.networkManualHandoff == true
+    callsUntilRefresh = stride
+    stats.reads = stats.reads + 1
+  end
+
+  local function refreshDynamic()
+    stats.dynamicRefreshes = stats.dynamicRefreshes + 1
+    if cached.manualNetwork and cached.manualBootstrapReady ~= true then
+      stats.markerReads = stats.markerReads + 1
+      cached.manualBootstrapReady = markerValue(
+        cached.root, "manual-bootstrap-ready") == "ready"
+    end
+    if validationRequested and cached.networkManualHandoff ~= true then
+      stats.markerReads = stats.markerReads + 1
+      if markerExists(cached.root, "manual-handoff") then
+        cached.networkManualHandoff, cached.networkAutoValidate = true, false
+      end
+    end
+    if cached.manualNetwork and cached.automaticRecoveryPrepare ~= true then
+      stats.markerReads = stats.markerReads + 1
+      cached.automaticRecoveryPrepare = markerValue(
+        cached.root, "prepare-restore") == "ready"
+    end
+  end
+
+  local reader = {}
+  function reader.read(force)
+    local source = sourceIdentity()
+    if cached == nil or source ~= cachedSource then rebuild(source) end
+    callsUntilRefresh = callsUntilRefresh - 1
+    if force == true or callsUntilRefresh <= 0 then
+      callsUntilRefresh = stride
+      refreshDynamic()
+    end
+    return cached
+  end
+  function reader.invalidate()
+    cached, cachedSource, validationRequested = nil, nil, nil
+    callsUntilRefresh = 0
+  end
+  function reader.status()
+    return {
+      reads = stats.reads,
+      dynamicRefreshes = stats.dynamicRefreshes,
+      markerReads = stats.markerReads,
+    }
+  end
+  return reader
+end
+
 return M

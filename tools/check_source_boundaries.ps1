@@ -53,6 +53,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\recovery_prepare_runtime.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\recovery_native_save_runtime.lua' = 170
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
+    'tpf2_mp_1\res\scripts\tpf2_mp\validation_station_proposal.lua' = 160
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_clock.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_content_gate.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_town_development.lua' = 180
@@ -83,6 +84,7 @@ $budgets = [ordered]@{
     'companion\tpf2mp\anchor_prepare_phase.py' = 180
     'companion\tpf2mp\anchor_prepare_phase_recovery.py' = 140
     'companion\tpf2mp\anchor_io.py' = 320
+    'companion\tpf2mp\json_file_index.py' = 70
     'companion\tpf2mp\restore.py' = 400
     'companion\tpf2mp\restore_plan.py' = 180
     'companion\tpf2mp\native_save.py' = 70
@@ -190,6 +192,19 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_artifact.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_loader.lua' = 130
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\engine_background_runtime.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\economy_clock_policy.lua' = 30
+    'tpf2_mp_1\res\scripts\tpf2_mp\proposal_work_scheduler.lua' = 30
+    'tpf2_mp_1\res\scripts\tpf2_mp\construction_verification_runtime.lua' = 210
+    'tpf2_mp_1\res\scripts\tpf2_mp\construction_delta_attestation.lua' = 170
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_proposal_result_capture.lua' = 80
+    'tpf2_mp_1\res\scripts\tpf2_mp\construction_output_order.lua' = 60
+    'tpf2_mp_1\res\scripts\tpf2_mp\construction_proposal_materializer.lua' = 150
+    'tpf2_mp_1\res\scripts\tpf2_mp\construction_replay_state.lua' = 80
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_native_capture_scheduler.lua' = 90
+    'tpf2_mp_1\res\scripts\tpf2_mp\checkpoint_retention.lua' = 50
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_bootstrap_policy.lua' = 30
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_pump_errors.lua' = 30
 }
 
 foreach ($relative in $budgets.Keys) {

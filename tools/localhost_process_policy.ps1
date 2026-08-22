@@ -1,5 +1,28 @@
 Set-StrictMode -Version Latest
 
+function Disable-Tpf2mpProcessPowerThrottling([Diagnostics.Process]$Process) {
+    if (-not ('Tpf2mpProcessPowerNative' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class Tpf2mpProcessPowerNative {
+  [StructLayout(LayoutKind.Sequential)]
+  public struct State { public uint Version, ControlMask, StateMask; }
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool SetProcessInformation(IntPtr process, int informationClass,
+    ref State information, uint informationSize);
+  public static bool Disable(IntPtr process) {
+    var state = new State { Version = 1, ControlMask = 1, StateMask = 0 };
+    return SetProcessInformation(process, 4, ref state,
+      (uint)Marshal.SizeOf(typeof(State)));
+  }
+}
+'@
+    }
+    try { return [Tpf2mpProcessPowerNative]::Disable($Process.Handle) }
+    catch { return $false }
+}
+
 function Get-Tpf2mpLocalhostAffinityMask([ValidateSet('player1', 'player2')][string]$Peer) {
     $logical = [Environment]::ProcessorCount
     if ($logical -lt 4 -or $logical -gt 63) { return $null }
@@ -43,6 +66,7 @@ function Set-Tpf2mpLocalhostProcessPolicy(
         $Process.ProcessorAffinity = [intptr][int64]$mask
     }
     $Process.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
+    $powerThrottlingDisabled = Disable-Tpf2mpProcessPowerThrottling $Process
     return [pscustomobject]@{
         peer = $Peer
         pid = $Process.Id
@@ -50,6 +74,7 @@ function Set-Tpf2mpLocalhostProcessPolicy(
         logicalProcessors = [Environment]::ProcessorCount
         affinityMask = if ($null -ne $mask) { '0x{0:x}' -f $mask } else { $null }
         priority = [string]$Process.PriorityClass
+        powerThrottlingDisabled = $powerThrottlingDisabled
     }
 }
 

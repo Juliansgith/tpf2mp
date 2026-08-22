@@ -237,8 +237,70 @@ function Read-Tpf2mpSessionState {
     )
     $path = Join-Path (Get-Tpf2mpSessionRoot $Session $Peer) 'session-state.json'
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
-    try { return (Get-Content -LiteralPath $path -Raw | ConvertFrom-Json) }
-    catch { return $null }
+    for ($attempt = 0; $attempt -lt 5; $attempt++) {
+        try {
+            $stream = [IO.FileStream]::new(
+                $path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+                ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+            )
+            try {
+                $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+                try { $raw = $reader.ReadToEnd() }
+                finally { $reader.Dispose() }
+            }
+            finally {
+                if ($stream) { $stream.Dispose() }
+            }
+            if ([string]::IsNullOrWhiteSpace($raw)) { throw 'Session state is empty.' }
+            return ($raw | ConvertFrom-Json)
+        }
+        catch {
+            if ($attempt -ge 4) { return $null }
+            Start-Sleep -Milliseconds 20
+        }
+    }
+    return $null
+}
+
+function Write-Tpf2mpSessionState {
+    param(
+        [Parameter(Mandatory = $true)][string]$Session,
+        [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer,
+        [Parameter(Mandatory = $true)]$State,
+        [ValidateRange(2, 50)][int]$Attempts = 20
+    )
+    $root = Get-Tpf2mpSessionRoot $Session $Peer
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $path = Join-Path $root 'session-state.json'
+    $temporary = Join-Path $root ('.session-state.' + [guid]::NewGuid().ToString('N') + '.tmp')
+    $backup = $temporary + '.previous'
+    $json = $State | ConvertTo-Json -Depth 12
+    [IO.File]::WriteAllText($temporary, $json, [Text.UTF8Encoding]::new($false))
+    try {
+        for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+            try {
+                if ([IO.File]::Exists($path)) {
+                    [IO.File]::Replace($temporary, $path, $backup, $true)
+                }
+                else {
+                    [IO.File]::Move($temporary, $path)
+                }
+                return $path
+            }
+            catch {
+                if ($attempt -ge ($Attempts - 1)) { throw }
+                Start-Sleep -Milliseconds ([Math]::Min(250, 20 * ($attempt + 1)))
+            }
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporary -PathType Leaf) {
+            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
+        }
+        if (Test-Path -LiteralPath $backup -PathType Leaf) {
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Find-Tpf2mpPausedWakeEvidence {
@@ -338,4 +400,67 @@ function Get-Tpf2mpVerifiedCompanionProcess {
         }
     }
     return $process
+}
+
+function Get-Tpf2mpTcpListenerOwners {
+    param([Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$Port)
+
+    $connections = @()
+    try {
+        $connections = @(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction Stop)
+    }
+    catch {
+        # No matching listener is reported as an error on some Windows builds.
+        return @()
+    }
+    $owners = New-Object System.Collections.Generic.List[object]
+    foreach ($ownerPid in @($connections | Select-Object -ExpandProperty OwningProcess -Unique)) {
+        $native = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction SilentlyContinue
+        $commandLine = if ($native -and $native.CommandLine) { [string]$native.CommandLine } else { '' }
+        $sessionMatch = [Regex]::Match($commandLine,
+            '(?:^|\s)--session(?:\s+|=)"?([A-Za-z0-9][A-Za-z0-9._-]{0,63})"?(?=\s|$)')
+        $peerMatch = [Regex]::Match($commandLine,
+            '(?:^|\s)--peer(?:\s+|=)"?(player1|player2)"?(?=\s|$)')
+        $owners.Add([pscustomobject][ordered]@{
+            processId = [int]$ownerPid
+            processName = if ($native) { [string]$native.Name } else { 'unknown' }
+            executablePath = if ($native) { [string]$native.ExecutablePath } else { $null }
+            commandLine = $commandLine
+            session = if ($sessionMatch.Success) { $sessionMatch.Groups[1].Value } else { $null }
+            peer = if ($peerMatch.Success) { $peerMatch.Groups[1].Value } else { $null }
+            tpf2mpCompanion = $commandLine -match '(?i)(?:tpf2mp(?:\.exe)?|entrypoint\.py).*(?:host|client)'
+        })
+    }
+    return @($owners | ForEach-Object { $_ })
+}
+
+function Assert-Tpf2mpHostPortAvailable {
+    param(
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$Session
+    )
+    $safeSession = Assert-Tpf2mpSessionId $Session
+    $owners = @(Get-Tpf2mpTcpListenerOwners -Port $Port)
+    if ($owners.Count -eq 0) { return }
+    $owner = $owners[0]
+    $identity = if ($owner.tpf2mpCompanion -and $owner.session) {
+        "TPF2MP session '$($owner.session)'"
+    }
+    else { "process '$($owner.processName)'" }
+    throw "TCP port $Port is already occupied by $identity (PID $($owner.processId)). Stop the old session or choose another port before hosting '$safeSession'."
+}
+
+function Assert-Tpf2mpLoopbackJoinTarget {
+    param(
+        [Parameter(Mandatory = $true)][string]$HostAddress,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$Port,
+        [Parameter(Mandatory = $true)][string]$Session
+    )
+    if ($HostAddress -notin @('127.0.0.1', 'localhost', '::1')) { return }
+    $safeSession = Assert-Tpf2mpSessionId $Session
+    foreach ($owner in @(Get-Tpf2mpTcpListenerOwners -Port $Port)) {
+        if ($owner.tpf2mpCompanion -and $owner.session -and $owner.session -ne $safeSession) {
+            throw "Local port $Port belongs to TPF2MP session '$($owner.session)', not '$safeSession'. Stop the old host or copy its exact session name before joining."
+        }
+    }
 }

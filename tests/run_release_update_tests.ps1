@@ -218,6 +218,31 @@ if (-not ($checkOutput -join "`n").Contains('0.39.0-alpha is a verified local up
     throw 'End-to-end local update check did not verify the newer release archive.'
 }
 
+$sourceInstallRoot = Join-Path $caseRoot 'source-launcher-install'
+$sourceInstalledBundle = Join-Path $sourceInstallRoot 'versions\0.38.0-alpha'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $sourceInstalledBundle) | Out-Null
+Copy-Item -LiteralPath $currentFixture -Destination $sourceInstalledBundle -Recurse
+[pscustomobject][ordered]@{
+    schemaVersion = 2
+    version = '0.38.0-alpha'
+    bundleRoot = $sourceInstalledBundle
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $sourceInstallRoot 'current.json') -Encoding UTF8
+$sourceTreeFixture = Join-Path $caseRoot 'development-source-tree'
+New-Item -ItemType Directory -Force -Path (Join-Path $sourceTreeFixture '.git') | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $sourceTreeFixture 'companion\tpf2mp') | Out-Null
+[IO.File]::WriteAllText(
+    (Join-Path $sourceTreeFixture 'companion\tpf2mp\__init__.py'),
+    '__version__ = "0.38.0-alpha"',
+    [Text.UTF8Encoding]::new($false))
+$sourceCheckOutput = @(& (Join-Path $ProjectRoot 'tools\update_release.ps1') `
+    -BundleRoot $sourceTreeFixture -InstallRoot $sourceInstallRoot `
+    -ArchivePath $nextZip -ExpectedSha256 $nextHash -CheckOnly 6>&1)
+$sourceCheckText = $sourceCheckOutput -join "`n"
+if (-not $sourceCheckText.Contains('Development source tree detected') `
+        -or -not $sourceCheckText.Contains('0.39.0-alpha is a verified local update')) {
+    throw 'Development launcher did not delegate update checking to the installed signed release.'
+}
+
 $installedRoot = Join-Path $caseRoot 'installed-root'
 $installedMods = Join-Path $caseRoot 'installed mods'
 $installOutput = @(& (Join-Path $ProjectRoot 'tools\update_release.ps1') `

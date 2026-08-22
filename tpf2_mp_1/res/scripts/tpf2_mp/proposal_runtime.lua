@@ -11,6 +11,10 @@ local edgeOwnership = require "tpf2_mp/edge_ownership"
 local networkFinanceHousekeepingModule = require "tpf2_mp/network_finance_housekeeping"
 local resourceCompatibility = require "tpf2_mp/resource_compatibility"
 local activeRecordIndex = require "tpf2_mp/active_record_index"
+local proposalWorkScheduler = require "tpf2_mp/proposal_work_scheduler"
+local constructionVerificationModule = require "tpf2_mp/construction_verification_runtime"
+local constructionReplayState, constructionDeltaAttestation = require "tpf2_mp/construction_replay_state", require "tpf2_mp/construction_delta_attestation"
+local constructionOutputOrder = require "tpf2_mp/construction_output_order"
 
 local M = {}
 
@@ -19,9 +23,9 @@ local M = {}
 -- two-instance Build 35924 session has now been observed taking longer than
 -- 120 script updates even though both peers ultimately produced byte-for-byte
 -- equivalent worlds.  Keep the wait bounded, but allow enough headroom for
--- large stations and post-bulldoze entity retirement to settle.
 local CONSTRUCTION_SETTLE_TIMEOUT_TICKS = 600
-
+local CONSTRUCTION_FIRST_VERIFY_DELAY_TICKS = 2
+local CONSTRUCTION_VERIFY_INTERVAL_TICKS, CONSTRUCTION_PENDING_RESCAN_TICKS, CONSTRUCTION_STABLE_TICKS = 3, 6, 3
 M.verifyTopologyCollateralRemoved = proposalCollateralRuntime.verifyRemoved
 M.verifyRemovalOnlyInputsRemoved = proposalCollateralRuntime.verifyTopologyRemoved
 
@@ -38,7 +42,8 @@ function M.new(deps)
   local nodePosition = assert(deps.nodePosition, "nodePosition dependency is required")
   local applyCommitted = assert(deps.applyCommitted, "applyCommitted dependency is required")
   local observeProposal = deps.observeProposal or resourceCompatibility.observer(getState)
-  local networkFinanceHousekeeping = networkFinanceHousekeepingModule.new({ getState = getState })
+  local networkFinanceHousekeeping, networkFinanceHousekeepingDue =
+    networkFinanceHousekeepingModule.new({ getState = getState })
 
   -- Transport Fever replaces the persisted table during script.load. This
   -- proxy keeps every read/write aimed at the current table without forcing
@@ -58,7 +63,6 @@ function M.new(deps)
     nextOriginToken = 1,
   }
 
-  local setDifference = util.setDifference
   local financeWork = activeRecordIndex.new(function(record)
     return type(record) == "table" and record.status == "awaiting-finance"
       and type(record.pendingFinance) == "table"
@@ -67,9 +71,23 @@ function M.new(deps)
     return type(record) == "table" and type(record.transaction) == "table"
       and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
       and not proposalCodec.isTopologyConstructionRemoval(record.transaction)
-      and (record.status == "queued"
+      and ((record.status == "queued" and record.replayPath ~= "gui-build-proposal")
         or (record.status == "building-construction" and record.constructionPending))
   end)
+
+  local constructionVerification = constructionVerificationModule.new({
+    getState = getState,
+    componentEntitySet = componentEntitySet,
+    componentEntityExists = deps.componentEntityExists,
+  })
+
+  local function prepareConstructionReplay(record)
+    return constructionReplayState.prepare(record, {
+      codec = proposalCodec, verification = constructionVerification, fingerprint = world.fingerprint,
+      tick = state.tick, timeoutTicks = CONSTRUCTION_SETTLE_TIMEOUT_TICKS,
+      firstVerifyDelayTicks = CONSTRUCTION_FIRST_VERIFY_DELAY_TICKS,
+    })
+  end
 
   local function routeProposalFinance(record, observation)
     local companyCid = record.companyCid
@@ -535,6 +553,11 @@ function M.new(deps)
       proposalBindingRuntime.rollback(state, record)
       return false, "proposal issuer balance is unavailable"
     end
+    if constructionReplayState.isExact(record, proposalCodec) then
+      local pending, pendingError = prepareConstructionReplay(record)
+      if not pending then proposalBindingRuntime.rollback(state, record); return false, pendingError end
+      constructionReplayState.prime(record, pending)
+    end
     state.world.proposals.byId[eventId] = record
     if type(observeProposal) == "function" then
       -- The manager is diagnostic and must never become a second authority
@@ -643,15 +666,19 @@ function M.new(deps)
     end
     return false
   end
-  
+
+  local finaliseCanonicalConstruction
   local function finaliseCanonicalProposal(payload)
-    financeWork.invalidate()
+    financeWork.invalidate(); constructionWork.invalidate()
     payload = type(payload) == "table" and payload or {}
     local proposalId = tostring(payload.proposalId or "")
     local record = state.world.proposals.byId[proposalId]
     if not record then return false, "unknown pending canonical proposal" end
     if record.status == "applied" then return true, util.deepCopy(record.result) end
     if record.status == "failed" then return false, util.deepCopy(record.result) end
+    local exactConstruction = constructionReplayState.isExact(record, proposalCodec)
+    if exactConstruction and payload.fallbackHelper == true and payload.worldUnchanged == true then
+      return true, constructionReplayState.fallback(record) end
     if payload.success ~= true then
       return proposalFailure(record, {
         error = tostring(payload.error or "GUI-state BuildProposal was rejected"),
@@ -663,6 +690,12 @@ function M.new(deps)
         -- recoverable rejection instead of poisoning the whole session.
         rollbackLazyBindings = payload.worldUnchanged == true,
       })
+    end
+    if exactConstruction then
+      local accepted, acceptError = constructionReplayState.accept(
+        record, payload, state.tick, 0, proposalCodec.MAX_CONSTRUCTION_NODES)
+      if not accepted then return proposalFailure(record, acceptError) end
+      return finaliseCanonicalConstruction(record)
     end
     local createdEdgeIds = type(payload.createdEdgeIds) == "table" and payload.createdEdgeIds or {}
     local createdNodeIds = type(payload.createdNodeIds) == "table" and payload.createdNodeIds or {}
@@ -795,72 +828,9 @@ function M.new(deps)
     return completeProposalFinance(record, result, finalEdgeIds, createdNodeIds, payload)
   end
   
-  local function constructionComponentSets()
-    local types = api and api.type and api.type.ComponentType or {}
-    local descriptors = {
-      { kind = "construction", componentType = types.CONSTRUCTION, required = true },
-      { kind = "station", componentType = types.STATION, required = true },
-      { kind = "station_group", componentType = types.STATION_GROUP, required = true },
-      { kind = "depot", componentType = types.VEHICLE_DEPOT, required = true },
-      { kind = "asset", componentType = types.ASSET_GROUP, required = false },
-      { kind = "edge_object", componentType = types.SIGNAL_LIST, required = false },
-      { kind = "node", componentType = types.BASE_NODE, required = true },
-      { kind = "edge", componentType = types.BASE_EDGE, required = true },
-    }
-    local result = {}
-    for _, descriptor in ipairs(descriptors) do
-      if not descriptor.componentType then
-        if descriptor.required then
-          return nil, "construction component type is unavailable: " .. descriptor.kind
-        end
-        result[descriptor.kind] = {}
-      else
-        local set, setError = componentEntitySet(descriptor.componentType)
-        if not set then return nil, setError end
-        result[descriptor.kind] = set
-      end
-    end
-    return result
-  end
-  
   proposalPreparation.construction = {
-    componentKinds = {
-      "construction", "station", "station_group", "depot", "asset", "edge_object", "node", "edge",
-    },
+    componentKinds = constructionVerification.componentKinds,
   }
-  
-  local function constructionSetDelta(after, before)
-    local result = {}
-    for _, kind in ipairs(proposalPreparation.construction.componentKinds) do
-      result[kind] = setDifference(after and after[kind], before and before[kind])
-    end
-    return result
-  end
-  
-  local function constructionDeltaCounts(delta)
-    local result = {}
-    for _, kind in ipairs(proposalPreparation.construction.componentKinds) do
-      result[kind] = #(delta and delta[kind] or {})
-    end
-    return result
-  end
-  
-  function proposalPreparation.construction.sortedOutputs(kind, values)
-    local rows, seen = {}, {}
-    for _, localId in ipairs(values or {}) do
-      local ok, fingerprint = pcall(world.fingerprint, localId, kind)
-      if not ok or type(fingerprint) ~= "string" or fingerprint == "" then
-        return nil, "construction output fingerprint is unavailable for " .. kind
-      end
-      if seen[fingerprint] then
-        return nil, "construction produced ambiguous duplicate " .. kind .. " outputs"
-      end
-      seen[fingerprint] = true
-      rows[#rows + 1] = { localId = localId, fingerprint = fingerprint }
-    end
-    table.sort(rows, function(a, b) return a.fingerprint < b.fingerprint end)
-    return rows
-  end
   
   local function bindConstructionOutputs(record, existing, delta, pending)
     local bound = existing or {}
@@ -901,7 +871,10 @@ function M.new(deps)
         if not (construction.mode == "upgrade" and descriptor.kind == rootKind
           and tonumber(localId) == rootEntity) then values[#values + 1] = localId end
       end
-      local rows, rowsError = proposalPreparation.construction.sortedOutputs(descriptor.kind, values)
+      local rows, rowsError = constructionOutputOrder.rows(descriptor.kind, values, {
+        exact = pending.guiDelta ~= nil, proposalDigest = record.transaction.digest,
+        fingerprint = world.fingerprint,
+      })
       if not rows then return nil, rowsError end
       for index, row in ipairs(rows) do
         local localId = row.localId
@@ -913,6 +886,13 @@ function M.new(deps)
           proposalDigest = record.transaction.digest,
           outputSlot = slot,
           fingerprint = row.fingerprint,
+          -- Build 35924 exposes the generated IDs to the GUI immediately, but
+          -- touching some of their freshly created native components from the
+          -- engine game-script thread terminates that script environment.  The
+          -- GUI delta and proposal-derived fingerprint are the authoritative
+          -- attestation for exact replay; background probes must not re-enter
+          -- those component userdata just to rediscover the same identity.
+          nativeReadUnsafe = pending.guiDelta ~= nil,
         })
         if not ok then return nil, bindError end
         state.world.logicalOwners[tostring(localId)] = record.companyCid
@@ -920,7 +900,8 @@ function M.new(deps)
           cid = cid,
           kind = descriptor.kind,
           logicalOwnerCid = record.companyCid,
-          nativePlayerId = world.ownerOf(localId) or record.nativeOwnerPlayerId,
+          nativePlayerId = pending.guiDelta and record.nativeOwnerPlayerId
+            or world.ownerOf(localId) or record.nativeOwnerPlayerId,
           requestedPlayerId = state.companies[record.companyCid].playerId,
           reason = "canonical-construction-replay",
         }
@@ -978,8 +959,10 @@ function M.new(deps)
     if activePlayer ~= tonumber(record.issuerPlayerId) then
       return nil, "construction replay player mapping changed before execution"
     end
+    local started = constructionVerification.started()
     local called, entityOrError = pcall(
       interface.buildConstruction, pending.spec.fileName, pending.spec.params, pending.spec.transform)
+    constructionVerification.recordTiming("native-build-helper", started)
     local rootEntity = called and tonumber(entityOrError) or nil
     if not rootEntity or rootEntity < 0 then
       return nil, tostring(called and "construction helper returned no entity" or entityOrError)
@@ -994,6 +977,8 @@ function M.new(deps)
     pending.phase = "settling-build"
     pending.stableSinceTick = nil
     pending.lastSignature = nil
+    pending.lastReadySignature = nil
+    pending.nextVerificationTick = state.tick + CONSTRUCTION_FIRST_VERIFY_DELAY_TICKS
     return rootEntity
   end
 
@@ -1002,32 +987,11 @@ function M.new(deps)
     if activePlayer ~= tonumber(record.issuerPlayerId) then
       return proposalFailure(record, "construction replay player mapping changed before execution")
     end
-    local spec, materialiseError = proposalCodec.materialiseConstruction(record.transaction)
-    if not spec then return proposalFailure(record, tostring(materialiseError)) end
-    local before, captureError = constructionComponentSets()
-    if not before then return proposalFailure(record, tostring(captureError)) end
-    local beforeFingerprints = {}
-    for _, kind in ipairs(proposalPreparation.construction.componentKinds) do
-      beforeFingerprints[kind] = {}
-      for localId in pairs(before[kind] or {}) do
-        local ok, fingerprint = pcall(world.fingerprint, localId, kind)
-        if ok then beforeFingerprints[kind][localId] = fingerprint end
-      end
-    end
+    local pending, materialiseError = prepareConstructionReplay(record)
+    if not pending then return proposalFailure(record, tostring(materialiseError)) end
+    local spec = pending.spec
     record.balanceBefore = balanceOf(record.issuerPlayerId)
     record.nativeOwnerBalanceBefore = balanceOf(record.nativeOwnerPlayerId)
-    local pending = {
-      rootEntity = nil,
-      sourceRootEntity = spec.mode ~= "build" and tonumber(
-        record.localRefs and record.localRefs[spec.sourceCid]) or nil,
-      spec = util.deepCopy(spec),
-      before = before,
-      beforeFingerprints = beforeFingerprints,
-      startedTick = state.tick,
-      deadlineTick = state.tick + CONSTRUCTION_SETTLE_TIMEOUT_TICKS,
-      stableSinceTick = nil,
-      lastSignature = nil,
-    }
     local interface = game and game.interface or {}
     local called, entityOrError, rootEntity
     if spec.mode == "build" then
@@ -1077,6 +1041,7 @@ function M.new(deps)
       if not called then return proposalFailure(record, tostring(entityOrError)) end
       pending.rootEntity = rootEntity
       pending.phase = "settling-change"
+      pending.nextVerificationTick = state.tick + CONSTRUCTION_FIRST_VERIFY_DELAY_TICKS
     end
     if spec.mode == "upgrade" and type(game.interface.setPlayer) == "function" then
       local assigned, assignError = pcall(game.interface.setPlayer, rootEntity, record.nativeOwnerPlayerId)
@@ -1103,15 +1068,6 @@ function M.new(deps)
     end
     table.sort(values)
     return values
-  end
-  
-  function proposalPreparation.construction.changeSignature(added, removed)
-    local parts = {}
-    for _, kind in ipairs(proposalPreparation.construction.componentKinds) do
-      parts[#parts + 1] = kind .. "+" .. tostring(#(added[kind] or {}))
-        .. "-" .. tostring(#(removed[kind] or {}))
-    end
-    return table.concat(parts, ":")
   end
   
   function proposalPreparation.construction.unexpectedTopologyRemoval(record, removed)
@@ -1167,7 +1123,9 @@ function M.new(deps)
           cid = canonical.resolveCanonical(state.canonical, kind, localId),
         }
       end
-      newRows = proposalPreparation.construction.sortedOutputs(kind, added[kind] or {})
+      newRows = constructionOutputOrder.rows(kind, added[kind] or {}, {
+        fingerprint = world.fingerprint,
+      })
       if not newRows then return nil, "changed " .. kind .. " outputs are ambiguous" end
       table.sort(oldRows, function(a, b)
         return tostring(a.fingerprint or "") < tostring(b.fingerprint or "")
@@ -1215,15 +1173,23 @@ function M.new(deps)
     return true
   end
   
-  local function finaliseCanonicalConstruction(record)
+  finaliseCanonicalConstruction = function(record)
     local pending = record.constructionPending
-    local after, captureError = constructionComponentSets()
-    if not after then return proposalFailure(record, tostring(captureError)) end
     if pending.phase == "clearing-collateral" then
-      local pendingRemovalInputs, pendingRemovalKinds =
-        proposalPreparation.construction.pendingRemovalInputs(record, after)
+      local pendingRemovalInputs, pendingRemovalKinds, targetedError =
+        constructionVerification.inputsPending(record.localInputs)
+      local after, captureError
+      if pendingRemovalInputs == nil then
+        after, captureError = constructionVerification.snapshot()
+        if not after then
+          return proposalFailure(record, tostring(captureError or targetedError))
+        end
+        pendingRemovalInputs, pendingRemovalKinds =
+          proposalPreparation.construction.pendingRemovalInputs(record, after)
+      end
       if pendingRemovalInputs > 0 then
         if state.tick < pending.deadlineTick then
+          pending.nextVerificationTick = state.tick + CONSTRUCTION_PENDING_RESCAN_TICKS
           return true, {
             waiting = true,
             phase = pending.phase,
@@ -1241,17 +1207,38 @@ function M.new(deps)
       if not rootEntity then return proposalFailure(record, buildError) end
       return true, { building = true, rootEntity = rootEntity }
     end
-    local added = constructionSetDelta(after, pending.before)
-    local removed = constructionSetDelta(pending.before, after)
-    local counts, removedCounts = constructionDeltaCounts(added), constructionDeltaCounts(removed)
-    local signature = proposalPreparation.construction.changeSignature(added, removed)
-    if pending.lastSignature ~= signature then
-      pending.lastSignature = signature
-      pending.stableSinceTick = state.tick
+    if not pending.guiDelta
+      and state.tick < util.integer(pending.nextVerificationTick, state.tick) then
+      return true, {
+        waiting = true, phase = pending.phase, verificationDeferred = true,
+        nextVerificationTick = pending.nextVerificationTick,
+      }
     end
-    pending.lastCounts, pending.lastRemovedCounts = counts, removedCounts
     local mode = pending.spec.mode
     local rootKind = pending.spec.kind == "asset" and "asset" or "construction"
+    -- A targeted getComponent(CONSTRUCTION) lookup can transiently report nil
+    -- for a root returned by BuildProposal while the same root is already in
+    -- forEachEntityWithComponent and its generated station graph is complete.
+    -- We need the full before/after sets below in every case, so make that
+    -- snapshot authoritative instead of turning a false-negative shortcut
+    -- into a verification timeout.
+    local after, added, removed
+    if pending.guiDelta then
+      added, removed = pending.guiDelta.added, pending.guiDelta.removed
+      after = constructionDeltaAttestation.apply(pending.before, pending.guiDelta)
+    else
+      local captureError
+      after, captureError = constructionVerification.snapshot()
+      if not after then return proposalFailure(record, tostring(captureError)) end
+      added = constructionVerification.delta(after, pending.before)
+      removed = constructionVerification.delta(pending.before, after)
+    end
+    pending.verificationScans = util.integer(pending.verificationScans, 0) + 1
+    constructionReplayState.identifyBuiltRoot(pending, added, rootKind)
+    local counts, removedCounts = constructionVerification.counts(added), constructionVerification.counts(removed)
+    local signature = constructionVerification.signature(added, removed)
+    pending.lastSignature = signature
+    pending.lastCounts, pending.lastRemovedCounts = counts, removedCounts
     local rootSet = after[rootKind] or {}
     local beforeRootSet = pending.before[rootKind] or {}
     if mode == "upgrade" and not rootSet[pending.rootEntity]
@@ -1309,10 +1296,26 @@ function M.new(deps)
       if #(added[kind] or {}) > proposalCodec.MAX_CONSTRUCTION_NODES
         or #(removed[kind] or {}) > proposalCodec.MAX_CONSTRUCTION_NODES then ready = false end
     end
-    local stable = state.tick - util.integer(pending.stableSinceTick, state.tick) >= 3
+    if ready then
+      if pending.lastReadySignature ~= signature or pending.stableSinceTick == nil then
+        pending.lastReadySignature = signature
+        pending.stableSinceTick = state.tick
+      end
+    else
+      pending.lastReadySignature = nil
+      pending.stableSinceTick = nil
+    end
+    local stable = pending.guiDelta and ready or (ready and state.tick
+      - util.integer(pending.stableSinceTick, state.tick) >= CONSTRUCTION_STABLE_TICKS)
     if not ready or not stable then
-      if state.tick < pending.deadlineTick then
-        return true, { waiting = true, mode = mode, counts = counts, removedCounts = removedCounts }
+      if not pending.guiDelta and state.tick < pending.deadlineTick then
+        pending.nextVerificationTick = state.tick
+          + (ready and CONSTRUCTION_VERIFY_INTERVAL_TICKS or CONSTRUCTION_PENDING_RESCAN_TICKS)
+        return true, {
+          waiting = true, mode = mode, counts = counts, removedCounts = removedCounts,
+          verificationScans = pending.verificationScans,
+          nextVerificationTick = pending.nextVerificationTick,
+        }
       end
       return proposalFailure(record, {
         error = "construction change did not stabilize to its canonical postcondition",
@@ -1398,6 +1401,7 @@ function M.new(deps)
       companyCid = record.companyCid,
       constructionKind = pending.spec.kind,
       constructionMode = mode,
+      constructionReplayPath = record.replayPath or "engine-helper",
       outputs = {},
     }
     for _, item in ipairs(bound) do
@@ -1418,7 +1422,7 @@ function M.new(deps)
       if type(record) == "table" and record.transaction
         and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
         and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
-        if record.status == "queued"
+        if (record.status == "queued" and record.replayPath ~= "gui-build-proposal")
           or (record.status == "building-construction" and record.constructionPending) then
           -- The helper mutates the native world over several ticks.  Record every
           -- bounded step as a machine-local event; the final step then captures
@@ -1442,8 +1446,15 @@ function M.new(deps)
     beginConstruction = beginCanonicalConstruction,
     finaliseConstruction = finaliseCanonicalConstruction,
     processConstructions = processCanonicalConstructionProposals,
+    hasConstructionWork = function()
+      return proposalWorkScheduler.hasDueConstruction(state, constructionWork)
+    end,
     processFinances = processPendingProposalFinances,
+    hasFinanceWork = function()
+      return proposalWorkScheduler.hasDueFinance(state, financeWork)
+    end,
     financeHousekeeping = networkFinanceHousekeeping,
+    financeHousekeepingDue = networkFinanceHousekeepingDue,
     emitCompletion = emitProposalCompletion,
   }
 end

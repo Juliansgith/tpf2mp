@@ -359,6 +359,14 @@ try {
         Receive-And-BindRestorePlan
         if (-not (Get-ExactRecoveryGame)) {
             Write-RecoveryWatcherStatus 'stopped-game-exited'
+            # The watcher outlives the foreground launcher by design.  It is
+            # therefore also the only process guaranteed to observe a user
+            # closing the exact game later.  Retire the matching companion so
+            # it cannot keep the shared TCP port or accept a future session.
+            if (Read-Tpf2mpSessionState $safeSession $Peer) {
+                & (Join-Path $PSScriptRoot 'stop_network_session.ps1') `
+                    -Session $safeSession -Peer $Peer -KeepCurrentWatcher
+            }
             break
         }
         $readyBoundary = 0

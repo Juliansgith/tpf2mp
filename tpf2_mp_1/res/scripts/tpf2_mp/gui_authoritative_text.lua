@@ -270,8 +270,8 @@ function M.station(snapshot, localId)
   }
 end
 
-function M.toolbar(snapshot)
-  local company = M.company(snapshot)
+function M.toolbar(snapshot, company)
+  company = company or M.company(snapshot)
   local totals = snapshot and snapshot.passengerPresentation
     and snapshot.passengerPresentation.totals or {}
   local cargoTotals = snapshot and snapshot.cargoPresentation

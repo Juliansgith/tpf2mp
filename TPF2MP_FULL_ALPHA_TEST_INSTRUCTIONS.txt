@@ -1,0 +1,441 @@
+TPF2MP FULL PLAYABLE-ALPHA TEST INSTRUCTIONS
+============================================
+
+Target
+------
+Transport Fever 2 Build 35924 (Windows x64)
+TPF2MP 0.38.3-alpha or the current development build
+Two players, trusted LAN/private VPN, or two instances on one PC
+
+This is the complete baseline test. For the first pass, load TPF2MP only.
+Do not deliberately enable any Workshop or third-party mods. TPF2MP itself is
+loaded by the launcher. Test data-only mods later in a separate match, with the
+exact same content and load order on both peers.
+
+IMPORTANT FOR THE CURRENT ATTEMPT
+---------------------------------
+Do not reuse either of these failed session names:
+
+  match-20260820-2218
+  match-20260820-2220
+  match-20260820-2237
+  match-20260820-2241
+
+These contain failed bridge/native-loader evidence. Start the test below with a
+brand-new session name.
+
+
+1. BEFORE LAUNCHING
+-------------------
+
+[ ] Close every Transport Fever 2 process.
+[ ] Close any other Steam game before starting the two-instance test.
+[ ] Keep Steam logged in.
+[ ] Update/install the same TPF2MP build for both peers.
+[ ] Confirm the game is exact Build 35924.
+[ ] Use the same starting save for both peers.
+
+For this PC, use:
+
+  C:\Program Files (x86)\Steam\userdata\63389028\1066780\local\save\TFPM_ALPHA_STARTER.sav
+
+The launcher requires the adjacent metadata file too:
+
+  TFPM_ALPHA_STARTER.sav.lua
+
+On two physical computers, copy the .sav, .sav.lua, and optional .jpg together.
+Do not open and re-save the copy on Player 2: both peers must select identical
+bytes. On localhost, simply select the same .sav path in both launchers.
+
+The current starter-save baseline is:
+
+  - economy difficulty: Normal
+  - native-agent policy: Skeleton
+  - physical town development: Off
+  - model-owned town growth and competitive demand: Active after bootstrap
+  - expected starting cash: $50,000,000 per company
+
+
+2. OPEN TWO LAUNCHERS
+---------------------
+
+For the current development build, run this twice:
+
+  C:\Users\Sepgi\Downloads\tf2mod\LAUNCH_TPF2MP.cmd
+
+For an installed-release user-flow test, open the desktop shortcut named:
+
+  TPF2MP Multiplayer
+
+Do not mix a source launcher and an installed-release launcher in one match.
+
+Call the first launcher P1/HOST and the second P2/JOIN.
+
+In P1/HOST:
+
+[ ] Click New name once.
+[ ] Copy the complete generated Session name.
+[ ] Select TFPM_ALPHA_STARTER.sav.
+[ ] Leave TCP port at 29742.
+
+In P2/JOIN:
+
+[ ] Paste the exact P1 session name over P2's independently generated name.
+[ ] Select the exact same TFPM_ALPHA_STARTER.sav.
+[ ] Set Host address to 127.0.0.1 for localhost.
+[ ] Leave TCP port at 29742.
+
+The session name, port, and save must be identical. Opening two launcher
+windows does NOT currently give them the same default session name.
+
+
+3. HOST AND JOIN
+----------------
+
+[ ] In P1, click HOST + LAUNCH GAME.
+[ ] Wait until its launcher reports that the host is listening and the game
+    reaches the title menu.
+[ ] In P2, click JOIN + LAUNCH GAME.
+[ ] Wait until P2 also reaches the title menu.
+[ ] Click MULTIPLAYER on the P1 title screen.
+[ ] Click MULTIPLAYER on the P2 title screen.
+
+The launcher should drive Load Game, select its byte-pinned copy of the save,
+and start it. Do not use the ordinary Load Game button yourself.
+
+Build 35924 can intermittently hang while opening its native Load Game page.
+The launcher now waits for a bounded transition and retries that exact
+role/session/save once. An identical already-pinned save is verified and reused;
+different or partial residue is still rejected. If both bounded attempts fail,
+keep the evidence and use a new session name rather than repeatedly clicking.
+
+Identity:
+
+  P1 = Host = player1 = Company 1
+  P2 = Join = player2 = Company 2
+
+If P2 reports that its local port belongs to another session, stop the named old
+host or use that host's exact session name. If P2 says its companion did not
+become ready, first compare the full session names. A mismatch is intentionally
+rejected before the P2 game launches.
+
+
+4. INITIAL READINESS CHECK
+--------------------------
+
+When each world appears:
+
+[ ] Open Multiplayer from the in-game HUD or Escape menu.
+[ ] Select Alpha Status on both peers.
+[ ] Wait until both say READY.
+[ ] Confirm the profile is trusted-lan-two-player-alpha.
+[ ] Confirm there is no BLOCK line, session fault, pending proposal,
+    pending operation, pending checkpoint, or queued ordered work.
+[ ] Confirm P1 owns Company 1 and P2 owns Company 2.
+[ ] Confirm both companies have about $50,000,000 and no inherited $30m loan.
+[ ] Confirm both worlds show the same epoch, service count, route counts, and
+    last agreed checkpoint.
+
+Warnings such as "no services" are expected before a line exists. Do not use
+the test-only build-gate, authorization, cash-repair, or standalone buttons.
+
+
+5. BASIC SHARED CLOCK AND UI
+----------------------------
+
+[ ] Request Speed 1 from P1 and confirm both follow.
+[ ] Request Speed 3 from P2 and confirm both follow after a small delay.
+[ ] Pause from P1 and confirm both pause.
+[ ] Resume at Speed 3 from either peer and confirm both resume.
+[ ] Close and reopen the Multiplayer window through Escape > Multiplayer.
+[ ] Confirm Overview, Routes / Transfers, Compatibility, and Alpha Status all
+    open and update without manually pressing Refresh.
+
+Record P1 and P2 idle FPS for roughly 30 seconds before building anything.
+
+
+6. BIDIRECTIONAL CONSTRUCTION AND OWNERSHIP
+-------------------------------------------
+
+Use a disposable area for the deletion tests. Wait for each object to appear
+on the other peer before issuing the next action.
+
+P1 builds:
+
+[ ] A short road connected to a public/town road.
+[ ] Normal track, one electrified/high-speed upgrade, and a crossover.
+[ ] One track crossing a road.
+[ ] One short bridge or tunnel.
+[ ] A two-track passenger station.
+[ ] A rail depot connected to the track.
+[ ] A signal and a waypoint.
+[ ] One plain construction such as a bench, lamp, or fence.
+
+For every item, verify:
+
+[ ] It appears in the intended position on P2, normally within about a second.
+[ ] Only P1's competitive wallet pays for it.
+[ ] Compatibility lists the exact road/track/station/object resource used.
+[ ] Alpha Status returns to READY before continuing.
+
+P2 then builds a separate short road/track/station or construction. Verify it
+appears on P1 and only P2 pays.
+
+Ownership veto:
+
+[ ] P2 attempts to extend, electrify, edit, or bulldoze P1 private track.
+[ ] The action is rejected and neither world nor wallet changes.
+[ ] P1 attempts the equivalent action against P2 private infrastructure.
+[ ] It is also rejected.
+[ ] Connecting either player to public town roads remains allowed.
+
+Deletion/editing regression checks:
+
+[ ] Delete a disposable track segment connected to another track.
+[ ] Delete a disposable road segment attached to a town road/house.
+[ ] Place a station where it removes one native building.
+[ ] Perform one modular station edit and then remove that module.
+[ ] Confirm each successful result is identical on both peers.
+[ ] Confirm a rejected edit does not poison later building or bulldozing.
+
+
+7. PASSENGER LINE AND VEHICLE OPERATIONS
+----------------------------------------
+
+On P1, build a usable A <-> B railway:
+
+[ ] Two passenger stations.
+[ ] Connected track and a depot connection.
+[ ] Create a line using the ordinary vanilla Line Manager.
+[ ] Add both stops and verify the train can find a path.
+[ ] Buy a passenger-capable train through the ordinary depot UI.
+[ ] Assign it to the line.
+[ ] Buy and assign a second train to the same line.
+[ ] Rename or recolor the line once.
+[ ] Exercise one vehicle command, such as stop/start, reverse, replace, or
+    return to depot, without breaking the active service.
+
+Expected behavior:
+
+[ ] The line registers automatically; Multiplayer shows at least one service.
+[ ] Both physical trains appear and move in both worlds.
+[ ] P2 does not need to see P1's line in P2's company-scoped vanilla Line
+    Manager. That manager is per company. Use Multiplayer for shared facts.
+[ ] P1's purchase and operating costs do not debit P2.
+[ ] A P2 player cannot operate, sell, reassign, or edit P1's train/line.
+[ ] Both trains can use their platforms without becoming permanently stopped.
+
+
+8. TRAIN RENDEZVOUS, ESCAPE PAUSE, AND DRIFT
+--------------------------------------------
+
+[ ] Let both trains complete several station visits at Speed 3.
+[ ] Leave P2 inside the Escape menu for 30-60 seconds.
+[ ] Confirm the shared clock pauses both worlds after a short network delay.
+[ ] Close Escape and request Speed 3 from either peer.
+[ ] Confirm the session returns to Speed 3 and does not remain stuck paused.
+[ ] Watch the next station visit: the leading copy may wait for its peer, but
+    both copies must receive a release and continue.
+[ ] Confirm two trains do not remain held forever at separate platforms.
+
+A small mid-leg visual position lead is acceptable. Exact coordinates are not
+continuously teleported. Station rounds, loads, deliveries, and the next leg's
+departure are the synchronization boundary. Report any lead that grows every
+round or any station hold longer than roughly one minute without a reconnect.
+
+
+9. PASSENGER ECONOMY AND PRESENTATION
+-------------------------------------
+
+[ ] Let the service run for at least one automatic settlement.
+[ ] Do not manually settle epochs during this normal-user test.
+[ ] In Multiplayer Overview, confirm positive passenger demand, capacity,
+    boarded/completed passengers, revenue, costs, and net result.
+[ ] Confirm the wallet changes only once for authored revenue/costs.
+[ ] Confirm queues move between waiting and aboard as trains arrive/depart.
+[ ] Confirm adding the second train changes service capacity/headway.
+[ ] Let at least two settlements complete and check model-town demand/growth.
+
+Accounting settles every five synchronized model minutes. Native 3D people,
+yellow station icons, income bubbles, and the native history chart are cosmetic.
+Trust the TPF2MP authoritative text in the stock panels and Multiplayer views.
+Skeleton mode intentionally uses far fewer native agents than modeled financial
+passenger cohorts.
+
+
+10. MULTI-HOP PASSENGER CONNECTION
+----------------------------------
+
+[ ] Keep A <-> B operating.
+[ ] Build and operate B <-> C.
+[ ] Reuse the exact same station group at B; a merely nearby station is not a
+    transfer station.
+[ ] Open Routes / Transfers.
+[ ] Confirm an A -> B -> C passenger route appears with one transfer.
+[ ] After another automatic settlement, confirm the connecting route adds
+    demand and both services keep operating.
+
+Optional: use a bus or tram for B <-> C while sharing B's station group. The
+authoritative route manager should remain carrier-neutral.
+
+
+11. CARGO DESTINATION AND MULTI-HOP CONSERVATION
+------------------------------------------------
+
+An oil well -> hub -> oil refinery chain is a convenient vanilla test.
+
+First make an incomplete chain:
+
+[ ] Put a cargo station in catchment of a producing industry.
+[ ] Put a Hub cargo station away from a compatible consumer.
+[ ] Create Source -> Hub and assign a compatible cargo vehicle.
+[ ] Let it visit the source.
+[ ] In Routes / Transfers, confirm the line says WAITING/no compatible path.
+[ ] Confirm authoritative cargo demand, transfer stock, and delivery revenue
+    remain zero. A producer alone must not create shippable model cargo.
+
+Complete the chain:
+
+[ ] Add a second line from the exact same Hub station group to a station in
+    catchment of an industry consuming that cargo type.
+[ ] Assign a compatible vehicle to the downstream line.
+[ ] Confirm one two-leg cargo path appears automatically.
+[ ] Observe upstream boarding at Source.
+[ ] Observe Hub transfer stock increase after unloading.
+[ ] Observe the downstream vehicle board no more than the Hub holds.
+[ ] Confirm Hub stock falls by exactly the boarded amount.
+[ ] Confirm only final delivery enters delivered totals and revenue.
+[ ] Confirm no negative stock, duplication, or cargo without a destination.
+
+
+12. PERFORMANCE OBSERVATIONS
+----------------------------
+
+With two trains running at Speed 3, record:
+
+[ ] P1 and P2 FPS while idle for 60 seconds.
+[ ] P1 and P2 FPS while panning over the railway.
+[ ] FPS with one train details window open for 30 seconds.
+[ ] Whether that window constantly resizes, refreshes, or causes rhythmic lag.
+[ ] FPS while previewing and placing one larger station.
+[ ] Any pause lasting more than 10 seconds without a deliberate Escape pause,
+    checkpoint, restore save, or reconnect.
+[ ] The native reconciliation counter before and after 60 idle seconds.
+
+Some host overhead is expected, but a persistent 4-5x host/client FPS gap,
+continuous idle reconciliation growth, or repeated multi-second stutters is a
+performance failure worth reporting.
+
+
+13. AUTOMATIC RESTORE POINT AND RELOAD
+--------------------------------------
+
+Do this only when both Alpha Status views say READY and all construction has
+appeared on both peers.
+
+[ ] Click Prepare & Save Restore Point once, preferably on P1.
+[ ] Stop issuing gameplay actions while preparation/save automation runs.
+[ ] Allow the game to pause or briefly open the stock Save UI automatically.
+[ ] Do not type a save name or click around in the Save UI.
+[ ] Wait until both panels show a Restore points boundary and no preparation,
+    native-save, checkpoint, or receipt work remains pending.
+[ ] Note both wallets, train positions/station round, waiting/aboard counts,
+    cargo transfer stock, and route counts.
+[ ] Exit both games normally.
+
+Reload on localhost:
+
+[ ] Open two fresh launcher windows.
+[ ] In the P1 launcher click LOAD LATEST RESTORE and choose Yes for
+    Host/player1.
+[ ] In the P2 launcher click LOAD LATEST RESTORE and choose No for
+    Join/player2.
+[ ] The launcher should lock the new resume-session name and select each
+    peer-specific attested save.
+[ ] Confirm both launchers show the same resume session and port 29742.
+[ ] P1 clicks HOST + LAUNCH GAME; P2 clicks JOIN + LAUNCH GAME.
+[ ] Click MULTIPLAYER in both title menus.
+[ ] Wait for the mandatory post-restore checkpoint and READY on both peers.
+[ ] Confirm lines, vehicles, ownership, finances, passenger/cargo queues,
+    transfer stock, and station rounds survived.
+[ ] Resume at Speed 3 and let every active vehicle complete another stop.
+
+Never load P1's restore save as P2 or combine saves from different boundaries.
+
+
+14. OPTIONAL TWO-COMPUTER RECONNECT TEST
+----------------------------------------
+
+Skip this on localhost. Do not kill a companion process as a substitute.
+
+[ ] While both games remain open, interrupt Player 2's network for 15-30 sec.
+[ ] Confirm both games pause and Alpha Status says reconnecting.
+[ ] Restore the network within 120 seconds.
+[ ] Wait for backlog replay and both Alpha Status views to return to READY.
+[ ] Manually request Speed 3 and confirm the next station round completes.
+
+If the 120-second grace expires, the correct result is a faulted match. Do not
+continue either world independently; use the latest paired restore point.
+
+
+15. FINAL EVIDENCE
+------------------
+
+While both localhost games and companions are still running and READY:
+
+[ ] Click Export Research in each game.
+[ ] Click Export Snapshot in each game.
+[ ] In the launcher, click CHECK PLAYABLE ALPHA.
+[ ] Require a PASS. If it fails, keep the exact message and session name.
+[ ] Take screenshots of both Alpha Status views and any visual mismatch.
+[ ] Use Open session files if logs/evidence need to be inspected.
+
+After evidence collection, exit both games and use Stop session / lab if a
+companion remains. Do not leave the two game instances running overnight.
+
+
+16. STOP IMMEDIATELY IF ANY OF THESE OCCUR
+------------------------------------------
+
+  - Alpha Status says FAULTED.
+  - Geometry differs between peers after the checkpoint finishes.
+  - Only one peer accepts an ordered construction/operation.
+  - A wallet changes on the wrong company or changes twice.
+  - Later construction stops working after one rejected action.
+  - A train is held permanently with no reconnect/checkpoint pending.
+  - "An error just occurred" appears in either game.
+  - A launcher reports a fingerprint, save, session, or authority mismatch.
+
+When one occurs:
+
+1. Do not build, bulldoze, buy, assign, or settle anything else.
+2. Leave both games open if they are still responsive.
+3. Record the session name, P1/P2, game speed, and last action.
+4. Export Research and Snapshot if the buttons still respond.
+5. Capture the exact console/launcher error and a screenshot.
+6. Report whether the action appeared on neither, one, or both worlds.
+
+
+SHORT RESULT TEMPLATE
+---------------------
+
+Session:
+Build/release:
+Starting save:
+Extra mods: none / list
+P1 Alpha Status:
+P2 Alpha Status:
+Construction/ownership:
+Passenger A-B:
+Passenger A-B-C transfer:
+Two-train station sync:
+Cargo no-destination check:
+Cargo two-leg transfer:
+Automatic settlements:
+Restore/reload:
+P1 idle/moving FPS:
+P2 idle/moving FPS:
+Longest unexplained pause:
+First failed action and exact time:
+Error text:
+Screenshots/evidence path:

@@ -392,6 +392,28 @@ script.init()
 assert(buildGateEnables == 1 and commandGateEnables == 1,
   "player2 network startup did not enable both native authority gates")
 
+-- This integration fixture exercises only the engine/game-script half of the
+-- runtime, so it has no GUI state in which to construct a typed
+-- SimpleProposal.ConstructionEntity. Reproduce the production fail-safe: the
+-- GUI attests that the world is unchanged and asks the engine to use the
+-- legacy helper. Exact typed replay is covered by the GUI/materializer tests
+-- and the disposable supported-API live probe.
+local function requestConstructionHelperFallback(record)
+  assert(record and record.status == "queued"
+      and record.replayPath == "gui-build-proposal",
+    "schema-7 construction was not primed for exact GUI replay")
+  script.handleEvent("test", "tpf2mp", "proposal.result", {
+    proposalId = record.proposalId,
+    success = false,
+    fallbackHelper = true,
+    worldUnchanged = true,
+    error = "fixture has no GUI state",
+  })
+  local fallback = assert(script.save().world.proposals.byId[record.proposalId])
+  assert(fallback.status == "queued" and fallback.replayPath == "helper-fallback",
+    "unchanged-world construction fallback did not return to the helper queue")
+end
+
 writeCommit(1, "player1", { type = "match.initialise" })
 script.update()
 local initialized = script.save()
@@ -920,6 +942,8 @@ end
 local stationBalanceBefore = players[100].balance
 writeCommit(15, "player2", { type = "proposal.build", transaction = stationTransaction })
 script.update() -- ordered commit queues the transaction
+requestConstructionHelperFallback(
+  script.save().world.proposals.byId[proposalId("player2", 15)])
 for _ = 1, 150 do script.update() end
 local delayedStationState = script.save()
 local delayedStationRecord = delayedStationState.world.proposals.byId[proposalId("player2", 15)]
@@ -1084,6 +1108,8 @@ depotBuildFixture = {
 }
 writeCommit(21, "player2", { type = "proposal.build", transaction = depotTransaction })
 script.update()
+requestConstructionHelperFallback(
+  script.save().world.proposals.byId[proposalId("player2", 21)])
 for _ = 1, 6 do script.update() end
 local depotRecord = assert(script.save().world.proposals.byId[proposalId("player2", 21)])
 assert(depotRecord.status == "applied" and #depotRecord.result.outputs == 5,
@@ -1120,6 +1146,12 @@ assetBuildFixture = {
 }
 writeCommit(24, "player2", { type = "proposal.build", transaction = assetTransaction })
 script.update()
+-- Let the helper work index prove the exact GUI-owned queue idle before the
+-- GUI fallback changes ownership. finalise must invalidate that exhausted
+-- index or this construction remains queued forever.
+script.update()
+requestConstructionHelperFallback(
+  script.save().world.proposals.byId[proposalId("player2", 24)])
 for _ = 1, 6 do script.update() end
 local assetRecord = assert(script.save().world.proposals.byId[proposalId("player2", 24)])
 local assetCid = canonical.resolveCanonical(script.save().canonical, "asset", 8201)

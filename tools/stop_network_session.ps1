@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Session,
     [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer,
     [string]$ArchiveSavePath,
-    [switch]$StopGame
+    [switch]$StopGame,
+    [switch]$KeepCurrentWatcher
 )
 
 $ErrorActionPreference = 'Stop'
@@ -31,7 +32,7 @@ if ($state.PSObject.Properties['menuCoordinatorPid'] -and $state.menuCoordinator
     }
 }
 
-if ($state.PSObject.Properties['recoveryWatcherPid'] -and $state.recoveryWatcherPid) {
+if (-not $KeepCurrentWatcher -and $state.PSObject.Properties['recoveryWatcherPid'] -and $state.recoveryWatcherPid) {
     $watcherPid = [int]$state.recoveryWatcherPid
     $watcherNative = Get-CimInstance Win32_Process -Filter "ProcessId = $watcherPid" -ErrorAction SilentlyContinue
     $sessionPattern = '(?:^|\s)-Session(?:\s+|=)' + [Regex]::Escape($safeSession) + '(?=\s|$)'
@@ -167,6 +168,5 @@ if (Test-Path -LiteralPath $launcherConfig -PathType Leaf) {
 
 $state.status = 'stopped'
 $state | Add-Member -NotePropertyName stoppedAtUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
-$statePath = Join-Path (Get-Tpf2mpSessionRoot $safeSession $Peer) 'session-state.json'
-$state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+[void](Write-Tpf2mpSessionState $safeSession $Peer $state)
 Write-Host "Stopped TPF2MP companion for $safeSession/$Peer."

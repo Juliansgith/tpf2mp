@@ -5601,6 +5601,8 @@ class AnchorRequestStoreTests(unittest.TestCase):
             )
             self.assertEqual(list(store.pending()), [])
             self.assertEqual(list(store.pending()), [])
+            self.assertEqual(store._request_index.path_scans, 1)
+            self.assertEqual(store._request_index.file_reads, 1)
             result = json.loads(
                 (store.results / f"{request_id}.json").read_text(encoding="utf-8")
             )

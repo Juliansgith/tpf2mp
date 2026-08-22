@@ -1841,7 +1841,7 @@ test("proposal codec canonicalises the measured smallest modular passenger stati
   equal(spec.transform[13], 100)
   local ordinary, ordinaryError = proposalCodec.materialise(first)
   equal(ordinary, nil)
-  truthy(tostring(ordinaryError):match("engine%-thread"), ordinaryError)
+  truthy(tostring(ordinaryError):find("unavailable", 1, true), ordinaryError)
 
   -- A stock placement may demolish town buildings without being an edit of
   -- those buildings. Keep the station as an absolute build and carry each
@@ -1949,6 +1949,39 @@ test("proposal codec canonicalises the measured smallest modular passenger stati
   equal(#twoTrack.edges, 24)
   local twoTrackSpec = assert(proposalCodec.materialiseConstruction(twoTrack))
   equal(twoTrackSpec.params.modules[8402000].metadata.track, true)
+
+  -- Live Build 35924 regression: snapping a stock station to an existing
+  -- track endpoint references that positive node directly. The station still
+  -- has one complete path, but nodesToAdd is one shorter than the detached
+  -- graph (12 new nodes + 1 canonical boundary node, 12 edges).
+  local attachedRaw = smallestStationProposal(600)
+  local attachedNode = attachedRaw.proposal.addedNodes[1].entity
+  table.remove(attachedRaw.proposal.addedNodes, 1)
+  attachedRaw.proposal.addedSegments[1].comp.node0 = 7001
+  local attached, attachedError = proposalCodec.normalise(attachedRaw, "company:1", {
+    resolveCanonical = function(kind, localId)
+      if kind == "node" and localId == 7001 then return "node:pre:station-approach" end
+    end,
+    resourceName = function(kind, index) return kind .. "/" .. index .. ".lua" end,
+  })
+  truthy(attached, attachedError)
+  equal(#attached.nodes, 12)
+  equal(#attached.edges, 12)
+  equal(attached.edges[1].node0.cid, "node:pre:station-approach")
+  truthy(proposalCodec.validatePortable(attached))
+  -- Make sure the fixture really replaced the native temporary endpoint.
+  truthy(attachedNode < 0)
+
+  local invalidBoundary = util.deepCopy(attached)
+  invalidBoundary.edges[#invalidBoundary.edges].node1 = {
+    cid = "node:pre:station-approach",
+  }
+  invalidBoundary.digest = proposalCodec.digest(invalidBoundary)
+  invalidBoundary.transactionId = "proposal:" .. invalidBoundary.digest
+  local invalidBoundaryOk, invalidBoundaryError = proposalCodec.validatePortable(invalidBoundary)
+  equal(invalidBoundaryOk, false)
+  truthy(tostring(invalidBoundaryError):find("boundary node", 1, true)
+    or tostring(invalidBoundaryError):find("cardinality", 1, true), invalidBoundaryError)
 end)
 
 test("proposal codec carries portable depots, arbitrary constructions, upgrades, and removals", function()
@@ -2851,6 +2884,57 @@ test("co-located crossing nodes use portable incident-edge anchors", function()
   api, game = previousApi, previousGame
   truthy(forgedLocal == nil and tostring(forgedError):find("no endpoint") ~= nil,
     "an anchor edge admitted a node fingerprint absent from its endpoints")
+end)
+
+test("structural snapshots use exact construction attestations without native component reads", function()
+  local previousApi, previousGame = api, game
+  local componentReads = 0
+  local types = {
+    PLAYER_OWNED = "PLAYER_OWNED", CONSTRUCTION = "CONSTRUCTION",
+    STATION = "STATION", STATION_GROUP = "STATION_GROUP",
+    VEHICLE_DEPOT = "VEHICLE_DEPOT", ASSET_GROUP = "ASSET_GROUP",
+    SIGNAL_LIST = "SIGNAL_LIST", BASE_NODE = "BASE_NODE",
+    BASE_EDGE = "BASE_EDGE", SIM_BUILDING = "SIM_BUILDING",
+  }
+  api = {
+    type = { ComponentType = types },
+    engine = {
+      entityExists = function(id) return id == 99 end,
+      getComponent = function()
+        componentReads = componentReads + 1
+        error("fresh exact construction component must not be read")
+      end,
+      forEachEntityWithComponent = function(callback, componentType)
+        if componentType == types.PLAYER_OWNED or componentType == types.CONSTRUCTION then
+          callback(99)
+        end
+      end,
+      system = { lineSystem = { getLines = function() return {} end } },
+    },
+  }
+  game = { interface = {
+    getTowns = function() return {} end,
+    getLines = function() return {} end,
+    getVehicles = function() return {} end,
+    getDepots = function() return {} end,
+    getEntity = function() error("fresh exact construction entity must not be read") end,
+  } }
+  local registry = canonical.newState()
+  truthy(canonical.bind(registry, "construction:event:test:1", "construction", 99, {
+    owner = "company:1", fingerprint = "proposal:construction:1",
+    nativeReadUnsafe = true,
+  }))
+  local snapshot = world.structuralSnapshot(registry, {
+    logicalOwners = { ["99"] = "company:1" },
+    logicalOwnershipAuthoritative = true,
+  }, { ["company:1"] = { playerId = 7 } })
+  api, game = previousApi, previousGame
+  equal(componentReads, 0,
+    "structural snapshot re-entered an attested exact construction component")
+  equal(#snapshot.objects, 1)
+  equal(snapshot.objects[1].fingerprint, "proposal:construction:1")
+  equal(snapshot.objects[1].owner, "company:1")
+  equal(snapshot.constructionCount, 1)
 end)
 
 test("pre-consensus existing identity lookup never mutates the origin registry", function()
@@ -4467,7 +4551,7 @@ end)
 
 test("native passenger cosmetics are telemetry-only and never issue a command", function()
   local previousApi = api
-  local sent, made = 0, 0
+  local sent, made, enumerations = 0, 0, 0
   local types = {
     SIM_PERSON = "SIM_PERSON", SIM_PERSON_AT_VEHICLE = "SIM_PERSON_AT_VEHICLE",
     SIM_PERSON_AT_TERMINAL = "SIM_PERSON_AT_TERMINAL",
@@ -4483,6 +4567,7 @@ test("native passenger cosmetics are telemetry-only and never issue a command", 
     type = { ComponentType = types },
     engine = {
       forEachEntityWithComponent = function(callback, componentType)
+        enumerations = enumerations + 1
         for _, entity in ipairs(entities[componentType] or {}) do callback(entity) end
       end,
       getComponent = function(entity, componentType)
@@ -4501,7 +4586,6 @@ test("native passenger cosmetics are telemetry-only and never issue a command", 
   local ok, probe = passengerCosmetics.applyDesiredCounts(nil, {
     totals = { aboard = 1200, waiting = 3400 },
   })
-  api = previousApi
   truthy(ok)
   equal(probe.nativeAboard, 1)
   equal(probe.nativeWaiting, 2)
@@ -4511,8 +4595,17 @@ test("native passenger cosmetics are telemetry-only and never issue a command", 
   equal(probe.targetWritesEnabled, false)
   equal(probe.targetAddressable, false)
   equal(probe.lastError, nil, "successful native passenger readers retained a false error")
+  local sampledEnumerations = enumerations
+  local cachedOk, cachedProbe = passengerCosmetics.applyDesiredCounts(probe, {
+    totals = { aboard = 1300, waiting = 3500 },
+  }, { sampleNative = false })
+  api = previousApi
   equal(made, 2, "the shape probe must only construct the two boolean variants")
   equal(sent, 0, "the unsafe untargeted debug command was issued")
+  truthy(cachedOk)
+  equal(cachedProbe.requestedAboard, 1300)
+  equal(enumerations, sampledEnumerations,
+    "cached cosmetic refresh re-enumerated every native passenger component")
 end)
 
 test("town growth targets are deterministic, split, capped, and quiet when idle", function()
@@ -5756,6 +5849,17 @@ test("performance runtime does not depend on the engine global unpack", function
   equal(second, nil)
   equal(third, nil)
   equal(fourth, "omega")
+end)
+
+test("performance runtime forwards failures without packed hot-path values", function()
+  local state = { tick = 0, probes = {} }
+  local runtime = performanceRuntime.new({ getState = function() return state end })
+  local invoked, message = runtime.run("failure", function(value)
+    error("failed-" .. value)
+  end, "cleanly")
+  equal(invoked, false)
+  truthy(tostring(message):find("failed%-cleanly") ~= nil)
+  equal(state.probes.performance.tasks.failure.failures, 1)
 end)
 
 test("performance sampling removes hot-path clock observer overhead", function()

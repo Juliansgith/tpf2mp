@@ -18,18 +18,54 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'update_common.ps1')
 . (Join-Path $PSScriptRoot 'github_release_common.ps1')
 
-if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
-$bundle = Resolve-Tpf2mpFullPath $BundleRoot
-$bundleManifest = Test-Tpf2mpReleaseManifest $bundle
 if (-not $InstallRoot) {
     if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is unavailable; pass -InstallRoot explicitly.' }
     $InstallRoot = Join-Path $env:LOCALAPPDATA 'TPF2MP'
 }
 $install = Resolve-Tpf2mpFullPath $InstallRoot
 $currentPath = Join-Path $install 'current.json'
-$currentVersion = [string]$bundleManifest.version
+$current = $null
 if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     $current = Get-Content -LiteralPath $currentPath -Raw | ConvertFrom-Json
+}
+
+if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
+$requestedBundle = Resolve-Tpf2mpFullPath $BundleRoot
+$bundle = $requestedBundle
+$requestedManifest = Join-Path $bundle 'release-manifest.json'
+if (-not (Test-Path -LiteralPath $requestedManifest -PathType Leaf)) {
+    $sourceTree = (Test-Path -LiteralPath (Join-Path $bundle '.git')) -and `
+        (Test-Path -LiteralPath (Join-Path $bundle 'companion\tpf2mp\__init__.py') -PathType Leaf)
+    if (-not $sourceTree) {
+        # Preserve the strict packaged-bundle diagnostic for a typo, damaged
+        # extraction, or arbitrary directory. Only a recognizable source tree
+        # may delegate to the installed release pointer.
+        [void](Test-Tpf2mpReleaseManifest $bundle)
+    }
+    if (-not $current) {
+        throw 'The development launcher cannot find an installed TPF2MP release to update. Install a versioned release first.'
+    }
+    $installedBundleValue = if ($current.PSObject.Properties['bundleRoot']) {
+        [string]$current.bundleRoot
+    } else { '' }
+    if (-not $installedBundleValue -and [string]$current.version) {
+        $installedBundleValue = Join-Path (Join-Path $install 'versions') ([string]$current.version)
+    }
+    if (-not $installedBundleValue) {
+        throw 'The installed TPF2MP pointer does not name a versioned support bundle.'
+    }
+    $installedBundle = Resolve-Tpf2mpFullPath $installedBundleValue
+    $versionsRoot = Resolve-Tpf2mpFullPath (Join-Path $install 'versions')
+    $versionsPrefix = $versionsRoot.TrimEnd('\') + '\'
+    if (-not $installedBundle.StartsWith($versionsPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing installed release pointer outside the version store: $installedBundle"
+    }
+    $bundle = $installedBundle
+    Write-Host "Development source tree detected; checking the installed release at $bundle. Git source files will not be modified."
+}
+$bundleManifest = Test-Tpf2mpReleaseManifest $bundle
+$currentVersion = [string]$bundleManifest.version
+if ($current) {
     if ([string]$current.version) { $currentVersion = [string]$current.version }
 }
 $updateMetadata = $bundleManifest.PSObject.Properties['update']

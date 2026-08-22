@@ -11,10 +11,12 @@ local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
+local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_scheduler"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local networkBootstrapPolicyModule = require "tpf2_mp/network_bootstrap_policy"
 local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local authoredFollowupRuntimeModule = require "tpf2_mp/authored_followup_runtime"
 local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
@@ -23,6 +25,7 @@ local vehicleSyncStateModule = require "tpf2_mp/vehicle_sync_state"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local checkpointRetentionModule = require "tpf2_mp/checkpoint_retention"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local recoveryPhaseProofModule = require "tpf2_mp/recovery_phase_proof"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
@@ -36,6 +39,14 @@ local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local researchReportModule = require "tpf2_mp/research_report"
 local economyModule = require "tpf2_mp/economy"
 local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
+local engineBackgroundRuntimeModule = require "tpf2_mp/engine_background_runtime"
+local constructionVerificationModule = require "tpf2_mp/construction_verification_runtime"
+local constructionDeltaAttestation = require "tpf2_mp/construction_delta_attestation"
+local guiProposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
+local constructionOutputOrder = require "tpf2_mp/construction_output_order"
+local constructionProposalMaterializer = require "tpf2_mp/construction_proposal_materializer"
+local constructionReplayState = require "tpf2_mp/construction_replay_state"
+local validationStationProposalModule = require "tpf2_mp/validation_station_proposal"
 local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
 local economyPublicViewModule = require "tpf2_mp/economy_public_view"
 local financeModule = require "tpf2_mp/finance"
@@ -48,6 +59,309 @@ local canonicalModule = require "tpf2_mp/canonical"
 local worldModule = require "tpf2_mp/world"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
+
+do
+  local previousApi, previousGame = rawget(_G, "api"), rawget(_G, "game")
+  api = { res = { trackTypeRep = { find = function() return 7 end } } }
+  game = { interface = {
+    getPlayer = function() return 101 end,
+    getHeight = function() return 42 end,
+  } }
+  local transaction = assert(validationStationProposalModule.transaction(
+    -1400, -1200, "company:1", {
+      height = function() return 42 end,
+      trackType = 7,
+      nativePlayerId = 101,
+      resourceName = function(kind, index)
+        return kind == "track" and index == 7 and "standard.lua" or nil
+      end,
+    }))
+  assert(transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+      and #transaction.nodes == 13 and #transaction.edges == 12
+      and transaction.constructions[1].transform[13] == -1400
+      and transaction.constructions[1].transform[14] == -1200
+      and transaction.nodes[1].position.x == -1395
+      and transaction.nodes[1].position.y == -1218
+      and transaction.nodes[13].position.y == -1140
+      and transaction.edges[2].node0.slot == "node:3"
+      and transaction.edges[2].node1.slot == "node:1"
+      and transaction.edges[2].tangent0.y == -16,
+    "validation station transaction did not retain its exact portable graph and transform")
+
+  local checks, submissions, transitions, finished = {}, {}, {}, nil
+  local current = {
+    bridge = { peerId = "player1" }, validation = { values = {} },
+    world = { proposalConsensus = { completed = 2 }, proposals = { byId = {} } },
+  }
+  local runtime = validationStationProposalModule.new({
+    getState = function() return current end,
+    transition = function(stage) transitions[#transitions + 1] = stage end,
+    check = function(name, passed)
+      assert(passed, name); checks[#checks + 1] = name
+    end,
+    submit = function(action)
+      submissions[#submissions + 1] = action
+      return { local_seq = 44 }
+    end,
+    checkpoint = function(predicate)
+      local record = { proposalId = "station:1", success = true, boundarySeq = 77 }
+      return predicate(record) and record or nil
+    end,
+    resourceName = function(kind, index)
+      return kind == "track" and index == 7 and "standard.lua" or nil
+    end,
+    finish = function(boundarySeq) finished = boundarySeq end,
+  })
+  runtime.begin()
+  assert(#submissions == 1 and submissions[1].type == "proposal.prepare"
+      and current.validation.values.stationProposalLocalSeq == 44
+      and transitions[1] == "wait-for-station-proposal-consensus",
+    "network validator did not submit the exact station through ordered prepare")
+  local outputs = {}
+  for index = 1, 28 do outputs[index] = { kind = "test", cid = tostring(index) } end
+  current.world.proposalConsensus = {
+    completed = 3, lastOutcome = { success = true, proposalId = "station:1" },
+  }
+  current.world.proposals.byId["station:1"] = {
+    result = { constructionReplayPath = "gui-build-proposal", outputs = outputs },
+  }
+  assert(runtime.maintain("wait-for-station-proposal-consensus") == true
+      and current.validation.values.stationProposalId == "station:1"
+      and transitions[2] == "wait-for-station-proposal-checkpoint",
+    "exact station validator did not accept its complete physical result")
+  assert(runtime.maintain("wait-for-station-proposal-checkpoint") == true and finished == 77,
+    "exact station validator did not cross its post-build checkpoint")
+  api, game = previousApi, previousGame
+end
+
+do
+  local exact = assert(constructionOutputOrder.rows("station", { 44 }, {
+    exact = true, proposalDigest = "abc12345",
+  }))
+  local ambiguous, ambiguityError = constructionOutputOrder.rows("station", { 44, 45 }, {
+    exact = true, proposalDigest = "abc12345",
+  })
+  local native = assert(constructionOutputOrder.rows("asset", { 2, 1 }, {
+    fingerprint = function(id) return id == 1 and "a" or "b" end,
+  }))
+  assert(exact[1].fingerprint == "abc12345:station:1"
+      and ambiguous == nil and ambiguityError:find("multiple indistinguishable", 1, true)
+      and native[1].localId == 1 and native[2].localId == 2,
+    "construction output ordering did not separate exact and native fingerprint paths")
+end
+
+do
+  local balance, captures = 1000, 0
+  local before = { sets = {
+    constructions = {}, stations = {}, stationGroups = {}, depots = {}, assets = {},
+    edgeObjects = {}, nodes = {}, edges = {},
+  } }
+  local pending = {
+    minimumFrame = 1, maximumFrame = 20, proposalId = "exact:capture",
+    issuerPlayerId = 1, nativeOwnerPlayerId = 1,
+    issuerBalanceBefore = 1000, nativeOwnerBalanceBefore = 1000,
+    lastIssuerBalance = 1000, lastNativeOwnerBalance = 1000,
+    stableFrames = 0, requireBalanceMutation = true, exactConstruction = true,
+    beforeWorld = before, createdEdgeIds = { 22 }, createdNodeIds = { 21 },
+  }
+  local deps = {
+    balanceOf = function() return balance end,
+    componentTypes = function() return {} end,
+    captureWorld = function()
+      captures = captures + 1
+      local sets = util.deepCopy(before.sets)
+      sets.constructions[20], sets.nodes[21], sets.edges[22] = true, true, true
+      return { sets = sets }
+    end,
+  }
+  assert(guiProposalResultCapture.sample(pending, 1, deps) == nil,
+    "exact construction result accepted a false zero-cost wallet window")
+  balance = 900
+  for frame = 2, 4 do
+    assert(guiProposalResultCapture.sample(pending, frame, deps) == nil,
+      "exact construction result did not wait for a stable native debit")
+  end
+  local payload = assert(guiProposalResultCapture.sample(pending, 5, deps))
+  local capturedDelta = assert(constructionDeltaAttestation.normalise(
+    payload.constructionDelta, 16))
+  assert(captures == 1 and payload.issuerBalanceAfter == 900
+      and type(payload.constructionDelta) == "string"
+      and capturedDelta.added.construction[1] == 20
+      and capturedDelta.added.node[1] == 21,
+    "stable GUI construction result did not carry its exact component delta")
+end
+
+do
+  local previousApi, previousClock = api, rawget(_G, "tpf2mp_native_monotonic_us")
+  local now, enumerations, lookups = 1000, 0, 0
+  local sets = {
+    CONSTRUCTION = { [10] = true }, STATION = {}, STATION_GROUP = {},
+    VEHICLE_DEPOT = {}, ASSET_GROUP = {}, SIGNAL_LIST = {},
+    BASE_NODE = { [20] = true }, BASE_EDGE = { [30] = true },
+  }
+  api = { type = { ComponentType = {} }, engine = {} }
+  for name in pairs(sets) do api.type.ComponentType[name] = name end
+  api.engine.getComponent = function(entity, kind)
+    lookups = lookups + 1
+    return sets[kind] and sets[kind][entity] and {} or nil
+  end
+  tpf2mp_native_monotonic_us = function() now = now + 10; return now end
+  local current = { tick = 7, probes = {} }
+  local runtime = constructionVerificationModule.new({
+    getState = function() return current end,
+    componentEntitySet = function(kind)
+      enumerations = enumerations + 1
+      local result = {}
+      for entity in pairs(sets[kind] or {}) do result[entity] = true end
+      return result
+    end,
+  })
+  local snapshot = assert(runtime.snapshot())
+  assert(enumerations == 8 and snapshot.construction[10] and snapshot.node[20]
+      and current.probes.constructionReplay.tasks["component-snapshot"].calls == 1,
+    "one exhaustive construction snapshot did not enumerate and time each component kind exactly once")
+  local pending, kinds = runtime.inputsPending({
+    { kind = "construction", localId = 10 }, { kind = "edge", localId = 99 },
+  })
+  assert(pending == 1 and kinds.construction == 1 and lookups == 2,
+    "construction settling did not use targeted component lookups for known entities")
+  local first = runtime.signature({ node = { 1 }, edge = {} }, {})
+  local second = runtime.signature({ node = { 2 }, edge = {} }, {})
+  assert(first ~= second, "construction stability signature ignored same-count entity replacement")
+  api, tpf2mp_native_monotonic_us = previousApi, previousClock
+end
+
+do
+  local constructionFactory = { new = function() return {} end }
+  local function fakeProposal()
+    local streetProposal = { nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {},
+      edgesToRemove = {}, edgeObjectsToAdd = {}, edgeObjectsToRemove = {} }
+    local additions = setmetatable({}, { __newindex = function(vector, index, value)
+      rawset(vector, index, value)
+      -- Reproduce Build 35924's generated-vector side effect. If the codec
+      -- also replays the captured station graph, these counts become 26/24.
+      if value.fileName == "station/rail/modular_station/modular_station.con" then
+        for node = 1, 13 do streetProposal.nodesToAdd[#streetProposal.nodesToAdd + 1] = {} end
+        for edge = 1, 12 do streetProposal.edgesToAdd[#streetProposal.edgesToAdd + 1] = {} end
+      end
+    end })
+    return {
+      constructionsToAdd = additions, constructionsToRemove = {}, old2new = {},
+      streetProposal = streetProposal,
+    }
+  end
+  local fakeApi = { type = {
+    SimpleProposal = {
+      ConstructionEntity = constructionFactory,
+      new = fakeProposal,
+    },
+    SegmentAndEntity = { new = function() return { comp = {} } end },
+    NodeAndEntity = { new = function() return { comp = {} } end },
+    Vec3f = { new = function(x, y, z) return { x, y, z } end },
+    Vec4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+    Mat4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+    BaseEdgeStreet = { new = function() return {} end },
+    BaseEdgeTrack = { new = function() return {} end },
+  }, res = {
+    constructionRep = { find = function() return 1 end },
+    streetTypeRep = { find = function() return 1 end },
+    trackTypeRep = { find = function() return 1 end },
+  } }
+  local transaction = assert(proposalCodec.normalise({
+    __observedCost = 500,
+    __constructionAdditions = {{
+      fileName = "asset/default_multi_bench_new.con",
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 20, 3, 1 },
+      params = { paramX = 0, paramY = 0, seed = 1, year = 1990 },
+    }},
+    __constructionRemovals = {},
+  }, "company:1"))
+  local proposal, metadata = assert(proposalCodec.materialise(transaction, {
+    api = fakeApi, nativePlayerId = 7, resolveLocal = function() return nil end,
+  }))
+  assert(proposal.constructionsToAdd[1].fileName == "asset/default_multi_bench_new.con"
+      and proposal.constructionsToAdd[1].playerEntity == 7
+      and proposal.constructionsToAdd[1].transf[4][4] == 1
+      and metadata.construction.factory == "SimpleProposal.ConstructionEntity",
+    "exact construction materialisation lost its typed payload or transform")
+
+  local stationTransaction = assert(validationStationProposalModule.transaction(
+    -1400, -1200, "company:1", {
+      height = function() return 42 end,
+      trackType = 1,
+      nativePlayerId = 7,
+      resourceName = function(kind, index)
+        return kind == "track" and index == 1 and "standard.lua" or nil
+      end,
+    }))
+  local stationProposal, stationMetadata = assert(proposalCodec.materialise(stationTransaction, {
+    api = fakeApi, nativePlayerId = 7, resolveLocal = function() return nil end,
+  }))
+  assert(stationMetadata.nativeGeneratedTopology == true
+      and #stationProposal.streetProposal.nodesToAdd == 13
+      and #stationProposal.streetProposal.edgesToAdd == 12,
+    "typed construction replay duplicated its native-generated station topology")
+
+  local upgradeProposal = fakeApi.type.SimpleProposal.new()
+  local applied = assert(constructionProposalMaterializer.apply(upgradeProposal, {
+    mode = "upgrade", sourceCid = "asset:old", collateral = {},
+    fileName = "asset/default_multi_bench_new.con",
+    transform = transaction.constructions[1].transform,
+    params = { seed = 2, upgrade = true },
+  }, { api = fakeApi, nativePlayerId = 7,
+    resolveLocal = function(cid) return cid == "asset:old" and 41 or nil end }))
+  assert(applied.sourceLocalId == 41 and upgradeProposal.constructionsToRemove[1] == 41
+      and upgradeProposal.old2new[41] == 0
+      and upgradeProposal.constructionsToAdd[1].params.upgrade == true,
+    "exact construction upgrade lost its replacement map or captured params")
+
+  local record = { proposalId = "proposal:test", transaction = transaction }
+  local pending = { phase = "new", spec = { mode = "build" } }
+  constructionReplayState.prime(record, pending)
+  assert(constructionReplayState.isExact(record, proposalCodec)
+      and record.replayPath == "gui-build-proposal",
+    "exact construction replay was not selected for a portable construction")
+  local delta = { schemaVersion = 1, added = {}, removed = {} }
+  for _, kind in ipairs({ "construction", "station", "station_group", "depot",
+      "asset", "edge_object", "node", "edge" }) do
+    delta.added[kind], delta.removed[kind] = {}, {}
+  end
+  delta.added.asset = { 99 }
+  local accepted = assert(constructionReplayState.accept(record,
+    { success = true, constructionDelta = delta }, 10, 2, 256))
+  constructionReplayState.identifyBuiltRoot(pending, { asset = { 99 } }, "asset")
+  assert(accepted.constructionVerificationPending and record.status == "building-construction"
+      and accepted.guiAttested and pending.rootEntity == 99
+      and pending.nextVerificationTick == 12,
+    "exact construction result did not enter bounded engine verification")
+  local upgradeRecord = { transaction = util.deepCopy(transaction) }
+  upgradeRecord.transaction.constructions[1].mode = "upgrade"
+  local removeRecord = { transaction = util.deepCopy(transaction) }
+  removeRecord.transaction.constructions[1].mode = "remove"
+  assert(not constructionReplayState.isExact(upgradeRecord, proposalCodec)
+      and not constructionReplayState.isExact(removeRecord, proposalCodec),
+    "unproven construction upgrade/removal escaped the helper fallback")
+end
+
+do
+  local before = { sets = {
+    constructions = { [10] = true }, stations = {}, stationGroups = {}, depots = {},
+    assets = {}, edgeObjects = {}, nodes = { [20] = true }, edges = {},
+  } }
+  local after = { sets = util.deepCopy(before.sets) }
+  after.sets.constructions[11], after.sets.nodes[20], after.sets.nodes[21] = true, nil, true
+  local delta = constructionDeltaAttestation.fromWorlds(before, after)
+  local accepted = assert(constructionDeltaAttestation.normalise(
+    constructionDeltaAttestation.encode(delta), 16))
+  local reconstructed = constructionDeltaAttestation.apply({
+    construction = { [10] = true }, station = {}, station_group = {}, depot = {},
+    asset = {}, edge_object = {}, node = { [20] = true }, edge = {},
+  }, accepted)
+  assert(accepted.added.construction[1] == 11 and accepted.removed.node[1] == 20
+      and reconstructed.construction[10] and reconstructed.construction[11]
+      and reconstructed.node[21] and not reconstructed.node[20],
+    "GUI construction delta did not validate and reconstruct its exact world sets")
+end
 
 do
   local events = {}
@@ -174,7 +488,7 @@ end
 
 do
   local gui = { frames = 0, status = {} }
-  local current, engineThread = nil, false
+  local current, engineThread, wall = nil, false, 0
   local migrated, reset, projected, rendered = 0, 0, 0, 0
   local function saved(errorValue)
     return {
@@ -200,15 +514,16 @@ do
       }
     end,
     renderGui = function() rendered = rendered + 1 end,
+    wallTime = function() return wall end,
   })
   local first = saved(nil)
   runtime.load(first)
   assert(current == first and migrated == 0 and projected == 1 and rendered == 1,
     "current GUI state was remigrated or its first snapshot was not projected")
-  gui.frames = 179
+  gui.frames, wall = 179, 2.99
   runtime.load(first)
   assert(projected == 1, "GUI snapshot cadence projected before its bounded interval")
-  gui.frames = 180
+  gui.frames, wall = 180, 3
   runtime.load(first)
   assert(projected == 2, "GUI snapshot cadence did not refresh at three seconds")
   local errored = saved("new error")
@@ -451,6 +766,114 @@ do
       and hashModule.value(canonicalModule.digestView(current.canonical)) == preparedDigest,
     "verified native rejection did not restore the exact PREPARE core")
   worldModule.resolvePreExisting = originalResolvePreExisting
+end
+
+do
+  local backgroundState = {
+    networkMode = "network", world = { networkClock = {} }, probes = {},
+  }
+  local calls = { clock = 0, economy = 0, construction = 0, finance = 0, house = 0 }
+  local due = { clock = false, economy = false, construction = false, finance = false, house = false }
+  local background = engineBackgroundRuntimeModule.new({
+    getState = function() return backgroundState end,
+    networkClock = {
+      needsUpdate = function() return due.clock end,
+      update = function() calls.clock = calls.clock + 1 end,
+    },
+    economyClock = {
+      needsUpdate = function() return due.economy end,
+      update = function() calls.economy = calls.economy + 1 end,
+    },
+    proposals = {
+      hasConstructionWork = function() return due.construction end,
+      processConstructions = function() calls.construction = calls.construction + 1; return true end,
+      hasFinanceWork = function() return due.finance end,
+      processFinances = function() calls.finance = calls.finance + 1; return true end,
+      financeHousekeepingDue = function() return due.house end,
+      financeHousekeeping = function() calls.house = calls.house + 1; return true end,
+    },
+  })
+  for _ = 1, 100 do background.run() end
+  assert(calls.construction == 0 and calls.finance == 0 and calls.house == 0,
+    "idle engine background scheduler entered protected worker boundaries")
+  backgroundState.networkMode = "standalone"
+  due.clock, due.economy, due.construction, due.finance, due.house = true, true, true, true, true
+  background.run()
+  assert(calls.clock == 1 and calls.economy == 1 and calls.construction == 1
+      and calls.finance == 1 and calls.house == 1,
+    "due engine background workers were not executed")
+end
+
+do
+  local bootstrapState = {
+    networkMode = "network", initialized = true, tick = 1000,
+    bridge = { peerId = "player1" }, recovery = {},
+  }
+  local bootstrap = { launcherReady = true, nextAttemptTick = 240, submitted = false }
+  assert(networkBootstrapPolicyModule.due(bootstrapState, {
+      manualNetwork = true, manualBootstrapReady = true,
+    }, bootstrap) == false,
+    "initialized network world kept entering manual bootstrap housekeeping")
+  bootstrapState.initialized = false
+  assert(networkBootstrapPolicyModule.due(bootstrapState, {
+      manualNetwork = true, manualBootstrapReady = true,
+    }, bootstrap) == true,
+    "ready fresh network world did not wake manual bootstrap")
+end
+
+do
+  local consensus = { byBoundary = {}, lastAgreed = { boundarySeq = 17 } }
+  for boundary = 1, 200 do
+    consensus.byBoundary[tostring(boundary)] = {
+      boundarySeq = boundary, status = boundary == 5 and "pending" or "complete",
+    }
+  end
+  local removed = checkpointRetentionModule.prune(consensus, 128)
+  assert(removed == 71 and consensus.byBoundary["5"] ~= nil
+      and consensus.byBoundary["17"] ~= nil
+      and consensus.byBoundary["200"] ~= nil,
+    "checkpoint retention did not preserve pending/latest recovery boundaries")
+  local finalized = 0
+  for _, record in pairs(consensus.byBoundary) do
+    if record.status ~= "pending" then finalized = finalized + 1 end
+  end
+  assert(finalized == 128,
+    "checkpoint consensus history remained unbounded after pruning")
+end
+
+do
+  local priorMask = rawget(_G, "tpf2mp_native_suppressed_pending_mask")
+  local mask, maskReads = 0, 0
+  local calls = { speed = 0, line = 0, vehicle = 0 }
+  tpf2mp_native_suppressed_pending_mask = function()
+    maskReads = maskReads + 1
+    return mask == 0 and nil or tostring(mask)
+  end
+  local captureGui = {
+    snapshot = { networkMode = "network" }, nativeLineKnownIds = {},
+    pendingNativeLinePassThroughCaptures = {}, pendingNativeVehicleCommands = {},
+    pendingNativeVehicleGuiCaptures = {},
+  }
+  local scheduler = guiNativeCaptureSchedulerModule.new({
+    gui = captureGui,
+    speed = function() calls.speed = calls.speed + 1; return true end,
+    line = function() calls.line = calls.line + 1; return true end,
+    vehicle = function() calls.vehicle = calls.vehicle + 1; return true end,
+  })
+  for _ = 1, 100 do scheduler.poll() end
+  assert(maskReads == 100 and calls.speed == 0 and calls.line == 0 and calls.vehicle == 0
+      and scheduler.status().skipped == 100,
+    "idle GUI frames still crossed all three suppressed-command native APIs")
+  mask = 7
+  assert(scheduler.poll() == true and calls.speed == 1 and calls.line == 1
+      and calls.vehicle == 1,
+    "pending native command categories were not drained in one GUI frame")
+  mask = 0
+  captureGui.pendingNativeVehicleCommands[1] = { frame = 1 }
+  scheduler.poll()
+  assert(calls.vehicle == 2 and calls.speed == 1 and calls.line == 1,
+    "machine-local vehicle correlation was skipped without a fresh native envelope")
+  tpf2mp_native_suppressed_pending_mask = priorMask
 end
 
 do
@@ -2668,6 +3091,65 @@ do
 end
 
 do
+  local source = {}
+  local reads, markerReads = 0, 0
+  local bootstrapReady, handoffReady, prepareReady = false, false, false
+  local reader = runtimeConfig.newReader({
+    dynamicStride = 3,
+    sourceIdentity = function() return source end,
+    readConfig = function()
+      reads = reads + 1
+      return {
+        root = "C:/bridge/cached",
+        manualNetwork = true,
+        manualBootstrapReady = false,
+        networkAutoValidate = true,
+        networkManualHandoff = false,
+        automaticRecoveryPrepare = false,
+      }
+    end,
+    bridgeMarkerExists = function(_, name)
+      markerReads = markerReads + 1
+      return name == "manual-handoff" and handoffReady
+    end,
+    bridgeMarkerValue = function(_, name)
+      markerReads = markerReads + 1
+      if name == "manual-bootstrap-ready" then
+        return bootstrapReady and "ready" or nil
+      end
+      if name == "prepare-restore" then return prepareReady and "ready" or nil end
+      return nil
+    end,
+  })
+  local first = reader.read()
+  for _ = 1, 99 do
+    assert(reader.read() == first, "cached runtime configuration identity changed")
+  end
+  local status = reader.status()
+  assert(reads == 1 and status.reads == 1,
+    "runtime configuration was rebuilt during a stable VM session")
+  assert(status.dynamicRefreshes == 33 and markerReads == 99,
+    "sticky launcher markers were not sampled at the configured cadence")
+
+  bootstrapReady, handoffReady, prepareReady = true, true, true
+  local armed = reader.read(true)
+  assert(armed.manualBootstrapReady == true
+      and armed.networkManualHandoff == true
+      and armed.networkAutoValidate == false
+      and armed.automaticRecoveryPrepare == true,
+    "cached runtime configuration did not observe sticky marker transitions")
+  local readsAfterArm = markerReads
+  for _ = 1, 6 do reader.read() end
+  assert(markerReads == readsAfterArm,
+    "settled sticky launcher markers continued touching the filesystem")
+
+  source = {}
+  local rebuilt = reader.read()
+  assert(rebuilt ~= first and reads == 2,
+    "a replacement mod-configuration source did not invalidate the cache")
+end
+
+do
   local versions = { stateVersion = 23, checkpointVersion = 3 }
   local cfg = baseConfig()
   local first = stateSchema.new(cfg, versions)
@@ -3411,11 +3893,15 @@ do
   })
   runtime.update()
   assert(#commands == 0, "en-route synchronized vehicle was mutated")
+  current.canonical.byCanonical["edge:test:unrelated"] = {
+    canonicalId = "edge:test:unrelated", kind = "edge", localId = 61,
+  }
+  current.canonical.revisions = 999
   runtime.update()
   assert(current.probes.vehicleSync.canonicalScans == 1
       and current.probes.vehicleSync.canonicalEntriesScanned == 2
       and current.probes.vehicleSync.updateCalls == 2,
-    "idle vehicle synchronization repeatedly rescanned the full canonical registry")
+    "unrelated canonical revisions repeatedly rescanned the full vehicle registry")
   transportVehicle.state = 2
   current.tick = 2
   runtime.update()
@@ -3592,6 +4078,8 @@ do
   economyModule.evaluateAll(current.economy, 160)
   gameTime, current.tick = 220, 5
   current.bridge.peerId = "player2"
+  assert(runtime.needsUpdate() == false,
+    "client economy clock was not removed from the hot update path")
   ok, reason = runtime.update()
   assert(ok == false and reason == "host-only" and #submitted == 2,
     "a client attempted to author an economy settlement")

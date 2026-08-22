@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tpf2mp-companion"
-version = "0.38.2-alpha"
+version = "0.38.3-alpha"
 description = "Deterministic commit-ordering companion for the TPF2MP research prototype"
 requires-python = ">=3.10"
 dependencies = []

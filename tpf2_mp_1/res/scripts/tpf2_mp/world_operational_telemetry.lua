@@ -3,6 +3,11 @@ local hash = require "tpf2_mp/hash"
 
 local M = {}
 
+local function readGameTimeSeconds(interface)
+  local observed = interface.getGameTime()
+  return tonumber(observed and observed.time)
+end
+
 function M.new(deps)
   assert(type(deps) == "table", "world telemetry dependencies are required")
   local safeField = assert(deps.safeField, "safeField dependency is required")
@@ -118,11 +123,8 @@ function M.new(deps)
   local function gameTimeSeconds()
     local interface = game and game.interface or {}
     if not util.isCallable(interface.getGameTime) then return nil end
-    local ok, value = pcall(interface.getGameTime)
-    if not ok or (type(value) ~= "table" and type(value) ~= "userdata") then
-      return nil
-    end
-    return tonumber(safeField(value, "time"))
+    local ok, value = pcall(readGameTimeSeconds, interface)
+    return ok and value or nil
   end
 
   local function journalScalars(value, path, output, budget, depth, seen)

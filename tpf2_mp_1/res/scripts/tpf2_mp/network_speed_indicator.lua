@@ -39,8 +39,9 @@ function M.new(deps)
     lastPauseWakeFrame = -1000,
     lastError = nil,
   }
+  local pendingWanted
 
-  local function project()
+  local function due()
     local state = getState()
     if state.networkMode ~= "network" or state.initialized ~= true then return false end
     local clock = state.world and state.world.networkClock or nil
@@ -49,6 +50,17 @@ function M.new(deps)
     stats.frames = stats.frames + 1
     local changed = stats.lastEffectiveSpeed ~= tonumber(clock.effectiveSpeed)
     if not changed and stats.frames % INSPECTION_STRIDE_FRAMES ~= 1 then return false end
+    pendingWanted = wanted
+    return true
+  end
+
+  local function project(force)
+    if force ~= true and not due() then return false end
+    local state = getState()
+    local clock = state.world and state.world.networkClock or nil
+    local wanted = pendingWanted or buttonIndex(clock and clock.effectiveSpeed)
+    pendingWanted = nil
+    if wanted == nil then return false end
     stats.lastEffectiveSpeed = tonumber(clock.effectiveSpeed)
     stats.lastButtonIndex = wanted
     stats.lastError = nil
@@ -94,6 +106,7 @@ function M.new(deps)
   end
 
   return {
+    due = due,
     project = project,
     status = function() return stats end,
     buttonIndex = buttonIndex,

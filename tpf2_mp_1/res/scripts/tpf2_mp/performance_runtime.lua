@@ -3,21 +3,6 @@ local util = require "tpf2_mp/util"
 local M = {}
 local SAMPLE_LIMIT, MEASURE_STRIDE, WARMUP_MEASUREMENTS = 128, 8, 4
 
-local function pack(...)
-  return { n = select("#", ...), ... }
-end
-
--- Build 35924 does not expose Lua's global unpack in every game-script state.
--- Indexing the packed Lua table ourselves also avoids the engine's
--- userdata-unsafe unpack implementation when a measured call returns native
--- values.
-local function unpackValues(values, first, last)
-  local index = first or 1
-  local final = last or values.n or #values
-  if index > final then return end
-  return values[index], unpackValues(values, index + 1, final)
-end
-
 local function nowMicroseconds()
   local native = rawget(_G, "tpf2mp_native_monotonic_us")
   if type(native) == "function" then
@@ -46,15 +31,18 @@ function M.new(deps)
     "performance runtime state provider is required")
   local getState = deps.getState
   local samples, lastTicks = {}, {}
+  local cachedState, cachedProbe
 
   local function probe()
     local state = getState()
+    if state == cachedState and cachedProbe ~= nil then return cachedProbe end
     state.probes.performance = type(state.probes.performance) == "table"
       and state.probes.performance or { schemaVersion = 1, tasks = {}, scheduler = {} }
     local result = state.probes.performance
     result.schemaVersion = 1
     result.tasks = type(result.tasks) == "table" and result.tasks or {}
     result.scheduler = type(result.scheduler) == "table" and result.scheduler or {}
+    cachedState, cachedProbe = state, result
     return result
   end
 
@@ -78,21 +66,24 @@ function M.new(deps)
 
   function runtime.run(name, callable, ...)
     assert(type(callable) == "function", "measured task must be callable")
-    local task = probe().tasks[name] or {
+    local performance = probe()
+    local task = performance.tasks[name] or {
       calls = 0, measuredCalls = 0, failures = 0, totalUs = 0,
       lastUs = 0, maxUs = 0, p50Us = 0, p95Us = 0,
       sampleStride = MEASURE_STRIDE,
     }
-    probe().tasks[name] = task
+    performance.tasks[name] = task
     task.calls = task.calls + 1
     local measure = task.calls <= WARMUP_MEASUREMENTS
       or task.calls % MEASURE_STRIDE == 0
-    local arguments, started = pack(...), measure and nowMicroseconds() or nil
-    local outcome = pack(xpcall(function()
-      return callable(unpackValues(arguments, 1, arguments.n))
-    end, debug.traceback))
+    local started = measure and nowMicroseconds() or nil
+    -- pcall forwards arguments and return values without allocating a packed
+    -- argument/result table or a closure on every network task. These task
+    -- boundaries already record the failure text at their caller; a traceback
+    -- here was disproportionately expensive in the per-tick path.
+    local invoked, first, second, third, fourth, fifth, sixth = pcall(callable, ...)
     local finished = measure and nowMicroseconds() or nil
-    if outcome[1] ~= true then task.failures = task.failures + 1 end
+    if invoked ~= true then task.failures = task.failures + 1 end
     if started and finished and finished >= started then
       local elapsed = math.floor(finished - started + 0.5)
       task.measuredCalls = (task.measuredCalls or 0) + 1
@@ -110,7 +101,7 @@ function M.new(deps)
         task.sampleCount = #values
       end
     end
-    return unpackValues(outcome, 1, outcome.n)
+    return invoked, first, second, third, fourth, fifth, sixth
   end
 
   function runtime.setNativeBridge(status)
@@ -122,6 +113,7 @@ function M.new(deps)
   function runtime.reset()
     samples, lastTicks = {}, {}
     getState().probes.performance = { schemaVersion = 1, tasks = {}, scheduler = {} }
+    cachedState, cachedProbe = nil, nil
   end
 
   return runtime

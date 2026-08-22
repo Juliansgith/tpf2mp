@@ -5,6 +5,7 @@ local operationCodec = require "tpf2_mp/operation_codec"
 local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 local proposalRejectionSnapshot = require "tpf2_mp/gui_proposal_rejection_snapshot"
 local replayWorkIndex = require "tpf2_mp/gui_replay_work_index"
+local proposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 
 local M = {}
 
@@ -182,36 +183,31 @@ function M.new(deps)
   local function processPendingProposalCaptures()
     for index = #gui.pendingProposalCaptures, 1, -1 do
       local pending = gui.pendingProposalCaptures[index]
-      if gui.frames >= pending.minimumFrame then
-        local issuerBalance = balanceOf(pending.issuerPlayerId)
-        local nativeOwnerBalance = balanceOf(pending.nativeOwnerPlayerId)
-        if issuerBalance == pending.lastIssuerBalance
-          and nativeOwnerBalance == pending.lastNativeOwnerBalance then
-          pending.stableFrames = pending.stableFrames + 1
-        else
-          pending.lastIssuerBalance = issuerBalance
-          pending.lastNativeOwnerBalance = nativeOwnerBalance
-          pending.stableFrames = 0
-        end
-        if pending.stableFrames >= 3 or gui.frames >= pending.maximumFrame then
-          queueGuiProposalResult({
-            proposalId = pending.proposalId,
-            success = true,
-            createdEdgeIds = pending.createdEdgeIds,
-            createdNodeIds = pending.createdNodeIds,
-            issuerBalanceBefore = pending.issuerBalanceBefore,
-            issuerBalanceAfter = issuerBalance,
-            nativeOwnerBalanceBefore = pending.nativeOwnerBalanceBefore,
-            nativeOwnerBalanceAfter = nativeOwnerBalance,
-          })
-          table.remove(gui.pendingProposalCaptures, index)
-          return true
-        end
+      local payload, captureError = proposalResultCapture.sample(pending, gui.frames, {
+        balanceOf = balanceOf, captureWorld = proposalWorld.capture,
+        componentTypes = function() return api.type and api.type.ComponentType or {} end,
+      })
+      if captureError then
+        payload = { proposalId = pending.proposalId, success = false,
+          error = captureError, worldUnchanged = false }
+      end
+      if payload then
+        queueGuiProposalResult(payload)
+        table.remove(gui.pendingProposalCaptures, index)
+        return true
       end
     end
     return false
   end
   
+  local function guiOwnsProposal(record)
+    local transaction = type(record) == "table" and record.transaction or nil
+    if type(transaction) ~= "table"
+      or transaction.schemaVersion ~= proposalCodec.CONSTRUCTION_SCHEMA_VERSION then return true end
+    return record.replayPath == "gui-build-proposal"
+      or proposalCodec.isTopologyConstructionRemoval(transaction)
+  end
+
   local function processGuiProposalQueue()
     if processPendingProposalCaptures() then return true end
     if #gui.proposalResults > 0 then
@@ -229,18 +225,11 @@ function M.new(deps)
     -- replay with the proposal whose builder userdata is being quarantined.
     if gui.proposalReplayQuarantine then return true end
     local proposals = state and state.world and state.world.proposals or {}
-    for _, proposalId in ipairs(proposalWork.candidates(proposals, gui.proposalIssued)) do
+    for _, proposalId in ipairs(proposalWork.candidates(
+        proposals, gui.proposalIssued, guiOwnsProposal)) do
       local record = (proposals.byId or {})[proposalId]
       if type(record) == "table" and record.status == "queued" and not gui.proposalIssued[proposalId] then
         gui.proposalIssued[proposalId] = true
-        -- Construction builds/upgrades and standalone bulldozes use the engine
-        -- thread helper. A topology edit with collateral demolition is the one
-        -- schema-7 exception: its native atomic form is a GUI BuildProposal.
-        if record.transaction
-          and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
-          and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
-          return true
-        end
         local localRefs = record.localRefs or {}
         local nativePlayerId = tonumber(record.nativeOwnerPlayerId)
         local issuerPlayerId = tonumber(record.issuerPlayerId or record.controlPlayerId)
@@ -255,7 +244,13 @@ function M.new(deps)
           nativePlayerId = nativePlayerId,
         })
         if not proposal then
-          rejectGuiProposal(proposalId, materialiseError, true)
+          if record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+            and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
+            queueGuiProposalResult({ proposalId = proposalId, success = false,
+              fallbackHelper = true, worldUnchanged = true, error = tostring(materialiseError) })
+          else
+            rejectGuiProposal(proposalId, materialiseError, true)
+          end
           return true
         end
         local factory = util.commandFactory("buildProposal")
@@ -264,8 +259,9 @@ function M.new(deps)
           return true
         end
         local types = api.type and api.type.ComponentType or {}
+        local exactConstruction = record.replayPath == "gui-build-proposal"
         local beforeWorld, worldCaptureError = proposalWorld.capture(
-          types, issuerPlayerId, nativePlayerId)
+          types, issuerPlayerId, nativePlayerId, exactConstruction)
         if not beforeWorld then
           rejectGuiProposal(proposalId, worldCaptureError, true)
           return true
@@ -319,6 +315,10 @@ function M.new(deps)
               lastIssuerBalance = balanceOf(issuerPlayerId),
               lastNativeOwnerBalance = balanceOf(nativePlayerId),
               stableFrames = 0,
+              beforeWorld = beforeWorld,
+              exactConstruction = exactConstruction,
+              requireBalanceMutation = exactConstruction
+                and util.integer(record.transaction.cost, 0) ~= 0,
               -- Build 35924 exposes the new topology in the callback before its
               -- journal entry is always visible.  Wait for the wallet samples
               -- to settle instead of falsely reporting a zero-cost build.
@@ -326,7 +326,7 @@ function M.new(deps)
               -- been observed more than 45 GUI frames after topology success.
               -- A short "stable" window before that debit is a false zero, so
               -- do not begin settlement sampling until a conservative delay.
-              minimumFrame = gui.frames + 90,
+              minimumFrame = gui.frames + (exactConstruction and 1 or 90),
               maximumFrame = gui.frames + 360,
             }
           end, "mod.network.replay-build-proposal")
@@ -633,7 +633,7 @@ function M.new(deps)
       if #gui.pendingProposalCaptures > 0 or #gui.proposalResults > 0
         or gui.proposalReplayQuarantine then return true end
       local proposals = state and state.world and state.world.proposals or {}
-      return #proposalWork.candidates(proposals, gui.proposalIssued) > 0
+      return #proposalWork.candidates(proposals, gui.proposalIssued, guiOwnsProposal) > 0
     end,
     operationWorkPending = function()
       if #gui.pendingOperationCaptures > 0 or #gui.operationResults > 0 then return true end

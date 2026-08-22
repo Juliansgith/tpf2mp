@@ -30,8 +30,10 @@ local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local networkBootstrapPolicy = require "tpf2_mp/network_bootstrap_policy"
 local performanceRuntimeModule = require "tpf2_mp/performance_runtime"
 local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
+local engineBackgroundRuntimeModule = require "tpf2_mp/engine_background_runtime"
 local economyActionRuntime = require "tpf2_mp/economy_action_runtime"
 local economyLineRegistration = require "tpf2_mp/economy_line_registration"
 local economySettlementTransaction = require "tpf2_mp/economy_settlement_transaction"
@@ -40,6 +42,7 @@ local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local checkpointRetention = require "tpf2_mp/checkpoint_retention"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
@@ -60,7 +63,8 @@ local EVENT_ID = "tpf2mp"
 local STATE_VERSION = 31
 local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
-local function config() return runtimeConfig.read() end
+local configReader = runtimeConfig.newReader()
+local function config() return configReader.read() end
 local setDifference = util.setDifference
 local function newState()
   return stateSchema.new(config(), {
@@ -237,11 +241,15 @@ local function publishSnapshot()
   return true
 end
 
-local function refreshPassengerCosmetics()
+local function refreshPassengerCosmetics(forceNativeSample)
   local presentationView = passengerPresentation.publicView(
     state.world.passengerPresentation, state.economy, state.canonical)
+  local probe = state.probes.passengerCosmetics or {}
+  local sampleNative = forceNativeSample == true or probe.lastNativeSampleTick == nil
+    or state.tick - util.integer(probe.lastNativeSampleTick, 0) >= 7200
   local ok, result = passengerCosmetics.applyDesiredCounts(
-    state.probes.passengerCosmetics, presentationView)
+    probe, presentationView, { sampleNative = sampleNative })
+  if ok and sampleNative then result.lastNativeSampleTick = state.tick end
   if ok then state.probes.passengerCosmetics = result end
   return ok, result
 end
@@ -995,9 +1003,6 @@ local queueCanonicalProposal = proposalRuntime.queue
 local finaliseCanonicalProposal = proposalRuntime.finalise
 local beginCanonicalConstruction = proposalRuntime.beginConstruction
 local finaliseCanonicalConstruction = proposalRuntime.finaliseConstruction
-local processCanonicalConstructionProposals = proposalRuntime.processConstructions
-local processPendingProposalFinances = proposalRuntime.processFinances
-local networkFinanceHousekeeping = proposalRuntime.financeHousekeeping
 local emitProposalCompletion = proposalRuntime.emitCompletion
 
 local operationRuntime = operationRuntimeModule.new({
@@ -1453,6 +1458,7 @@ handlers["network.checkpoint_outcome"] = function(action)
     }
     state.world.proposalConsensus.sessionFault = fault
   end
+  checkpointRetention.prune(consensus, 128)
   return success, util.deepCopy(record)
 end
 
@@ -1715,11 +1721,12 @@ end
 local validationConstruction = require "tpf2_mp/validation_construction"
 -- Disposable live validation creates the same compound native shapes as
 -- player-built depots/stations, plus a topology-free data-driven asset. The
--- GUI state's typed constructionsToAdd vector has no exposed
--- ConstructionEntity constructor in Build 35924, while the shipped engine
--- interface provides build/upgrade/bulldoze helpers. Keep this bridge behind
--- the one-shot validator and select every stock resource server-side; probe
--- actions can never supply an arbitrary filename or parameter table.
+-- live-pinned GUI constructor is nested at SimpleProposal.ConstructionEntity.
+-- This historical helper remains the controlled fallback for construction
+-- upgrades/removals and for disposable mutation probes; fresh player builds
+-- use the exact typed GUI BuildProposal route. Keep the bridge behind the
+-- one-shot validator and select every stock resource server-side; probe actions
+-- can never supply an arbitrary filename or parameter table.
 handlers["probe.build_construction"] = function(action)
   if not config().autoValidate then
     return false, "probe construction is available only in a disposable validation world"
@@ -1931,7 +1938,7 @@ handlers["probe.structural"] = function()
 end
 
 handlers["probe.passenger_cosmetics"] = function()
-  return refreshPassengerCosmetics()
+  return refreshPassengerCosmetics(true)
 end
 
 handlers["probe.export_research"] = function()
@@ -2917,6 +2924,14 @@ economyClock = economyClockRuntimeModule.new({
 vehicleSync = vehicleSyncRuntimeModule.new({
   getState = function() return state end,
   diagnosticLog = diagnosticLog,
+  gameTimeSeconds = world.gameTimeSeconds,
+})
+
+local engineBackgroundRuntime = engineBackgroundRuntimeModule.new({
+  getState = function() return state end,
+  networkClock = networkClock,
+  economyClock = economyClock,
+  proposals = proposalRuntime,
 })
 
 -- Game-script update ticks stop while a loaded world is paused, but GUI
@@ -3175,6 +3190,7 @@ local guiEventRuntime = guiEventRuntimeModule.new({
   freezeNetworkCalendar = freezeNetworkCalendar,
   diagnosticLog = diagnosticLog,
   projectNetworkSpeedIndicator = networkSpeedIndicator.project,
+  networkSpeedIndicatorDue = networkSpeedIndicator.due,
   eventId = EVENT_ID,
   scriptFile = SCRIPT_FILE,
 })
@@ -3262,38 +3278,18 @@ local script = {
     -- orders are consumed before their local projections run. They used to run
     -- here as well as inside pumpNetworkBridge, doubling vehicle scans and
     -- clock work on every multiplayer update.
-    if state.networkMode ~= "network" then
-      local clockOk, clockError = xpcall(networkClock.update, debug.traceback)
-      if not clockOk then state.world.networkClock.lastError = tostring(clockError) end
-      local economyClockOk, economyClockError = xpcall(economyClock.update, debug.traceback)
-      if not economyClockOk then state.probes.lastError = tostring(economyClockError) end
-      local vehicleOk, vehicleError = xpcall(vehicleSync.update, debug.traceback)
-      if not vehicleOk then state.probes.vehicleSync.lastError = tostring(vehicleError) end
-    end
-    if state.tick % 300 == 0 then
+    engineBackgroundRuntime.run()
+    if state.tick % 900 == 0 then
       local cosmeticOk, cosmeticError = xpcall(refreshPassengerCosmetics, debug.traceback)
       if not cosmeticOk then state.probes.passengerCosmetics.lastError = tostring(cosmeticError) end
     end
     enforceProxyLoanLimit()
-    local constructionOk, constructionResult, constructionError =
-      xpcall(processCanonicalConstructionProposals, debug.traceback)
-    if not constructionOk then
-      state.lastError = "canonical construction processing failed: " .. tostring(constructionResult)
-    elseif constructionResult ~= true then
-      state.lastError = tostring(type(constructionError) == "table"
-        and constructionError.error or constructionError or "canonical construction failed")
-    end
-    local pendingFinanceOk, pendingFinanceError = xpcall(processPendingProposalFinances, debug.traceback)
-    if not pendingFinanceOk then state.lastError = tostring(pendingFinanceError) end
-    local financeHousekeepingInvoked, financeHousekeepingOk, financeHousekeepingError =
-      xpcall(networkFinanceHousekeeping, debug.traceback)
-    if not financeHousekeepingInvoked or financeHousekeepingOk ~= true then
-      state.probes.lastError = tostring(financeHousekeepingError or financeHousekeepingOk)
-    end
-    local manualBootstrapOk, manualBootstrapError = xpcall(
-      networkClock.maintainManualBootstrap, debug.traceback)
-    if not manualBootstrapOk then state.probes.lastError = tostring(manualBootstrapError) end
     local cfg = config()
+    if networkBootstrapPolicy.due(state, cfg, networkClock.manualBootstrap) then
+      local manualBootstrapOk, manualBootstrapError = xpcall(
+        networkClock.maintainManualBootstrap, debug.traceback)
+      if not manualBootstrapOk then state.probes.lastError = tostring(manualBootstrapError) end
+    end
     if cfg.networkAutoValidate or cfg.autoValidate then
       local validator = cfg.networkAutoValidate and runAutomatedNetworkValidation or runAutomatedValidation
       local validationOk, validationError = xpcall(validator, debug.traceback)
@@ -3496,7 +3492,9 @@ local script = {
 
   guiUpdate = function()
     local result = guiEventRuntime.update()
-    pcall(guiStockPresentation.update, gui, gui.snapshot or {})
+    if guiStockPresentation.due(gui, gui.snapshot or {}) then
+      pcall(guiStockPresentation.update, gui, gui.snapshot or {})
+    end
     return result
   end,
 

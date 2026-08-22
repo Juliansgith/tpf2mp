@@ -200,6 +200,78 @@ local function edgeObjectFactories()
   return candidates
 end
 
+local function constructionEntityFactories()
+  local candidates = {}
+  local function add(label, factory)
+    if factory and factory.new ~= nil then candidates[#candidates + 1] = { label = label, factory = factory } end
+  end
+  pcall(function() add("ConstructionEntity", api.type.ConstructionEntity) end)
+  pcall(function() add("SimpleProposal.ConstructionEntity", api.type.SimpleProposal.ConstructionEntity) end)
+  pcall(function() add("SimpleProposal.Construction", api.type.SimpleProposal.Construction) end)
+  pcall(function() add("ConstructionProposal.ConstructionEntity", api.type.ConstructionProposal.ConstructionEntity) end)
+  pcall(function() add("SimpleConstructionProposal.ConstructionEntity", api.type.SimpleConstructionProposal.ConstructionEntity) end)
+  return candidates
+end
+
+local function probeConstructionEntityFactories()
+  local result = {}
+  for _, candidate in ipairs(constructionEntityFactories()) do
+    local entry = {}
+    local objectOk, object = pcall(candidate.factory.new)
+    entry.construct = objectOk and object ~= nil
+    entry.constructError = not entry.construct and tostring(object) or nil
+    if entry.construct then
+      entry.vectorAccepted, entry.vectorError = pcall(function()
+        local proposal = api.type.SimpleProposal.new()
+        proposal.constructionsToAdd[1] = object
+        assert(proposal.constructionsToAdd[1] ~= nil)
+      end)
+      if not entry.vectorAccepted then entry.vectorError = tostring(entry.vectorError) end
+      for _, field in ipairs({ "fileName", "params", "transf", "name", "playerEntity", "headquarters" }) do
+        local readOk, value = pcall(function() return object[field] end)
+        entry[field] = { readable = readOk, valueType = readOk and type(value) or nil,
+          error = not readOk and tostring(value) or nil }
+      end
+      local samples = {
+        fileName = "asset/decoration/bench_a.con", params = {}, name = "",
+        playerEntity = -1, headquarters = -1,
+      }
+      for field, sample in pairs(samples) do
+        local freshOk, fresh = pcall(candidate.factory.new)
+        local writeOk, writeError = false, fresh
+        if freshOk then writeOk, writeError = pcall(function() fresh[field] = sample end) end
+        entry[field].writable = writeOk
+        if not writeOk then entry[field].writeError = tostring(writeError) end
+      end
+      local matrixCandidates = {
+        table16 = function()
+          return api.type.Mat4f.new({ 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 })
+        end,
+        vec4Columns = function()
+          return api.type.Mat4f.new(
+            api.type.Vec4f.new(1, 0, 0, 0), api.type.Vec4f.new(0, 1, 0, 0),
+            api.type.Vec4f.new(0, 0, 1, 0), api.type.Vec4f.new(0, 0, 0, 1))
+        end,
+        default = function() return api.type.Mat4f.new() end,
+      }
+      entry.matrixFactories = {}
+      for label, makeMatrix in pairs(matrixCandidates) do
+        local matrixOk, matrix = pcall(makeMatrix)
+        local freshOk, fresh = pcall(candidate.factory.new)
+        local writeOk, writeError = false, matrixOk and fresh or matrix
+        if matrixOk and freshOk then writeOk, writeError = pcall(function() fresh.transf = matrix end) end
+        entry.matrixFactories[label] = {
+          construct = matrixOk, constructType = matrixOk and type(matrix) or nil,
+          constructError = not matrixOk and tostring(matrix) or nil,
+          writable = writeOk, writeError = not writeOk and tostring(writeError) or nil,
+        }
+      end
+    end
+    result[candidate.label] = entry
+  end
+  return result
+end
+
 local function constructCompatibleEdgeObject()
   local errors = {}
   for _, candidate in ipairs(edgeObjectFactories()) do
@@ -370,6 +442,23 @@ function M.capabilities()
       assert(value ~= nil)
     end)
   end
+  local constructionPlainVectorWritable = false
+  local constructionPlainVectorError = nil
+  if api and api.type and api.type.SimpleProposal and api.type.SimpleProposal.new then
+    local assigned, assignmentError = pcall(function()
+      local proposal = api.type.SimpleProposal.new()
+      local additions = proposal.constructionsToAdd or proposal.toAdd
+      assert(additions ~= nil, "construction addition vector is unavailable")
+      additions[1] = {
+        fileName = "asset/decoration/bench_a.con",
+        transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+        params = {},
+      }
+      assert(additions[1] ~= nil, "construction addition did not round-trip")
+    end)
+    constructionPlainVectorWritable = assigned
+    if not assigned then constructionPlainVectorError = tostring(assignmentError) end
+  end
   local compatibleEdgeObject, compatibleEdgeObjectFactory = constructCompatibleEdgeObject()
   local function nestedType(first, second)
     local ok, value = pcall(function()
@@ -407,6 +496,9 @@ function M.capabilities()
     segmentAndEntity = api and api.type and available(api.type.SegmentAndEntity) or false,
     nodeAndEntity = api and api.type and available(api.type.NodeAndEntity) or false,
     constructionEntity = api and api.type and available(api.type.ConstructionEntity) or false,
+    constructionPlainVectorWritable = constructionPlainVectorWritable,
+    constructionPlainVectorError = constructionPlainVectorError,
+    constructionEntityFactoryProbe = probeConstructionEntityFactories(),
     edgeObject = edgeObjectAvailable,
     edgeObjectNewType = edgeObjectNewType,
     edgeObjectConstructed = edgeObjectConstructed,
@@ -1742,7 +1834,172 @@ local function facilityDelta(after, before)
   return result
 end
 
-local function facilityIds(delta)
+local facilityIds
+
+local function exactConstructionMicros()
+  local native = rawget(_G, "tpf2mp_native_monotonic_us")
+  if type(native) == "function" then
+    local ok, value = pcall(native)
+    if ok and tonumber(value) then return tonumber(value) end
+  end
+  return os and os.clock and os.clock() * 1000000 or 0
+end
+
+local function tryExactConstruction(index, before, started)
+  if index > #candidates then
+    marker("exact-construction-complete", {
+      success = false, error = "no exact construction candidate succeeded",
+    })
+    return
+  end
+  local x, y = candidates[index][1], candidates[index][2]
+  local position = api.type.Vec2f.new(x, y)
+  local z = terrainHeight(position, x, y)
+  if z == nil then tryExactConstruction(index + 1, before, started); return end
+  local proposal = api.type.SimpleProposal.new()
+  local construction = api.type.SimpleProposal.ConstructionEntity.new()
+  construction.fileName = "asset/default_multi_bench_new.con"
+  construction.params = { paramX = 0, paramY = 0, seed = index, year = 1990 }
+  construction.transf = api.type.Mat4f.new(
+    api.type.Vec4f.new(1, 0, 0, 0), api.type.Vec4f.new(0, 1, 0, 0),
+    api.type.Vec4f.new(0, 0, 1, 0), api.type.Vec4f.new(x, y, z, 1))
+  construction.name = "TPF2MP exact replay probe"
+  construction.playerEntity = game.interface.getPlayer()
+  construction.headquarters = false
+  proposal.constructionsToAdd[1] = construction
+  local factory = commandFactory("buildProposal")
+  local commandOk, commandOrError = pcall(factory, proposal, nil, false)
+  if not commandOk then
+    marker("exact-construction-complete", { success = false, error = tostring(commandOrError) })
+    return
+  end
+  api.cmd.sendCommand(commandOrError, function(result, success)
+    if success ~= true then tryExactConstruction(index + 1, before, started); return end
+    local after, snapshotError = facilitySnapshot()
+    local delta = after and facilityDelta(after, before) or {}
+    local ids = facilityIds(delta)
+    marker("exact-construction-complete", {
+      success = after ~= nil and (#(delta.asset or {}) == 1 or #(delta.construction or {}) == 1),
+      nativeSuccess = true, candidate = index, x = x, y = y, z = z,
+      elapsedUs = math.max(0, exactConstructionMicros() - started),
+      resultIds = resultIds(result), delta = delta, createdIds = ids, error = snapshotError,
+    })
+  end)
+end
+
+function M.runExactConstructionTest()
+  M.capabilities()
+  local factory = commandFactory("buildProposal")
+  if not (factory and api and api.cmd and type(api.cmd.sendCommand) == "function"
+    and api.type and api.type.SimpleProposal and api.type.SimpleProposal.ConstructionEntity
+    and api.type.Mat4f and api.type.Vec4f and terrainHeightAvailable()) then
+    marker("exact-construction-complete", { success = false, error = "exact construction API unavailable" })
+    return false
+  end
+  local before, snapshotError = facilitySnapshot()
+  if not before then
+    marker("exact-construction-complete", { success = false, error = snapshotError })
+    return false
+  end
+  tryExactConstruction(1, before, exactConstructionMicros())
+  return true
+end
+
+local function exactStationParams(index)
+  local prefix = "station/rail/modular_station/"
+  return {
+    year = 1990, seed = index, trackType = 0, catenary = 0,
+    length = 0, tracks = 0, paramX = 0, paramY = 0,
+    modules = {
+      [3700000] = { name = prefix .. "main_building_1_era_c.module", variant = 0,
+        metadata = { era = 2, level = 1, span = { 1, 2 },
+          moreCapacity = { cargo = 0, passenger = 30 },
+          snapPoint = { 0, -1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 0, -14, 0, 0, 1 } } },
+      [7400000] = { name = prefix .. "platform_passenger_era_c.module", variant = 0,
+        metadata = { platform = true, passenger_platform = true } },
+      [7400010] = { name = prefix .. "platform_passenger_era_c.module", variant = 0,
+        metadata = { platform = true, passenger_platform = true } },
+      [8401000] = { name = prefix .. "platform_track.module", variant = 0,
+        metadata = { track = true } },
+      [8401010] = { name = prefix .. "platform_track.module", variant = 0,
+        metadata = { track = true } },
+      [10400000] = { name = prefix .. "platform_passenger_roof_era_c.module", variant = 0,
+        metadata = { platform_roof = true } },
+      [10400010] = { name = prefix .. "platform_passenger_roof_era_c.module", variant = 0,
+        metadata = { platform_roof = true } },
+      [10800000] = { name = prefix .. "addon_platform_passenger_stairs_era_c.module", variant = 0,
+        metadata = { underground = true } },
+    },
+  }
+end
+
+local function tryExactStation(index, before, started)
+  if index > #candidates then
+    marker("exact-station-construction-complete", {
+      success = false, error = "no exact stock-station candidate succeeded",
+    })
+    return
+  end
+  local x, y = candidates[index][1], candidates[index][2]
+  local z = terrainHeight(api.type.Vec2f.new(x, y), x, y)
+  if z == nil then tryExactStation(index + 1, before, started); return end
+  local proposal = api.type.SimpleProposal.new()
+  local construction = api.type.SimpleProposal.ConstructionEntity.new()
+  construction.fileName = "station/rail/modular_station/modular_station.con"
+  construction.params = exactStationParams(index)
+  construction.transf = api.type.Mat4f.new(
+    api.type.Vec4f.new(1, 0, 0, 0), api.type.Vec4f.new(0, 1, 0, 0),
+    api.type.Vec4f.new(0, 0, 1, 0), api.type.Vec4f.new(x, y, z, 1))
+  construction.name = "TPF2MP exact station probe"
+  construction.playerEntity = game.interface.getPlayer()
+  construction.headquarters = false
+  proposal.constructionsToAdd[1] = construction
+  local factory = commandFactory("buildProposal")
+  local commandOk, commandOrError = pcall(factory, proposal, nil, false)
+  if not commandOk then
+    marker("exact-station-construction-complete", {
+      success = false, stage = "command", error = tostring(commandOrError),
+    })
+    return
+  end
+  api.cmd.sendCommand(commandOrError, function(result, success)
+    if success ~= true then tryExactStation(index + 1, before, started); return end
+    local after, snapshotError = facilitySnapshot()
+    local delta = after and facilityDelta(after, before) or {}
+    local complete = after ~= nil and #(delta.construction or {}) == 1
+      and #(delta.station or {}) >= 1 and #(delta.stationGroup or {}) >= 1
+      and #(delta.track or {}) >= 1
+    marker("exact-station-construction-complete", {
+      success = complete, nativeSuccess = true, candidate = index,
+      x = x, y = y, z = z,
+      elapsedUs = math.max(0, exactConstructionMicros() - started),
+      resultIds = resultIds(result), delta = delta, createdIds = facilityIds(delta),
+      error = snapshotError,
+    })
+  end)
+end
+
+function M.runExactStationTest()
+  M.capabilities()
+  local factory = commandFactory("buildProposal")
+  if not (factory and api and api.cmd and type(api.cmd.sendCommand) == "function"
+    and api.type and api.type.SimpleProposal and api.type.SimpleProposal.ConstructionEntity
+    and api.type.Mat4f and api.type.Vec4f and terrainHeightAvailable()) then
+    marker("exact-station-construction-complete", {
+      success = false, error = "exact station construction API unavailable",
+    })
+    return false
+  end
+  local before, snapshotError = facilitySnapshot()
+  if not before then
+    marker("exact-station-construction-complete", { success = false, error = snapshotError })
+    return false
+  end
+  tryExactStation(1, before, exactConstructionMicros())
+  return true
+end
+
+facilityIds = function(delta)
   local ids, seen = {}, {}
   for _, name in ipairs({ "construction", "asset", "depot", "station", "stationGroup", "track" }) do
     for _, entity in ipairs(delta[name] or {}) do

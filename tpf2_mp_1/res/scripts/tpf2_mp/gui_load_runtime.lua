@@ -14,6 +14,14 @@ function M.new(deps)
   local publicSnapshot = assert(deps.publicSnapshot, "snapshot projector is required")
   local renderGui = assert(deps.renderGui, "GUI renderer is required")
   local resetReplayWork = deps.resetReplayWork or function() end
+  local wallTime = deps.wallTime or function()
+    local native = rawget(_G, "tpf2mp_native_monotonic_us")
+    if type(native) == "function" then
+      local ok, value = pcall(native)
+      if ok and tonumber(value) then return tonumber(value) / 1000000 end
+    end
+    return os and type(os.time) == "function" and os.time() or nil
+  end
 
   local function load(saved)
     local engineThread = isEngineThread()
@@ -29,6 +37,7 @@ function M.new(deps)
     if config().networkAutoValidate then return nextState end
 
     local frame = tonumber(gui.frames) or 0
+    local wall = wallTime()
     local activeCid = select(1, activeCompany())
     local current = gui.snapshot
     local priorityChange = current == nil
@@ -41,10 +50,13 @@ function M.new(deps)
     -- Rebuilding it twice per second also rerendered a hidden Multiplayer
     -- window while a stock vehicle window was animating. Priority state still
     -- projects immediately; ordinary presentation data is three-second UI.
-    if priorityChange
-      or frame - (gui.lastSnapshotProjectionFrame or -1000) >= 180 then
+    local lastWall = tonumber(gui.lastSnapshotProjectionWall)
+    local periodicDue = wall and (lastWall == nil or wall < lastWall or wall - lastWall >= 3)
+      or not wall and frame - (gui.lastSnapshotProjectionFrame or -1000) >= 180
+    if priorityChange or periodicDue then
       gui.snapshot = publicSnapshot({ allowNativeAccounts = false })
       gui.lastSnapshotProjectionFrame = frame
+      gui.lastSnapshotProjectionWall = wall
       gui.snapshotProjections = (gui.snapshotProjections or 0) + 1
       if gui.status then renderGui() end
     end

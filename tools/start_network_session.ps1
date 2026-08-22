@@ -78,6 +78,12 @@ if ($existingState) {
         }
     }
 }
+if ($Role -eq 'Host') {
+    Assert-Tpf2mpHostPortAvailable -Port $Port -Session $safeSession
+}
+else {
+    Assert-Tpf2mpLoopbackJoinTarget -HostAddress $HostAddress -Port $Port -Session $safeSession
+}
 
 $game = Find-Tpf2mpGameExecutable $GameExecutable
 if (-not $game) { throw 'Transport Fever 2 executable was not discovered; pass -GameExecutable.' }
@@ -197,7 +203,6 @@ $companionCommandLine = ConvertTo-Tpf2mpCommandLine (@($companion.Prefix) + $com
 $companionProcess = Start-Process -FilePath $companion.FilePath -ArgumentList $companionCommandLine `
     -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
 
-$statePath = Join-Path $sessionRoot 'session-state.json'
 $state = [ordered]@{
     schemaVersion = 3
     session = $safeSession
@@ -246,7 +251,7 @@ $state = [ordered]@{
     stdout = $stdout
     stderr = $stderr
 }
-$state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+[void](Write-Tpf2mpSessionState $safeSession $peer $state)
 
 try {
     if ($pinnedSave -and -not $restorePlanData) {
@@ -254,7 +259,7 @@ try {
             -SavePath $pinnedSave.savePath -BundleRoot $bundle
         if ($LASTEXITCODE -ne 0) { throw "Initial recovery archive failed with exit code $LASTEXITCODE" }
         $state.initialRecoveryArchive = Join-Path $sessionRoot 'latest-recovery-archive.json'
-        $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+        [void](Write-Tpf2mpSessionState $safeSession $peer $state)
     }
     $deadline = (Get-Date).AddSeconds(12)
     $companionStatus = $null
@@ -317,7 +322,7 @@ try {
         $state.gameStdout = $launch.stdout
         $state.gameStderr = $launch.stderr
         $state.status = 'injecting-native-hook'
-        $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+        [void](Write-Tpf2mpSessionState $safeSession $peer $state)
 
         $nativeStatusPath = Add-Tpf2mpNativeHook -GameProcess $gameProcess -NativePaths $native
         $state.nativeStatusPath = $nativeStatusPath
@@ -325,13 +330,13 @@ try {
             $menu = Wait-Tpf2mpMainMenuEntry -GameProcess $gameProcess -BridgePath $bridge `
                 -Session $safeSession -Peer $peer -TimeoutSeconds 120
             $state.status = 'awaiting-multiplayer-selection'
-            $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+            [void](Write-Tpf2mpSessionState $safeSession $peer $state)
             $loadReceipt = Invoke-Tpf2mpPinnedSaveLoad -GameProcess $gameProcess -BridgePath $bridge `
                 -Session $safeSession -Peer $peer -ExpectedSaveBaseName $stagedSave.baseName `
                 -EvidenceDirectory (Join-Path $sessionRoot 'native-save-load') -TimeoutSeconds 600
             $state.nativeSaveLoadReceipt = Join-Path $sessionRoot 'native-save-load\native-save-load.json'
             $state.status = 'waiting-for-network-world'
-            $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+            [void](Write-Tpf2mpSessionState $safeSession $peer $state)
             [void](Wait-Tpf2mpNativeWorld -GameProcess $gameProcess -NativeStatusPath $nativeStatusPath `
                 -RequireGameScriptObserver -RequireAuthorityGates)
             [IO.File]::WriteAllText((Join-Path $bridge 'launcher\manual-bootstrap-ready'),
@@ -406,7 +411,7 @@ try {
         $state.recoveryWatcherStdout = $recoveryWatcherStdout
         $state.recoveryWatcherStderr = $recoveryWatcherStderr
     }
-    $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    [void](Write-Tpf2mpSessionState $safeSession $peer $state)
     Write-Host "TPF2MP $Role session ready: $safeSession ($peer), fingerprint $fingerprint"
     Write-Host "Bridge: $bridge"
     if ($StartingSave -and -not $NoLaunchGame) {
@@ -425,7 +430,7 @@ try {
 catch {
     $state.status = 'failed'
     $state.error = $_.Exception.Message
-    $state | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    [void](Write-Tpf2mpSessionState $safeSession $peer $state)
     if ($gameProcess) {
         try {
             $gameProcess.Refresh()
@@ -448,7 +453,10 @@ catch {
     foreach ($cleanupPid in @($cleanupPids | Where-Object { $_ } | Select-Object -Unique)) {
         $cleanupProcess = Get-Tpf2mpVerifiedCompanionProcess -ProcessId ([int]$cleanupPid) `
             -Session $safeSession -Peer $peer -ExecutablePath $state.companionExecutable
-        if ($cleanupProcess) { Stop-Process -Id $cleanupProcess.Id -Force -ErrorAction SilentlyContinue }
+        if ($cleanupProcess) {
+            Stop-Process -Id $cleanupProcess.Id -Force -ErrorAction SilentlyContinue
+            [void]$cleanupProcess.WaitForExit(5000)
+        }
     }
     throw
 }

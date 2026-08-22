@@ -1,4 +1,9 @@
 local canonical = require "tpf2_mp/canonical"
+local constructionMaterializerOk, constructionProposalMaterializer =
+  pcall(require, "tpf2_mp/construction_proposal_materializer")
+if not constructionMaterializerOk then
+  constructionProposalMaterializer = require "tpf2_mp_probe/construction_proposal_materializer"
+end
 local hash = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 
@@ -698,29 +703,54 @@ end
 
 local function validateStationGraph(nodes, edges, params)
   local trackCount = params.tracks + 1
-  if #nodes == 0 or #edges == 0 or #nodes ~= #edges + trackCount then
-    return false, "station graph cardinality does not match its track count"
+  if #nodes == 0 or #edges == 0 then
+    return false, "station graph is empty"
   end
-  local adjacency = {}
-  for _, node in ipairs(nodes) do adjacency[node.slot] = {} end
+  local adjacency, boundary = {}, {}
+  for _, node in ipairs(nodes) do adjacency["slot:" .. node.slot] = {} end
+  local function vertex(reference)
+    if type(reference) ~= "table" then return nil end
+    if reference.slot ~= nil then
+      local key = "slot:" .. tostring(reference.slot)
+      return adjacency[key] and key or nil
+    end
+    if type(reference.cid) == "string" and reference.cid:match("^node:") then
+      local key = "cid:" .. reference.cid
+      if adjacency[key] == nil then adjacency[key], boundary[key] = {}, true end
+      return key
+    end
+    return nil
+  end
   for _, edge in ipairs(edges) do
     if edge.carrier ~= "track" then return false, "station graph contains a non-track edge" end
     if edge.private ~= true then return false, "station graph edges must remain player-owned" end
     if edge.catenary ~= (params.catenary == 1) then
       return false, "station graph catenary differs from its module template"
     end
-    local node0 = type(edge.node0) == "table" and edge.node0.slot or nil
-    local node1 = type(edge.node1) == "table" and edge.node1.slot or nil
+    local node0, node1 = vertex(edge.node0), vertex(edge.node1)
     if not node0 or not node1 or node0 == node1 or not adjacency[node0] or not adjacency[node1] then
-      return false, "station graph must reference only its own distinct node slots"
+      return false, "station graph must reference distinct new or canonical boundary nodes"
     end
     adjacency[node0][#adjacency[node0] + 1] = node1
     adjacency[node1][#adjacency[node1] + 1] = node0
   end
+  local boundaryCount = util.tableCount(boundary)
+  -- A station snapped to an existing track endpoint omits that endpoint from
+  -- nodesToAdd and references its canonical node directly. Count those
+  -- boundary vertices when proving that the captured graph is still exactly
+  -- one simple path per platform track. This remains resource-agnostic and the
+  -- preparation stage separately resolves and ownership-checks every cid.
+  if #nodes + boundaryCount ~= #edges + trackCount then
+    return false, "station graph cardinality does not match its track count"
+  end
+  for slot in pairs(boundary) do
+    if #adjacency[slot] ~= 1 then
+      return false, "station canonical boundary node must be a path endpoint"
+    end
+  end
   local visited, components = {}, 0
-  for _, node in ipairs(nodes) do
-    local slot = node.slot
-    local degree = #adjacency[slot]
+  for slot, neighbours in pairs(adjacency) do
+    local degree = #neighbours
     if degree < 1 or degree > 2 then return false, "station track graph is not a set of simple paths" end
     if not visited[slot] then
       components = components + 1
@@ -1938,17 +1968,16 @@ function M.materialise(transaction, options)
   options = options or {}
   local valid, validationError = M.validate(transaction)
   if not valid then return nil, validationError end
-  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
-    and not M.isTopologyConstructionRemoval(transaction) then
-    return nil, "construction proposals require engine-thread materialisation"
-  end
   local gameApi = options.api or api
   if not (gameApi and gameApi.type and gameApi.type.SimpleProposal and gameApi.type.SegmentAndEntity
     and gameApi.type.NodeAndEntity and gameApi.type.Vec3f and gameApi.type.BaseEdgeStreet
     and gameApi.type.BaseEdgeTrack and gameApi.res) then
     return nil, "BuildProposal materialisation API is unavailable"
   end
-  if #transaction.edgeObjects.add > 0 then
+  local construction = transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
+    and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
+  local nativeGeneratedTopology = type(construction) == "table" and construction.mode == "build"
+  if not nativeGeneratedTopology and #transaction.edgeObjects.add > 0 then
     local probe = edgeObjectConstructor(gameApi)
     if not probe then return nil, "EdgeObject materialisation API is unavailable" end
   end
@@ -1967,6 +1996,13 @@ function M.materialise(transaction, options)
     slotIds[object.slot], nextObjectId = nextObjectId, nextObjectId - 1
   end
 
+  -- Build 35924 expands a typed ConstructionEntity into its nodes, edges and
+  -- construction-owned edge objects at the moment it is assigned to the
+  -- SimpleProposal. Replaying the captured generated graph as well produces
+  -- two overlapping copies and the native BuildProposal rejects it. Keep the
+  -- captured graph in the canonical transaction for matching and audit, but
+  -- give the native construction factory sole ownership of additions here.
+  if not nativeGeneratedTopology then
   for index, node in ipairs(transaction.nodes) do
     local value = gameApi.type.NodeAndEntity.new()
     value.entity = slotIds[node.slot]
@@ -2075,6 +2111,7 @@ function M.materialise(transaction, options)
     value.name = object.name
     proposal.streetProposal.edgeObjectsToAdd[index] = value
   end
+  end
   for index, cid in ipairs(transaction.remove.edges) do
     local localId, err = resolveLocalReference({ cid = cid }, slotIds, options)
     if localId == nil then return nil, err end
@@ -2090,30 +2127,23 @@ function M.materialise(transaction, options)
     if localId == nil then return nil, err end
     proposal.streetProposal.edgeObjectsToRemove[index] = localId
   end
-  if M.isTopologyConstructionRemoval(transaction) then
-    local removals = safeField(proposal, "constructionsToRemove")
-    if removals == nil and type(proposal) == "table" then
-      proposal.constructionsToRemove = {}
-      removals = proposal.constructionsToRemove
-    end
-    if removals == nil then return nil, "construction removal vector is unavailable" end
-    local construction = transaction.constructions[1]
-    local references = {
-      { cid = construction.sourceCid },
-    }
-    for _, collateral in ipairs(construction.collateral) do
-      references[#references + 1] = { cid = collateral.cid }
-    end
-    for index, reference in ipairs(references) do
-      local localId, resolveError = resolveLocalReference(reference, slotIds, options)
-      if localId == nil then return nil, resolveError end
-      local assigned, assignError = pcall(function() removals[index] = localId end)
-      if not assigned then
-        return nil, "construction removal assignment failed: " .. tostring(assignError)
-      end
-    end
+  local constructionMaterialisation
+  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
+    local spec, specError = M.materialiseConstruction(transaction, { exactProposal = true })
+    if not spec then return nil, specError end
+    local applied, applyError = constructionProposalMaterializer.apply(proposal, spec, {
+      api = gameApi,
+      nativePlayerId = options.nativePlayerId,
+      resolveLocal = options.resolveLocal,
+    })
+    if not applied then return nil, applyError end
+    constructionMaterialisation = applied
   end
-  return proposal, { slotIds = slotIds, digest = transaction.digest }
+  return proposal, {
+    slotIds = slotIds, digest = transaction.digest,
+    construction = constructionMaterialisation,
+    nativeGeneratedTopology = nativeGeneratedTopology,
+  }
 end
 
 local function stationModuleMetadata(name, year)
@@ -2178,7 +2208,8 @@ local function stationModuleMetadata(name, year)
   return nil
 end
 
-function M.materialiseConstruction(transaction)
+function M.materialiseConstruction(transaction, options)
+  options = options or {}
   local valid, validationError = M.validate(transaction)
   if not valid then return nil, validationError end
   if transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION then
@@ -2195,7 +2226,7 @@ function M.materialiseConstruction(transaction)
   local params = source.adapter == "stock-rail-station"
     and util.deepCopy(source.params) or materialisePlainValue(source.params)
   if type(params) ~= "table" then return nil, "construction params could not be materialised" end
-  if source.mode == "upgrade" then
+  if source.mode == "upgrade" and options.exactProposal ~= true then
     -- Build 35924's legacy upgradeConstruction helper owns these two control
     -- fields.  Native GUI proposals expose them in the prepared addition, but
     -- passing them back to the helper makes its lua::Table builder insert a

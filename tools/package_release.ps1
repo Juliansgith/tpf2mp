@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.38.2-alpha',
+    [string]$Version = '0.38.3-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -160,7 +160,8 @@ $toolNames = @(
     'installed_entrypoint.ps1', 'installed_command.cmd',
     'new_match_manifest.ps1', 'new_recovery_plan.ps1',
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
-    'network_common.ps1', 'native_load_common.ps1', 'start_network_session.ps1', 'stop_network_session.ps1',
+    'network_common.ps1', 'native_load_common.ps1', 'start_network_session.ps1',
+    'start_network_session_retry.ps1', 'stop_network_session.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
     'analyze_alpha_live_evidence.ps1', 'run_alpha_live_acceptance.ps1',
     'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
@@ -168,7 +169,8 @@ $toolNames = @(
     'multiplayer_launcher.ps1',
     'watch_recovery_saves.ps1', 'recovery_plan_common.ps1', 'recovery_save_common.ps1',
     'save_recovery_via_ui.ps1',
-    'run_localhost_live_validation.ps1', 'localhost_process_policy.ps1', 'start_operational_capture_lab.ps1',
+    'run_localhost_live_validation.ps1', 'run_launcher_end_to_end.ps1',
+    'localhost_process_policy.ps1', 'start_operational_capture_lab.ps1',
     'analyze_operational_capture.ps1', 'localhost_bootstrap.lua', 'multiplayer_menu_bootstrap.lua',
     'send_game_console.ps1', 'ensure_paused_network_wake.ps1',
     'automatic_restore_capture.ps1', 'run_latest_local_restore_acceptance.ps1',
