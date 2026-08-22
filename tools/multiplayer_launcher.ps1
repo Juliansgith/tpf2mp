@@ -6,6 +6,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'network_common.ps1')
+. (Join-Path $PSScriptRoot 'launcher_worker_result.ps1')
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 $bundleVersion = 'development'
@@ -364,6 +365,7 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
     $commandLine = ConvertTo-Tpf2mpCommandLine $allArguments
     $script:worker = Start-Process -FilePath $powershell -ArgumentList $commandLine -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $script:workerStdout -RedirectStandardError $script:workerStderr
+    $script:workerName = $Name
     $hostButton.Enabled = $false
     $joinButton.Enabled = $false
     $localhostButton.Enabled = $false
@@ -626,16 +628,34 @@ $timer.Add_Tick({
         Flush-LauncherWorkerLogs
         $script:worker.Refresh()
         if ($script:worker.HasExited) {
+            $script:worker.WaitForExit()
+            $script:worker.Refresh()
             Flush-LauncherWorkerLogs
-            if ($script:worker.ExitCode -eq 0) {
+            $completedName = $script:workerName
+            $exitCode = $script:worker.ExitCode
+            $verifiedUpdate = $null
+            if ($exitCode -ne 0 -and $completedName -eq 'release-update') {
+                $verifiedUpdate = Get-Tpf2mpVerifiedReleaseUpdateResult `
+                    -StdoutPath $script:workerStdout -StderrPath $script:workerStderr
+            }
+            if ($exitCode -eq 0 -or $verifiedUpdate) {
                 $statusLabel.ForeColor = $accent
-                $statusLabel.Text = 'Task completed successfully.'
+                if ($verifiedUpdate) {
+                    $statusLabel.Text = "Update installed and verified: $($verifiedUpdate.version)."
+                    Append-LauncherLog "Release-update exited $exitCode after committing a fully verified $($verifiedUpdate.version) install; ignoring the false process result."
+                }
+                else {
+                    $statusLabel.Text = 'Task completed successfully.'
+                    Append-LauncherLog "Completed $completedName with exit 0."
+                }
             }
             else {
                 $statusLabel.ForeColor = $danger
-                $statusLabel.Text = "Task failed (exit $($script:worker.ExitCode)); see log."
+                $statusLabel.Text = "Task failed (exit $exitCode); see log."
+                Append-LauncherLog "Failed $completedName with exit $exitCode."
             }
             $script:worker = $null
+            $script:workerName = $null
             $hostButton.Enabled = -not $script:restorePeer -or $script:restorePeer -eq 'player1'
             $joinButton.Enabled = -not $script:restorePeer -or $script:restorePeer -eq 'player2'
             $localhostButton.Enabled = $true

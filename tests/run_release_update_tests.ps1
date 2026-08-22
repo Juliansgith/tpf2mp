@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $ProjectRoot 'tools\update_common.ps1')
 . (Join-Path $ProjectRoot 'tools\github_release_common.ps1')
+. (Join-Path $ProjectRoot 'tools\launcher_worker_result.ps1')
 
 function Assert-VersionOrder([string]$Older, [string]$Newer) {
     if ((Compare-Tpf2mpSemanticVersion $Older $Newer) -ge 0 `
@@ -262,4 +263,41 @@ if ([IO.Path]::GetFullPath([string]$installReceipt.installRoot) -ne [IO.Path]::G
     throw 'Updater did not pass exact named paths to the packaged installer.'
 }
 
-Write-Host 'PASS semantic update selection, integrity metadata, sidecars, safe extraction, ZIP traversal refusal, and end-to-end local update/install handoff'
+$workerResultRoot = Join-Path $caseRoot 'launcher-worker-result'
+$workerInstallRoot = Join-Path $workerResultRoot 'install'
+$workerBundle = Join-Path $workerInstallRoot 'versions\0.39.0-alpha'
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $workerBundle) | Out-Null
+Copy-Item -LiteralPath $nextFixture -Destination $workerBundle -Recurse
+[pscustomobject][ordered]@{
+    schemaVersion = 2
+    version = '0.39.0-alpha'
+    bundleRoot = $workerBundle
+} | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $workerInstallRoot 'current.json') -Encoding UTF8
+$workerStdout = Join-Path $workerResultRoot 'update.stdout.log'
+$workerStderr = Join-Path $workerResultRoot 'update.stderr.log'
+[IO.File]::WriteAllText(
+    $workerStdout,
+    "TPF2MP updated successfully: 0.38.0-alpha -> 0.39.0-alpha`r`n",
+    [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText($workerStderr, '', [Text.UTF8Encoding]::new($false))
+$verifiedWorkerResult = Get-Tpf2mpVerifiedReleaseUpdateResult `
+    -StdoutPath $workerStdout -StderrPath $workerStderr -InstallRoot $workerInstallRoot
+if (-not $verifiedWorkerResult -or $verifiedWorkerResult.version -cne '0.39.0-alpha') {
+    throw 'Launcher did not independently verify a committed successful update.'
+}
+[IO.File]::WriteAllText($workerStderr, 'late failure', [Text.UTF8Encoding]::new($false))
+if (Get-Tpf2mpVerifiedReleaseUpdateResult `
+        -StdoutPath $workerStdout -StderrPath $workerStderr -InstallRoot $workerInstallRoot) {
+    throw 'Launcher accepted update evidence with stderr residue.'
+}
+[IO.File]::WriteAllText($workerStderr, '', [Text.UTF8Encoding]::new($false))
+$workerPointerPath = Join-Path $workerInstallRoot 'current.json'
+$workerPointer = Get-Content -LiteralPath $workerPointerPath -Raw | ConvertFrom-Json
+$workerPointer.version = '0.38.0-alpha'
+$workerPointer | ConvertTo-Json | Set-Content -LiteralPath $workerPointerPath -Encoding UTF8
+if (Get-Tpf2mpVerifiedReleaseUpdateResult `
+        -StdoutPath $workerStdout -StderrPath $workerStderr -InstallRoot $workerInstallRoot) {
+    throw 'Launcher accepted update evidence whose installed pointer names another version.'
+}
+
+Write-Host 'PASS semantic update selection, integrity metadata, sidecars, safe extraction, ZIP traversal refusal, end-to-end install handoff, and launcher result verification'

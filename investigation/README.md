@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.3-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.4-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
 
 [Behavior-preserving runtime performance pass](NON_GAMEPLAY_RUNTIME_PERFORMANCE_2026-08-19.md)
 records the host scalar economy clock, shared digest projections, indexed idle

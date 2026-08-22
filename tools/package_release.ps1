@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.38.3-alpha',
+    [string]$Version = '0.38.4-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -160,7 +160,7 @@ $toolNames = @(
     'installed_entrypoint.ps1', 'installed_command.cmd',
     'new_match_manifest.ps1', 'new_recovery_plan.ps1',
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
-    'network_common.ps1', 'native_load_common.ps1', 'start_network_session.ps1',
+    'network_common.ps1', 'launcher_worker_result.ps1', 'native_load_common.ps1', 'start_network_session.ps1',
     'start_network_session_retry.ps1', 'stop_network_session.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
     'analyze_alpha_live_evidence.ps1', 'run_alpha_live_acceptance.ps1',
