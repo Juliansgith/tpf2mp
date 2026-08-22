@@ -1,6 +1,7 @@
 local util = require "tpf2_mp/util"
 local transportManager = require "tpf2_mp/gui_transport_manager"
 local matchInitialisePolicy = require "tpf2_mp/match_initialise_policy"
+local constructionSubmission = require "tpf2_mp/gui_construction_submission"
 
 local M = {}
 
@@ -46,6 +47,7 @@ function M.render(gui, snapshot, options)
   if not gui.status then return end
   options = options or {}
   snapshot = snapshot or gui.snapshot or {}
+  constructionSubmission.refresh(gui, snapshot)
   local companion = snapshot.bridge and snapshot.bridge.companion or {}
   local linkStatus = snapshot.networkMode ~= "network" and "local"
     or (companion.connected == true and "connected" or tostring(companion.status or "offline"))
@@ -159,17 +161,20 @@ function M.render(gui, snapshot, options)
       cargoLines, waitingCargo, aboardCargo, cargoCapacity, deliveredCargo,
       settledCargo, settledCargoRevenue / 100)
     local capture = gui.nativeBuildCapture or {}
+    local constructionBusy = constructionSubmission.reason(snapshot)
     lines[#lines + 1] = string.format(
-      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",
-      gui.proposalReplayQuarantine and "replay settling"
+      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | busy inputs rejected %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",
+      constructionBusy and ("construction locked: " .. constructionBusy)
+        or (gui.proposalReplayQuarantine and "replay settling"
         or (gui.pendingNetworkBuildSuppression and "settling click"
         or (gui.pendingNetworkBuildExact and "exact click latched"
-          or (gui.pendingNetworkBuildPreview and "preview armed" or "idle"))),
+          or (gui.pendingNetworkBuildPreview and "preview armed" or "idle")))),
       tonumber(capture.captured) or 0,
       tonumber(capture.exactCaptures) or 0,
       tonumber(capture.previewFallbacks) or 0,
       tonumber(capture.duplicates) or 0,
       tonumber(capture.orphaned) or 0,
+      tonumber(capture.busyRejected) or 0,
       tonumber(capture.constructionPreviewsProjected) or 0,
       tonumber(capture.constructionPreviewsSkipped) or 0,
       tonumber(capture.replayPreviewsQuarantined) or 0,

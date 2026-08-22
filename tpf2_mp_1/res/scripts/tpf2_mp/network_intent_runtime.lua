@@ -3,6 +3,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local bridgeConsumerModule = require "tpf2_mp/network_bridge_consumer"
 local followupQueueModule = require "tpf2_mp/network_followup_queue"
+local busyRejection = require "tpf2_mp/network_busy_rejection"
 local M = {
   MAX_DEFERRED_INTENTS = 32,
   MAX_DEFERRED_FOLLOWUPS = 512,
@@ -111,11 +112,8 @@ function M.new(deps)
     return ok, messageOrError, "emit"
   end
 
-  -- An origin-applied operation is a vanilla pass-through command that has
-  -- already mutated this world. If it is rejected anywhere before commit, the
-  -- ordered history can never contain it, so the worlds have provably
-  -- diverged: fail closed exactly like a commit-time consensus fault and
-  -- request the ordered pause a faulted session is still allowed to apply.
+  -- Rejection of an already-applied vanilla command proves divergence. Fault
+  -- closed and request the ordered pause still allowed to a faulted session.
   local function raiseOriginResidueFault(errorCode, detail)
     if state.networkMode ~= "network" then return false end
     local consensus = state.world.operationConsensus
@@ -136,8 +134,7 @@ function M.new(deps)
       detail = fault.detail and util.deepCopy(fault.detail) or nil,
       tick = state.tick,
     })
-    -- The pause request is best-effort: raising the fault must never throw,
-    -- even if the bridge is unavailable at this exact tick.
+    -- Fault creation must survive an unavailable best-effort pause bridge.
     local called, emitOk, emitError = pcall(emitNetworkIntent, { type = "clock.request", requestedSpeed = 0 })
     if not called or emitOk ~= true then
       diagnosticLog("origin-residue-pause-failed", {
@@ -276,7 +273,10 @@ function M.new(deps)
     if pendingReason then
       local deferablePhysical = action.type == "proposal.capture" or action.type == "proposal.prepare"
         or action.type == "proposal.build" or action.type == "operation.execute"
-      if deferablePhysical and #deferredNetworkIntents < MAX_DEFERRED_NETWORK_INTENTS then
+      local busyRejected, busyError = busyRejection.reject(
+        action, pendingReason, state, #deferredNetworkIntents, diagnosticLog, publishSnapshot)
+      if busyRejected then return false, busyError
+      elseif deferablePhysical and #deferredNetworkIntents < MAX_DEFERRED_NETWORK_INTENTS then
         deferredNetworkIntents[#deferredNetworkIntents + 1] = {
           action = util.deepCopy(action),
           companyCid = action.companyCid

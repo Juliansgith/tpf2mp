@@ -473,9 +473,26 @@ def _stock_station_modules(params: Mapping[str, int], *, cargo: bool, head: bool
 
 def _validate_stock_station_graph(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], params: Mapping[str, int]) -> None:
     track_count = params["tracks"] + 1
-    if not nodes or not edges or len(nodes) != len(edges) + track_count:
-        raise ProtocolError("station graph cardinality does not match its track count")
-    adjacency: dict[str, list[str]] = {node["slot"]: [] for node in nodes}
+    if not nodes or not edges:
+        raise ProtocolError("station graph is empty")
+    adjacency: dict[str, list[str]] = {f"slot:{node['slot']}": [] for node in nodes}
+    boundary: set[str] = set()
+
+    def vertex(reference: Any) -> str | None:
+        if not isinstance(reference, dict):
+            return None
+        slot = reference.get("slot")
+        if slot is not None:
+            key = f"slot:{slot}"
+            return key if key in adjacency else None
+        cid = reference.get("cid")
+        if isinstance(cid, str) and cid.startswith("node:"):
+            key = f"cid:{cid}"
+            adjacency.setdefault(key, [])
+            boundary.add(key)
+            return key
+        return None
+
     for edge in edges:
         if edge["carrier"] != "track":
             raise ProtocolError("station graph contains a non-track edge")
@@ -483,17 +500,21 @@ def _validate_stock_station_graph(nodes: list[dict[str, Any]], edges: list[dict[
             raise ProtocolError("station graph edges must remain player-owned")
         if edge["catenary"] != (params["catenary"] == 1):
             raise ProtocolError("station graph catenary differs from its module template")
-        node0 = edge["node0"].get("slot") if isinstance(edge["node0"], dict) else None
-        node1 = edge["node1"].get("slot") if isinstance(edge["node1"], dict) else None
-        if not node0 or not node1 or node0 == node1 or node0 not in adjacency or node1 not in adjacency:
-            raise ProtocolError("station graph must reference only its own distinct node slots")
+        node0 = vertex(edge["node0"])
+        node1 = vertex(edge["node1"])
+        if not node0 or not node1 or node0 == node1:
+            raise ProtocolError("station graph must reference distinct new or canonical boundary nodes")
         adjacency[node0].append(node1)
         adjacency[node1].append(node0)
+    if len(nodes) + len(boundary) != len(edges) + track_count:
+        raise ProtocolError("station graph cardinality does not match its track count")
+    for key in boundary:
+        if len(adjacency[key]) != 1:
+            raise ProtocolError("station canonical boundary node must be a path endpoint")
     visited: set[str] = set()
     components = 0
-    for node in nodes:
-        slot = node["slot"]
-        if not 1 <= len(adjacency[slot]) <= 2:
+    for slot, neighbours in adjacency.items():
+        if not 1 <= len(neighbours) <= 2:
             raise ProtocolError("station track graph is not a set of simple paths")
         if slot in visited:
             continue

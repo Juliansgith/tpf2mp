@@ -194,6 +194,8 @@ Runtime-controller modules:
   for the native wallet presentation cache and its barrier-safe deferral.
 - `network_intent_runtime.lua` owns the local intent FIFO, host-order wait state,
   barrier back-pressure, bridge ingress, acknowledgement, and reset lifecycle.
+  `network_busy_rejection.lua` is its fail-fast policy for suppressed
+  construction input that must never become delayed physical work.
 - `network_pump_runtime.lua` owns the authority-preserving engine cadence for
   bridge ingress, clocks, deferred work, vehicle synchronization, and stable
   content/freight maintenance. `performance_runtime.lua` supplies bounded
@@ -275,6 +277,8 @@ GUI/native-adapter modules:
   alternative-platform selections.
 - `gui_replay_quarantine.lua` owns the machine-local no-dereference window for
   builder ghosts while a delayed canonical BuildProposal settles.
+- `gui_construction_submission.lua` projects ordered-lane busy state into the
+  stock builder error contract and makes construction capture single-flight.
 - `gui_replay_runtime.lua` owns GUI-state proposal and line/vehicle command
   materialization, callback correlation, and result delivery to the engine.
 - `native_hook.lua` parses native status and validates the fail-closed authority

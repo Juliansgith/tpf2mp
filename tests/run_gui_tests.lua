@@ -679,6 +679,32 @@ local exactPreview = {
     },
   },
 }
+-- Construction input must be rejected visibly while a prior ordered action is
+-- in flight. It must not arm a preview/apply pair that can materialise later.
+script.handleEvent("test", "tpf2mp", "snapshot", {
+  networkMode = "network", activeCompanyCid = "company:1",
+  proposals = { queued = 1, applied = 0, failed = 0 },
+  operations = { queued = 0, applied = 0, failed = 0 },
+  proposalConsensus = { pending = 1 }, operationConsensus = { pending = 0 },
+  checkpointConsensus = { pending = 0 }, deferredNetworkQueue = { count = 0 },
+})
+local busyPreview = script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", exactPreview)
+assert(type(busyPreview) == "table" and busyPreview.errorMessages[1]:find("not queued", 1, true),
+  "busy construction preview did not expose a native builder error")
+local busyApply = script.guiHandleEvent("constructionBuilder", "builder.apply", {
+  proposal = { streetProposal = { edgesToAdd = {}, nodesToAdd = {} } }, result = {},
+})
+assert(type(busyApply) == "table" and busyApply.errorMessages[1]:find("not queued", 1, true),
+  "busy construction apply escaped its preview rejection")
+assert(#proposalCaptureEvents() == captureCount + 1,
+  "busy construction input was silently retained for later capture")
+script.handleEvent("test", "tpf2mp", "snapshot", {
+  networkMode = "network", activeCompanyCid = "company:1",
+  proposals = { queued = 1, applied = 1, failed = 0 },
+  operations = { queued = 0, applied = 0, failed = 0 },
+  proposalConsensus = { pending = 0 }, operationConsensus = { pending = 0 },
+  checkpointConsensus = { pending = 0 }, deferredNetworkQueue = { count = 0 },
+})
 assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", exactPreview) == nil)
 for _ = 1, 2 do script.guiUpdate() end
 -- Move the same station template. The lightweight path must retain only its

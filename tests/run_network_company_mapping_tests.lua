@@ -575,6 +575,18 @@ assert(deferredState.lastResult and deferredState.lastResult.deferred == true
   "busy physical barrier did not retain the first deferred build")
 assert(deferredState.bridge.emitted == emittedBeforeDeferred,
   "deferred build escaped to the companion before the physical barrier closed")
+local rejectIfBusyCapture = {}
+for key, value in pairs(deferredCapture) do rejectIfBusyCapture[key] = value end
+rejectIfBusyCapture.queuePolicy = "reject-if-busy"
+script.handleEvent("test", "tpf2mp", "intent", rejectIfBusyCapture)
+local busyRejectedState = script.save()
+assert(busyRejectedState.lastResult and busyRejectedState.lastResult.rejected == true
+    and busyRejectedState.lastResult.busy == true
+    and busyRejectedState.lastResult.queued == false
+    and tostring(busyRejectedState.lastError):find("not queued", 1, true),
+  "construction-only busy policy did not reject instead of deferring")
+assert(busyRejectedState.bridge.emitted == emittedBeforeDeferred,
+  "busy-rejected construction escaped to the companion")
 deferredCapture.proposalSnapshot.__observedCost = 54321
 deferredCapture.proposalSnapshot.streetProposal.nodesToAdd[1].comp.position.x = 300
 deferredCapture.proposalSnapshot.streetProposal.nodesToAdd[2].comp.position.x = 340

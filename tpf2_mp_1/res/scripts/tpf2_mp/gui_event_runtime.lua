@@ -12,6 +12,7 @@ local guiVehicleCaptureRuntimeModule = require "tpf2_mp/gui_vehicle_capture_runt
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
 local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_scheduler"
+local constructionSubmission = require "tpf2_mp/gui_construction_submission"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "GUI event runtime dependencies are required")
@@ -344,12 +345,13 @@ function M.new(deps)
       proposalSnapshot = snapshot,
       localOnly = true,
     })
-    -- The canonical capture is latency-sensitive and must precede diagnostic
-    -- observations already queued by repeated builder previews.
+    -- Canonical capture precedes lower-value diagnostics; constructions fail
+    -- fast at a busy barrier instead of becoming delayed ghost work.
     table.insert(gui.queue, 1, {
       type = "proposal.capture",
       companyCid = pending.companyCid,
       proposalSnapshot = util.deepCopy(snapshot),
+      queuePolicy = constructionSubmission.queuePolicy(gui, snapshot),
     })
     renderGui()
     return true
@@ -566,9 +568,8 @@ function M.new(deps)
         if not proposalSnapshot then return true end
         local snapshotState = gui.snapshot or {}
         if snapshotState.networkMode == "network" then
-          -- Canonical replays deliberately pass through api.cmd.sendCommand.
-          -- They already hold a one-shot native authorization and must never be
-          -- reflected back into the intent stream as if they were fresh input.
+          -- Canonical replay already has one-shot authorization; do not reflect
+          -- its sendCommand call back as fresh input.
           if gui.issuingCanonicalProposal then return true end
           local hook = nativeHookStatus()
           local gate = hook.gates and hook.gates.buildProposal or {}
@@ -619,10 +620,8 @@ function M.new(deps)
       gui.nativeClockCapture.duplicates = (gui.nativeClockCapture.duplicates or 0) + 1
       return false
     end
-    -- Speed is control-plane traffic and the host may need it to drain a slow
-    -- gameplay barrier, so place the collapsed latest request ahead of ordinary
-    -- observations and build intents. The engine's clock.request path still
-    -- validates, orders and adaptively caps it before either peer is authorized.
+    -- Prioritize collapsed control-plane speed requests; clock.request still
+    -- validates, orders and caps them before either peer is authorized.
     table.insert(gui.queue, 1, { type = "clock.request", requestedSpeed = latest })
     return true
   end
@@ -1178,6 +1177,8 @@ function M.new(deps)
         local isProposalApply = eventName:find("builder.apply", 1, true) ~= nil
         local quarantined, quarantineResult = replayQuarantine.handleBuilderEvent(gui, id, isProposalCreate, isProposalApply, diagnosticLog)
         if quarantined then return quarantineResult end
+        local busy, busyResult = constructionSubmission.handleBuilderEvent(gui, id, isProposalCreate, isProposalApply, param, diagnosticLog)
+        if busy then return busyResult end
         if config().operationalCapture and not isProposalCreate and not isProposalApply
           and operationalGuiMutation(id, name) then
           local envelope = expandedCommandEnvelope(param)

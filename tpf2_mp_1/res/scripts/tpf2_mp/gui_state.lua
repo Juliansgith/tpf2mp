@@ -35,6 +35,7 @@ function M.new()
   pendingNetworkBuildPreview = nil,
   pendingNetworkBuildExact = nil,
   pendingNetworkBuildSuppression = nil,
+  constructionBusyNoticeActive = false,
   buildGateSuppressedSeen = nil,
   observerSuppressionCredits = 0,
   networkAuthorityBootstrap = nil,
@@ -53,6 +54,7 @@ function M.new()
     coalescedConstructionSuppressions = 0,
     replayPreviewsQuarantined = 0,
     replayAppliesRejected = 0,
+    busyRejected = 0,
   },
   nativeClockCapture = {
     captured = 0,

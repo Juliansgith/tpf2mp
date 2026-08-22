@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.5-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.6-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+
+[Connected-station parity and construction input backlog](CONNECTED_STATION_PARITY_AND_CONSTRUCTION_INPUT_BACKLOG_2026-08-22.md)
+records the live Lua/Python validator mismatch, correct canonical-boundary graph
+proof, distinct delayed station clicks, construction-only single-flight policy,
+visible busy feedback, and full regression gate.
 
 [Duplicate match-bootstrap fault](DUPLICATE_MATCH_BOOTSTRAP_FAULT_2026-08-22.md)
 records the live successful automatic initialization, the later panel-issued

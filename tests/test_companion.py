@@ -1161,6 +1161,34 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(len(accepted["transaction"]["nodes"]), 13)
         self.assertEqual(len(accepted["transaction"]["edges"]), 12)
 
+        # Live Build 35924 capture: a station snapped to an existing track
+        # endpoint omits that endpoint from nodesToAdd and references its
+        # canonical node directly. Lua and the companion must admit the same
+        # graph or the origin suppresses the native build only for consensus to
+        # reject it later.
+        attached = json.loads(json.dumps(transaction))
+        attached["nodes"].pop()
+        attached["edges"][-1]["node1"] = {"cid": "node:pre:station-approach"}
+        redigest_proposal(attached)
+        accepted_attached = validate_action({"type": "proposal.build", "transaction": attached})
+        self.assertEqual(len(accepted_attached["transaction"]["nodes"]), 12)
+        self.assertEqual(
+            accepted_attached["transaction"]["edges"][-1]["node1"]["cid"],
+            "node:pre:station-approach",
+        )
+
+        reused_boundary = json.loads(json.dumps(attached))
+        reused_boundary["edges"][0]["node0"] = {"cid": "node:pre:station-approach"}
+        redigest_proposal(reused_boundary)
+        with self.assertRaisesRegex(ProtocolError, "canonical boundary node must be a path endpoint"):
+            validate_action({"type": "proposal.build", "transaction": reused_boundary})
+
+        forged_boundary = json.loads(json.dumps(attached))
+        forged_boundary["edges"][-1]["node1"] = {"cid": "edge:pre:not-a-node"}
+        redigest_proposal(forged_boundary)
+        with self.assertRaisesRegex(ProtocolError, "invalid canonical node id"):
+            validate_action({"type": "proposal.build", "transaction": forged_boundary})
+
         obstructed = json.loads(json.dumps(transaction))
         obstructed["constructions"][0]["collateral"] = [
             {"kind": "construction", "cid": "construction:pre:house-a"},
