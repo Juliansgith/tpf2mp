@@ -187,6 +187,22 @@ assert(initialized.probes.networkAuthority.ready == true
     and initialized.probes.networkAuthority.error == nil,
   "successful native authority bootstrap retained a false error")
 
+-- The launcher owns network bootstrap. Reproduce the exact live regression:
+-- after that ordered commit succeeds, the old visible panel action fires.
+-- The submission boundary must acknowledge it locally without writing a
+-- second intent file or creating a pending consensus action.
+local nextOutBeforeDuplicateInitialise = initialized.bridge.nextOutSeq
+script.handleEvent("test", "tpf2mp", "intent", { type = "match.initialise" })
+local duplicateSubmission = script.save()
+assert(duplicateSubmission.bridge.nextOutSeq == nextOutBeforeDuplicateInitialise
+    and duplicateSubmission.lastError == nil
+    and duplicateSubmission.lastResult.alreadyInitialized == true
+    and duplicateSubmission.lastResult.phase == "local-submission",
+  "post-bootstrap panel initialise escaped into host ordering")
+assert(duplicateSubmission.world.proposalConsensus.sessionFault == nil
+    and duplicateSubmission.world.operationConsensus.sessionFault == nil,
+  "ignored post-bootstrap initialise faulted local consensus state")
+
 -- The persistent launcher keeps sending these pulses for the lifetime of the
 -- loaded process. A running world already has its simulation pump, so the
 -- pulse must neither rebuild the GUI snapshot nor duplicate native work.
@@ -367,6 +383,37 @@ assert(clocked.world.networkClock.requestedSpeed == 4
 assert(authorizedCommandTags[#authorizedCommandTags] == "0"
   and commands[#commands].kind == "speed" and commands[#commands].speed == 3,
   "shared clock did not authorize and issue the effective native game speed")
+
+-- Compatibility backstop: even an older client that manages to put a second
+-- initialise in the ordered stream must receive a successful no-op on every
+-- peer, not ordered-action-rejected and its downstream checkpoint timeout.
+local checkpointExportsBeforeCommittedDuplicate = clocked.checkpoint.exports
+local duplicateCommit = {
+  protocol = 1,
+  session = "engine-test",
+  seq = 6,
+  kind = "commit",
+  origin_peer = "player1",
+  origin_local_seq = 99,
+  tick = 6,
+  payload = { action = { type = "match.initialise" } },
+}
+duplicateCommit.checksum = hash.value(duplicateCommit)
+local sixth = assert(io.open(bridgeRoot .. "/game_inbox/000000000006.json", "wb"))
+sixth:write(json.encode(duplicateCommit) .. "\n")
+sixth:close()
+script.update()
+local duplicateCommitted = script.save()
+local duplicateEvent = duplicateCommitted.eventLog.items[#duplicateCommitted.eventLog.items]
+assert(duplicateEvent.commitSeq == 6 and duplicateEvent.success == true
+    and duplicateEvent.result.alreadyInitialized == true
+    and duplicateEvent.result.phase == "committed-action",
+  "ordered duplicate initialise was not an idempotent committed no-op")
+assert(duplicateCommitted.checkpoint.exports == checkpointExportsBeforeCommittedDuplicate,
+  "ordered duplicate initialise opened a redundant checkpoint barrier")
+assert(duplicateCommitted.world.proposalConsensus.sessionFault == nil
+    and duplicateCommitted.world.operationConsensus.sessionFault == nil,
+  "ordered duplicate initialise created a consensus fault")
 
 local savedCommandGate = tpf2mp_native_enable_command_gate
 tpf2mp_native_enable_command_gate = nil

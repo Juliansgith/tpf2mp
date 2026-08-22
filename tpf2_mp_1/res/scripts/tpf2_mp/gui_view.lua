@@ -1,11 +1,13 @@
 local util = require "tpf2_mp/util"
 local transportManager = require "tpf2_mp/gui_transport_manager"
+local matchInitialisePolicy = require "tpf2_mp/match_initialise_policy"
 
 local M = {}
 
 local function compactResult(value)
   if value == nil then return "-" end
   if type(value) ~= "table" then return tostring(value) end
+  if value.alreadyInitialized == true then return "match already ready (duplicate ignored)" end
   if value.mode then return "mode=" .. tostring(value.mode) end
   if value.lineCid then return tostring(value.lineCid) .. (value.fareCents and (" fare=" .. value.fareCents .. "c") or "") end
   if value.queued then return "queued seq " .. tostring(value.localSeq) end
@@ -47,12 +49,14 @@ function M.render(gui, snapshot, options)
   local companion = snapshot.bridge and snapshot.bridge.companion or {}
   local linkStatus = snapshot.networkMode ~= "network" and "local"
     or (companion.connected == true and "connected" or tostring(companion.status or "offline"))
+  local matchStatus = matchInitialisePolicy.status(snapshot)
   local status = string.format(
-    "Mode: %s | Peer: %s | Link: %s | Active: %s | Proxy: %s | Selected: %s (%s) | Markets: %d | Services: %d | Epoch: %d",
+    "Mode: %s | Peer: %s | Link: %s | Match: %s | Company: %s | Proxy: %s | Selected: %s (%s) | Markets: %d | Services: %d | Epoch: %d",
     tostring(snapshot.networkMode or "?"),
     tostring(snapshot.peerId or "?"),
     linkStatus,
-    tostring(snapshot.activeCompanyName or "not initialised"),
+    matchStatus,
+    tostring(snapshot.activeCompanyName or "pending"),
     tostring(snapshot.proxyMode == true),
     tostring(gui.selectedEntityId or "none"),
     tostring(gui.selectedEntityKind or "-"),

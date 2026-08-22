@@ -24,6 +24,7 @@ local guiView = require "tpf2_mp/gui_view"
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiStockPresentation = require "tpf2_mp/gui_stock_presentation"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
+local guiMatchControls = require "tpf2_mp/gui_match_controls"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
@@ -31,6 +32,7 @@ local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
 local networkBootstrapPolicy = require "tpf2_mp/network_bootstrap_policy"
+local matchInitialisePolicy = require "tpf2_mp/match_initialise_policy"
 local performanceRuntimeModule = require "tpf2_mp/performance_runtime"
 local economyClockRuntimeModule = require "tpf2_mp/economy_clock_runtime"
 local engineBackgroundRuntimeModule = require "tpf2_mp/engine_background_runtime"
@@ -689,7 +691,9 @@ local function normaliseMatchRules(rules)
 end
 
 local function initialiseMatch(rules)
-  if state.initialized then return false, "match is already initialised" end
+  -- Accept an already-ordered retry so a stale client cannot turn a harmless
+  -- duplicate into an ordered-action-rejected session fault.
+  if state.initialized then return true, matchInitialisePolicy.duplicateResult("committed-action") end
   local difficultyOk, difficultyError = economy.validateDifficultyRule(rules)
   if not difficultyOk then return false, difficultyError end
   local matchRules = normaliseMatchRules(rules)
@@ -2775,7 +2779,9 @@ applyCommitted = function(action, actor, commitSeq)
   end
   state.eventLog.items[#state.eventLog.items + 1] = stateRetention.compactEvent(event)
   trimEvents()
-  if success and (action.type == "match.initialise" or action.type == "recovery.resume") then
+  local duplicateInitialise = action.type == "match.initialise" and type(result) == "table" and result.alreadyInitialized == true
+  if success and not duplicateInitialise
+    and (action.type == "match.initialise" or action.type == "recovery.resume") then
     local checkpointed, checkpointError =
       checkpointRuntime.initialActionCheckpoint(action, authoritySeq)
     if not checkpointed then
@@ -2895,6 +2901,7 @@ networkIntentController = networkIntentRuntimeModule.new({
   physicalPrerequisite = function(action)
     return networkClock and networkClock.operationPrerequisite(action) or nil
   end,
+  ignoreDuplicateInitialise = function(action) return matchInitialisePolicy.ignoreDuplicateSubmission(state, action, diagnosticLog, publishSnapshot) end,
 })
 submitIntent = networkIntentController.submit
 local processDeferredNetworkIntent = networkIntentController.processDeferred
@@ -3034,12 +3041,7 @@ local function ensureWindow()
   gui.status = api.gui.comp.TextView.new("TPF2MP starting...")
   gui.details = api.gui.comp.TextView.new("")
   rootLayout:addItem(gui.status)
-  addRow(rootLayout, {
-    { "Initialise Match", function() return { type = "match.initialise" } end },
-    { "Finish Match", function() return { type = "match.finish", reason = "manual-ui" } end },
-    { "Cycle Company", function() return { type = "company.cycle" } end },
-    { "Reconcile Turn", function() return { type = "company.reconcile" } end },
-  })
+  guiMatchControls.add(rootLayout, addRow, config())
   addRow(rootLayout, guiView.managerButtons(gui))
   if config().developerEconomyControls then
     addRow(rootLayout, {

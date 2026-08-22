@@ -162,6 +162,7 @@ function M.new(deps)
 
   local function submitIntent(action)
     if type(action) ~= "table" then return false, "action must be a table" end
+    local duplicate = deps.ignoreDuplicateInitialise and { deps.ignoreDuplicateInitialise(action) }; if duplicate and duplicate[1] then return true, duplicate[2] end
     if action.type == "network.origin_residue" then
       local raised = raiseOriginResidueFault(
         tostring(action.errorCode or "origin-applied-residue"),

@@ -27,6 +27,7 @@ local PORTABLE_SCALARS = {
   generation = true, round = true, stopIndex = true,
   requestedSpeed = true, effectiveSpeed = true, scheduled = true,
   queued = true, prepared = true, changed = true, applied = true,
+  ignored = true, alreadyInitialized = true, phase = true,
   tick = true, peer = true, name = true,
 }
 

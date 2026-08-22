@@ -17,6 +17,7 @@ local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
 local networkBootstrapPolicyModule = require "tpf2_mp/network_bootstrap_policy"
+local matchInitialisePolicyModule = require "tpf2_mp/match_initialise_policy"
 local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local authoredFollowupRuntimeModule = require "tpf2_mp/authored_followup_runtime"
 local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
@@ -814,6 +815,17 @@ do
       manualNetwork = true, manualBootstrapReady = true,
     }, bootstrap) == false,
     "initialized network world kept entering manual bootstrap housekeeping")
+  assert(matchInitialisePolicyModule.showManualControl({ manualNetwork = true }) == false
+      and matchInitialisePolicyModule.showManualControl({ manualNetwork = false }) == true,
+    "launcher-managed network setup still exposes a manual initialise control")
+  assert(matchInitialisePolicyModule.status({
+      networkMode = "network", initialized = false,
+      bridge = { companion = { connected = true } },
+    }) == "starting automatically"
+      and matchInitialisePolicyModule.status({
+        networkMode = "network", initialized = true,
+      }) == "ready",
+    "bootstrap status does not distinguish automatic startup from a ready match")
   bootstrapState.initialized = false
   assert(networkBootstrapPolicyModule.due(bootstrapState, {
       manualNetwork = true, manualBootstrapReady = true,
@@ -923,6 +935,61 @@ do
   assert(indicator.project() == false
       and buttons["menu.speedButton0"].selected == true,
     "network clock projection mutated a standalone speed bar")
+end
+
+do
+  -- Reproduce the live 2026-08-22 fault shape at the intent boundary: the
+  -- launcher has already committed match.initialise and a stale panel action
+  -- arrives afterwards.  It must not receive a bridge sequence or disturb
+  -- the existing awaiting-order/deferred state.
+  local current = {
+    networkMode = "network", initialized = true, tick = 426,
+    bridge = { peerId = "player1" },
+    probes = { networkAuthority = { ready = true } },
+    world = {
+      proposalConsensus = { byId = {} }, operationConsensus = { byId = {} },
+      checkpointConsensus = { byBoundary = {} },
+    },
+    finance = {},
+  }
+  local published, diagnostics, emitted = 0, {}, 0
+  local originalEmit = bridgeModule.emit
+  local guarded, guardFailure = xpcall(function()
+    bridgeModule.emit = function()
+      emitted = emitted + 1
+      return true, { local_seq = emitted }
+    end
+    local controller = networkIntentRuntimeModule.new({
+      getState = function() return current end,
+      normaliseForNetwork = function(action) return util.deepCopy(action) end,
+      normaliseOperationCapture = function(action) return action end,
+      applyCommitted = function() error("duplicate escaped into local apply") end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() published = published + 1 end,
+      diagnosticLog = function(kind, payload)
+        diagnostics[#diagnostics + 1] = { kind = kind, payload = util.deepCopy(payload) }
+      end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+      ignoreDuplicateInitialise = function(action)
+        return matchInitialisePolicyModule.ignoreDuplicateSubmission(
+          current, action, function(kind, payload)
+            diagnostics[#diagnostics + 1] = { kind = kind, payload = util.deepCopy(payload) }
+          end, function() published = published + 1 end)
+      end,
+    })
+    local accepted, result = controller.submit({ type = "match.initialise" })
+    assert(accepted == true and result.ignored == true
+        and result.alreadyInitialized == true and result.phase == "local-submission",
+      "post-bootstrap initialise was not accepted as a deterministic no-op")
+    assert(emitted == 0 and controller.awaitingOrder() == nil,
+      "post-bootstrap initialise consumed consensus sequence space")
+    assert(current.lastError == nil and current.lastResult.alreadyInitialized == true
+        and published == 1 and diagnostics[1].kind == "duplicate-match-initialise-ignored",
+      "ignored initialise did not publish an honest local result")
+  end, debug.traceback)
+  bridgeModule.emit = originalEmit
+  assert(guarded, guardFailure)
 end
 
 do
@@ -3636,6 +3703,7 @@ do
   first.status, first.details = status, details
   guiView.render(first, {
     networkMode = "network",
+    initialized = true,
     peerId = "player1",
     sessionId = "runtime-module-test",
     activeCompanyName = "Company 1",
@@ -3663,6 +3731,10 @@ do
     },
   }, { maxDeferredNetworkIntents = 32 })
   assert(status.value:find("Peer: player1", 1, true), "GUI status formatter lost peer identity")
+  assert(status.value:find("Match: ready", 1, true)
+      and status.value:find("Company: Company 1", 1, true)
+      and not status.value:find("Active:", 1, true),
+    "GUI status still presents company assignment as match initialization")
   assert(details.value:find("Session: runtime-module-test", 1, true),
     "GUI detail formatter lost session identity")
   assert(details.value:find(
@@ -3678,6 +3750,7 @@ do
   -- scenery, so a player never has to infer which layer is authoritative.
   guiView.render(first, {
     networkMode = "network",
+    initialized = true,
     peerId = "player1",
     sessionId = "runtime-module-test",
     activeCompanyName = "Company 1",
