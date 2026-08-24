@@ -1086,7 +1086,20 @@ $timer.Add_Tick({
                         $expiry = if ($recovery.PSObject.Properties['expiresAtUtc'] -and $recovery.expiresAtUtc) {
                             " Guard expires $($recovery.expiresAtUtc)."
                         } else { '' }
-                        $recoveryHint.Text = "Automatic recovery: $($recovery.status)$boundary. A stable save after consensus is archived and verified.$expiry$faultEvidence"
+                        $autosaveGuardText = ''
+                        if ($state.PSObject.Properties['autosaveGuardStatusPath'] `
+                                -and $state.autosaveGuardStatusPath `
+                                -and (Test-Path -LiteralPath ([string]$state.autosaveGuardStatusPath) -PathType Leaf)) {
+                            try {
+                                $autosaveGuardStatus = Get-Content `
+                                    -LiteralPath ([string]$state.autosaveGuardStatusPath) -Raw | ConvertFrom-Json
+                                if ($autosaveGuardStatus.status -eq 'active') {
+                                    $autosaveGuardText = ' Ordinary per-client autosaves are suspended; recovery saves run only at a coordinated READY boundary.'
+                                }
+                            }
+                            catch { }
+                        }
+                        $recoveryHint.Text = "Automatic recovery: $($recovery.status)$boundary. A stable save after consensus is archived and verified.$autosaveGuardText$expiry$faultEvidence"
                         $recoveryHint.ForeColor = if ($recovery.status -eq 'failed' -or $faultEvidence) { $danger } else { $muted }
                     }
                     catch { }

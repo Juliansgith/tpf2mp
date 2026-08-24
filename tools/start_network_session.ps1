@@ -20,6 +20,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
+. (Join-Path $PSScriptRoot 'network_autosave_guard.ps1')
 
 $agentModeExplicit = $PSBoundParameters.ContainsKey('AgentMode')
 $townDevelopmentExplicit = $PSBoundParameters.ContainsKey('TownDevelopment')
@@ -137,6 +138,9 @@ $nativeStatusPath = $null
 $runtimeOverlay = $null
 $menuBootstrap = $null
 $directLaunch = $null
+$autosaveGuard = $null
+$autosaveGuardWatcher = $null
+$autosaveGuardLeasePath = Join-Path (Join-Path $env:LOCALAPPDATA 'TPF2MP') 'network-autosave-guard.json'
 if ($StartingSave) {
     $startingSaveOriginal = Resolve-Tpf2mpFullPath $StartingSave
     if ($restorePlanData) {
@@ -261,6 +265,11 @@ $state = [ordered]@{
     recoveryWatcherStatusPath = $null
     recoveryWatcherStdout = $null
     recoveryWatcherStderr = $null
+    autosaveGuardLeasePath = $null
+    autosaveGuardStatusPath = $null
+    autosaveGuardWatcherPid = $null
+    autosaveGuardWatcherStdout = $null
+    autosaveGuardWatcherStderr = $null
     nativeStatusPath = $null
     nativeSaveLoadReceipt = $null
     pausedNetworkWake = $null
@@ -338,6 +347,13 @@ try {
         $state.runtimeOverlay = $runtimeOverlay
         $state.directLaunchMarker = $directLaunch
 
+        $settingsPath = Join-Path (Split-Path -Parent $resolvedSaveDirectory) 'settings.lua'
+        $autosaveGuard = Enter-Tpf2mpNetworkAutosaveGuard `
+            -LeasePath $autosaveGuardLeasePath -SettingsPath $settingsPath `
+            -Session $safeSession -Peer $peer
+        $state.autosaveGuardLeasePath = $autosaveGuardLeasePath
+        [void](Write-Tpf2mpSessionState $safeSession $peer $state)
+
         if ($StartingSave) {
             $stagedSave = New-Tpf2mpStagedStartingSave -SourceSave $StartingSave `
                 -SaveDirectory $resolvedSaveDirectory -Session $safeSession -Peer $peer
@@ -358,6 +374,35 @@ try {
         $state.gameStartedAtUtc = $gameProcess.StartTime.ToUniversalTime().ToString('o')
         $state.gameStdout = $launch.stdout
         $state.gameStderr = $launch.stderr
+        $autosaveGuard = Bind-Tpf2mpNetworkAutosaveGuard `
+            -LeasePath $autosaveGuardLeasePath -GameProcess $gameProcess -GameExecutable $game
+        $autosaveGuardStatus = Join-Path $sessionRoot 'network-autosave-guard-status.json'
+        $autosaveGuardStdout = Join-Path $sessionRoot 'network-autosave-guard.stdout.log'
+        $autosaveGuardStderr = Join-Path $sessionRoot 'network-autosave-guard.stderr.log'
+        $autosaveGuardArguments = @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            (Join-Path $PSScriptRoot 'watch_network_autosave_guard.ps1'),
+            '-LeasePath', $autosaveGuardLeasePath,
+            '-GameProcessId', $gameProcess.Id,
+            '-GameExecutable', $game,
+            '-GameStartedAtUtc', $state.gameStartedAtUtc,
+            '-StatusPath', $autosaveGuardStatus
+        )
+        $autosaveGuardWatcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+            -ArgumentList (ConvertTo-Tpf2mpCommandLine $autosaveGuardArguments) -PassThru -WindowStyle Hidden `
+            -RedirectStandardOutput $autosaveGuardStdout -RedirectStandardError $autosaveGuardStderr
+        Start-Sleep -Milliseconds 250
+        $autosaveGuardWatcher.Refresh()
+        if ($autosaveGuardWatcher.HasExited) {
+            $guardError = if (Test-Path -LiteralPath $autosaveGuardStderr -PathType Leaf) {
+                Get-Content -LiteralPath $autosaveGuardStderr -Raw
+            } else { '' }
+            throw "Network autosave guard exited during startup: $guardError"
+        }
+        $state.autosaveGuardStatusPath = $autosaveGuardStatus
+        $state.autosaveGuardWatcherPid = $autosaveGuardWatcher.Id
+        $state.autosaveGuardWatcherStdout = $autosaveGuardStdout
+        $state.autosaveGuardWatcherStderr = $autosaveGuardStderr
         $state.status = 'injecting-native-hook'
         [void](Write-Tpf2mpSessionState $safeSession $peer $state)
 
@@ -483,6 +528,13 @@ catch {
             }
         }
         catch { }
+    }
+    if ($autosaveGuard) {
+        try {
+            [void](Restore-Tpf2mpNetworkAutosaveGuard -LeasePath $autosaveGuardLeasePath `
+                -Reason 'launcher-failure')
+        }
+        catch { Write-Warning "Network autosave guard cleanup requires attention: $($_.Exception.Message)" }
     }
     if ($stagedSave) {
         try { Remove-Tpf2mpStagedStartingSave $stagedSave }

@@ -23,7 +23,7 @@ local function isIndustryConstruction(fileName, construction)
 end
 
 function data()
-  local minorVersion = 39
+  local minorVersion = 40
   local agentModeKeys = { "skeleton", "vanilla", "empty" }
   local economyDifficultyKeys = { "normal", "hard", "easy", "relaxed" }
   local peerValues = { "player1 (host)", "player2 (client)" }

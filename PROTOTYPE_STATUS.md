@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-24 for prototype `0.39.3-alpha`, state schema `31`,
+Last updated: 2026-08-24 for prototype `0.40.0-alpha`, state schema `31`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -50,7 +50,7 @@ TPF2MP contains two usable but differently mature modes:
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
 
-Prototype 0.39 adds the preferred Internet transport without moving authority
+Prototype 0.40 adds the preferred Internet transport without moving authority
 out of Player 1. Host and Join make outbound authenticated WSS connections to
 two relay channels: gameplay carries the existing framed TCP protocol and save
 carries the existing verified starting-save stream. Neither player exposes an
