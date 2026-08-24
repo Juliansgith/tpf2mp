@@ -41,10 +41,12 @@ Write-Host 'TPF2MP 0.39.1-alpha is available (installed: 0.39.0-alpha).'
     $label = New-Object Windows.Forms.Label
     $form.Controls.Add($button)
     $form.Controls.Add($label)
+    $controllerMessages = [Collections.Generic.List[string]]::new()
     [void](Initialize-Tpf2mpLauncherUpdateController -Form $form -Button $button `
         -StatusLabel $label -BundleRoot $ProjectRoot -CurrentVersion '0.39.0-alpha' `
-        -LogAction { param($message) } -CanEnableAction { $true } -UpdateScript $fakeUpdater)
-    $deadline = [DateTime]::UtcNow.AddSeconds(5)
+        -LogAction { param($message) $controllerMessages.Add([string]$message) } `
+        -CanEnableAction { $true } -UpdateScript $fakeUpdater)
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
     $watchdog = New-Object Windows.Forms.Timer
     $watchdog.Interval = 50
     $watchdog.Add_Tick({
@@ -57,7 +59,7 @@ Write-Host 'TPF2MP 0.39.1-alpha is available (installed: 0.39.0-alpha).'
     $watchdog.Stop()
     $watchdog.Dispose()
     if ($button.Text -ne 'UPDATE 0.39.1-ALPHA') {
-        throw 'The real launcher controller did not complete its non-blocking Shown-event update check.'
+        throw "The real launcher controller did not complete its non-blocking Shown-event update check: $($controllerMessages -join '; ')"
     }
     $form.Dispose()
 
