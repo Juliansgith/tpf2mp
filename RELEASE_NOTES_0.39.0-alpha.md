@@ -53,16 +53,19 @@ diagnostics. Direct LAN/private-VPN mode remains available.
 
 ## Validation
 
-- The existing complete project suite passes: 137 Lua tests, 195 Python tests,
+- The existing complete project suite passes: 137 Lua tests, 196 Python tests,
   cross-language economy/freight/transport parity, PowerShell/CMD parsing, and
   installer/updater safety.
-- Relay-specific service tests cover authentication, cross-session rejection,
+- Twenty-five relay-specific service tests cover authentication, cross-session rejection,
   duplicate roles, fingerprint mismatch, redaction, storage quotas, retention,
   tunnel teardown, audit-writer failure, and bounded rate-limiter state.
 - A local full-stack run transferred a 54,455,136-byte native save triplet and
   gameplay traffic through the relay, synchronized both companions, delivered
   diagnostics for both roles under one support ID, then survived relay loss and
   reconnect without a match fault.
+- A repeatable cross-repository test also round-trips both byte streams through
+  the real packaged client and proves secrets, invite codes, local user paths,
+  and IPv4/IPv6 addresses are redacted before transmission.
 
 The remaining acceptance gate is deployment behind a real HTTPS endpoint and
 one fresh two-computer match through that endpoint.

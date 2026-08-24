@@ -99,7 +99,7 @@ cross-session rejection, diagnostic quotas, retention, bidirectional tunnels,
 duplicate roles, content-fingerprint mismatch, bounded limiter memory, local
 operator lookup, and audit-writer failure containment.
 
-Main project: 137 Lua tests and 195 Python tests passed with all cross-language
+Main project: 137 Lua tests and 196 Python tests passed with all cross-language
 parity, PowerShell/CMD syntax, manifest, installer, updater, save-sync, launcher,
 and recovery tests.
 
