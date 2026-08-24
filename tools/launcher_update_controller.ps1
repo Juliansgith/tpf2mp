@@ -130,6 +130,15 @@ function Initialize-Tpf2mpLauncherUpdateController {
     )
     if (-not $UpdateScript) { $UpdateScript = Join-Path $PSScriptRoot 'update_release.ps1' }
     $updateScriptPath = Resolve-Tpf2mpFullPath $UpdateScript
+    # WinForms callbacks execute outside a caller script's dynamic child
+    # scope. Capture the helper bodies while that scope is alive so an
+    # installed_entrypoint.ps1 -> multiplayer_launcher.ps1 invocation behaves
+    # exactly like launching multiplayer_launcher.ps1 directly.
+    $startUpdateProcess = ${function:Start-Tpf2mpLauncherUpdateProcess}
+    $readExitCode = ${function:Get-Tpf2mpCompletedProcessExitCode}
+    $readCheckResult = ${function:Get-Tpf2mpReleaseUpdateCheckResult}
+    $readInstalledResult = ${function:Get-Tpf2mpVerifiedReleaseUpdateResult}
+    $restartInstalledLauncher = ${function:Start-Tpf2mpInstalledLauncherAfterUpdate}
     $state = [pscustomobject]@{
         Work = $null; Mode = $null; StdoutLength = 0; StderrLength = 0; Started = $false
     }
@@ -148,7 +157,7 @@ function Initialize-Tpf2mpLauncherUpdateController {
         $state.Mode = $Mode
         $state.StdoutLength = 0
         $state.StderrLength = 0
-        $state.Work = Start-Tpf2mpLauncherUpdateProcess -BundleRoot $BundleRoot `
+        $state.Work = & $startUpdateProcess -BundleRoot $BundleRoot `
             -UpdateScript $updateScriptPath -CheckOnly:($Mode -eq 'check')
         $Button.Enabled = $false
         $Button.Text = if ($Mode -eq 'check') { 'CHECKING FOR UPDATE...' } else { 'INSTALLING UPDATE...' }
@@ -193,14 +202,14 @@ function Initialize-Tpf2mpLauncherUpdateController {
         & $flushInstallLog
         $state.Work.Process.Refresh()
         if (-not $state.Work.Process.HasExited) { return }
-        $exitCode = Get-Tpf2mpCompletedProcessExitCode $state.Work.Process
+        $exitCode = & $readExitCode $state.Work.Process
         & $flushInstallLog
         $work = $state.Work
         $mode = $state.Mode
         $state.Work = $null
         $state.Mode = $null
         if ($mode -eq 'check') {
-            $result = Get-Tpf2mpReleaseUpdateCheckResult -StdoutPath $work.StdoutPath `
+            $result = & $readCheckResult -StdoutPath $work.StdoutPath `
                 -StderrPath $work.StderrPath -ExpectedCurrentVersion $CurrentVersion
             if ($result -and $result.state -eq 'available') {
                 & $setReadyButton "UPDATE $($result.availableVersion.ToUpperInvariant())"
@@ -215,13 +224,13 @@ function Initialize-Tpf2mpLauncherUpdateController {
             }
             return
         }
-        $verified = Get-Tpf2mpVerifiedReleaseUpdateResult -StdoutPath $work.StdoutPath `
+        $verified = & $readInstalledResult -StdoutPath $work.StdoutPath `
             -StderrPath $work.StderrPath
         if ($verified -and [bool]$verified.changed) {
             try {
                 $StatusLabel.Text = "Updated to $($verified.version); restarting launcher..."
                 & $writeLog "Update $($verified.version) installed and verified; restarting into the new launcher."
-                [void](Start-Tpf2mpInstalledLauncherAfterUpdate $verified)
+                [void](& $restartInstalledLauncher $verified)
                 $timer.Stop()
                 $Form.Close()
                 return
