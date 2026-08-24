@@ -166,6 +166,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Release update safety tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_launcher_qol_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Launcher QoL tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_release_install_transaction_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Transactional release install tests failed' }

@@ -109,6 +109,7 @@ $budgets = [ordered]@{
     'tools\accept_relay_invite.ps1' = 60
     'tools\sync_starting_save.ps1' = 120
     'tools\launcher_worker_result.ps1' = 300
+    'tools\launcher_update_controller.ps1' = 300
     'tools\network_common.ps1' = 600
     'tools\multiplayer_launcher.ps1' = 1150
     'tools\ensure_paused_network_wake.ps1' = 120

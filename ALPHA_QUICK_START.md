@@ -1,6 +1,6 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.39.0-alpha` is a restricted two-player competitive build for the
+TPF2MP `0.39.1-alpha` is a restricted two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
 trust each other. Its preferred transport is the TPF2MP secure relay: both
 players make outbound WSS connections, so neither player opens a port. Direct
@@ -29,9 +29,10 @@ powershell -ExecutionPolicy Bypass -File .\tools\install_release.ps1
 powershell -ExecutionPolicy Bypass -File .\tools\verify_install.ps1 -StrictNative
 ```
 
-A normal install creates a `TPF2MP Multiplayer` desktop shortcut plus stable
-Launch and Update commands under `%LOCALAPPDATA%\TPF2MP`. The launcher also has
-a **CHECK / INSTALL UPDATE** button. Private-repository updates use each
+A normal first install offers a `TPF2MP Multiplayer` desktop shortcut and
+creates stable Launch and Update commands under `%LOCALAPPDATA%\TPF2MP`. The
+launcher checks for updates when opened, retains a manual update button, and
+restarts into a newly verified version after installation. Private-repository updates use each
 tester's own GitHub authorization; no shared token or deploy key is shipped.
 See [DISTRIBUTION_AND_UPDATES.md](DISTRIBUTION_AND_UPDATES.md).
 

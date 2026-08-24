@@ -27,7 +27,10 @@ if ($AllowInsecureLoopback) { $arguments += '--allow-insecure-loopback' }
 $previousLoopback = $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK
 try {
     if ($AllowInsecureLoopback) { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = '1' }
-    & $companion.FilePath @arguments
+    # The companion prints the same machine-readable receipt fields that this
+    # wrapper emits after independently validating and protecting the files.
+    # Suppress the unvalidated copy so launcher logs contain one receipt only.
+    & $companion.FilePath @arguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Relay session creation failed with exit code $LASTEXITCODE" }
 }
 finally { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = $previousLoopback }

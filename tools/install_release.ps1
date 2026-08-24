@@ -6,7 +6,8 @@ param(
     [switch]$ResetBridge,
     [switch]$SkipVerification,
     [switch]$NoDesktopShortcut,
-    [Parameter(ValueFromRemainingArguments = $true)][object[]]$LegacyArguments
+    [Parameter(ValueFromRemainingArguments = $true)][object[]]$LegacyArguments,
+    [switch]$CreateDesktopShortcut
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,6 +37,7 @@ if ($BundleRoot -ceq '-BundleRoot' -and $InstallRoot -ceq '-InstallRoot' `
             '-ResetBridge' { $ResetBridge = $true; $index += 1 }
             '-SkipVerification' { $SkipVerification = $true; $index += 1 }
             '-NoDesktopShortcut' { $NoDesktopShortcut = $true; $index += 1 }
+            '-CreateDesktopShortcut' { $CreateDesktopShortcut = $true; $index += 1 }
             default { throw "Unexpected legacy installer argument: $token" }
         }
     }
@@ -44,6 +46,9 @@ if ($BundleRoot -ceq '-BundleRoot' -and $InstallRoot -ceq '-InstallRoot' `
 }
 elseif ($legacyTail.Count -gt 0) {
     throw 'Unexpected positional installer arguments.'
+}
+if ($NoDesktopShortcut -and $CreateDesktopShortcut) {
+    throw 'Choose either -CreateDesktopShortcut or -NoDesktopShortcut, not both.'
 }
 
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
@@ -70,6 +75,7 @@ if (-not $InstallRoot) {
     $InstallRoot = Join-Path $env:LOCALAPPDATA 'TPF2MP'
 }
 $install = Resolve-Tpf2mpFullPath $InstallRoot
+$firstInstall = -not (Test-Path -LiteralPath (Join-Path $install 'current.json') -PathType Leaf)
 $mods = Find-Tpf2mpLocalModsPath $LocalModsPath
 $targetMod = Assert-Tpf2mpModTarget (Join-Path $mods 'tpf2_mp_1') $mods
 $versionRoot = Join-Path (Join-Path $install 'versions') $version
@@ -256,11 +262,27 @@ finally {
     }
 }
 
-if ($defaultInstallRoot -and -not $NoDesktopShortcut `
+$shouldCreateDesktopShortcut = [bool]$CreateDesktopShortcut
+if ($defaultInstallRoot -and $firstInstall -and -not $NoDesktopShortcut -and -not $CreateDesktopShortcut) {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        $choice = [Windows.Forms.MessageBox]::Show(
+            'Add a TPF2MP Multiplayer shortcut to your desktop?',
+            'TPF2MP installed',
+            [Windows.Forms.MessageBoxButtons]::YesNo,
+            [Windows.Forms.MessageBoxIcon]::Question)
+        $shouldCreateDesktopShortcut = $choice -eq [Windows.Forms.DialogResult]::Yes
+    }
+    catch { Write-Warning "Could not show the optional desktop-shortcut choice: $($_.Exception.Message)" }
+}
+if ($shouldCreateDesktopShortcut -and -not $NoDesktopShortcut `
         -and (Test-Path -LiteralPath (Join-Path $install 'LAUNCH_TPF2MP.cmd') -PathType Leaf)) {
     try {
-        $desktop = [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory)
+        $desktop = if ($env:TPF2MP_DESKTOP_DIRECTORY_OVERRIDE) {
+            Resolve-Tpf2mpFullPath $env:TPF2MP_DESKTOP_DIRECTORY_OVERRIDE
+        } else { [Environment]::GetFolderPath([Environment+SpecialFolder]::DesktopDirectory) }
         if ($desktop) {
+            New-Item -ItemType Directory -Force -Path $desktop | Out-Null
             $shortcutPath = Join-Path $desktop 'TPF2MP Multiplayer.lnk'
             $shell = New-Object -ComObject WScript.Shell
             $shortcut = $shell.CreateShortcut($shortcutPath)

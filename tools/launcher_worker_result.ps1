@@ -21,11 +21,13 @@ function Get-Tpf2mpVerifiedReleaseUpdateResult {
 
         $stdout = [IO.File]::ReadAllText($StdoutPath)
         $expectedVersion = $null
+        $changed = $false
         $updated = [regex]::Match(
             $stdout,
             '(?m)^TPF2MP updated successfully:\s+\S+\s+->\s+(\S+)\s*$')
         if ($updated.Success) {
             $expectedVersion = $updated.Groups[1].Value
+            $changed = $true
         }
         else {
             $current = [regex]::Match(
@@ -67,6 +69,7 @@ function Get-Tpf2mpVerifiedReleaseUpdateResult {
             version = $expectedVersion
             bundleRoot = $installedBundle
             sourceCommit = [string]$manifest.source.commit
+            changed = $changed
         }
     }
     catch {

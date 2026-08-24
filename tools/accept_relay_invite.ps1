@@ -25,7 +25,9 @@ if ($AllowInsecureLoopback) { $arguments += '--allow-insecure-loopback' }
 $previousLoopback = $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK
 try {
     if ($AllowInsecureLoopback) { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = '1' }
-    & $companion.FilePath @arguments
+    # Publish only the wrapper's validated receipt below; otherwise the
+    # companion and wrapper duplicate every field in the launcher log.
+    & $companion.FilePath @arguments | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Relay invitation validation failed with exit code $LASTEXITCODE" }
 }
 finally { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = $previousLoopback }

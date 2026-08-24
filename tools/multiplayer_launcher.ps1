@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'network_common.ps1')
 . (Join-Path $PSScriptRoot 'launcher_worker_result.ps1')
+. (Join-Path $PSScriptRoot 'launcher_update_controller.ps1')
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 [void](Remove-Tpf2mpExpiredRelayDrafts)
@@ -374,6 +375,12 @@ function Append-LauncherLog([string]$Text) {
     $logBox.ScrollToCaret()
 }
 
+$script:updateController = Initialize-Tpf2mpLauncherUpdateController `
+    -Form $form -Button $updateButton -StatusLabel $statusLabel `
+    -BundleRoot $bundle -CurrentVersion $(if ($sourceTreeLauncher) { '' } else { $bundleVersion }) `
+    -LogAction { param($message) Append-LauncherLog $message } `
+    -CanEnableAction { -not [bool]$script:worker } -SmokeTest:$SmokeTest
+
 function Get-ValidatedRelayUrl {
     $value = $relayUrlBox.Text.Trim().TrimEnd('/')
     if ($value -match '^https://[A-Za-z0-9.-]+(?::\d+)?(?:/[A-Za-z0-9._~!$&''()*+,;=:@%-]+)*$') {
@@ -572,23 +579,6 @@ $newSessionButton.Add_Click({
     $sessionBox.Text = 'match-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
 })
 
-$updateButton.Add_Click({
-    try {
-        if (Get-Process -Name TransportFever2 -ErrorAction SilentlyContinue) {
-            throw 'Close Transport Fever 2 before installing an update.'
-        }
-        $scriptPath = Join-Path $PSScriptRoot 'update_release.ps1'
-        if (-not (Test-Path -LiteralPath $scriptPath -PathType Leaf)) {
-            throw 'This development bundle does not include the release updater.'
-        }
-        Start-LauncherWorker $scriptPath @('-BundleRoot', $bundle) 'release-update'
-        if ($sourceTreeLauncher) {
-            Append-LauncherLog 'Source-tree launcher: updating the installed signed release; Git working files are left unchanged.'
-        }
-        Append-LauncherLog 'The updater will use your own GitHub authentication if this repository is private.'
-    }
-    catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot update') | Out-Null }
-})
 $browseButton.Add_Click({
     $dialog = New-Object Windows.Forms.OpenFileDialog
     $dialog.Title = if ($script:restorePlanPath) {
@@ -930,19 +920,12 @@ $timer.Add_Tick({
         Flush-LauncherWorkerLogs
         $script:worker.Refresh()
         if ($script:worker.HasExited) {
-            $script:worker.WaitForExit()
-            $script:worker.Refresh()
             Flush-LauncherWorkerLogs
             $completedName = $script:workerName
-            $exitCode = $script:worker.ExitCode
-            $verifiedUpdate = $null
+            $exitCode = Get-Tpf2mpCompletedProcessExitCode $script:worker
             $verifiedSaveSync = $null
             $verifiedRelayCreate = $null
             $verifiedRelayJoin = $null
-            if ($exitCode -ne 0 -and $completedName -eq 'release-update') {
-                $verifiedUpdate = Get-Tpf2mpVerifiedReleaseUpdateResult `
-                    -StdoutPath $script:workerStdout -StderrPath $script:workerStderr
-            }
             if ($exitCode -eq 0 -and $completedName -eq 'save-sync-receive') {
                 $verifiedSaveSync = Get-Tpf2mpVerifiedSaveSyncResult `
                     -StdoutPath $script:workerStdout -StderrPath $script:workerStderr `
@@ -953,18 +936,18 @@ $timer.Add_Tick({
                     Append-LauncherLog 'Save-sync worker exited without a valid receipt for the currently selected session.'
                 }
             }
-            if ($exitCode -eq 0 -and $completedName -eq 'relay-session-create') {
+            if ($completedName -eq 'relay-session-create') {
                 $verifiedRelayCreate = Get-Tpf2mpVerifiedRelayCreateResult `
                     -StdoutPath $script:workerStdout -StderrPath $script:workerStderr
-                if (-not $verifiedRelayCreate) {
+                if ($exitCode -eq 0 -and -not $verifiedRelayCreate) {
                     $exitCode = 2
                     Append-LauncherLog 'Relay creation worker exited without a valid protected credential receipt.'
                 }
             }
-            if ($exitCode -eq 0 -and $completedName -eq 'relay-invite-accept') {
+            if ($completedName -eq 'relay-invite-accept') {
                 $verifiedRelayJoin = Get-Tpf2mpVerifiedRelayJoinResult `
                     -StdoutPath $script:workerStdout -StderrPath $script:workerStderr
-                if (-not $verifiedRelayJoin) {
+                if ($exitCode -eq 0 -and -not $verifiedRelayJoin) {
                     $exitCode = 2
                     Append-LauncherLog 'Relay invitation worker exited without valid protected join credentials.'
                 }
@@ -979,13 +962,10 @@ $timer.Add_Tick({
                 catch { Append-LauncherLog 'Warning: the protected temporary join-code input could not be removed.' }
                 $script:pendingRelayInviteFile = $null
             }
-            if ($exitCode -eq 0 -or $verifiedUpdate) {
+            if (Test-Tpf2mpWorkerCompletionSucceeded -ExitCode $exitCode `
+                    -VerifiedReceipts @($verifiedRelayCreate, $verifiedRelayJoin)) {
                 $statusLabel.ForeColor = $accent
-                if ($verifiedUpdate) {
-                    $statusLabel.Text = "Update installed and verified: $($verifiedUpdate.version)."
-                    Append-LauncherLog "Release-update exited $exitCode after committing a fully verified $($verifiedUpdate.version) install; ignoring the false process result."
-                }
-                elseif ($verifiedSaveSync) {
+                if ($verifiedSaveSync) {
                     $saveBox.Text = [string]$verifiedSaveSync.savePath
                     $statusLabel.Text = 'Host save received and verified. Ready to Join + Launch.'
                     $reuse = if ($verifiedSaveSync.reused) { 'reused existing identical copy' } else { 'installed new copy' }

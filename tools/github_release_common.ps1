@@ -21,10 +21,18 @@ function Get-Tpf2mpGitHubToken {
             return ([string]$value[0]).Trim()
         }
     }
-    if (-not $NoCredentialPrompt) {
-        $git = Get-Command git.exe -ErrorAction SilentlyContinue
-        if (-not $git) { $git = Get-Command git -ErrorAction SilentlyContinue }
-        if ($git) {
+    $git = Get-Command git.exe -ErrorAction SilentlyContinue
+    if (-not $git) { $git = Get-Command git -ErrorAction SilentlyContinue }
+    if ($git) {
+        $previousGcmInteractive = [Environment]::GetEnvironmentVariable('GCM_INTERACTIVE', 'Process')
+        $previousTerminalPrompt = [Environment]::GetEnvironmentVariable('GIT_TERMINAL_PROMPT', 'Process')
+        try {
+            # Launch-time checks may use an already cached Git Credential Manager
+            # credential, but they must never summon an authentication dialog.
+            if ($NoCredentialPrompt) {
+                $env:GCM_INTERACTIVE = 'Never'
+                $env:GIT_TERMINAL_PROMPT = '0'
+            }
             $credentialInput = "protocol=https`nhost=github.com`n`n"
             $lines = @($credentialInput | & $git.Source credential fill 2>$null)
             if ($LASTEXITCODE -eq 0) {
@@ -32,6 +40,10 @@ function Get-Tpf2mpGitHubToken {
                     if ([string]$line -match '^password=(.+)$') { return [string]$matches[1] }
                 }
             }
+        }
+        finally {
+            [Environment]::SetEnvironmentVariable('GCM_INTERACTIVE', $previousGcmInteractive, 'Process')
+            [Environment]::SetEnvironmentVariable('GIT_TERMINAL_PROMPT', $previousTerminalPrompt, 'Process')
         }
     }
     return $null

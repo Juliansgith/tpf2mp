@@ -13,6 +13,7 @@ $modsRoot = Join-Path $caseRoot 'Steam\userdata\12345\1066780\local\mods'
 $targetMod = Join-Path $modsRoot 'tpf2_mp_1'
 $versionRoot = Join-Path $installRoot 'versions\0.38.0-alpha'
 $currentPath = Join-Path $installRoot 'current.json'
+$desktopRoot = Join-Path $caseRoot 'desktop'
 
 New-Item -ItemType Directory -Force -Path `
     (Join-Path $bundle 'tpf2_mp_1'),
@@ -120,8 +121,14 @@ foreach ($name in @('installed_entrypoint.ps1', 'LAUNCH_TPF2MP.cmd', 'UPDATE_TPF
     }
 }
 
-& (Join-Path $ProjectRoot 'tools\install_release.ps1') `
-    -BundleRoot $bundle -InstallRoot $installRoot -LocalModsPath $modsRoot -SkipVerification
+$previousDesktopOverride = $env:TPF2MP_DESKTOP_DIRECTORY_OVERRIDE
+try {
+    $env:TPF2MP_DESKTOP_DIRECTORY_OVERRIDE = $desktopRoot
+    & (Join-Path $ProjectRoot 'tools\install_release.ps1') `
+        -BundleRoot $bundle -InstallRoot $installRoot -LocalModsPath $modsRoot -SkipVerification `
+        -CreateDesktopShortcut
+}
+finally { $env:TPF2MP_DESKTOP_DIRECTORY_OVERRIDE = $previousDesktopOverride }
 $installedCurrent = Get-Content -LiteralPath $currentPath -Raw | ConvertFrom-Json
 if ([int]$installedCurrent.schemaVersion -ne 2 `
         -or [int]$installedCurrent.manifestFormat -ne 2 `
@@ -140,6 +147,17 @@ foreach ($name in @('installed_entrypoint.ps1', 'LAUNCH_TPF2MP.cmd', 'UPDATE_TPF
     if (-not (Test-Path -LiteralPath (Join-Path $installRoot $name) -PathType Leaf)) {
         throw "Successful install did not publish stable entrypoint: $name"
     }
+}
+$shortcutPath = Join-Path $desktopRoot 'TPF2MP Multiplayer.lnk'
+if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+    throw 'Explicit first-install desktop-shortcut request did not create the stable shortcut.'
+}
+$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+if ([IO.Path]::GetFullPath([string]$shortcut.TargetPath) `
+        -ne [IO.Path]::GetFullPath((Join-Path $installRoot 'LAUNCH_TPF2MP.cmd')) `
+        -or [IO.Path]::GetFullPath([string]$shortcut.WorkingDirectory) `
+        -ne [IO.Path]::GetFullPath($installRoot)) {
+    throw 'Desktop shortcut does not target the version-stable installed launcher.'
 }
 $successfulBackups = @(Get-ChildItem -LiteralPath (Join-Path $installRoot 'backups') -Directory)
 if ($successfulBackups.Count -ne 2 `
@@ -165,4 +183,4 @@ if ([string]$legacyCurrent.version -ne '0.38.0-alpha' `
     throw 'Legacy array-splatted updater arguments did not bootstrap the corrected installer.'
 }
 
-Write-Host 'PASS release install rolls back failures, commits provenance, and accepts the bounded legacy updater handoff'
+Write-Host 'PASS release install rolls back failures, commits provenance, offers a stable desktop shortcut, and accepts the bounded legacy updater handoff'

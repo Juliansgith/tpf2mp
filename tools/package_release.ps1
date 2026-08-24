@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.39.0-alpha',
+    [string]$Version = '0.39.1-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -178,7 +178,8 @@ $toolNames = @(
     'installed_entrypoint.ps1', 'installed_command.cmd',
     'new_match_manifest.ps1', 'new_recovery_plan.ps1',
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
-    'network_common.ps1', 'launcher_worker_result.ps1', 'native_load_common.ps1', 'start_network_session.ps1',
+    'network_common.ps1', 'launcher_worker_result.ps1', 'launcher_update_controller.ps1',
+    'native_load_common.ps1', 'start_network_session.ps1',
     'start_network_session_retry.ps1', 'sync_starting_save.ps1', 'stop_network_session.ps1',
     'new_relay_session.ps1', 'accept_relay_invite.ps1', 'start_relay_network_session.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
@@ -208,7 +209,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination
 Copy-Item -LiteralPath (Join-Path $projectRoot 'relay-config.json') -Destination (Join-Path $releaseRoot 'relay-config.json')
 $documentNames = @(
     'README.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
-    'SECURE_RELAY.md', 'RELEASE_NOTES_0.39.0-alpha.md',
+    'SECURE_RELAY.md', 'RELEASE_NOTES_0.39.1-alpha.md',
     'TPF2MP_FULL_ALPHA_TEST_INSTRUCTIONS.txt',
     'DISTRIBUTION_AND_UPDATES.md',
     'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
@@ -232,9 +233,10 @@ Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
     powershell -ExecutionPolicy Bypass -File .\tools\install_release.ps1
 
 The installer creates stable Launch and Update commands under
-`%LOCALAPPDATA%\TPF2MP` and, on a normal install, a desktop launcher shortcut.
-`UPDATE_TPF2MP.cmd` checks versioned GitHub Releases, verifies the release ZIP
-and its internal manifest, and installs it transactionally. A private repository
+`%LOCALAPPDATA%\TPF2MP` and offers a desktop shortcut on first install. The
+launcher checks for a release when opened and restarts into a verified update;
+`UPDATE_TPF2MP.cmd` remains the manual path. Updates verify both the release ZIP
+and its internal manifest and install transactionally. A private repository
 uses the player's own GitHub CLI/Git Credential Manager login or
 `TPF2MP_GITHUB_TOKEN`; no shared repository key is included.
 

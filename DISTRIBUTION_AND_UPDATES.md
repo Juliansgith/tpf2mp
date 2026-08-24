@@ -10,7 +10,8 @@ Extract the release ZIP and double-click `INSTALL_TPF2MP.cmd`. The installer:
 - preserves recoverable backups if anything is replaced;
 - installs versioned support files under `%LOCALAPPDATA%\TPF2MP`;
 - creates stable Launch, Update, Verify, and Uninstall commands there; and
-- creates `TPF2MP Multiplayer.lnk` on the desktop for a normal per-user install.
+- on the first normal per-user install, asks whether to add
+  `TPF2MP Multiplayer.lnk` to the desktop.
 
 The stable commands do not change when a new version is installed:
 
@@ -26,9 +27,12 @@ The extracted release also remains directly usable through its own
 
 ## Safe updates
 
-Use **CHECK / INSTALL UPDATE** in the multiplayer launcher or double-click the
-stable `UPDATE_TPF2MP.cmd`. Updating is refused while Transport Fever 2 is
-running. The updater:
+The multiplayer launcher checks for an update in the background whenever it
+opens. Use its update button, or double-click the stable
+`UPDATE_TPF2MP.cmd`, to install one. After a launcher-driven update verifies
+the new signed install, the old launcher closes and the new version opens
+automatically. Updating is refused while Transport Fever 2 or a multiplayer
+companion is running. The updater:
 
 1. reads versioned releases from `Juliansgith/tpf2mp`;
 2. selects only a newer semantic version on the configured alpha channel;
@@ -63,9 +67,9 @@ Publication intentionally requires a clean worktree and a package whose
 manifest names the exact current commit. After tests, commit, and push:
 
 ```powershell
-.\tools\package_release.ps1 -Version 0.39.0-alpha
+.\tools\package_release.ps1 -Version 0.39.1-alpha
 .\tools\publish_github_release.ps1 `
-  -Version 0.39.0-alpha `
+  -Version 0.39.1-alpha `
   -ConfirmPublish
 ```
 

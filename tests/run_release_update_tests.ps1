@@ -282,7 +282,8 @@ $workerStderr = Join-Path $workerResultRoot 'update.stderr.log'
 [IO.File]::WriteAllText($workerStderr, '', [Text.UTF8Encoding]::new($false))
 $verifiedWorkerResult = Get-Tpf2mpVerifiedReleaseUpdateResult `
     -StdoutPath $workerStdout -StderrPath $workerStderr -InstallRoot $workerInstallRoot
-if (-not $verifiedWorkerResult -or $verifiedWorkerResult.version -cne '0.39.0-alpha') {
+if (-not $verifiedWorkerResult -or $verifiedWorkerResult.version -cne '0.39.0-alpha' `
+        -or $verifiedWorkerResult.changed -ne $true) {
     throw 'Launcher did not independently verify a committed successful update.'
 }
 [IO.File]::WriteAllText($workerStderr, 'late failure', [Text.UTF8Encoding]::new($false))
@@ -291,6 +292,19 @@ if (Get-Tpf2mpVerifiedReleaseUpdateResult `
     throw 'Launcher accepted update evidence with stderr residue.'
 }
 [IO.File]::WriteAllText($workerStderr, '', [Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText(
+    $workerStdout,
+    "TPF2MP 0.39.0-alpha is current on the alpha channel.`r`n",
+    [Text.UTF8Encoding]::new($false))
+$verifiedCurrentResult = Get-Tpf2mpVerifiedReleaseUpdateResult `
+    -StdoutPath $workerStdout -StderrPath $workerStderr -InstallRoot $workerInstallRoot
+if (-not $verifiedCurrentResult -or $verifiedCurrentResult.changed -ne $false) {
+    throw 'Launcher could not distinguish an already-current check from an installed update.'
+}
+[IO.File]::WriteAllText(
+    $workerStdout,
+    "TPF2MP updated successfully: 0.38.0-alpha -> 0.39.0-alpha`r`n",
+    [Text.UTF8Encoding]::new($false))
 $workerPointerPath = Join-Path $workerInstallRoot 'current.json'
 $workerPointer = Get-Content -LiteralPath $workerPointerPath -Raw | ConvertFrom-Json
 $workerPointer.version = '0.38.0-alpha'
