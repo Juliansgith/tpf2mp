@@ -43,9 +43,25 @@ end
 
 function M.status(snapshot)
   snapshot = type(snapshot) == "table" and snapshot or {}
-  if snapshot.initialized == true then return "ready" end
-  if snapshot.networkMode ~= "network" then return "manual setup" end
   local companion = snapshot.bridge and snapshot.bridge.companion or {}
+  local proposal = snapshot.proposalConsensus or {}
+  local operation = snapshot.operationConsensus or {}
+  if proposal.sessionFault or operation.sessionFault or companion.sessionFault then
+    return "FAULTED"
+  end
+  if snapshot.initialized == true then
+    if snapshot.networkMode == "network"
+      and type(snapshot.checkpointConsensus) == "table"
+      and not snapshot.checkpointConsensus.lastAgreed then
+      return "synchronising checkpoint"
+    end
+    return "ready"
+  end
+  if snapshot.networkMode ~= "network" then return "manual setup" end
+  local content = snapshot.industryContent or {}
+  if companion.connected == true and content.ready ~= true then
+    return "waiting for peer world"
+  end
   if companion.connected == true then return "starting automatically" end
   return "waiting for peer"
 end

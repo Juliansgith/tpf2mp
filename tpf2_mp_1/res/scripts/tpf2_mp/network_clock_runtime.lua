@@ -3,6 +3,7 @@ local bridge = require "tpf2_mp/bridge"
 local heartbeatModule = require "tpf2_mp/network_clock_heartbeat"
 local world = require "tpf2_mp/world"
 local restoreBootstrapRuntime = require "tpf2_mp/restore_bootstrap_runtime"
+local networkBootstrapPolicy = require "tpf2_mp/network_bootstrap_policy"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "network clock runtime dependencies are required")
@@ -339,6 +340,7 @@ function M.new(deps)
     if not cfg.manualNetwork or not bootstrapReady or state.networkMode ~= "network"
       or state.bridge.peerId ~= "player1" then return end
     if restoreBootstrap.maintain(bootstrap) then return end
+    if networkBootstrapPolicy.deferForContent(state, bootstrap, diagnosticLog) then return end
     if state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
     if state.initialized then return end
     if awaitingOrder() or networkPendingBarrierReason() then return end
@@ -362,7 +364,7 @@ function M.new(deps)
   networkClock.reset = function()
     networkClock.manualBootstrap = {
       nextAttemptTick = 240, attempts = 0, submitted = false,
-      launcherReady = false, restoreNextAttemptAt = nil,
+      launcherReady = false, restoreNextAttemptAt = nil, waitingFor = nil,
     }
     heartbeat.reset()
     nativeRearmPending = true

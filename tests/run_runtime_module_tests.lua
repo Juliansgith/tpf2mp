@@ -830,6 +830,7 @@ do
   local bootstrapState = {
     networkMode = "network", initialized = true, tick = 1000,
     bridge = { peerId = "player1" }, recovery = {},
+    world = { industryContent = { ready = true, digest = "edc7a517" } },
   }
   local bootstrap = { launcherReady = true, nextAttemptTick = 240, submitted = false }
   assert(networkBootstrapPolicyModule.due(bootstrapState, {
@@ -842,12 +843,34 @@ do
   assert(matchInitialisePolicyModule.status({
       networkMode = "network", initialized = false,
       bridge = { companion = { connected = true } },
+      industryContent = { ready = true },
     }) == "starting automatically"
       and matchInitialisePolicyModule.status({
+        networkMode = "network", initialized = false,
+        bridge = { companion = { connected = true } },
+        industryContent = { ready = false },
+      }) == "waiting for peer world"
+      and matchInitialisePolicyModule.status({
         networkMode = "network", initialized = true,
+        checkpointConsensus = { lastAgreed = { boundarySeq = 2 } },
       }) == "ready",
     "bootstrap status does not distinguish automatic startup from a ready match")
+  assert(matchInitialisePolicyModule.status({
+      networkMode = "network", initialized = true,
+      checkpointConsensus = {},
+    }) == "synchronising checkpoint"
+      and matchInitialisePolicyModule.status({
+        networkMode = "network", initialized = true,
+        bridge = { companion = { sessionFault = "checkpoint-timeout" } },
+      }) == "FAULTED",
+    "bootstrap status hid an incomplete or faulted initial checkpoint")
   bootstrapState.initialized = false
+  bootstrapState.world.industryContent.ready = false
+  assert(networkBootstrapPolicyModule.due(bootstrapState, {
+      manualNetwork = true, manualBootstrapReady = true,
+    }, bootstrap) == false,
+    "fresh network world initialized before both live content attestations")
+  bootstrapState.world.industryContent.ready = true
   assert(networkBootstrapPolicyModule.due(bootstrapState, {
       manualNetwork = true, manualBootstrapReady = true,
     }, bootstrap) == true,
@@ -3088,6 +3111,7 @@ do
     initialized = false,
     tick = 240,
     bridge = { peerId = "player1" },
+    world = { industryContent = { ready = false, digest = "edc7a517" } },
     probes = {
       networkAuthority = { ready = true },
       networkCalendar = { requested = true, frozen = true },
@@ -3117,10 +3141,16 @@ do
     "manual clock bootstrap did not latch an early launcher/UI readiness handoff")
   current.tick = 240
   clock.maintainManualBootstrap()
+  assert(submissions == 0
+      and clock.manualBootstrap.waitingFor == "industry-content-consensus",
+    "manual clock bootstrap did not wait for the remote game world")
+  current.world.industryContent.ready = true
+  clock.maintainManualBootstrap()
   assert(submissions == 1 and clock.manualBootstrap.submitted == true,
     "manual clock bootstrap lost its latched launcher/UI readiness handoff")
   clock.reset()
   bootstrapReady = true
+  current.world.industryContent.ready = true
   clock.maintainManualBootstrap()
   assert(submissions == 2,
     "manual clock bootstrap ignored a directly visible readiness marker")

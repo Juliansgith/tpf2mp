@@ -1,5 +1,23 @@
 local M = {}
 
+function M.contentReady(state)
+  local content = type(state) == "table" and state.world and state.world.industryContent or nil
+  return type(content) == "table" and content.ready == true and type(content.digest) == "string"
+    and content.digest ~= ""
+end
+
+function M.deferForContent(state, bootstrap, diagnosticLog)
+  if M.contentReady(state) then
+    bootstrap.waitingFor = nil
+    return false
+  end
+  if bootstrap.waitingFor ~= "industry-content-consensus" then
+    bootstrap.waitingFor = "industry-content-consensus"
+    diagnosticLog("manual-network-bootstrap-deferred", { reason = bootstrap.waitingFor, tick = state.tick })
+  end
+  return true
+end
+
 function M.due(state, cfg, bootstrap)
   if state.networkMode ~= "network" or state.bridge.peerId ~= "player1" then return false end
   if type(cfg.restoreResume) == "table" and cfg.restoreResume.requested == true then
@@ -8,7 +26,8 @@ function M.due(state, cfg, bootstrap)
       and bootstrap.submitted ~= true
   end
   local ready = cfg.manualBootstrapReady == true or bootstrap.launcherReady == true
-  return cfg.manualNetwork == true and ready and state.initialized ~= true
+  return cfg.manualNetwork == true and ready and M.contentReady(state)
+    and state.initialized ~= true
     and state.tick >= math.max(240, tonumber(bootstrap.nextAttemptTick) or 240)
 end
 

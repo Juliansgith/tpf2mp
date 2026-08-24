@@ -452,6 +452,24 @@ class CommitHost(HostIntentMixin):
                         "cannot commit a consensus-bound action while peers are disconnected: "
                         + ", ".join(missing)
                     )
+            if (
+                action["type"] == "match.initialise"
+                and self.require_connected_peers
+                and self.industry_content_consensus.result.get("ready") is not True
+            ):
+                # A companion socket connects before its Transport Fever world
+                # necessarily finishes loading. Per-peer content attestations
+                # are the first ordered proof that both game-script VMs are
+                # alive and able to answer the initial checkpoint.
+                missing = sorted(
+                    set(self.required_peers)
+                    - set(self.industry_content_consensus.attestations)
+                )
+                detail = ", ".join(missing) if missing else "matching peer content"
+                raise ProtocolError(
+                    "cannot initialise before both live worlds attest identical "
+                    f"industry content: waiting for {detail}"
+                )
             if action["type"] == "recovery.save_receipt":
                 existing_receipt = self.anchor.validate_receipt(action, origin)
                 if existing_receipt:

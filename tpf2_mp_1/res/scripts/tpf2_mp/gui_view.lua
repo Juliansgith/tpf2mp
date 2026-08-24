@@ -560,11 +560,11 @@ function M.render(gui, snapshot, options)
     lines[#lines + 1] = "Network calendar: "
       .. (calendar.frozen == true and "frozen (native recurring finance disabled)"
         or "FAULTED - " .. tostring(calendar.error or "freeze unavailable"))
-    local sessionFault = (snapshot.proposalConsensus and snapshot.proposalConsensus.sessionFault)
-      or (snapshot.operationConsensus and snapshot.operationConsensus.sessionFault)
-    local ready = authority.ready == true and companion.connected == true and not sessionFault
-    lines[#lines + 1] = "Multiplayer readiness: " .. (ready and "READY"
-      or "WAITING - start the matching host/client companion and use the same session/manifest")
+    local alpha = snapshot.alphaReadiness or {}
+    local firstBlocker = type(alpha.blockers) == "table" and alpha.blockers[1] or nil
+    lines[#lines + 1] = "Multiplayer readiness: " .. (alpha.ready == true and "READY"
+      or "WAITING - " .. tostring(firstBlocker and firstBlocker.text
+        or "start the matching peer and wait for initial checkpoint consensus"))
     local networkAccounts = snapshot.networkAccounts or {}
     local reconciliation = networkAccounts.reconciliation or {}
     lines[#lines + 1] = string.format(

@@ -5859,6 +5859,45 @@ class IndustryContentConsensusTests(unittest.TestCase):
             self.assertEqual(host.session_fault, "industry-content-mismatch")
             self.assertFalse(host.industry_content_consensus.result["ready"])
 
+    def test_live_host_refuses_match_initialise_until_both_worlds_attest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, session = Path(directory), "industry-content-start-gate"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+            )
+            # The socket can be connected while the remote game is still on
+            # its loading screen. That is not sufficient evidence that it can
+            # answer the first deterministic checkpoint.
+            host.peers["player2"] = object()
+            initialise = sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "match.initialise"}},
+            })
+            with mock.patch.object(host, "_broadcast"):
+                with self.assertRaisesRegex(
+                    ProtocolError, "before both live worlds attest"
+                ):
+                    host._commit(initialise)
+                host._commit(self._intent(session, "player1", 2, "edc7a517"))
+                with self.assertRaisesRegex(
+                    ProtocolError, "waiting for player2"
+                ):
+                    host._commit(sign({
+                        "protocol": 1, "session": session, "peer": "player1",
+                        "local_seq": 3, "tick": 0, "kind": "intent",
+                        "payload": {"action": {"type": "match.initialise"}},
+                    }))
+                host._commit(self._intent(session, "player2", 1, "edc7a517"))
+                committed = host._commit(sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 4, "tick": 0, "kind": "intent",
+                    "payload": {"action": {"type": "match.initialise"}},
+                }))
+            self.assertEqual(committed["payload"]["action"]["type"], "match.initialise")
+            self.assertEqual(committed["seq"], 3)
+
 
 class NativeSaveTests(unittest.TestCase):
     def test_load_bearing_pair_refuses_a_mid_hash_change(self) -> None:
