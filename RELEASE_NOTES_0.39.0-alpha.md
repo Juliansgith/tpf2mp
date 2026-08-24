@@ -67,5 +67,6 @@ diagnostics. Direct LAN/private-VPN mode remains available.
   the real packaged client and proves secrets, invite codes, local user paths,
   and IPv4/IPv6 addresses are redacted before transmission.
 
-The remaining acceptance gate is deployment behind a real HTTPS endpoint and
-one fresh two-computer match through that endpoint.
+The production relay is deployed behind a real HTTPS endpoint and has passed a
+live gameplay/save/diagnostics round trip. The remaining acceptance gate is one
+fresh two-computer match through that endpoint.

@@ -112,12 +112,18 @@ and two paired events) with no credential value. Stopping the relay put both
 tunnels into retry; restarting against the same database re-paired them and P2
 reported one clean reconnect without a session fault.
 
+The production container was then deployed at
+`https://tpf2mp.213-133-98-90.sslip.io` behind Nginx and Let's Encrypt. A real
+client-created room paired both WSS channels, echoed a 28-byte gameplay frame
+and a 262,144-byte save payload exactly, accepted a redacted client-status
+event, remained inspectable by its `mp-...` support ID, and closed cleanly.
+Public admin requests returned `404`; the container was healthy, read-only,
+unprivileged, limited to one CPU/512 MiB, and exposed only on loopback.
+
 ## Remaining live gate
 
-1. Deploy the separate repository behind a real named HTTPS endpoint.
-2. Put that endpoint in the signed main-release `relay-config.json`.
-3. Install the same clean `0.39.0-alpha` release on two physical computers.
-4. Create/prepare a room, transfer a representative save, reach READY, perform
+1. Install the same clean `0.39.0-alpha` release on two physical computers.
+2. Create/prepare a room, transfer a representative save, reach READY, perform
    construction/operation/economy actions, force one short network outage, and
    verify recovery plus the support-ID timeline.
 

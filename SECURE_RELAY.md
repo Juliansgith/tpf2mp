@@ -33,8 +33,8 @@ the session faults closed.
 The relay never stores save-transfer bytes or gameplay command payloads. The
 diagnostic reporter cannot discover arbitrary files and rejects save/binary
 extensions. Both client and server redact secret-looking fields, bearer values,
-join codes, Windows/Unix user paths, and IPv4 addresses. Raw crash dumps and
-memory dumps are never uploaded automatically.
+join codes, Windows/Unix user paths, and IPv4/IPv6 addresses. Raw crash dumps
+and memory dumps are never uploaded automatically.
 
 Default retention is 30 days, with an eight-hour room lifetime and a 100 MiB
 per-room diagnostic ceiling. These are server policy values and may be reduced.
@@ -60,16 +60,15 @@ Compose deployment:
   reverse-proxy virtual host;
 - runs as an unprivileged UID with all Linux capabilities dropped,
   `no-new-privileges`, a read-only root filesystem, and CPU/memory/PID limits;
-- mounts only a dedicated SQLite data volume—never Docker control, SSH keys,
-  home directories, game saves, or another hosted service's data; and
-- restricts `/v1/admin/*` to a private/Tailscale network before its independent
-  admin bearer authentication.
+- mounts only a dedicated SQLite data volume; it never mounts Docker control,
+  SSH keys, home directories, game saves, or another hosted service's data; and
+- returns `404` for `/v1/admin/*` at the public Nginx host. Support lookup uses
+  the local container CLI; the service retains independent admin authentication.
 
 An operator can look up one support ID using the protected admin API or locally
 on the server with `tpf2mp-relay inspect mp-...`. Neither route returns player
 credentials.
 
 Plain HTTP is rejected except for an explicit loopback-only development mode.
-The production endpoint and TLS certificate will be configured after deployment
-details are supplied; `relay-config.json` intentionally remains empty until
-then.
+The deployed endpoint is `https://tpf2mp.213-133-98-90.sslip.io`; HTTP redirects
+to HTTPS and its Let's Encrypt certificate renews automatically.
