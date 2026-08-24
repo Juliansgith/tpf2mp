@@ -1,9 +1,11 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.38.8-alpha` is a restricted two-player competitive build for the
+TPF2MP `0.39.0-alpha` is a restricted two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
-trust each other and connect over a LAN or private VPN. It is not safe public
-Internet multiplayer and it does not support host migration.
+trust each other. Its preferred transport is the TPF2MP secure relay: both
+players make outbound WSS connections, so neither player opens a port. Direct
+LAN/private-VPN mode remains available. It does not support hostile peers or
+host migration.
 
 ## Before the first match
 
@@ -11,9 +13,13 @@ Both computers need:
 
 - the exact supported game executable;
 - the same TPF2MP release;
-- byte-identical starting `.sav` and `.sav.lua` files;
-- identical enabled game content and data-only mods;
-- TCP port `29742` reachable from Player 2 to Player 1.
+- one complete starting save on Host (`.sav`, `.sav.lua`, and optional `.jpg`);
+- identical enabled game content and data-only mods; and
+- outbound HTTPS/WebSocket access to the configured TPF2MP relay.
+
+Join does not need the starting save and neither player needs port forwarding.
+If **Use secure relay** is turned off for direct LAN/VPN mode, TCP ports `29742`
+and `29743` must instead be reachable from Player 2 to Player 1.
 
 Install the release on both computers by double-clicking
 `INSTALL_TPF2MP.cmd`, or from PowerShell:
@@ -32,10 +38,15 @@ See [DISTRIBUTION_AND_UPDATES.md](DISTRIBUTION_AND_UPDATES.md).
 ## Start a match
 
 1. Open `TPF2MP Multiplayer` (or `LAUNCH_TPF2MP.cmd`) on both computers.
-2. Enter the same session name, port, and starting save.
-3. Player 1 clicks **HOST + LAUNCH GAME** and gives Player 2 the host's LAN or
-   VPN address.
-4. Player 2 enters that address and clicks **JOIN + LAUNCH GAME**.
+2. Leave **Use secure relay** checked. Player 1 selects the starting save and
+   clicks **CREATE SESSION**, then **COPY CODE** and sends that opaque code to
+   Player 2. The displayed `mp-...` value is the non-secret support ID.
+3. Player 2 pastes the code into **Join code** and clicks **PREPARE JOIN**.
+   Player 2 leaves the save field empty; the room fixes the session identity.
+4. Player 1 clicks **HOST + LAUNCH GAME**. After Host reaches the title screen,
+   Player 2 clicks **JOIN + LAUNCH GAME**. Join receives `.sav`, `.sav.lua`, and
+   optional `.jpg` through the relay, verifies every SHA-256, installs `.sav`
+   last, fingerprints the resulting world, and launches it automatically.
 5. In each game's title screen, click **MULTIPLAYER**. Do not load the save
    through the ordinary Load Game button.
 6. Open the in-game Multiplayer panel and select **Alpha Status**. Begin only
@@ -46,6 +57,23 @@ connect to public roads; private rival track, stations, depots, constructions,
 lines, and vehicles remain protected. Construction and ordinary line/vehicle
 commands are ordered by Player 1 and replayed on both worlds before money or a
 checkpoint commits.
+
+Starting-save sync is for a fresh normal match. It is not used for
+receipt-bound restore: each role must load its own attested restore save. The
+ordinary match fingerprint independently rejects a changed or incomplete
+synchronized copy before gameplay begins.
+
+The relay retains bounded protocol metadata and redacted structured logs from
+both clients under the support ID. It does not retain save bytes, command
+payloads, raw crash dumps, or arbitrary local files. See
+[SECURE_RELAY.md](SECURE_RELAY.md) for the exact privacy and failure boundary.
+
+### Direct LAN/private-VPN fallback
+
+Uncheck **Use secure relay**, then use the earlier Session/Host address/port
+fields. Host launches first and reports `SAVE READY:29743`; Join clicks
+**SYNC FROM HOST**, then **JOIN + LAUNCH GAME**. Direct mode does not upload
+central diagnostics and requires the two inbound Host ports to be reachable.
 
 ## If a connection drops
 
@@ -75,8 +103,8 @@ or plans, and never use a normal autosave as if it were a coordinated restore.
   passenger connections, and conserved multi-line freight transfers;
 - automatic checkpoints, first-fault evidence, and paired recovery saves.
 
-Executable mod callbacks, arbitrary script commands, hostile peers, encrypted
-transport, host migration, and in-place repair of already-divergent geometry
+Executable mod callbacks, arbitrary script commands, hostile peers, host
+migration, and in-place repair of already-divergent geometry
 are outside this alpha. Native people, yellow station icons, income popups, and
 mid-leg vehicle coordinates are presentation; the Multiplayer views contain
 the authoritative counts and finances.

@@ -1138,6 +1138,42 @@ assert(originAck.name == "operation.result"
     and originAck.param.originApplied == true,
   "optimistic vanilla line result was not returned to canonical finalisation")
 
+-- The stock manager can retire a newly-created empty line while its ordered
+-- event is in flight (the live P2 crash occurred when opening a depot).  Once
+-- absence is proven, replay exactly once and mark the result so the engine
+-- finaliser performs strict postcondition checking rather than optimistic
+-- origin attestation.
+lineEntities[799] = nil
+lineEntities[800] = nil
+local issuedBeforeOriginRecovery = #issuedCanonicalCommands
+saved.world.operations.byId["gui-origin-recovery-regression"] = {
+  operationId = "gui-origin-recovery-regression",
+  transaction = lineTransaction,
+  localRefs = {},
+  nativePlayerId = 100,
+  status = "queued",
+  originApplied = { localId = 799, capturedTick = 1 },
+}
+script.load(saved)
+for _ = 1, 10 do script.guiUpdate() end
+local originRecovery
+for index = #sentEvents, 1, -1 do
+  local candidate = sentEvents[index]
+  if candidate.name == "operation.result"
+    and candidate.param.operationId == "gui-origin-recovery-regression" then
+    originRecovery = candidate
+    break
+  end
+end
+assert(#issuedCanonicalCommands == issuedBeforeOriginRecovery + 1
+    and issuedCanonicalCommands[#issuedCanonicalCommands].kind == "create-line",
+  "a vanished optimistic line was not recovered through canonical replay")
+assert(originRecovery and originRecovery.param.success == true
+    and originRecovery.param.outputLocalId == 800
+    and originRecovery.param.originReplayed == true,
+  "recovered optimistic line did not carry its strict-finalisation marker")
+lineEntities[799] = true
+
 -- Buying is pre-mutation: the stock GUI contributes the consist while the
 -- pinned visitor contributes the actual player/depot identity. Retain the
 -- live train+waggon resource namespaces, then exercise direct SetLine capture.

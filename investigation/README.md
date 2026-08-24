@@ -1,6 +1,16 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-24 (Europe/Amsterdam), prototype `0.38.8-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-24 (Europe/Amsterdam), prototype `0.39.0-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Secure relay transport and support diagnostics (2026-08-24)](SECURE_RELAY_2026-08-24.md)
+records the separate service boundary, invitation/credential model, outbound WSS
+bridges, automatic save transport, privacy-bounded diagnostics, deployment
+isolation, complete localhost outage/reconnect proof, and remaining HTTPS/two-PC
+gate.
+
+[Automatic starting-save sync (2026-08-24)](AUTOMATIC_STARTING_SAVE_SYNC_2026-08-24.md)
+documents the adjacent-port Host share, transactional Join receiver, launcher
+button, integrity/failure boundaries, and remaining two-computer acceptance.
 
 [First cross-PC P2 station and save failure](CROSS_PC_P2_STATION_AND_SAVE_FAILURE_2026-08-24.md)
 records the first Tailscale two-computer run, healthy physical/checkpoint
@@ -607,6 +617,7 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [P2_LINE_CREATE_DEPOT_TRANSITION_2026-08-24.md](P2_LINE_CREATE_DEPOT_TRANSITION_2026-08-24.md) - physical P2 empty-line/depot-transition fault, optimistic `line:pre:*` adoption, vanished-output replay, strict finalisation, and exact failure telemetry.
 - [EXACT_CONSTRUCTION_REPLAY_AND_LATENCY_2026-08-22.md](EXACT_CONSTRUCTION_REPLAY_AND_LATENCY_2026-08-22.md) - typed `SimpleProposal.ConstructionEntity` discovery, debit-driven exact `BuildProposal` replay, strict GUI delta attestation, crash-safe canonical construction identity, 273/436 ms native measurements, passing two-process station checkpoint/soak evidence, and the remaining connected/landscaped human gate.
 - [NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md](NATIVE_ASYNC_RUNTIME_AND_SKELETON_PERFORMANCE_2026-08-10.md) - exact-build native asynchronous bridge, measured engine scheduler, compact telemetry/GUI projections, exact one-person-per-building skeleton mode, localhost CCD isolation, complete offline proof, and the next-launch live performance gate.
 - [CHECKPOINT_VEHICLE_OWNER_AND_RUNTIME_PERFORMANCE_2026-08-09.md](CHECKPOINT_VEHICLE_OWNER_AND_RUNTIME_PERFORMANCE_2026-08-09.md) - boundary-29 ownerless pre-existing-train checkpoint fault, strict save migration/producer repair, host hot-loop audit, four runtime optimizations, full regression proof, and the controlled live performance gate.

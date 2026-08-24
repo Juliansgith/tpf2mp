@@ -158,6 +158,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Release manifest validation tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_save_sync_worker_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Launcher save-sync worker tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_release_update_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Release update safety tests failed' }

@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-24 for prototype `0.38.8-alpha`, state schema `31`,
+Last updated: 2026-08-24 for prototype `0.39.0-alpha`, state schema `31`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -50,6 +50,21 @@ TPF2MP contains two usable but differently mature modes:
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
 
+Prototype 0.39 adds the preferred Internet transport without moving authority
+out of Player 1. Host and Join make outbound authenticated WSS connections to
+two relay channels: gameplay carries the existing framed TCP protocol and save
+carries the existing verified starting-save stream. Neither player exposes an
+inbound port. A short-lived opaque join code fixes separate Host/Join roles;
+the relay rejects role duplication, cross-session credentials, and mismatched
+content fingerprints. Tunnel loss enters the existing pause/reconnect/backlog
+fence and never falls back silently to direct mode. Both clients also submit
+only bounded, named, double-redacted status/log evidence under a non-secret
+support ID; command payloads, save bytes, raw dumps, and arbitrary files are
+not retained. A full localhost relay run transferred a 54,455,136-byte save
+triplet, synchronized both companions, survived relay loss/restart, and
+delivered both diagnostic timelines without credentials. Real HTTPS deployment
+and one fresh two-computer relay match remain the new live gates.
+
 The Multiplayer panel now includes a fail-closed **Alpha Status** view. The
 companion's `alpha-live-report` produces `core`, `playable`, and `alpha`
 verdicts from converged checkpoints and both companion statuses. The strongest
@@ -58,7 +73,7 @@ development, passenger transfers, conserved cargo transfers, one recovered
 disconnect, and a matching current restore plan; a missing receipt is a failed
 gate rather than prose judgment.
 
-Prototype 0.38 adds one deterministic carrier-neutral service graph. Passenger
+Prototype 0.38 added one deterministic carrier-neutral service graph. Passenger
 connections now add through-demand to every used corridor, including
 interchanges at intermediate stops. Cargo refuses to ship without a reachable
 compatible consumer, then moves through conserved authoritative station stock
@@ -805,9 +820,13 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
   game remains idle until the player selects it; selection is receipted, then
   the byte-pinned save is loaded and the session proceeds. Disposable production
   session `menu-production3-20260803` proved that entire path.
-- The launcher provides Host, Join, verified/manual and one-click latest-local restore selection, automated Localhost Test, local-only
-  Populated Capture Lab, fingerprints, status/logs, evidence collection, and
-  exact-session stop controls.
+- The launcher provides Host, Join, **SYNC FROM HOST** for the complete pinned
+  starting-save set, verified/manual and one-click latest-local restore
+  selection, automated Localhost Test, local-only Populated Capture Lab,
+  fingerprints, status/logs, evidence collection, and exact-session stop
+  controls. Starting-save sync uses the adjacent TCP port, verifies every
+  SHA-256, never overwrites a different save, and exposes `.sav` only after its
+  metadata is complete. Peer-specific restore saves remain excluded.
 - `start_freight_live_acceptance.ps1` now starts a clean 50M-per-company manual
   two-process match, proves its initial checkpoint, hands the windows to the
   player, collects the audit on close, and requires a strict current-format
@@ -827,15 +846,16 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 - Release ZIP includes the mod, one-file companion, native injector/DLL,
   launcher, title bootstrap/coordinator, recovery watcher, archive/plan tools,
-  installer/verifier/recoverable uninstaller, docs, and SHA-256 manifest.
+  transactional starting-save receiver, installer/verifier/recoverable
+  uninstaller, docs, and SHA-256 manifest.
 - Current post-change suite passes:
-  - 132 core Lua tests and 108 cross-language economy scenarios;
+  - 137 core Lua tests and 108 cross-language economy scenarios;
   - game-script, ownership, GUI, hot-seat, network-company, and 1,024-event replay
     integrations;
-  - 141 mod Lua and 9 investigation/tool Lua syntax checks;
-  - 54 PowerShell syntax checks;
+  - 166 mod Lua and 9 investigation/tool Lua syntax checks;
+  - 64 PowerShell syntax checks;
   - launcher construction smoke test;
-  - 179 Python protocol/network/checkpoint/recovery/report tests;
+  - 188 Python protocol/network/checkpoint/recovery/report/save-sync tests;
   - functional first-fault watcher/real-bundle fixtures, including the
     already-exited-game ordering case and the automatic-save READY-poll race;
   - a synthetic byte-exact host publication -> player2 receipt-bound archive ->

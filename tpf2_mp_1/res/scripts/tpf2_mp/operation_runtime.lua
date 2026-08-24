@@ -44,6 +44,88 @@ function M.reconcileLinePostcondition(transaction, targetCid, observed, originAp
   return expected
 end
 
+-- A vanilla New Line is visible to native discovery before its ordered event
+-- identity reaches the originating peer.  A structural/UI sample in that
+-- window may therefore bind the exact local line as `line:pre:*`.  The remote
+-- peer never creates that provisional identity, so treating the ordinary
+-- canonical.bind collision as an operation failure guarantees divergence.
+--
+-- Retire only the narrowly identifiable, unbound-to-gameplay provisional
+-- line.  Any authored reference means this is no longer a harmless discovery
+-- race and must fail closed instead of silently rewriting canonical history.
+function M.retireTransientOriginLineBinding(state, record, localId)
+  if type(state) ~= "table" or type(state.canonical) ~= "table"
+    or type(record) ~= "table" or type(record.transaction) ~= "table"
+    or record.transaction.kind ~= "line.create"
+    or type(record.originApplied) ~= "table" then
+    return true, nil
+  end
+  local capturedLocalId = tonumber(record.originApplied.localId)
+  localId = tonumber(localId)
+  local replayReplacement = record.originReplayed == true
+    and tonumber(record.originReplayOutputLocalId) == localId
+    and capturedLocalId and localId and capturedLocalId ~= localId
+  if not capturedLocalId or not localId
+    or (capturedLocalId ~= localId and not replayReplacement) then
+    return false, "origin line cleanup does not target the captured native line"
+  end
+  local provisionalCid = canonical.resolveCanonical(state.canonical, "line", localId)
+  if not provisionalCid then return true, nil end
+  local finalCid = canonical.createdId("line", record.eventId, 1)
+  if provisionalCid == finalCid then return true, nil end
+  local binding = state.canonical.byCanonical[provisionalCid]
+  if type(provisionalCid) ~= "string"
+    or provisionalCid:find("line:pre:", 1, true) ~= 1
+    or type(binding) ~= "table"
+    or binding.kind ~= "line"
+    or tonumber(binding.localId) ~= localId
+    or (binding.metadata and binding.metadata.manifestBound == true) then
+    return false, "origin line output is occupied by a non-transient canonical binding"
+  end
+  local economyState = state.economy or {}
+  if (economyState.services and economyState.services[provisionalCid])
+    or (economyState.deliveryCursors and economyState.deliveryCursors[provisionalCid]) then
+    return false, "transient origin line already has authored economy state"
+  end
+  for cid, candidate in pairs(state.canonical.byCanonical or {}) do
+    local metadata = candidate and candidate.metadata or {}
+    if cid ~= provisionalCid and metadata.lineCid == provisionalCid then
+      return false, "transient origin line is already referenced by " .. tostring(cid)
+    end
+  end
+  local vehicleSync = state.world and state.world.vehicleSync or {}
+  for _, vehicle in pairs(vehicleSync.vehicles or {}) do
+    if vehicle.lineCid == provisionalCid then
+      return false, "transient origin line already has a vehicle synchronization record"
+    end
+  end
+  for _, reservation in pairs(vehicleSync.scheduleReservations or {}) do
+    if reservation.lineCid == provisionalCid then
+      return false, "transient origin line already has a departure reservation"
+    end
+  end
+  for operationId, candidate in pairs(state.world and state.world.operations
+      and state.world.operations.byId or {}) do
+    if operationId ~= record.operationId and type(candidate) == "table"
+      and type(candidate.transaction) == "table" then
+      local data = candidate.transaction.data or {}
+      local referenced = data.targetCid == provisionalCid or data.lineCid == provisionalCid
+      if not referenced then
+        for _, targetCid in ipairs(data.targetCids or {}) do
+          if targetCid == provisionalCid then referenced = true; break end
+        end
+      end
+      if referenced then
+        return false, "transient origin line is already referenced by a pending operation"
+      end
+    end
+  end
+  if not canonical.unbindCanonical(state.canonical, provisionalCid) then
+    return false, "transient origin line binding disappeared during adoption"
+  end
+  return true, provisionalCid
+end
+
 -- Apply only the portable metadata implied by a completed operation. Keeping
 -- this pure makes lifecycle changes independently testable and prevents a
 -- physically successful replacement from leaving the old consist in the
@@ -335,7 +417,8 @@ function M.new(env)
         }
       end
       return M.reconcileLinePostcondition(
-        transaction, targetCid, result, type(record.originApplied) == "table")
+        transaction, targetCid, result,
+        type(record.originApplied) == "table" and record.originReplayed ~= true)
     elseif kind:sub(1, 8) == "vehicle." then
       local vehicle = safeOperationComponent(localId, types.TRANSPORT_VEHICLE)
       if not vehicle then return nil, "native vehicle component is unavailable after operation" end
@@ -390,6 +473,11 @@ function M.new(env)
     end
     if world.kindOf(localId) ~= spec.outputKind then
       return nil, "native operation output kind mismatch"
+    end
+    if spec.outputKind == "line" and type(record.originApplied) == "table" then
+      local retired, retireError = M.retireTransientOriginLineBinding(
+        currentState(), record, localId)
+      if not retired then return nil, retireError end
     end
     local cid = canonical.createdId(spec.outputKind, record.eventId, 1)
     local metadata = {
@@ -452,7 +540,13 @@ function M.new(env)
     local payload = util.deepCopy(view)
     payload.financeDelta = success and util.integer(result.financeDelta, 0) or nil
     payload.resultDigest = hash.value(view)
-    if not success then payload.errorCode = "native-operation-failed" end
+    if not success then
+      payload.errorCode = "native-operation-failed"
+      local detail = tostring(type(result) == "table" and result.error
+        or record.error or "native operation failed")
+      detail = detail:gsub("[%c]", " "):sub(1, 384)
+      if detail ~= "" then payload.errorDetail = detail end
+    end
     local emitted, messageOrError = bridge.emit(
       currentState().bridge, "operation_completion", payload, currentState().tick)
     if not emitted then record.completionError = tostring(messageOrError); return false, record.completionError end
@@ -474,6 +568,29 @@ function M.new(env)
         { error = tostring(payload.error or "GUI-state native operation was rejected") })
       emitOperationCompletion(record, false, result)
       return ok, result
+    end
+
+    record.originReplayed = payload.originReplayed == true
+    record.originReplayOutputLocalId = record.originReplayed
+      and tonumber(payload.outputLocalId) or nil
+    if record.originReplayed then
+      if type(record.originApplied) ~= "table"
+        or record.transaction.kind ~= "line.create" then
+        local ok, result = operationFailure(record,
+          "origin replay marker is invalid for this canonical operation")
+        emitOperationCompletion(record, false, result)
+        return ok, result
+      end
+      -- The stock line manager may remove an empty optimistic line before its
+      -- commit is finalised.  GUI replay then creates a replacement; discard
+      -- any stale provisional binding for the vanished original first.
+      local retired, retireError = M.retireTransientOriginLineBinding(
+        currentState(), record, tonumber(record.originApplied.localId))
+      if not retired then
+        local ok, result = operationFailure(record, retireError)
+        emitOperationCompletion(record, false, result)
+        return ok, result
+      end
     end
   
     local output

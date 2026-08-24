@@ -1,8 +1,9 @@
 # TPF2MP alpha release checklist
 
-This is the release definition for the restricted trusted-LAN two-player
-alpha. A feature is not accepted because it looked correct once: the final
-report must prove every required item from converged all-peer checkpoints.
+This is the release definition for the restricted trusted-peer two-player
+alpha over secure relay or direct LAN/VPN. A feature is not accepted because
+it looked correct once: the final report must prove every required item from
+converged all-peer checkpoints.
 
 ## Automated code gate
 
@@ -10,7 +11,7 @@ Run from the repository root:
 
 ```powershell
 .\tools\run_tests.ps1
-.\tools\package_release.ps1 -Version 0.38.8-alpha
+.\tools\package_release.ps1 -Version 0.39.0-alpha
 ```
 
 The gate covers Lua/Python deterministic parity, proposal and operation codecs,
@@ -28,6 +29,10 @@ On both test computers:
 3. Run `VERIFY_TPF2MP.cmd` and require the exact Build 35924 hook profile.
 4. Start through `LAUNCH_TPF2MP.cmd`; require the title-screen Multiplayer
    entry and an in-game `READY` Alpha Status.
+5. With relay enabled, create a room on P1, prepare the opaque code on P2, and
+   require automatic save delivery without an inbound player port. Record the
+   common support ID and verify the server timeline contains both roles but no
+   credentials, local user paths, raw payloads, save bytes, or dumps.
 
 ## Full live-alpha scenario
 

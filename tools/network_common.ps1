@@ -24,6 +24,79 @@ function Get-Tpf2mpSessionRoot {
     return (Resolve-Tpf2mpFullPath (Join-Path (Get-Tpf2mpSupportRoot) "sessions\$safeSession\$Peer"))
 }
 
+function Protect-Tpf2mpPrivateFile {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $resolved = Resolve-Tpf2mpFullPath $Path
+    if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
+        throw "Private file does not exist: $resolved"
+    }
+    if ($env:OS -eq 'Windows_NT') {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        if (-not $sid) { throw 'Current Windows identity has no security identifier.' }
+        $acl = [IO.File]::GetAccessControl(
+            $resolved,
+            [Security.AccessControl.AccessControlSections]::Access
+        )
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($existingRule in @($acl.Access)) {
+            [void]$acl.RemoveAccessRuleSpecific($existingRule)
+        }
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.InheritanceFlags]::None,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+        [IO.File]::SetAccessControl($resolved, $acl)
+    }
+    return $resolved
+}
+
+function Write-Tpf2mpPrivateTextFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Text
+    )
+    $resolved = Resolve-Tpf2mpFullPath $Path
+    $parent = Split-Path -Parent $resolved
+    New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    [IO.File]::WriteAllText($resolved, $Text, [Text.UTF8Encoding]::new($false))
+    return (Protect-Tpf2mpPrivateFile $resolved)
+}
+
+function Remove-Tpf2mpExpiredRelayDrafts {
+    param([ValidateRange(1, 30)][int]$RetentionDays = 7)
+    $root = Resolve-Tpf2mpFullPath (Join-Path (Get-Tpf2mpSupportRoot) 'relay-drafts')
+    if (-not (Test-Path -LiteralPath $root -PathType Container)) { return 0 }
+    $prefix = $root.TrimEnd('\') + '\'
+    $cutoff = [DateTime]::UtcNow.AddDays(-$RetentionDays)
+    $removed = 0
+    foreach ($directory in @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+        $target = Resolve-Tpf2mpFullPath $directory.FullName
+        if (-not $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing relay-draft cleanup outside $root"
+        }
+        if ($directory.LastWriteTimeUtc -lt $cutoff) {
+            Remove-Item -LiteralPath $target -Recurse -Force
+            $removed++
+        }
+    }
+    foreach ($file in @(Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue)) {
+        $target = Resolve-Tpf2mpFullPath $file.FullName
+        if (-not $target.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing relay-draft cleanup outside $root"
+        }
+        if ($file.Name -match '^join-input-[0-9a-f]{32}\.txt$' `
+                -and $file.LastWriteTimeUtc -lt $cutoff) {
+            Remove-Item -LiteralPath $target -Force
+            $removed++
+        }
+    }
+    return $removed
+}
+
 function Get-Tpf2mpCompanionCommand {
     param([Parameter(Mandatory = $true)][string]$BundleRoot)
     $bundle = Resolve-Tpf2mpFullPath $BundleRoot

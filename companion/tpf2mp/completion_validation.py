@@ -96,10 +96,11 @@ def operation_completion_payload(payload: Any) -> dict[str, Any]:
     allowed = {
         "operationId", "commitSeq", "operationDigest", "success", "outputs",
         "postcondition", "financeDelta", "coreDigest", "resultDigest", "errorCode",
+        "errorDetail",
     }
     if set(payload) - allowed:
         raise ProtocolError("operation completion has unknown fields")
-    required = allowed - {"errorCode", "financeDelta"}
+    required = allowed - {"errorCode", "errorDetail", "financeDelta"}
     if not required <= set(payload):
         raise ProtocolError("operation completion has missing fields")
     commit_seq = payload.get("commitSeq")
@@ -132,6 +133,16 @@ def operation_completion_payload(payload: Any) -> dict[str, Any]:
         raise ProtocolError("operation completion postcondition must be an object")
     if "errorCode" in payload and not isinstance(payload["errorCode"], str):
         raise ProtocolError("operation completion errorCode must be a string")
+    if "errorDetail" in payload:
+        detail = payload["errorDetail"]
+        if (
+            payload["success"]
+            or not isinstance(detail, str)
+            or not detail
+            or len(detail) > 384
+            or any(ord(character) < 32 or ord(character) == 127 for character in detail)
+        ):
+            raise ProtocolError("operation completion errorDetail is invalid")
     if payload["success"]:
         finance_delta = payload.get("financeDelta")
         if not isinstance(finance_delta, int) or isinstance(finance_delta, bool):

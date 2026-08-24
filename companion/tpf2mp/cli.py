@@ -24,6 +24,10 @@ from .protocol import ProtocolError
 from .recovery import verify_recovery_archive, write_recovery_archive, write_recovery_plan
 from .research import write_report
 from .restore import confirm_restore_readiness, verify_restore_plan, write_restore_plan
+from .save_sync import SaveSyncServer, receive_save
+from .relay_api import RelayApiError
+from .relay_cli import configure_cli as configure_relay_cli
+from .relay_cli import run_cli as run_relay_cli
 
 
 def default_bridge(peer: str) -> Path:
@@ -51,6 +55,18 @@ def parser() -> argparse.ArgumentParser:
         default=45.0,
         help="seconds allowed for physical completion or checkpoint consensus",
     )
+    host.add_argument(
+        "--share-save", type=Path,
+        help="serve this already-pinned starting save on a separate pre-session port",
+    )
+    host.add_argument(
+        "--save-sync-port", type=int,
+        help="pre-session save-transfer port (defaults to gameplay port + 1)",
+    )
+    host.add_argument(
+        "--save-sync-status", type=Path,
+        help="optional JSON status written by the save-transfer listener",
+    )
 
     client = commands.add_parser("client", help="connect a game instance to a host")
     client.add_argument("host")
@@ -59,6 +75,21 @@ def parser() -> argparse.ArgumentParser:
     client.add_argument("--session", default="local-dev")
     client.add_argument("--bridge", type=Path)
     client.add_argument("--manifest", type=Path)
+
+    save_receive = commands.add_parser(
+        "save-sync-receive",
+        help="download and verify the host's complete pinned starting save",
+    )
+    save_receive.add_argument("host")
+    save_receive.add_argument("--port", type=int, default=29743)
+    save_receive.add_argument("--session", required=True)
+    save_receive.add_argument("--peer", choices=("player2",), default="player2")
+    save_receive.add_argument("--output-dir", type=Path, required=True)
+    save_receive.add_argument("--receipt", type=Path)
+    save_receive.add_argument("--connect-timeout", type=float, default=30.0)
+    save_receive.add_argument("--transfer-timeout", type=float, default=600.0)
+
+    configure_relay_cli(commands)
 
     replay = commands.add_parser("replay", help="verify and summarize an audit log")
     replay.add_argument("audit", type=Path)
@@ -183,20 +214,63 @@ def main(argv: list[str] | None = None) -> int:
             restore_plan = verify_restore_plan(json.loads(
                 args.restore_plan.read_text(encoding="utf-8-sig")
             )) if args.restore_plan else None
-            CommitHost(
-                game_bridge,
-                args.bind,
-                args.port,
-                audit,
-                fingerprint,
-                required_peers=tuple(args.required_peer) if args.required_peer else None,
-                completion_timeout=args.completion_timeout,
-                restore_plan=restore_plan,
-            ).run()
+            save_sync = None
+            if args.share_save is not None:
+                save_sync_port = args.save_sync_port
+                if save_sync_port is None:
+                    if args.port >= 65535:
+                        raise ProtocolError(
+                            "gameplay port 65535 leaves no adjacent save-sync port"
+                        )
+                    save_sync_port = args.port + 1
+                save_sync = SaveSyncServer(
+                    args.share_save,
+                    args.session,
+                    args.bind,
+                    save_sync_port,
+                    status_path=args.save_sync_status,
+                ).start()
+                print(f"save_sync_listening={args.bind}:{save_sync.port}", flush=True)
+                print(f"save_sync_bundle={save_sync.manifest['bundleId']}", flush=True)
+            elif args.save_sync_port is not None or args.save_sync_status is not None:
+                raise ProtocolError("save-sync host options require --share-save")
+            try:
+                CommitHost(
+                    game_bridge,
+                    args.bind,
+                    args.port,
+                    audit,
+                    fingerprint,
+                    required_peers=tuple(args.required_peer) if args.required_peer else None,
+                    completion_timeout=args.completion_timeout,
+                    restore_plan=restore_plan,
+                ).run()
+            finally:
+                if save_sync is not None:
+                    save_sync.close()
         elif args.command == "client":
             bridge_path = args.bridge or default_bridge(args.peer)
             fingerprint = load_manifest(args.manifest)["fingerprint"] if args.manifest else None
             CommitClient(GameBridge(bridge_path, args.session, args.peer), args.host, args.port, fingerprint).run()
+        elif args.command == "save-sync-receive":
+            receipt = receive_save(
+                args.host,
+                args.port,
+                args.session,
+                args.output_dir,
+                connect_timeout=args.connect_timeout,
+                transfer_timeout=args.transfer_timeout,
+                receipt_path=args.receipt,
+            )
+            print(f"save_sync_received={receipt['savePath']}")
+            print(f"save_sync_metadata={receipt['metadataPath']}")
+            if receipt.get("previewPath"):
+                print(f"save_sync_preview={receipt['previewPath']}")
+            print(f"save_sync_bundle={receipt['bundleId']}")
+            print(f"save_sync_bytes={receipt['totalBytes']}")
+            print(f"save_sync_reused={str(receipt['reused']).lower()}")
+        elif run_relay_cli(args):
+            pass
         elif args.command == "replay":
             return replay(args.audit, args.session, require_settled=args.require_settled)
         elif args.command == "freight-live-report":
@@ -317,6 +391,6 @@ def main(argv: list[str] | None = None) -> int:
                 sort_keys=True, separators=(",", ":"),
             ))
         return 0
-    except (OSError, ProtocolError, ValueError) as exc:
+    except (OSError, ProtocolError, RelayApiError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -80,6 +80,12 @@ if ($existingState) {
 }
 if ($Role -eq 'Host') {
     Assert-Tpf2mpHostPortAvailable -Port $Port -Session $safeSession
+    if ($StartingSave -and -not $restorePlanData) {
+        if ($Port -ge 65535) {
+            throw 'Gameplay port 65535 leaves no adjacent port for automatic starting-save sync.'
+        }
+        Assert-Tpf2mpHostPortAvailable -Port ($Port + 1) -Session $safeSession
+    }
 }
 else {
     Assert-Tpf2mpLoopbackJoinTarget -HostAddress $HostAddress -Port $Port -Session $safeSession
@@ -184,6 +190,12 @@ $launcherConfig = Write-Tpf2mpLauncherConfig -Session $safeSession -Peer $peer -
     -AgentMode $AgentMode -TownDevelopment $townDevelopmentEnabled
 $stdout = Join-Path $sessionRoot 'companion.stdout.log'
 $stderr = Join-Path $sessionRoot 'companion.stderr.log'
+$saveSyncPort = if ($Role -eq 'Host' -and $pinnedSave -and -not $restorePlanData) {
+    $Port + 1
+} else { $null }
+$saveSyncStatus = if ($saveSyncPort) {
+    Join-Path $sessionRoot 'save-sync-status.json'
+} else { $null }
 $companionArgs = if ($Role -eq 'Host') {
     @(
         'host', '--session', $safeSession, '--peer', $peer, '--bind', $BindAddress,
@@ -198,6 +210,13 @@ else {
 }
 if ($Role -eq 'Host' -and $restorePlanPath) {
     $companionArgs += @('--restore-plan', $restorePlanPath)
+}
+if ($Role -eq 'Host' -and $saveSyncPort) {
+    $companionArgs += @(
+        '--share-save', $pinnedSave.savePath,
+        '--save-sync-port', $saveSyncPort,
+        '--save-sync-status', $saveSyncStatus
+    )
 }
 $companionCommandLine = ConvertTo-Tpf2mpCommandLine (@($companion.Prefix) + $companionArgs)
 $companionProcess = Start-Process -FilePath $companion.FilePath -ArgumentList $companionCommandLine `
@@ -221,6 +240,8 @@ $state = [ordered]@{
     startingSave = $startingSaveOriginal
     pinnedStartingSave = if ($pinnedSave) { $pinnedSave.savePath } else { $null }
     pinnedStartingSaveManifest = if ($pinnedSave) { Join-Path $sessionRoot 'starting-save-manifest.json' } else { $null }
+    saveSyncPort = $saveSyncPort
+    saveSyncStatusPath = $saveSyncStatus
     stagedStartingSave = $null
     stagedStartingSaveManifest = $null
     bridgePath = $bridge
@@ -285,6 +306,20 @@ try {
     if ($companionStatus.session -ne $safeSession -or $companionStatus.peer -ne $peer `
         -or $companionStatus.matchFingerprint -ne $fingerprint) {
         throw 'Companion readiness status does not match the requested session, peer, and fingerprint.'
+    }
+    if ($saveSyncPort) {
+        $saveSyncReady = $null
+        if (Test-Path -LiteralPath $saveSyncStatus -PathType Leaf) {
+            try { $saveSyncReady = Get-Content -LiteralPath $saveSyncStatus -Raw | ConvertFrom-Json }
+            catch { }
+        }
+        if (-not $saveSyncReady -or $saveSyncReady.listening -ne $true `
+                -or [string]$saveSyncReady.session -ne $safeSession `
+                -or [int]$saveSyncReady.port -ne [int]$saveSyncPort `
+                -or [string]$saveSyncReady.bundleId -notmatch '^[0-9a-f]{64}$') {
+            throw 'Host companion did not publish a valid automatic starting-save sync listener.'
+        }
+        Write-Host "Automatic save sync ready on TCP $saveSyncPort (bundle $($saveSyncReady.bundleId.Substring(0, 12)))."
     }
     if (-not $companionStatus.PSObject.Properties['pid'] -or -not $companionStatus.pid) {
         throw 'Companion readiness status did not include its service PID.'

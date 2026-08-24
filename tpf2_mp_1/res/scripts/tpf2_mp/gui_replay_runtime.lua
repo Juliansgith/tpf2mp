@@ -6,6 +6,7 @@ local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 local proposalRejectionSnapshot = require "tpf2_mp/gui_proposal_rejection_snapshot"
 local replayWorkIndex = require "tpf2_mp/gui_replay_work_index"
 local proposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
+local originOperationRecovery = require "tpf2_mp/gui_origin_operation_recovery"
 
 local M = {}
 
@@ -370,7 +371,7 @@ function M.new(deps)
     end
     return difference[1]
   end
-  
+
   local function processPendingOperationCaptures()
     for index, pending in ipairs(gui.pendingOperationCaptures) do
       local balance = balanceOf(pending.nativePlayerId)
@@ -393,6 +394,7 @@ function M.new(deps)
           outputLocalId = pending.outputLocalId,
           balanceAfter = balance,
           financeDelta = financeDelta,
+          originReplayed = pending.originReplayed == true,
         })
         table.remove(gui.pendingOperationCaptures, index)
         return true
@@ -429,21 +431,30 @@ function M.new(deps)
       if type(record) == "table" and record.status == "queued"
         and not gui.operationIssued[operationId] then
         gui.operationIssued[operationId] = true
+        local originReplayed = false
         if type(record.originApplied) == "table" then
-          -- The initiating vanilla widget has already received native success.
-          -- Do not issue the command a second time on this machine: acknowledge
-          -- that exact local result so finalisation can bind/check it while the
-          -- non-origin peer follows the ordinary authorised replay path below.
-          queueGuiOperationResult({
-            operationId = operationId,
-            success = true,
-            outputLocalId = operationCodec.spec(record.transaction.kind).outputKind
-              and tonumber(record.originApplied.localId) or nil,
-            balanceAfter = balanceOf(record.nativePlayerId),
-            financeDelta = 0,
-            originApplied = true,
-          })
-          return true
+          local decision, decisionError = originOperationRecovery.decide(record)
+          if not decision then
+            queueGuiOperationResult({ operationId = operationId, success = false,
+              error = tostring(decisionError) })
+            return true
+          elseif decision.mode == "ack" then
+            queueGuiOperationResult({
+              operationId = operationId,
+              success = true,
+              outputLocalId = decision.outputLocalId,
+              balanceAfter = balanceOf(record.nativePlayerId),
+              financeDelta = 0,
+              originApplied = true,
+            })
+            return true
+          end
+          -- Closing or changing the stock manager can retire a freshly-created
+          -- empty line before the ordered event comes back.  Re-enter the same
+          -- authorised replay path used by the remote peer.  This is safe only
+          -- after proving the captured output no longer exists; otherwise it
+          -- would duplicate a live line.
+          originReplayed = true
         end
         -- Generated API userdata can reject a structurally valid Lua value by
         -- throwing before a command factory is entered. Close that ordered
@@ -604,6 +615,7 @@ function M.new(deps)
             stableFrames = 0,
             minimumFrame = gui.frames + (affectsFinance and 30 or 2),
             maximumFrame = gui.frames + (affectsFinance and 240 or 30),
+            originReplayed = originReplayed,
           }
         end, "mod.canonical-operation." .. tostring(record.transaction.kind))
         if not sent then

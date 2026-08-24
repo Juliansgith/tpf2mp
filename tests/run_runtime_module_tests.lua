@@ -1524,6 +1524,83 @@ do
   assert(#advanced.stops == 2,
     "line postcondition reconciliation mutated the observed physical state")
 
+  -- Live two-computer regression (2026-08-24): the optimistic peer's empty
+  -- line was discovered as line:pre:* between native CreateLine and ordered
+  -- finalisation.  The exact unreferenced provisional binding must be retired
+  -- so both peers can converge on the event-derived identity.
+  local originRegistry = canonicalModule.newState()
+  local provisionalCid = "line:pre:optimistic-discovery"
+  assert(canonicalModule.bind(originRegistry, provisionalCid, "line", 799, {
+    fingerprint = "optimistic-discovery", duplicateOrdinal = 1,
+  }))
+  local originRecord = {
+    operationId = "session:player2:55",
+    eventId = "session:player2:55",
+    companyCid = "company:2",
+    transaction = { kind = "line.create", data = { line = { stops = {} } } },
+    originApplied = { localId = 799 },
+  }
+  local originState = {
+    canonical = originRegistry,
+    economy = { services = {}, deliveryCursors = {} },
+    world = { operations = { byId = {
+      [originRecord.operationId] = originRecord,
+    } }, vehicleSync = { vehicles = {}, scheduleReservations = {} } },
+  }
+  local retired, retiredCid = operationRuntimeModule.retireTransientOriginLineBinding(
+    originState, originRecord, 799)
+  assert(retired == true and retiredCid == provisionalCid
+      and canonicalModule.resolveCanonical(originRegistry, "line", 799) == nil,
+    "optimistic line discovery binding was not retired before event adoption")
+  local finalCid = canonicalModule.createdId("line", originRecord.eventId, 1)
+  assert(canonicalModule.bind(originRegistry, finalCid, "line", 799, {
+    owner = "company:2", operationDigest = "83402d0d", outputSlot = "line:1",
+  }))
+  local cleanRegistry = canonicalModule.newState()
+  assert(canonicalModule.bind(cleanRegistry, finalCid, "line", 1800, {
+    owner = "company:2", operationDigest = "83402d0d", outputSlot = "line:1",
+  }))
+  assert(hashModule.value(canonicalModule.digestView(originRegistry))
+      == hashModule.value(canonicalModule.digestView(cleanRegistry)),
+    "origin adoption did not converge with the replay peer's canonical view")
+
+  local replacementRegistry = canonicalModule.newState()
+  assert(canonicalModule.bind(replacementRegistry,
+    "line:pre:replayed-discovery", "line", 800, {}))
+  originState.canonical = replacementRegistry
+  originRecord.originReplayed = true
+  originRecord.originReplayOutputLocalId = 800
+  local replacementRetired = operationRuntimeModule.retireTransientOriginLineBinding(
+    originState, originRecord, 800)
+  assert(replacementRetired == true
+      and canonicalModule.resolveCanonical(replacementRegistry, "line", 800) == nil,
+    "replayed origin output retained a second provisional discovery binding")
+  originRecord.originReplayed = nil
+  originRecord.originReplayOutputLocalId = nil
+
+  local protectedRegistry = canonicalModule.newState()
+  assert(canonicalModule.bind(protectedRegistry, provisionalCid, "line", 799, {
+    manifestBound = true,
+  }))
+  originState.canonical = protectedRegistry
+  local protected, protectedError = operationRuntimeModule.retireTransientOriginLineBinding(
+    originState, originRecord, 799)
+  assert(protected == false
+      and tostring(protectedError):find("non%-transient canonical binding")
+      and canonicalModule.resolveCanonical(protectedRegistry, "line", 799) == provisionalCid,
+    "origin adoption rewrote a manifest-bound line")
+
+  local referencedRegistry = canonicalModule.newState()
+  assert(canonicalModule.bind(referencedRegistry, provisionalCid, "line", 799, {}))
+  originState.canonical = referencedRegistry
+  originState.economy.services[provisionalCid] = { lineCid = provisionalCid }
+  local referenced, referencedError = operationRuntimeModule.retireTransientOriginLineBinding(
+    originState, originRecord, 799)
+  assert(referenced == false and tostring(referencedError):find("authored economy state")
+      and canonicalModule.resolveCanonical(referencedRegistry, "line", 799) == provisionalCid,
+    "origin adoption silently rewrote an already-authored service")
+  originState.economy.services[provisionalCid] = nil
+
   local binding = { metadata = {
     owner = "company:1", lineCid = "line:test",
     models = { { model = "vehicle/train/old.mdl" } },

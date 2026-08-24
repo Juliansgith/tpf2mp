@@ -44,6 +44,67 @@ if (-not $KeepCurrentWatcher -and $state.PSObject.Properties['recoveryWatcherPid
     }
 }
 
+function Stop-Tpf2mpRecordedRelayProcess {
+    param(
+        [string]$Property,
+        [string]$CommandName
+    )
+    if (-not $state.PSObject.Properties[$Property] -or -not $state.$Property) { return }
+    $processId = [int]$state.$Property
+    $native = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+    if (-not $native) { return }
+    $expectedExecutable = if ($state.PSObject.Properties['companionExecutable']) {
+        Resolve-Tpf2mpFullPath ([string]$state.companionExecutable)
+    } else { $null }
+    $actualExecutable = if ($native.ExecutablePath) {
+        Resolve-Tpf2mpFullPath ([string]$native.ExecutablePath)
+    } else { $null }
+    $credentialPath = if ($state.PSObject.Properties['relayCredentials']) {
+        [Regex]::Escape([string]$state.relayCredentials)
+    } else { $null }
+    $commandMatches = [string]$native.CommandLine -match ([Regex]::Escape($CommandName)) `
+        -and ($null -eq $credentialPath `
+            -or [string]$native.CommandLine -match $credentialPath)
+    if ($expectedExecutable -and $actualExecutable -and $commandMatches `
+            -and [string]::Equals(
+                $expectedExecutable, $actualExecutable,
+                [StringComparison]::OrdinalIgnoreCase)) {
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+    }
+    else {
+        Write-Warning "Recorded relay PID $processId no longer matches its executable/command; it was not touched."
+    }
+}
+
+if ($state.PSObject.Properties['transportMode'] -and $state.transportMode -eq 'secure-relay') {
+    Stop-Tpf2mpRecordedRelayProcess 'relayDiagnosticsPid' 'relay-diagnostics'
+    Stop-Tpf2mpRecordedRelayProcess 'relayDiagnosticsLauncherPid' 'relay-diagnostics'
+    if ($state.role -eq 'host' -and $state.PSObject.Properties['relayCredentials'] `
+            -and $state.relayCredentials `
+            -and (Test-Path -LiteralPath ([string]$state.relayCredentials) -PathType Leaf)) {
+        try {
+            $companion = Get-Tpf2mpCompanionCommand (Split-Path -Parent $PSScriptRoot)
+            $previousLoopback = $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK
+            try {
+                if ($state.PSObject.Properties['relayAllowInsecureLoopback'] `
+                        -and $state.relayAllowInsecureLoopback) {
+                    $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = '1'
+                }
+                & $companion.FilePath @($companion.Prefix + @(
+                    'relay-session-close', '--credentials', ([string]$state.relayCredentials)
+                ))
+                if ($LASTEXITCODE -ne 0) { throw "relay close exited $LASTEXITCODE" }
+            }
+            finally { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = $previousLoopback }
+        }
+        catch {
+            Write-Warning "Relay session could not be closed immediately and will expire automatically: $($_.Exception.Message)"
+        }
+    }
+    Stop-Tpf2mpRecordedRelayProcess 'relayTunnelPid' 'relay-tunnel'
+    Stop-Tpf2mpRecordedRelayProcess 'relayTunnelLauncherPid' 'relay-tunnel'
+}
+
 $companionPids = @()
 # PyInstaller's one-file supervisor must be stopped before its extracted
 # service child; the reverse order can briefly create a replacement child.

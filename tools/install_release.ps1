@@ -266,7 +266,7 @@ if ($defaultInstallRoot -and -not $NoDesktopShortcut `
             $shortcut = $shell.CreateShortcut($shortcutPath)
             $shortcut.TargetPath = Join-Path $install 'LAUNCH_TPF2MP.cmd'
             $shortcut.WorkingDirectory = $install
-            $shortcut.Description = 'Launch TPF2MP trusted-LAN multiplayer'
+            $shortcut.Description = 'Launch TPF2MP secure-relay multiplayer'
             $shortcut.Save()
             Write-Host "Desktop shortcut: $shortcutPath"
         }

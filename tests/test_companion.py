@@ -64,6 +64,7 @@ from tpf2mp.protocol import (
     canonical_json,
     checksum,
     decode_line,
+    encode_line,
     sign,
     validate_action,
     validate_envelope,
@@ -83,6 +84,12 @@ from tpf2mp.restore import (
 )
 from tpf2mp.session_identity import derive_resume_session, validate_session_id
 from tpf2mp.restore_plan_exchange import RestorePlanExchange
+from tpf2mp.save_sync import (
+    SaveSyncServer,
+    build_save_sync_manifest,
+    receive_save,
+    validate_save_sync_manifest,
+)
 
 
 def wait_for(predicate, timeout: float = 5.0) -> bool:
@@ -6243,6 +6250,226 @@ class LocalRestoreDiscoveryTests(unittest.TestCase):
             self.assertEqual(json.loads(output.getvalue())["session"], session)
 
 
+class SaveSyncTests(unittest.TestCase):
+    @staticmethod
+    def _save_set(root: Path, name: str = "host-world") -> Path:
+        save = root / f"{name}.sav"
+        save.write_bytes((b"native-save-payload\x00" * 257) + b"end")
+        Path(str(save) + ".lua").write_text(
+            "return { name = 'host world' }\n", encoding="utf-8"
+        )
+        save.with_suffix(".jpg").write_bytes(b"\xff\xd8preview\xff\xd9")
+        return save
+
+    def test_complete_triplet_is_verified_installed_and_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            source, destination = root / "source", root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            save = self._save_set(source)
+            status = root / "status.json"
+            server = SaveSyncServer(
+                save, "match-save-sync", "127.0.0.1", 0, status_path=status
+            ).start()
+            try:
+                first = receive_save(
+                    "127.0.0.1", server.port, "match-save-sync", destination
+                )
+                installed = Path(first["savePath"])
+                self.assertTrue(installed.is_file())
+                self.assertEqual(installed.read_bytes(), save.read_bytes())
+                self.assertEqual(
+                    Path(str(installed) + ".lua").read_bytes(),
+                    Path(str(save) + ".lua").read_bytes(),
+                )
+                self.assertEqual(
+                    installed.with_suffix(".jpg").read_bytes(),
+                    save.with_suffix(".jpg").read_bytes(),
+                )
+                self.assertFalse(first["reused"])
+
+                second = receive_save(
+                    "127.0.0.1", server.port, "match-save-sync", destination
+                )
+                self.assertTrue(second["reused"])
+                self.assertEqual(second["savePath"], first["savePath"])
+                self.assertTrue(wait_for(lambda: server.successful_downloads == 2))
+                published: dict | None = None
+
+                def read_published_status() -> bool:
+                    nonlocal published
+                    try:
+                        candidate = json.loads(status.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        return False
+                    if candidate.get("successfulDownloads") != 2:
+                        return False
+                    published = candidate
+                    return True
+
+                self.assertTrue(wait_for(read_published_status))
+                assert published is not None
+                self.assertEqual(published["bundleId"], first["bundleId"])
+                self.assertEqual(published["successfulDownloads"], 2)
+                self.assertFalse(any(destination.glob(".tpf2mp-save-sync-*")))
+            finally:
+                server.close()
+            self.assertFalse(json.loads(status.read_text(encoding="utf-8"))["listening"])
+
+    def test_wrong_session_is_rejected_without_installing_a_save(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            source, destination = root / "source", root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            server = SaveSyncServer(
+                self._save_set(source), "match-correct", "127.0.0.1", 0
+            ).start()
+            try:
+                with self.assertRaisesRegex(ProtocolError, "identity|different session"):
+                    receive_save(
+                        "127.0.0.1", server.port, "match-wrong", destination,
+                        connect_timeout=1,
+                    )
+                self.assertFalse(list(destination.glob("*.sav")))
+                self.assertFalse(any(destination.glob(".tpf2mp-save-sync-*")))
+            finally:
+                server.close()
+
+    def test_existing_different_files_are_never_overwritten(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            source, destination = root / "source", root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            save = self._save_set(source)
+            manifest, _ = build_save_sync_manifest(save, "match-collision")
+            base = f"tpf2mp_match-collision_{manifest['bundleId'][:10]}"
+            occupied = destination / f"{base}.sav"
+            occupied.write_bytes(b"keep-me")
+            Path(str(occupied) + ".lua").write_bytes(b"keep-metadata")
+            occupied.with_suffix(".jpg").write_bytes(b"keep-preview")
+            server = SaveSyncServer(
+                save, "match-collision", "127.0.0.1", 0
+            ).start()
+            try:
+                receipt = receive_save(
+                    "127.0.0.1", server.port, "match-collision", destination
+                )
+            finally:
+                server.close()
+            self.assertEqual(occupied.read_bytes(), b"keep-me")
+            self.assertEqual(Path(str(occupied) + ".lua").read_bytes(), b"keep-metadata")
+            self.assertNotEqual(Path(receipt["savePath"]), occupied)
+            self.assertTrue(Path(receipt["savePath"]).stem.endswith("-2"))
+
+    def test_interrupted_stream_never_exposes_a_loadable_save(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            source, destination = root / "source", root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            manifest, _ = build_save_sync_manifest(
+                self._save_set(source), "match-interrupted"
+            )
+            listener = socket.socket()
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(1)
+            port = int(listener.getsockname()[1])
+
+            def truncated_server() -> None:
+                conn, _ = listener.accept()
+                try:
+                    reader = conn.makefile("rb")
+                    reader.readline()
+                    conn.sendall(encode_line(sign({
+                        "kind": "save_sync_manifest", "version": 1,
+                        "session": "match-interrupted", "manifest": manifest,
+                    })))
+                    conn.sendall(b"too-short")
+                finally:
+                    conn.close()
+                    listener.close()
+
+            thread = threading.Thread(target=truncated_server, daemon=True)
+            thread.start()
+            with self.assertRaises((ConnectionError, OSError, ProtocolError)):
+                receive_save(
+                    "127.0.0.1", port, "match-interrupted", destination,
+                    connect_timeout=1, transfer_timeout=1,
+                )
+            thread.join(2)
+            self.assertFalse(list(destination.glob("*.sav")))
+            self.assertFalse(any(destination.glob(".tpf2mp-save-sync-*")))
+
+    def test_manifest_tampering_and_missing_metadata_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            save = self._save_set(root)
+            manifest, _ = build_save_sync_manifest(save, "match-manifest")
+            tampered = dict(manifest)
+            tampered["totalBytes"] = int(tampered["totalBytes"]) + 1
+            with self.assertRaisesRegex(ProtocolError, "bundle id"):
+                validate_save_sync_manifest(tampered, "match-manifest")
+            Path(str(save) + ".lua").unlink()
+            with self.assertRaisesRegex(ProtocolError, "metadata is missing"):
+                build_save_sync_manifest(save, "match-manifest")
+
+    def test_receive_cli_writes_a_verified_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            source, destination = root / "source", root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            receipt_path = root / "receipt.json"
+            server = SaveSyncServer(
+                self._save_set(source), "match-cli-sync", "127.0.0.1", 0
+            ).start()
+            output = io.StringIO()
+            try:
+                with redirect_stdout(output):
+                    result = companion_main([
+                        "save-sync-receive", "127.0.0.1",
+                        "--port", str(server.port),
+                        "--session", "match-cli-sync",
+                        "--peer", "player2",
+                        "--output-dir", str(destination),
+                        "--receipt", str(receipt_path),
+                    ])
+            finally:
+                server.close()
+            self.assertEqual(result, 0)
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            self.assertTrue(Path(receipt["savePath"]).is_file())
+            self.assertIn(f"save_sync_received={receipt['savePath']}", output.getvalue())
+            self.assertIn(f"save_sync_bundle={receipt['bundleId']}", output.getvalue())
+
+    def test_host_cli_starts_and_closes_adjacent_save_listener(self) -> None:
+        with tempfile.TemporaryDirectory() as value:
+            root = Path(value)
+            save = self._save_set(root)
+            status = root / "save-sync-status.json"
+            output = io.StringIO()
+            with mock.patch("tpf2mp.cli.CommitHost") as host_type:
+                host_type.return_value.run.return_value = None
+                with redirect_stdout(output):
+                    result = companion_main([
+                        "host", "--session", "match-host-cli-sync",
+                        "--peer", "player1", "--bind", "127.0.0.1",
+                        "--port", "0", "--bridge", str(root / "bridge"),
+                        "--share-save", str(save), "--save-sync-port", "0",
+                        "--save-sync-status", str(status),
+                    ])
+            self.assertEqual(result, 0)
+            host_type.return_value.run.assert_called_once_with()
+            published = json.loads(status.read_text(encoding="utf-8"))
+            self.assertFalse(published["listening"])
+            self.assertGreater(int(published["port"]), 0)
+            self.assertIn("save_sync_listening=127.0.0.1:", output.getvalue())
+            self.assertIn(f"save_sync_bundle={published['bundleId']}", output.getvalue())
+
+
 class NetworkIntegrationTests(unittest.TestCase):
     @staticmethod
     def _settlement_intent(session: str, local_seq: int) -> dict:
@@ -7985,6 +8212,28 @@ class NetworkIntegrationTests(unittest.TestCase):
                 failed_operation
             )
             self.assertEqual(CommitHost._operation_completion_payload(failed_operation)["outputs"], {})
+            failed_operation["errorDetail"] = (
+                "local identity already bound to line:pre:optimistic-discovery"
+            )
+            self.assertEqual(
+                CommitHost._operation_completion_payload(failed_operation)["errorDetail"],
+                failed_operation["errorDetail"],
+            )
+            # Diagnostics are peer-local evidence, not a consensus input.
+            self.assertEqual(
+                failed_operation["resultDigest"],
+                operation_completion_result_digest(failed_operation),
+            )
+            malformed_detail = dict(failed_operation)
+            malformed_detail["errorDetail"] = "line one\nline two"
+            with self.assertRaisesRegex(ProtocolError, "errorDetail is invalid"):
+                CommitHost._operation_completion_payload(malformed_detail)
+            successful_detail = operation_completion(
+                session, "player1", 14, operation_transaction("company:1")
+            )["payload"]
+            successful_detail["errorDetail"] = "must not accompany success"
+            with self.assertRaisesRegex(ProtocolError, "errorDetail is invalid"):
+                CommitHost._operation_completion_payload(successful_detail)
 
     def test_failed_proposal_is_fatal_if_rejection_has_residue_or_changed_core(self) -> None:
         cases = (

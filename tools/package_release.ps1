@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.38.8-alpha',
+    [string]$Version = '0.39.0-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -131,6 +131,14 @@ if ($LASTEXITCODE -ne 0) { throw "Packaged companion freight report smoke test f
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion passenger-feeder report smoke test failed with exit code $LASTEXITCODE" }
 & (Join-Path $companionDist 'tpf2mp.exe') alpha-live-report --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion alpha report smoke test failed with exit code $LASTEXITCODE" }
+& (Join-Path $companionDist 'tpf2mp.exe') save-sync-receive --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Packaged companion save-sync smoke test failed with exit code $LASTEXITCODE" }
+& (Join-Path $companionDist 'tpf2mp.exe') relay-session-create --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Packaged companion relay API smoke test failed with exit code $LASTEXITCODE" }
+& (Join-Path $companionDist 'tpf2mp.exe') relay-tunnel --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Packaged companion relay-tunnel smoke test failed with exit code $LASTEXITCODE" }
+& (Join-Path $companionDist 'tpf2mp.exe') relay-diagnostics --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Packaged companion relay-diagnostics smoke test failed with exit code $LASTEXITCODE" }
 
 $releaseName = "TPF2MP-$Version"
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $dist $releaseName))
@@ -171,7 +179,8 @@ $toolNames = @(
     'new_match_manifest.ps1', 'new_recovery_plan.ps1',
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
     'network_common.ps1', 'launcher_worker_result.ps1', 'native_load_common.ps1', 'start_network_session.ps1',
-    'start_network_session_retry.ps1', 'stop_network_session.ps1',
+    'start_network_session_retry.ps1', 'sync_starting_save.ps1', 'stop_network_session.ps1',
+    'new_relay_session.ps1', 'accept_relay_invite.ps1', 'start_relay_network_session.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
     'analyze_alpha_live_evidence.ps1', 'run_alpha_live_acceptance.ps1',
     'verify_build_transition_gate.ps1',
@@ -196,8 +205,10 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_verify.cmd') -Destinati
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_uninstall.cmd') -Destination (Join-Path $releaseRoot 'UNINSTALL_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_update.cmd') -Destination (Join-Path $releaseRoot 'UPDATE_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination (Join-Path $releaseRoot 'LAUNCH_TPF2MP.cmd')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'relay-config.json') -Destination (Join-Path $releaseRoot 'relay-config.json')
 $documentNames = @(
     'README.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
+    'SECURE_RELAY.md', 'RELEASE_NOTES_0.39.0-alpha.md',
     'TPF2MP_FULL_ALPHA_TEST_INSTRUCTIONS.txt',
     'DISTRIBUTION_AND_UPDATES.md',
     'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
@@ -213,7 +224,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'native\README.md') -Destination 
 $quickStart = @'
 # TPF2MP packaged prototype
 
-This is an alpha research build, not finished Internet multiplayer.
+This is an alpha research build for trusted two-player matches. Secure relay
+transport is available, but hostile peers and host migration are unsupported.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 
@@ -226,12 +238,19 @@ and its internal manifest, and installs it transactionally. A private repository
 uses the player's own GitHub CLI/Git Credential Manager login or
 `TPF2MP_GITHUB_TOKEN`; no shared repository key is included.
 
-Then double-click `LAUNCH_TPF2MP.cmd`. Its Host / Join buttons fingerprint the
-game, mod, binaries, and selected save; configure the peer and session; start
-the TCP companion; and launch the exact game at its title screen. Click the new
-`MULTIPLAYER` entry inside Transport Fever 2. Only that receipted selection
-allows the launcher to load the byte-pinned save and continue the authority
-flow. Both players must use byte-identical copies of the same starting save.
+Then double-click `LAUNCH_TPF2MP.cmd`. Leave **Use secure relay** enabled. Host
+selects the save, clicks **CREATE SESSION**, copies the opaque join code, and
+then launches. Join pastes the code, clicks **PREPARE JOIN**, and launches with
+its save field empty. Both PCs use outbound authenticated WSS; Join receives and
+hashes `.sav`, `.sav.lua`, and optional `.jpg` automatically before the ordinary
+match fingerprint independently proves equality. No player port forwarding is
+required. Uncheck relay only for the direct trusted-LAN/VPN fallback.
+
+Click the new `MULTIPLAYER` entry inside Transport Fever 2. Only that receipted
+selection allows the launcher to load the byte-pinned save and continue the
+authority flow. The visible `mp-...` value is a non-secret support ID linking
+both clients' bounded redacted diagnostics; save bytes, command payloads, raw
+dumps, and arbitrary files are never uploaded.
 
 The Localhost Test button runs two real disposable game instances on one PC and
 produces a convergence report automatically. Tick its manual-lab option to
@@ -244,13 +263,14 @@ observation lab, not synchronized multiplayer.
 
 Standalone hot-seat play does not need the launcher or native hook. Network
 experiments require the exact Transport Fever 2 Build 35924 executable and
-should be used only with trusted LAN/VPN peers.
+trusted peers, whether transported by relay or direct LAN/VPN.
 
 Useful commands:
 
     .\tools\verify_install.ps1
     .\LAUNCH_TPF2MP.cmd
     .\tools\start_network_session.ps1 -Role Host -Session match-1 -StartingSave C:\saves\match.sav
+    .\tools\sync_starting_save.ps1 -Session match-1 -HostAddress 192.168.1.10
     .\tools\start_network_session.ps1 -Role Join -Session match-1 -HostAddress 192.168.1.10 -StartingSave C:\saves\match.sav
     .\tools\new_match_manifest.ps1 -Session match-1
     .\tools\start_host_release.ps1 -Session match-1 -ManifestPath "$env:LOCALAPPDATA\TPF2MP\matches\match-1-manifest.json"

@@ -40,6 +40,21 @@ else {
         -and (Test-Path -LiteralPath ([string]$state.recoveryWatcherStatusPath) -PathType Leaf)) {
         try { $recoveryWatcher = Get-Content -LiteralPath ([string]$state.recoveryWatcherStatusPath) -Raw | ConvertFrom-Json } catch { }
     }
+    $saveSyncStatus = $null
+    if ($state.PSObject.Properties['saveSyncStatusPath'] -and $state.saveSyncStatusPath `
+        -and (Test-Path -LiteralPath ([string]$state.saveSyncStatusPath) -PathType Leaf)) {
+        try { $saveSyncStatus = Get-Content -LiteralPath ([string]$state.saveSyncStatusPath) -Raw | ConvertFrom-Json } catch { }
+    }
+    $relayTunnelStatus = $null
+    if ($state.PSObject.Properties['relayTunnelStatusPath'] -and $state.relayTunnelStatusPath `
+        -and (Test-Path -LiteralPath ([string]$state.relayTunnelStatusPath) -PathType Leaf)) {
+        try { $relayTunnelStatus = Get-Content -LiteralPath ([string]$state.relayTunnelStatusPath) -Raw | ConvertFrom-Json } catch { }
+    }
+    $relayDiagnosticsStatus = $null
+    if ($state.PSObject.Properties['relayDiagnosticsStatusPath'] -and $state.relayDiagnosticsStatusPath `
+        -and (Test-Path -LiteralPath ([string]$state.relayDiagnosticsStatusPath) -PathType Leaf)) {
+        try { $relayDiagnosticsStatus = Get-Content -LiteralPath ([string]$state.relayDiagnosticsStatusPath) -Raw | ConvertFrom-Json } catch { }
+    }
     $companionPid = if ($state.companionPid) { [int]$state.companionPid } else { $null }
     if ($companionStatus -and $companionStatus.session -eq $safeSession `
         -and $companionStatus.peer -eq $Peer -and $companionStatus.pid) {
@@ -60,6 +75,11 @@ else {
         session = $safeSession
         peer = $Peer
         role = $state.role
+        transportMode = if ($state.PSObject.Properties['transportMode']) { $state.transportMode } else { 'direct-lan' }
+        supportId = if ($state.PSObject.Properties['supportId']) { $state.supportId } else { $null }
+        relayUrl = if ($state.PSObject.Properties['relayUrl']) { $state.relayUrl } else { $null }
+        relayTunnel = $relayTunnelStatus
+        relayDiagnostics = $relayDiagnosticsStatus
         launcherStatus = $state.status
         companionRunning = $null -ne $companion -and -not $companion.HasExited
         gameRunning = $null -ne $game -and -not $game.HasExited
@@ -94,6 +114,10 @@ else {
         fingerprint = $state.fingerprint
         bridgePath = $state.bridgePath
         pinnedStartingSave = if ($state.PSObject.Properties['pinnedStartingSave']) { $state.pinnedStartingSave } else { $null }
+        saveSync = $saveSyncStatus
+        saveSyncReady = $null -ne $saveSyncStatus -and $saveSyncStatus.listening -eq $true
+        saveSyncPort = if ($saveSyncStatus) { $saveSyncStatus.port } else { $null }
+        saveSyncDownloads = if ($saveSyncStatus) { $saveSyncStatus.successfulDownloads } else { 0 }
         recoveryWatcherStatus = if ($recoveryWatcher) { $recoveryWatcher.status } else { $null }
         recoveryWatcherBoundary = if ($recoveryWatcher -and $recoveryWatcher.PSObject.Properties['lastArchivedBoundary']) {
             $recoveryWatcher.lastArchivedBoundary

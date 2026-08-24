@@ -4,8 +4,9 @@ TPF2MP FULL PLAYABLE-ALPHA TEST INSTRUCTIONS
 Target
 ------
 Transport Fever 2 Build 35924 (Windows x64)
-TPF2MP 0.38.8-alpha or the current development build
-Two players, trusted LAN/private VPN, or two instances on one PC
+TPF2MP 0.39.0-alpha or the current development build
+Two players over the secure relay, trusted LAN/private VPN, or two instances
+on one PC
 
 This is the complete baseline test. For the first pass, load TPF2MP only.
 Do not deliberately enable any Workshop or third-party mods. TPF2MP itself is
@@ -33,7 +34,8 @@ brand-new session name.
 [ ] Keep Steam logged in.
 [ ] Update/install the same TPF2MP build for both peers.
 [ ] Confirm the game is exact Build 35924.
-[ ] Use the same starting save for both peers.
+[ ] Select a complete starting save on P1/Host. P2/Join will receive its exact
+    bytes through the launcher.
 
 For this PC, use:
 
@@ -43,9 +45,10 @@ The launcher requires the adjacent metadata file too:
 
   TFPM_ALPHA_STARTER.sav.lua
 
-On two physical computers, copy the .sav, .sav.lua, and optional .jpg together.
-Do not open and re-save the copy on Player 2: both peers must select identical
-bytes. On localhost, simply select the same .sav path in both launchers.
+On two physical computers, P1 must have the .sav, .sav.lua, and optional .jpg
+together. Secure-relay Join receives that complete bundle automatically during
+launch; no manual file copy is required. The receiver verifies every file,
+installs the .sav last, and never overwrites an existing different save.
 
 The current starter-save baseline is:
 
@@ -73,29 +76,39 @@ Call the first launcher P1/HOST and the second P2/JOIN.
 
 In P1/HOST:
 
-[ ] Click New name once.
-[ ] Copy the complete generated Session name.
+[ ] Leave Use secure relay checked.
 [ ] Select TFPM_ALPHA_STARTER.sav.
-[ ] Leave TCP port at 29742.
+[ ] Click CREATE SESSION.
+[ ] Wait for the mp-... support ID, click COPY CODE, and privately send that
+    opaque code to P2.
 
 In P2/JOIN:
 
-[ ] Paste the exact P1 session name over P2's independently generated name.
-[ ] Select the exact same TFPM_ALPHA_STARTER.sav.
-[ ] Set Host address to 127.0.0.1 for localhost.
-[ ] Leave TCP port at 29742.
+[ ] Leave Use secure relay checked.
+[ ] Paste P1's code into Join code.
+[ ] Click PREPARE JOIN and wait for the same mp-... support ID.
+[ ] Leave the starting-save field empty.
 
-The session name, port, and save must be identical. Opening two launcher
-windows does NOT currently give them the same default session name.
+The room fixes the ordinary game session to the support ID. P2 does not enter an
+address or port and neither player opens an inbound port. For localhost source
+testing before a production relay URL is installed, configure the explicit
+loopback development relay; otherwise use the published HTTPS relay.
+
+Direct LAN/private-VPN fallback: uncheck Use secure relay on both launchers,
+then use New name/session, Host address, TCP 29742, and SYNC FROM HOST exactly as
+in the 0.38 flow. That fallback requires Host TCP 29742/29743 to be reachable
+and does not produce centralized relay diagnostics.
 
 
 3. HOST AND JOIN
 ----------------
 
 [ ] In P1, click HOST + LAUNCH GAME.
-[ ] Wait until its launcher reports that the host is listening and the game
+[ ] Wait until its launcher reports RELAY with the support ID and the game
     reaches the title menu.
 [ ] In P2, click JOIN + LAUNCH GAME.
+[ ] Confirm P2 reports that the Host save was received and verified through the
+    relay before it starts the game.
 [ ] Wait until P2 also reaches the title menu.
 [ ] Click MULTIPLAYER on the P1 title screen.
 [ ] Click MULTIPLAYER on the P2 title screen.
@@ -114,10 +127,10 @@ Identity:
   P1 = Host = player1 = Company 1
   P2 = Join = player2 = Company 2
 
-If P2 reports that its local port belongs to another session, stop the named old
-host or use that host's exact session name. If P2 says its companion did not
-become ready, first compare the full session names. A mismatch is intentionally
-rejected before the P2 game launches.
+If P2 cannot join, compare the complete support IDs and relay URLs; create a new
+room rather than editing its generated game session. A wrong/expired join code,
+role collision, changed content fingerprint, or missing peer is intentionally
+rejected before the world becomes ready.
 
 
 4. INITIAL READINESS CHECK

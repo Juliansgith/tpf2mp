@@ -122,6 +122,9 @@ foreach ($peerId in $peers) {
     $fixedArtifacts = [ordered]@{
         'session-state.json' = Join-Path $sessionRoot 'session-state.json'
         'recovery-watcher-status.json' = Join-Path $sessionRoot 'recovery-watcher-status.json'
+        'save-sync-status.json' = Join-Path $sessionRoot 'save-sync-status.json'
+        'relay-tunnel-status.json' = Join-Path $sessionRoot 'relay-tunnel-status.json'
+        'relay-diagnostics-status.json' = Join-Path $sessionRoot 'relay-diagnostics-status.json'
     }
     foreach ($entry in $fixedArtifacts.GetEnumerator()) {
         $artifact = Copy-DiagnosticFile $entry.Value (Join-Path $artifactRoot $entry.Key)
@@ -131,7 +134,9 @@ foreach ($peerId in $peers) {
         foreach ($field in @(
             'stdout', 'stderr', 'gameStdout', 'gameStderr',
             'menuCoordinatorStdout', 'menuCoordinatorStderr',
-            'recoveryWatcherStdout', 'recoveryWatcherStderr'
+            'recoveryWatcherStdout', 'recoveryWatcherStderr',
+            'relayTunnelStdout', 'relayTunnelStderr',
+            'relayDiagnosticsStdout', 'relayDiagnosticsStderr'
         )) {
             $property = $sessionState.PSObject.Properties[$field]
             if ($property -and $property.Value) {
