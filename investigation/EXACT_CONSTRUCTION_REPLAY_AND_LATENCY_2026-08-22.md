@@ -51,8 +51,15 @@ command can be issued.
 
 - current construction schema;
 - one fresh construction build;
+- no construction collateral to demolish;
 - no separately materialized edge-object additions/retentions;
 - no topology-only construction removal.
+
+The collateral restriction was added after the first physical two-computer
+run. Build 35924 rejected a typed multi-track station proposal that also named
+two town buildings for removal, identically on both peers. Compound builds now
+use the established helper, which retires collateral before replaying the
+captured absolute transform; isolated builds keep the low-latency exact path.
 
 The construction itself is assigned to the typed proposal. Generated topology
 is not also inserted into the street proposal; doing both caused Build 35924 to

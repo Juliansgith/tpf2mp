@@ -1,5 +1,6 @@
 local util = require "tpf2_mp/util"
 local hash = require "tpf2_mp/hash"
+local proposalStateRetention = require "tpf2_mp/proposal_state_retention"
 
 local M = {}
 
@@ -79,6 +80,7 @@ end
 
 function M.compact(state, configuredEventLimit)
   if type(state) ~= "table" then return state end
+  proposalStateRetention.releaseTerminalRuntime(state)
   state.eventLog = type(state.eventLog) == "table" and state.eventLog
     or { nextSeq = 1, items = {} }
   local requested = math.max(1, util.integer(configuredEventLimit, M.EVENT_LIMIT))

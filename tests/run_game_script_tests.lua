@@ -486,4 +486,22 @@ assert(freshSession.bridge.sessionId == "engine-test-new-session"
   and freshSession.world.networkClock.startupPause.requested == false,
   "new network session did not record its physical-world-only bootstrap")
 game.config.tpf2mp = originalRuntimeConfig
+
+-- Native Save Game invokes script.save directly, independently of a recovery
+-- checkpoint. Prove that boundary performs the terminal replay cleanup while
+-- preserving scratch for an actually in-flight construction.
+local persistenceState = script.save()
+local activeScratch = { before = { construction = { [71] = true } } }
+persistenceState.world.proposals.byId["save-terminal-scratch"] = {
+  status = "failed", constructionPending = { before = { construction = { [70] = true } } },
+}
+persistenceState.world.proposals.byId["save-active-scratch"] = {
+  status = "building-construction", constructionPending = activeScratch,
+}
+local compactedSave = script.save()
+assert(compactedSave.world.proposals.byId["save-terminal-scratch"].constructionPending == nil
+    and compactedSave.world.proposals.byId["save-active-scratch"].constructionPending == activeScratch,
+  "game-script save boundary did not compact terminal scratch or altered active replay state")
+compactedSave.world.proposals.byId["save-terminal-scratch"] = nil
+compactedSave.world.proposals.byId["save-active-scratch"] = nil
 print("PASS game-script intent/commit/persistence integration")

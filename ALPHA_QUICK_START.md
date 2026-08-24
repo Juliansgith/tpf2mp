@@ -1,6 +1,6 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.38.7-alpha` is a restricted two-player competitive build for the
+TPF2MP `0.38.8-alpha` is a restricted two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
 trust each other and connect over a LAN or private VPN. It is not safe public
 Internet multiplayer and it does not support host migration.

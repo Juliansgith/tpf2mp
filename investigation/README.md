@@ -1,6 +1,12 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.7-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-24 (Europe/Amsterdam), prototype `0.38.8-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[First cross-PC P2 station and save failure](CROSS_PC_P2_STATION_AND_SAVE_FAILURE_2026-08-24.md)
+records the first Tailscale two-computer run, healthy physical/checkpoint
+consensus, compound station exact-replay rejection, retained terminal world
+snapshots, the stalled `.sav.lua` finalization, helper containment, save-time
+cleanup, full automated proof, and the remaining fresh-build live gate.
 
 [BuildProposal correlation hardening](BUILD_CORRELATION_HARDENING_2026-08-22.md)
 records the live station-for-track capture, counter/latest-preview root cause,

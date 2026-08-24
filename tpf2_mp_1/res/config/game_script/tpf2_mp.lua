@@ -3324,6 +3324,10 @@ local script = {
     end
   end,
   save = function()
+    -- Native saves may be requested independently of our recovery boundary.
+    -- Keep diagnostic tails bounded and strip terminal replay scratch state
+    -- immediately before Transport Fever serialises this table.
+    stateRetention.compact(state, config().maxEvents)
     return state
   end,
 

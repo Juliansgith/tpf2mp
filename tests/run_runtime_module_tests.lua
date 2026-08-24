@@ -342,9 +342,14 @@ do
   upgradeRecord.transaction.constructions[1].mode = "upgrade"
   local removeRecord = { transaction = util.deepCopy(transaction) }
   removeRecord.transaction.constructions[1].mode = "remove"
+  local collateralRecord = { transaction = util.deepCopy(transaction) }
+  collateralRecord.transaction.constructions[1].collateral = {
+    { kind = "construction", cid = "construction:pre:town-building" },
+  }
   assert(not constructionReplayState.isExact(upgradeRecord, proposalCodec)
-      and not constructionReplayState.isExact(removeRecord, proposalCodec),
-    "unproven construction upgrade/removal escaped the helper fallback")
+      and not constructionReplayState.isExact(removeRecord, proposalCodec)
+      and not constructionReplayState.isExact(collateralRecord, proposalCodec),
+    "unproven construction upgrade/removal/collateral escaped the helper fallback")
 end
 
 do
@@ -387,8 +392,15 @@ do
     capture[field] = {}
     for index = 1, limit + 3 do capture[field][index] = { sequence = index } end
   end
+  local terminalScratch = { before = { construction = { [1] = true } } }
+  local activeScratch = { before = { construction = { [2] = true } } }
   local retained = stateRetention.compact({
     eventLog = { nextSeq = 81, items = events }, probes = { capture = capture },
+    world = { proposals = { byId = {
+      applied = { status = "applied", constructionPending = terminalScratch },
+      failed = { status = "failed", constructionPending = terminalScratch },
+      active = { status = "building-construction", constructionPending = activeScratch },
+    } } },
   }, 64)
   local first = retained.eventLog.items[1]
   local last = retained.eventLog.items[#retained.eventLog.items]
@@ -407,6 +419,10 @@ do
         and retained.probes.capture[field][1].sequence == 4,
       "capture retention did not preserve the bounded newest tail for " .. field)
   end
+  assert(retained.world.proposals.byId.applied.constructionPending == nil
+      and retained.world.proposals.byId.failed.constructionPending == nil
+      and retained.world.proposals.byId.active.constructionPending == activeScratch,
+    "save compaction did not release terminal construction snapshots or altered an active replay")
 end
 
 do
@@ -759,6 +775,7 @@ do
     transaction = { digest = "deadbeef" },
     localRefs = localRefs, localInputs = localInputs,
     newlyBoundCids = newlyBoundCids, canonicalRevisionBefore = revisionBefore,
+    constructionPending = { before = { construction = { [91] = true } } },
   }
   local accepted = runtime.finalise({
     proposalId = "rejected-proposal", success = false,
@@ -767,8 +784,9 @@ do
   assert(accepted == false
       and canonicalModule.resolveLocal(current.canonical, cid) == nil
       and current.canonical.revisions == 0
+      and current.world.proposals.byId["rejected-proposal"].constructionPending == nil
       and hashModule.value(canonicalModule.digestView(current.canonical)) == preparedDigest,
-    "verified native rejection did not restore the exact PREPARE core")
+    "verified native rejection did not restore PREPARE or release replay scratch state")
   worldModule.resolvePreExisting = originalResolvePreExisting
 end
 

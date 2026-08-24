@@ -331,6 +331,9 @@ function M.new(deps)
     record.completedTick = state.tick
     record.error = tostring(errorValue.error)
     record.result = util.deepCopy(errorValue)
+    -- Drop the full-world replay snapshot at the terminal boundary; the signed
+    -- transaction/result are sufficient for retry, consensus and recovery.
+    record.constructionPending = nil
     state.world.proposals.failed = (state.world.proposals.failed or 0) + 1
     state.world.proposalFailure = {
       tick = state.tick,
