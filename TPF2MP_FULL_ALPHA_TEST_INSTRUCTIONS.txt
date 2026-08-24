@@ -4,7 +4,7 @@ TPF2MP FULL PLAYABLE-ALPHA TEST INSTRUCTIONS
 Target
 ------
 Transport Fever 2 Build 35924 (Windows x64)
-TPF2MP 0.38.6-alpha or the current development build
+TPF2MP 0.38.7-alpha or the current development build
 Two players, trusted LAN/private VPN, or two instances on one PC
 
 This is the complete baseline test. For the first pass, load TPF2MP only.
@@ -197,6 +197,24 @@ Deletion/editing regression checks:
 [ ] Perform one modular station edit and then remove that module.
 [ ] Confirm each successful result is identical on both peers.
 [ ] Confirm a rejected edit does not poison later building or bulldozing.
+
+Generation-bound transition matrix (use a disposable area and do each in this
+exact order, waiting for READY only where stated):
+
+[ ] Select a station and move its ghost, cancel it, then build a road.
+[ ] Place a disposable station, bulldoze it, then immediately select and place
+    one long track that crosses a road and changes terrain.
+[ ] Place a signal and waypoint, then switch back to track and extend it.
+[ ] Trigger one rival-owner rejection, switch back to owned/public ground, and
+    retry the same action successfully.
+[ ] Perform at least three successful physical builds from P1 and three from P2.
+[ ] Require READY and one matching checkpoint, then run from the repository or
+    installed support bundle:
+
+      .\tools\verify_build_transition_gate.ps1 -Session <session-name>
+
+[ ] Require Passed=True, hook 0.19.0, zero rejected/dropped/pending build
+    correlations, and construction/track/street/edge-object/bulldozer coverage.
 
 
 7. PASSENGER LINE AND VEHICLE OPERATIONS

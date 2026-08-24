@@ -116,37 +116,11 @@ local validatedNetworkAuthority = nativeHook.validatedNetworkAuthority
 local markNativeContext = nativeHook.markContext
 local function configureNativeAuthority(mode)
   local network = mode == "network"
-  local buildName = network and "tpf2mp_native_enable_build_gate"
-    or "tpf2mp_native_disable_build_gate"
-  local commandName = network and "tpf2mp_native_enable_command_gate"
-    or "tpf2mp_native_disable_command_gate"
-  local revokeName = "tpf2mp_native_revoke_command"
-  local buildGate = rawget(_G, buildName)
-  local commandGate = rawget(_G, commandName)
-  local revokeCommand = rawget(_G, revokeName)
-  if network and (type(buildGate) ~= "function" or type(commandGate) ~= "function"
-      or type(revokeCommand) ~= "function") then
-    local missing = {}
-    if type(buildGate) ~= "function" then missing[#missing + 1] = buildName end
-    if type(commandGate) ~= "function" then missing[#missing + 1] = commandName end
-    if type(revokeCommand) ~= "function" then missing[#missing + 1] = revokeName end
-    local message = "network mode requires exact-build native authority gates: "
-      .. table.concat(missing, ", ")
+  local configured, configureError = nativeHook.configureAuthority(mode)
+  if not configured then
+    local message = tostring(configureError)
     state.probes.networkAuthority = { ready = false, mode = mode, error = message }
     return false, message
-  end
-  for _, operation in ipairs({
-    { name = buildName, fn = buildGate },
-    { name = commandName, fn = commandGate },
-  }) do
-    if type(operation.fn) == "function" then
-      local ok, err = pcall(operation.fn)
-      if not ok then
-        local message = "could not configure " .. operation.name .. ": " .. tostring(err)
-        state.probes.networkAuthority = { ready = false, mode = mode, error = message }
-        return false, message
-      end
-    end
   end
   state.probes.nativeHook = nativeHookStatus()
   local nativeStatus = state.probes.nativeHook
@@ -1685,7 +1659,9 @@ handlers["probe.gui_capabilities"] = function(action)
     local gameReady = bootstrap.gameReady == true
     local calendarReady = bootstrap.calendarReady == true
     local revokeReady = capabilities.nativeCommandRevoke == true
+    local correlationReady = capabilities.nativeBuildCorrelationApi == true
     local bootstrapReady = authorityReady and gameReady and calendarReady and revokeReady
+      and correlationReady
     state.probes.networkAuthority = {
       ready = bootstrapReady,
       mode = "network",
@@ -1694,7 +1670,8 @@ handlers["probe.gui_capabilities"] = function(action)
       commandVisitors = authorityView.commandVisitors,
       source = "validated-gui-native-bootstrap",
       error = not bootstrapReady and tostring(not revokeReady
-        and "GUI native command revocation API is unavailable"
+        and "GUI native command revocation API is unavailable" or not correlationReady
+        and "GUI native build-correlation API is unavailable"
         or bootstrap.error or "GUI native authority bootstrap was incomplete") or nil,
     }
     if bootstrapReady then
@@ -3357,7 +3334,7 @@ local script = {
   handleEvent = function(src, id, name, param)
     if id ~= EVENT_ID then return end
     if not isEngineThread() then
-      if name == "snapshot" and type(param) == "table" then gui.snapshot = param; renderGui() end
+      if name == "snapshot" and type(param) == "table" then local previous = gui.snapshot; gui.snapshot = param; guiEventRuntime.snapshotChanged(previous, param); renderGui() end
       return
     end
     if name == "intent" then

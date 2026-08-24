@@ -132,6 +132,14 @@ function Test-Tpf2mpReleaseManifest {
         if ($null -eq $dirtyProperty -or $dirtyProperty.Value -isnot [bool]) {
             throw 'Release manifest source dirty flag is missing or invalid.'
         }
+        $nativeProperty = $manifest.PSObject.Properties['supportedNativeBuild']
+        if ($nativeProperty -and $nativeProperty.Value) {
+            $hookVersionProperty = $nativeProperty.Value.PSObject.Properties['hookVersion']
+            if ($hookVersionProperty `
+                    -and [string]$hookVersionProperty.Value -notmatch '^\d+\.\d+\.\d+$') {
+                throw 'Release manifest native hook version is invalid.'
+            }
+        }
     }
     if ([string]$manifest.name -ne 'TPF2MP Competitive Prototype') {
         throw 'Unexpected release manifest product name.'

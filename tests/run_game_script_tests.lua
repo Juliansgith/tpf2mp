@@ -24,8 +24,11 @@ end
 tpf2mp_native_disable_command_gate = function() commandGateEnabled = false end
 tpf2mp_native_authorize_command = function(tag) authorizedCommandTags[#authorizedCommandTags + 1] = tostring(tag) end
 tpf2mp_native_revoke_command = function() end
+tpf2mp_native_arm_build_correlation = function() end
+tpf2mp_native_take_suppressed_build = function() return nil end
 tpf2mp_native_status = function()
   return {
+    hookVersion = "0.19.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
@@ -34,7 +37,8 @@ tpf2mp_native_status = function()
       authorityCommandVisitors = 31,
     },
     gates = {
-      buildProposal = { enabled = buildGateEnabled },
+      buildProposal = { enabled = buildGateEnabled, tagMismatches = 0,
+        suppressedQueue = { queued = 0, captured = 0, consumed = 0, dropped = 0 } },
       commandVisitors = {
         enabled = commandGateEnabled,
         hooked = 31,
@@ -429,6 +433,16 @@ assert(authorityFault.initialized == false and authorityFault.bridge.nextOutSeq 
 assert(tostring(authorityFault.lastError):find("network authority is not ready", 1, true),
   "authority startup fault was not surfaced")
 tpf2mp_native_enable_command_gate = savedCommandGate
+local savedCorrelationTake = tpf2mp_native_take_suppressed_build
+tpf2mp_native_take_suppressed_build = nil
+script.load(nil)
+script.init()
+authorityFault = script.save()
+assert(authorityFault.probes.networkAuthority.ready == false
+    and tostring(authorityFault.probes.networkAuthority.error)
+      :find("tpf2mp_native_take_suppressed_build", 1, true),
+  "network startup did not fault closed when the build-correlation API was incomplete")
+tpf2mp_native_take_suppressed_build = savedCorrelationTake
 local savedNativeStatus = tpf2mp_native_status
 tpf2mp_native_status = function()
   return {

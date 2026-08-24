@@ -198,6 +198,18 @@ local PROPOSAL_SOURCE_FIELDS = {
   toRemove = true,
 }
 
+local PROPOSAL_WRAPPER_FIELDS = {
+  "proposal", "streetProposal", "simpleProposal", "resultProposal",
+  "proposalData", "resultProposalData", "data", "context",
+}
+
+local PROPOSAL_GRAPH_FIELDS = {
+  addedSegments = true, edgesToAdd = true,
+  addedNodes = true, nodesToAdd = true,
+  constructionsToAdd = true, __constructionAdditions = true,
+  edgeObjectsToAdd = true,
+}
+
 local function proposalSourceIds(snapshot)
   local result, seenIds, seenTables = {}, {}, {}
 
@@ -236,19 +248,63 @@ local function proposalSourceIds(snapshot)
     end
   end
 
-  local function walk(value, depth)
-    if type(value) ~= "table" or seenTables[value] or depth > 12 then return end
-    seenTables[value] = true
-    for key, nested in pairs(value) do
-      if PROPOSAL_SOURCE_FIELDS[tostring(key)] then
-        addContainer(nested)
-      else
-        walk(nested, depth + 1)
+  local function addEndpointContainer(container)
+    if type(container) ~= "table" then return end
+    for key, item in pairs(container) do
+      if key ~= "__type" and key ~= "__truncated" and type(item) == "table" then
+        local comp = type(item.comp) == "table" and item.comp or item
+        add(comp.node0)
+        add(comp.node1)
       end
     end
   end
 
-  walk(snapshot, 0)
+  -- BuildProposal's mutable source vectors live on a small set of standard
+  -- wrappers. Walking every nested table used to visit the complete 200-node /
+  -- 192-edge station graph on every ownership preview, despite none of those
+  -- added component tables being ownership sources. Keep the compatibility
+  -- breadth across known wrappers without turning access control into O(graph).
+  local candidates = {}
+  local function addCandidate(value)
+    if type(value) ~= "table" or seenTables[value] or #candidates >= 24 then return end
+    seenTables[value] = true
+    candidates[#candidates + 1] = value
+  end
+  addCandidate(snapshot)
+  local candidateIndex = 1
+  while candidateIndex <= #candidates do
+    local candidate = candidates[candidateIndex]
+    for key, nested in pairs(candidate) do
+      if PROPOSAL_SOURCE_FIELDS[tostring(key)] then addContainer(nested) end
+    end
+    for _, field in ipairs(PROPOSAL_WRAPPER_FIELDS) do addCandidate(candidate[field]) end
+    candidateIndex = candidateIndex + 1
+  end
+  -- Preserve mod compatibility for an unfamiliar wrapper without descending
+  -- into its potentially enormous node/edge/construction vectors. This walk
+  -- is bounded and follows wrapper/object tables only; recognised graph fields
+  -- are inspected directly and never recursively expanded.
+  local fallbackQueue, fallbackSeen = { snapshot }, {}
+  local fallbackIndex = 1
+  while fallbackIndex <= #fallbackQueue and fallbackIndex <= 96 do
+    local candidate = fallbackQueue[fallbackIndex]
+    fallbackIndex = fallbackIndex + 1
+    if type(candidate) == "table" and not fallbackSeen[candidate] then
+      fallbackSeen[candidate] = true
+      for rawKey, nested in pairs(candidate) do
+        local key = tostring(rawKey)
+        if PROPOSAL_SOURCE_FIELDS[key] then
+          addContainer(nested)
+        elseif key == "addedSegments" or key == "edgesToAdd" then
+          addEndpointContainer(nested)
+        elseif type(nested) == "table" and not PROPOSAL_GRAPH_FIELDS[key]
+          and key ~= "__builderData" and key ~= "__type" and key ~= "__truncated"
+          and #fallbackQueue < 96 then
+          fallbackQueue[#fallbackQueue + 1] = nested
+        end
+      end
+    end
+  end
   -- An extension normally adds an edge whose one endpoint is a positive,
   -- already-committed BASE_NODE and whose other endpoint is a temporary
   -- negative node. Treat the positive endpoint as an ownership source even

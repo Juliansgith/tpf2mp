@@ -106,6 +106,13 @@ struct HookStatusView {
   std::uint64_t build_gate_tag_mismatches{};
   int build_gate_last_tag{-1};
   DWORD build_gate_last_thread{};
+  std::size_t suppressed_build_queued{};
+  std::uint64_t suppressed_build_captured{};
+  std::uint64_t suppressed_build_consumed{};
+  std::uint64_t suppressed_build_dropped{};
+  std::uint64_t suppressed_build_last_generation{};
+  std::uint64_t suppressed_build_armed_correlation{};
+  std::uint64_t suppressed_build_last_correlation{};
 
   bool command_gate_enabled{};
   std::uint64_t command_gate_tag_mismatches{};

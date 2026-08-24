@@ -6,7 +6,15 @@ local enabled = {}
 local textViews = {}
 local guiById = {}
 local nativeCommandObserver = nil
-local nativeBuildGate = { enabled = true, authorizations = 0, allowed = 0, suppressed = 0 }
+local nativeBuildGate = {
+  enabled = true, authorizations = 0, allowed = 0, suppressed = 0,
+  suppressedQueue = { queued = 0, captured = 0, consumed = 0, dropped = 0 },
+}
+local nativeBuildFastVersion = 1
+local nativeBuildGeneration = 0
+local nativeBuildDropped = 0
+local nativeBuildArmedCorrelation = 0
+local nativeBuildEvents = {}
 local nativeSpeedRequests = {}
 local nativeLineCommands = {}
 local nativeVehicleCommands = {}
@@ -14,11 +22,13 @@ local authorizedCommandTags = {}
 local issuedCanonicalCommands = {}
 local lineEntities = {}
 local lineEnumerations = 0
+local nativeStatusReads = 0
 
 tpf2mp_native_status = function()
+  nativeStatusReads = nativeStatusReads + 1
   return {
     schemaVersion = 1,
-    hookVersion = "test",
+    hookVersion = "0.19.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
@@ -32,6 +42,33 @@ tpf2mp_native_status = function()
       commandVisitors = { enabled = true, hooked = 31, tagMismatches = 0 },
     },
   }
+end
+
+tpf2mp_native_build_gate_sample = function()
+  if nativeBuildFastVersion == 2 then
+    return table.concat({
+      "B2", nativeBuildGate.enabled and "1" or "0",
+      tostring(nativeBuildGate.suppressed or 0),
+      tostring(nativeBuildGate.tagMismatches or 0),
+      tostring(nativeBuildGeneration), tostring(#nativeBuildEvents),
+      tostring(nativeBuildDropped),
+      tostring(nativeBuildArmedCorrelation),
+    }, "|")
+  end
+  return table.concat({
+    "B1", nativeBuildGate.enabled and "1" or "0",
+    tostring(nativeBuildGate.suppressed or 0),
+    tostring(nativeBuildGate.tagMismatches or 0),
+  }, "|")
+end
+
+tpf2mp_native_arm_build_correlation = function(value)
+  nativeBuildArmedCorrelation = assert(tonumber(value))
+end
+
+tpf2mp_native_take_suppressed_build = function()
+  if #nativeBuildEvents == 0 then return nil end
+  return table.remove(nativeBuildEvents, 1)
 end
 
 tpf2mp_native_set_command_observer = function(callback)
@@ -267,6 +304,8 @@ assert(sentEvents[1].param.capabilities.nativeVehicleCommandCaptureApi == true,
   "native vehicle-command capture API was not reported")
 assert(sentEvents[1].param.capabilities.nativeCommandRevoke == true,
   "native command-authorization revocation API was not reported")
+assert(sentEvents[1].param.capabilities.nativeBuildCorrelationApi == true,
+  "native build-correlation API was not reported")
 assert(sentEvents[2].id == "tpf2mp" and sentEvents[2].name == "snapshot.request", "GUI used the wrong snapshot envelope")
 
 nativeCommandObserver({
@@ -598,6 +637,18 @@ local function proposalCaptureEvents()
   return result
 end
 
+local function observedEvents(observation)
+  local count = 0
+  for _, event in ipairs(sentEvents) do
+    if event.name == "intent" and event.param
+      and event.param.type == "native.observed"
+      and event.param.observation == observation then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 local networkPreview = {
   data = { trackType = 7, catenary = true },
   proposal = {
@@ -623,11 +674,21 @@ local networkPreview = {
   },
 }
 local captureCount = #proposalCaptureEvents()
+local nativeStatusBeforePreview = nativeStatusReads
+local previewDiagnosticsBefore = observedEvents("builder.proposalCreate")
 assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", networkPreview) == nil,
   "network track preview was unexpectedly vetoed")
+for _ = 1, 120 do
+  assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", networkPreview) == nil,
+    "repeated network hover was unexpectedly vetoed")
+end
 for _ = 1, 3 do script.guiUpdate() end
 assert(#proposalCaptureEvents() == captureCount,
   "a mouse-move proposal preview was replicated before native commit evidence")
+assert(nativeStatusReads == nativeStatusBeforePreview,
+  "ordinary network hover used the heavyweight full native-status serializer")
+assert(observedEvents("builder.proposalCreate") == previewDiagnosticsBefore,
+  "ordinary network hover emitted a diagnostic intent/journal record")
 nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
 for _ = 1, 59 do script.guiUpdate() end
 assert(#proposalCaptureEvents() == captureCount,
@@ -705,7 +766,7 @@ script.handleEvent("test", "tpf2mp", "snapshot", {
   proposalConsensus = { pending = 0 }, operationConsensus = { pending = 0 },
   checkpointConsensus = { pending = 0 }, deferredNetworkQueue = { count = 0 },
 })
-assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", exactPreview) == nil)
+assert(script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", exactPreview) == nil)
 for _ = 1, 2 do script.guiUpdate() end
 -- Move the same station template. The lightweight path must retain only its
 -- latest placement and rebase the cached full graph once at builder.apply.
@@ -713,13 +774,13 @@ exactPreview.proposal.constructionsToRemove = {}
 exactPreview.proposal.constructionsToAdd[1].transf[13] = 333
 exactPreview.proposal.streetProposal.nodesToAdd[1].comp.position.x = 333
 exactPreview.proposal.streetProposal.nodesToAdd[2].comp.position.x = 393
-assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", exactPreview) == nil,
+assert(script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", exactPreview) == nil,
   "lightweight construction preview update was unexpectedly vetoed")
 -- Live Build 35924 ordering is apply -> next ghost preview -> delayed native
 -- status counter. Its apply proposal is empty after native suppression, so the
 -- exact click must come from the latest rebased pre-apply ghost and survive the
 -- construction tool's subsequent preview.
-script.guiHandleEvent("trackBuilder", "builder.apply", {
+script.guiHandleEvent("constructionBuilder", "builder.apply", {
   data = { costs = 0 },
   proposal = { streetProposal = {
     edgesToAdd = {}, nodesToAdd = {}, edgesToRemove = {}, nodesToRemove = {},
@@ -732,7 +793,7 @@ exactPreview.proposal.constructionsToAdd[1].params.length = 4
 exactPreview.proposal.constructionsToAdd[1].transf[13] = 777
 exactPreview.proposal.streetProposal.nodesToAdd[1].comp.position.x = 777
 exactPreview.proposal.streetProposal.nodesToAdd[2].comp.position.x = 837
-assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", exactPreview) == nil,
+assert(script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", exactPreview) == nil,
   "post-click station preview was unexpectedly vetoed")
 assert(#proposalCaptureEvents() == captureCount + 1,
   "builder.apply was replicated without matching native suppression")
@@ -969,6 +1030,59 @@ assert(assetCapture.__constructionAdditions["1"].fileName == "asset/decoration/b
 assert(assetCapture.streetProposal.edgesToAdd["1"] == nil
     and assetCapture.streetProposal.nodesToAdd["1"] == nil,
   "graphless asset capture unexpectedly invented a transport graph")
+
+-- The release hook carries an explicit preview token on every suppressed
+-- BuildProposal. Exercise the adversarial station -> tool switch -> track
+-- ordering: a late station token must be rejected, never substituted for the
+-- current track preview, and a clean retry must still succeed.
+nativeBuildFastVersion = 2
+tpf2mp_native_take_suppressed_build = function()
+  if #nativeBuildEvents == 0 then return nil end
+  return table.remove(nativeBuildEvents, 1)
+end
+local transitionCaptureCount = #proposalCaptureEvents()
+local transitionErrors = observedEvents("native.buildProposal.captureError")
+assert(script.guiHandleEvent(
+  "constructionBuilder", "builder.proposalCreate", exactPreview) == nil)
+local staleStationCorrelation = nativeBuildArmedCorrelation
+script.guiHandleEvent("menu.construction.rail", "button.click", {})
+assert(nativeBuildArmedCorrelation == 0,
+  "build-tool switch did not disarm the stale construction token")
+assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", networkPreview) == nil)
+nativeBuildGeneration = nativeBuildGeneration + 1
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+nativeBuildEvents[#nativeBuildEvents + 1] = table.concat({
+  "S1", nativeBuildGeneration, staleStationCorrelation, 15,
+}, "|")
+for _ = 1, 3 do script.guiUpdate() end
+assert(#proposalCaptureEvents() == transitionCaptureCount
+    and observedEvents("native.buildProposal.captureError") == transitionErrors + 1,
+  "late station correlation was allowed to masquerade as a track click")
+
+assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", networkPreview) == nil)
+local retryTrackCorrelation = nativeBuildArmedCorrelation
+script.guiHandleEvent("trackBuilder", "builder.apply", networkPreview)
+nativeBuildGeneration = nativeBuildGeneration + 1
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+nativeBuildEvents[#nativeBuildEvents + 1] = table.concat({
+  "S1", nativeBuildGeneration, retryTrackCorrelation, 15,
+}, "|")
+for _ = 1, 4 do script.guiUpdate() end
+captures = proposalCaptureEvents()
+assert(#captures == transitionCaptureCount + 1
+    and captures[#captures].param.proposalSnapshot.__constructionAdditions == nil
+    and captures[#captures].param.proposalSnapshot.streetProposal.edgesToAdd["1"] ~= nil,
+  "generation-bound track retry did not recover cleanly after stale-token rejection")
+
+local overflowCaptureCount = #proposalCaptureEvents()
+local overflowErrors = observedEvents("native.buildProposal.captureError")
+nativeBuildDropped = 1
+assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", networkPreview) == nil)
+for _ = 1, 4 do script.guiUpdate() end
+assert(#proposalCaptureEvents() == overflowCaptureCount
+    and observedEvents("native.buildProposal.captureError") > overflowErrors,
+  "a historically overflowed native correlation queue resumed accepting builds")
+nativeBuildDropped = 0
 
 -- Build 35924 throws a table-valued native exception when its global unpack
 -- is asked to copy Line/Vec3f userdata.  Canonical replay must call the command

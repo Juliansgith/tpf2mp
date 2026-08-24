@@ -35,6 +35,10 @@ try {
     & (Join-Path $projectRoot 'tools\check_source_boundaries.ps1') -ProjectRoot $projectRoot
     if (-not $?) { throw 'Architecture boundary checks failed' }
 
+    & $lua (Join-Path $projectRoot 'tests\run_multiplayer_menu_bootstrap_tests.lua') `
+        (Join-Path $projectRoot 'tools\multiplayer_menu_bootstrap.lua')
+    if ($LASTEXITCODE -ne 0) { throw "Multiplayer menu-bootstrap tests failed with exit code $LASTEXITCODE" }
+
     & $lua (Join-Path $projectRoot 'tests\run_lua_tests.lua') $projectRoot $temporary
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed with exit code $LASTEXITCODE" }
 
@@ -384,6 +388,50 @@ return { ["tpf2_mp.lua"] = { companies = {
     if ($hookResult.Count -ne 1 -or [string]$hookResult[0] -notmatch 'status-424242\.json$') {
         throw 'Native injector diagnostics leaked into the status-path return pipeline.'
     }
+    $expectedNativeVersion = Get-Tpf2mpExpectedNativeHookVersion $projectRoot
+    if ($expectedNativeVersion -ne '0.19.0') {
+        throw "Source native hook version discovery returned '$expectedNativeVersion'."
+    }
+    $fakeHook = Join-Path $temporary 'fake-hook.dll'
+    [IO.File]::WriteAllBytes($fakeHook, [byte[]](1))
+    $nativeStatusDirectory = Join-Path ([IO.Path]::GetTempPath()) 'tpf2mp_native'
+    New-Item -ItemType Directory -Force -Path $nativeStatusDirectory | Out-Null
+    $versionedStatusPath = Join-Path $nativeStatusDirectory 'status-424243.json'
+    [pscustomobject]@{
+        processId = 424243
+        hookVersion = '0.19.0'
+        dllPath = $fakeHook
+        active = $true
+        stage = 'active'
+    } | ConvertTo-Json | Set-Content -LiteralPath $versionedStatusPath -Encoding UTF8
+    $versionedNative = [pscustomobject]@{
+        Injector = $fakeInjector
+        Hook = $fakeHook
+        ExpectedHookVersion = '0.19.0'
+    }
+    $versionedResult = @(Add-Tpf2mpNativeHook `
+        -GameProcess ([pscustomobject]@{ Id = 424243 }) -NativePaths $versionedNative)
+    if ($versionedResult.Count -ne 1 -or $versionedResult[0] -ne $versionedStatusPath) {
+        throw 'Matching native hook version preflight did not return its exact status path.'
+    }
+    [pscustomobject]@{
+        processId = 424243
+        hookVersion = '0.17.0'
+        dllPath = $fakeHook
+        active = $true
+        stage = 'active'
+    } | ConvertTo-Json | Set-Content -LiteralPath $versionedStatusPath -Encoding UTF8
+    $mismatchRejected = $false
+    try {
+        [void](Add-Tpf2mpNativeHook `
+            -GameProcess ([pscustomobject]@{ Id = 424243 }) -NativePaths $versionedNative)
+    }
+    catch { $mismatchRejected = $_.Exception.Message -match 'requires 0\.19\.0.+reported 0\.17\.0' }
+    Remove-Item -LiteralPath $versionedStatusPath -Force -ErrorAction SilentlyContinue
+    if (-not $mismatchRejected) {
+        throw 'A stale native hook was not rejected before world loading.'
+    }
+    Write-Host 'PASS native launcher binds and enforces the source hook version'
     $nativeSaveRoot = Join-Path $temporary 'native-load\userdata\1\1066780\local\save'
     New-Item -ItemType Directory -Force -Path $nativeSaveRoot | Out-Null
     $nativeSource = Join-Path $temporary 'native-load\source.sav'

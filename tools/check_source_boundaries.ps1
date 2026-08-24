@@ -31,6 +31,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_asset_cost_runtime.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_cost_runtime.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\native_command_authority.lua' = 60
+    'tpf2_mp_1\res\scripts\tpf2_mp\native_hook.lua' = 290
     'tpf2_mp_1\res\scripts\tpf2_mp\operation_vehicle_postcondition.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_demo.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_runtime.lua' = 1450
@@ -60,6 +61,9 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_town_development.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\operational_capture_runtime.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_capture_runtime.lua' = 340
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_correlation.lua' = 340
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_gate_sampler.lua' = 110
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_load_runtime.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_line_command_codec.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_entry_points.lua' = 90
@@ -110,7 +114,9 @@ $budgets = [ordered]@{
     'companion\tpf2mp\synchronization.py' = 700
     'companion\tpf2mp\vehicle_barrier.py' = 390
     'companion\tpf2mp\paused_deadline.py' = 210
-    'native\src\hook_dll.cpp' = 1250
+    'native\src\hook_dll.cpp' = 1320
+    'native\src\native_build_correlation.cpp' = 100
+    'tools\verify_build_transition_gate.ps1' = 180
     'native\src\native_async_bridge.cpp' = 450
     'native\src\native_command_codec.cpp' = 350
     'native\src\native_vehicle_command_codec.cpp' = 180
@@ -237,6 +243,56 @@ foreach ($file in $luaSources) {
 
 $entryPoint = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\config\game_script\tpf2_mp.lua') -Raw
+$guiEventRuntime = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua') -Raw
+$guiCapture = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_capture.lua') -Raw
+$guiBuildRuntime = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_capture_runtime.lua') -Raw
+$nativeHookSource = Get-Content -LiteralPath `
+    (Join-Path $root 'native\src\hook_dll.cpp') -Raw
+foreach ($correlationBoundary in @(
+    'guiBuildCaptureRuntimeModule.new',
+    'buildCorrelation.validateApply',
+    'gui.invalidateBuildCorrelation',
+    'context.constructionPlacement'
+)) {
+    if (-not $guiEventRuntime.Contains($correlationBoundary)) {
+        throw "Generation-bound GUI build boundary is missing: $correlationBoundary"
+    }
+}
+foreach ($captureBoundary in @(
+    'local result = util.deepCopy(snapshot)',
+    'walk(result, 0)',
+    'return result'
+)) {
+    if (-not $guiCapture.Contains($captureBoundary)) {
+        throw "Immutable construction-cache boundary is missing: $captureBoundary"
+    }
+}
+if ($guiEventRuntime.Contains('gui.lastConstructionPreviewSnapshot = rebased')) {
+    throw 'Click-time construction rebase regressed to mutating/replacing the cached template.'
+}
+foreach ($nativeCorrelationBoundary in @(
+    'tpf2mp_native_arm_build_correlation',
+    'tpf2mp_native_take_suppressed_build',
+    'g_suppressed_builds.Capture',
+    'tpf2mp native hook 0.19.0'
+)) {
+    if (-not $nativeHookSource.Contains($nativeCorrelationBoundary)) {
+        throw "Native BuildProposal correlation boundary is missing: $nativeCorrelationBoundary"
+    }
+}
+foreach ($failClosedBoundary in @(
+    'generation was replayed or reordered',
+    'crossed correlation boundaries',
+    'correlation.validatePending',
+    'eventError ~= "unavailable"'
+)) {
+    if (-not $guiBuildRuntime.Contains($failClosedBoundary)) {
+        throw "Fail-closed build-correlation boundary is missing: $failClosedBoundary"
+    }
+}
 $menuBootstrap = Get-Content -LiteralPath `
     (Join-Path $root 'tools\multiplayer_menu_bootstrap.lua') -Raw
 if ($menuBootstrap.Contains('networkPumpCount >= 30')) {

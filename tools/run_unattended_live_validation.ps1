@@ -309,7 +309,7 @@ try {
             Copy-Item -LiteralPath $nativeStatusSource -Destination (Join-Path $runDirectory 'native-hook-status.json') -Force
         }
         $nativeHookPassed = $nativeHookStatus -and
-            $nativeHookStatus.hookVersion -eq '0.17.0' -and
+            $nativeHookStatus.hookVersion -eq '0.19.0' -and
             $nativeHookStatus.active -eq $true -and
             $nativeHookStatus.hooks.enabled -eq $true -and
             $nativeHookStatus.hooks.commandListSwap -eq $true -and

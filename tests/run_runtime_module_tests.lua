@@ -12,6 +12,9 @@ local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_scheduler"
+local guiBuildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
+local guiBuildCorrelationModule = require "tpf2_mp/gui_build_correlation"
+local guiProposalPredicatesModule = require "tpf2_mp/gui_proposal_predicates"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
@@ -856,7 +859,7 @@ end
 do
   local priorMask = rawget(_G, "tpf2mp_native_suppressed_pending_mask")
   local mask, maskReads = 0, 0
-  local calls = { speed = 0, line = 0, vehicle = 0 }
+  local calls = { speed = 0, line = 0, vehicle = 0, build = 0 }
   tpf2mp_native_suppressed_pending_mask = function()
     maskReads = maskReads + 1
     return mask == 0 and nil or tostring(mask)
@@ -868,24 +871,206 @@ do
   }
   local scheduler = guiNativeCaptureSchedulerModule.new({
     gui = captureGui,
+    build = function() calls.build = calls.build + 1; return true end,
     speed = function() calls.speed = calls.speed + 1; return true end,
     line = function() calls.line = calls.line + 1; return true end,
     vehicle = function() calls.vehicle = calls.vehicle + 1; return true end,
   })
-  for _ = 1, 100 do scheduler.poll() end
-  assert(maskReads == 100 and calls.speed == 0 and calls.line == 0 and calls.vehicle == 0
-      and scheduler.status().skipped == 100,
-    "idle GUI frames still crossed all three suppressed-command native APIs")
-  mask = 7
-  assert(scheduler.poll() == true and calls.speed == 1 and calls.line == 1
-      and calls.vehicle == 1,
+  for frame = 1, 100 do scheduler.poll(frame) end
+  assert(maskReads == 34 and calls.speed == 0 and calls.line == 0 and calls.vehicle == 0
+      and scheduler.status().skipped == 34
+      and scheduler.status().idleStrideSkips == 66,
+    "idle GUI capture sampling was not bounded to one native read per three frames")
+  mask = 15
+  assert(scheduler.poll(101) == false,
+    "idle native capture sampling ignored its documented two-frame latency bound")
+  assert(scheduler.poll(103) == true and calls.speed == 1 and calls.line == 1
+      and calls.vehicle == 1 and calls.build == 1,
     "pending native command categories were not drained in one GUI frame")
   mask = 0
   captureGui.pendingNativeVehicleCommands[1] = { frame = 1 }
-  scheduler.poll()
+  scheduler.poll(104)
   assert(calls.vehicle == 2 and calls.speed == 1 and calls.line == 1,
     "machine-local vehicle correlation was skipped without a fresh native envelope")
   tpf2mp_native_suppressed_pending_mask = priorMask
+end
+
+
+do
+  local previousSample = rawget(_G, "tpf2mp_native_build_gate_sample")
+  local fullReads = 0
+  local previousTake = rawget(_G, "tpf2mp_native_take_suppressed_build")
+  local nativeEvents = { "S1|43|77|15" }
+  tpf2mp_native_build_gate_sample = function() return "B2|1|42|0|43|1|0|77" end
+  tpf2mp_native_take_suppressed_build = function()
+    if #nativeEvents == 0 then return nil end
+    return table.remove(nativeEvents, 1)
+  end
+  local sampler = guiBuildGateSamplerModule.new(function()
+    fullReads = fullReads + 1
+    return { available = true, gates = { buildProposal = {
+      enabled = true, suppressed = 7, tagMismatches = 0,
+    } } }
+  end)
+  local suppressed, sampleError, sample = sampler.sample()
+  assert(suppressed == 42 and sampleError == nil
+      and sample.source == "native-fast-sample" and sample.sampleVersion == 2
+      and sample.lastGeneration == 43 and sample.queued == 1
+      and sample.armedCorrelation == 77 and fullReads == 0
+      and sampler.status().fastSamples == 1,
+    "constant-time native build-gate sample did not bypass full status")
+  local events, eventError = sampler.drain(4)
+  assert(eventError == nil and #events == 1 and events[1].generation == 43
+      and events[1].correlation == 77 and events[1].tag == 15,
+    "native suppressed-build correlation event did not preserve its identity")
+  nativeEvents = { "F1|suppressed-build-queue-overflow|65" }
+  local overflowEvents, overflowError = sampler.drain(4)
+  assert(overflowEvents == nil
+      and overflowError:find("suppressed%-build%-queue%-overflow")
+      and overflowError:find("65", 1, true),
+    "native suppressed-build queue overflow was not a sticky fail-closed event")
+
+  tpf2mp_native_build_gate_sample = nil
+  local fallback = guiBuildGateSamplerModule.new(function()
+    fullReads = fullReads + 1
+    return { available = true, gates = { buildProposal = {
+      enabled = true, suppressed = 8, tagMismatches = 0,
+    } } }
+  end)
+  assert(fallback.sample() == 8 and fullReads == 1
+      and fallback.status().fallbackSamples == 1,
+    "older native hook did not retain the full-status compatibility path")
+
+  tpf2mp_native_build_gate_sample = function() return "corrupt" end
+  local malformed = guiBuildGateSamplerModule.new(function()
+    error("malformed fast ABI must fail closed, not fall back")
+  end)
+  local invalid, invalidError = malformed.sample()
+  assert(invalid == nil and invalidError:find("invalid", 1, true)
+      and malformed.status().invalidSamples == 1,
+    "malformed native build-gate sample did not fail closed")
+  tpf2mp_native_build_gate_sample = previousSample
+  tpf2mp_native_take_suppressed_build = previousTake
+end
+
+do
+  local previousArm = rawget(_G, "tpf2mp_native_arm_build_correlation")
+  local armed, cacheClears = {}, 0
+  tpf2mp_native_arm_build_correlation = function(value) armed[#armed + 1] = tostring(value) end
+  local gui = { frames = 10, nativeBuildCapture = {} }
+  local correlation = guiBuildCorrelationModule.new(gui, {
+    maximumHistory = 8,
+    maximumAgeFrames = 60,
+    clearConstructionCache = function() cacheClears = cacheClears + 1 end,
+  })
+  local station = { __constructionAdditions = { ["1"] = {
+    fileName = "station/rail/test.con",
+  } } }
+  local stationMetadata = correlation.begin(
+    station, "company:1", "constructionBuilder", "station-template"
+  )
+  local stationPending = {
+    proposalSnapshot = station, frame = gui.frames, exact = false,
+  }
+  for key, value in pairs(stationMetadata) do stationPending[key] = value end
+  assert(correlation.register(stationPending) == true)
+  local valid = correlation.validatePending(stationPending, {
+    generation = 1, correlation = stationMetadata.correlationId, tag = 15,
+  }, "company:1")
+  assert(valid == true and armed[#armed] == tostring(stationMetadata.correlationId),
+    "station preview was not bound to its native correlation token")
+
+  gui.frames = 11
+  local track = { streetProposal = { edgesToAdd = { ["1"] = {
+    type = 1, trackEdge = { trackType = 0 },
+  } } } }
+  local trackMetadata = correlation.begin(track, "company:1", "trackBuilder", nil)
+  assert(cacheClears == 1 and correlation.lookup(stationMetadata.correlationId) == nil
+      and gui.buildCorrelation.lastInvalidationReason == "tool-or-family-change"
+      and trackMetadata.family == "track",
+    "station-to-track transition retained stale construction correlation state")
+  assert(guiBuildCorrelationModule.sourceAllows("trackBuilder", "construction") == false
+      and guiBuildCorrelationModule.sourceAllows("constructionBuilder", "construction") == true,
+    "builder-family semantic guard admitted a station payload as a track click")
+  local applyOk, applyError = correlation.validateApply({
+    correlationId = trackMetadata.correlationId,
+    sourceId = "trackBuilder", companyCid = "company:1", family = "track", frame = 11,
+  }, "constructionBuilder", station, "company:1")
+  assert(applyOk == false and applyError:find("source differs", 1, true),
+    "reordered builder.apply source was not rejected")
+  local invalidates, reason = correlation.invalidationEvent(
+    "menu.construction.rail", "button.click")
+  assert(invalidates == true and reason == "build-tool-control",
+    "explicit build-tool transition did not invalidate cached previews")
+  correlation.invalidate("test-cancel", { clearConstruction = true })
+  assert(armed[#armed] == "0" and gui.builderContext == nil,
+    "build correlation invalidation did not disarm the native hook")
+  tpf2mp_native_arm_build_correlation = previousArm
+end
+
+
+do
+  local gui = {}
+  guiProposalPredicatesModule.install(gui)
+  local large = { proposal = { streetProposal = {
+    edgesToAdd = {}, edgesToRemove = {}, nodesToAdd = {}, nodesToRemove = {},
+  } } }
+  for index = 1, 2000 do
+    large.proposal.streetProposal.previewGraph = large.proposal.streetProposal.previewGraph or {}
+    large.proposal.streetProposal.previewGraph[index] = { nested = { index = index } }
+  end
+  assert(gui.proposalSnapshotHasChange(large) == false
+      and gui.proposalSnapshotHasConstructionChange(large) == false,
+    "empty stock proposal vectors were mistaken for a physical change")
+  local modded = { unfamiliarWrapper = { deeper = {
+    edgeObjectsToAdd = { { edgeEntity = 77 } },
+  } } }
+  assert(gui.proposalSnapshotHasChange(modded) == true,
+    "bounded proposal predicate fallback lost an unfamiliar mod wrapper")
+end
+
+do
+  local gui = { frames = 1 }
+  guiProposalPredicatesModule.install(gui)
+  guiCaptureModule.install(gui, { proposalCost = function() return nil end })
+  local template = {
+    __observedCost = 100,
+    __constructionAdditions = { ["1"] = {
+      fileName = "station/rail/test.con",
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 20, 3, 1 },
+      params = { length = 1, tracks = 0 },
+    } },
+    streetProposal = {
+      nodesToAdd = {
+        ["1"] = { comp = { position = { x = 10, y = 20, z = 3 } } },
+        ["2"] = { comp = { position = { x = 70, y = 20, z = 3 } } },
+      },
+      edgesToAdd = { ["1"] = { comp = {
+        tangent0 = { x = 60, y = 0, z = 0 },
+        tangent1 = { x = 60, y = 0, z = 0 },
+      } } },
+    },
+  }
+  local templateDigest = hashModule.value(template)
+  local placement = {
+    transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 110, 220, 3, 1 },
+    params = { length = 2, tracks = 0 },
+    cost = 250,
+  }
+  local rebased = assert(gui.rebaseConstructionPreviewSnapshot(template, placement))
+  local reference = util.deepCopy(template)
+  reference.__constructionAdditions["1"].transf[13] = 110
+  reference.__constructionAdditions["1"].transf[14] = 220
+  reference.__constructionAdditions["1"].params.length = 2
+  reference.streetProposal.nodesToAdd["1"].comp.position.x = 110
+  reference.streetProposal.nodesToAdd["1"].comp.position.y = 220
+  reference.streetProposal.nodesToAdd["2"].comp.position.x = 170
+  reference.streetProposal.nodesToAdd["2"].comp.position.y = 220
+  reference.__observedCost = 250
+  assert(hashModule.value(template) == templateDigest,
+    "optimized construction rebase mutated its cached template")
+  assert(hashModule.value(rebased) == hashModule.value(reference),
+    "optimized construction rebase diverged from the slow isolated reference")
 end
 
 do
@@ -3659,7 +3844,7 @@ end
 do
   local status = nativeHook.compactStatus({
     schemaVersion = 4,
-    hookVersion = "test",
+    hookVersion = "0.19.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
@@ -3668,7 +3853,10 @@ do
       authorityCommandVisitors = 31,
     },
     gates = {
-      buildProposal = { enabled = true, tagMismatches = 0 },
+      buildProposal = { enabled = true, tagMismatches = 0, suppressedQueue = {
+        queued = 0, captured = 2, consumed = 2, dropped = 0,
+        lastGeneration = 2, armedCorrelation = 0, lastCorrelation = 4,
+      } },
       commandVisitors = { enabled = true, hooked = 31, tagMismatches = 0 },
     },
     commandEvents = {
@@ -3682,6 +3870,10 @@ do
   local ready, boundary = nativeHook.validatedNetworkAuthority(status)
   assert(ready == true and boundary.commandVisitors == 31,
     "validated native authority status was not accepted")
+  status.hookVersion = "0.18.0"
+  assert(nativeHook.validatedNetworkAuthority(status) == false,
+    "counter-only legacy hook was accepted for network authority")
+  status.hookVersion = "0.19.0"
   status.gates.commandVisitors.tagMismatches = 1
   assert(nativeHook.validatedNetworkAuthority(status) == false,
     "ABI-mismatched native authority status was accepted")

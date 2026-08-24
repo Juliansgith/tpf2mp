@@ -74,7 +74,13 @@ function M.handleBuilderEvent(gui, id, isCreate, isApply, param, diagnosticLog)
   if not construction then return false end
   if isCreate then
     gui.blockedConstructionApplyUntilFrame = (gui.frames or 0) + 180
-    gui.builderContext = nil
+    if type(gui.invalidateBuildCorrelation) == "function" then
+      gui.invalidateBuildCorrelation("construction-rejected-while-busy", {
+        clearConstruction = true,
+      })
+    else
+      gui.builderContext = nil
+    end
   end
   local capture = gui.nativeBuildCapture or {}
   local firstNotice = gui.constructionBusyNoticeActive ~= true

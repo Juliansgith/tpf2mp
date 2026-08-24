@@ -22,6 +22,8 @@ target_link_libraries(tpf2mp_native_common PUBLIC bcrypt)
 
 add_library(tpf2mp_hook_support STATIC
   src/native_async_bridge.cpp
+  src/native_binding_catalog.cpp
+  src/native_build_correlation.cpp
   src/native_command_codec.cpp
   src/native_vehicle_command_codec.cpp
   src/native_hook_status.cpp

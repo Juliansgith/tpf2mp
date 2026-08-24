@@ -81,6 +81,11 @@ $baseline = [pscustomobject][ordered]@{
         commit = '0123456789abcdef0123456789abcdef01234567'
         dirty = $false
     }
+    supportedNativeBuild = [pscustomobject][ordered]@{
+        game = 'Transport Fever 2 Build 35924 (Windows x64)'
+        executableSha256 = '782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c'
+        hookVersion = '0.19.0'
+    }
     files = $records
 }
 $manifestPath = Join-Path $bundle 'release-manifest.json'
@@ -148,6 +153,10 @@ Assert-ManifestRejected 'missing source provenance' {
 Assert-ManifestRejected 'an invalid source commit' {
     param($value)
     $value.source.commit = 'deadbeef'
+}
+Assert-ManifestRejected 'an invalid native hook version' {
+    param($value)
+    $value.supportedNativeBuild.hookVersion = '../old-hook'
 }
 Assert-ManifestRejected 'a non-boolean source dirty flag' {
     param($value)

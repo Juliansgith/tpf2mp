@@ -1,6 +1,16 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.6-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.17.0`.
+Last updated: 2026-08-22 (Europe/Amsterdam), prototype `0.38.7-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[BuildProposal correlation hardening](BUILD_CORRELATION_HARDENING_2026-08-22.md)
+records the live station-for-track capture, counter/latest-preview root cause,
+generation-bound native FIFO, immutable construction templates, semantic and
+invalidation fences, automated adversarial proof, and repeatable live gate.
+
+[Build-tool preview performance](BUILD_TOOL_PREVIEW_PERFORMANCE_2026-08-22.md)
+records the live render-cadence proposal/audit evidence, heavyweight native-
+status and graph-scan root causes, click-boundary capture design, hidden-menu
+polling fix, preserved authority invariants, and the fresh-pair validation gate.
 
 [Connected-station parity and construction input backlog](CONNECTED_STATION_PARITY_AND_CONSTRUCTION_INPUT_BACKLOG_2026-08-22.md)
 records the live Lua/Python validator mismatch, correct canonical-boundary graph

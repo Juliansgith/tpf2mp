@@ -10,7 +10,7 @@ Run from the repository root:
 
 ```powershell
 .\tools\run_tests.ps1
-.\tools\package_release.ps1 -Version 0.38.6-alpha
+.\tools\package_release.ps1 -Version 0.38.7-alpha
 ```
 
 The gate covers Lua/Python deterministic parity, proposal and operation codecs,
@@ -33,23 +33,31 @@ On both test computers:
 
 Use one fresh, flat, populated save and leave physical town development on.
 
-1. Build private road/rail infrastructure, a station, depot, signal, line, and
+1. Before building, compare both peers at the same camera. Hold and move a
+   station ghost for ten seconds, then a bulldozer ghost for ten seconds. The
+   issuer may remain slower because it runs native collision/terrain preview,
+   but must not show the former sustained single-digit multiplayer collapse.
+   Click once and require exactly one replicated result.
+2. Build private road/rail infrastructure, a station, depot, signal, line, and
    at least two assigned vehicles. Exercise one line edit and one vehicle
-   lifecycle command. Verify rival private edits are rejected.
-2. Operate `A-B` and `B-C` passenger services through the exact same station
+   lifecycle command. Verify rival private edits are rejected. In a disposable
+   area, explicitly run station -> bulldoze -> long track, construction ->
+   Escape/cancel -> road, rejection -> retry, and signal/waypoint transitions;
+   originate at least three accepted builds from each peer.
+3. Operate `A-B` and `B-C` passenger services through the exact same station
    group at B. Require a multi-line passenger route and at least one automatic
    five-minute settlement.
-3. Create a cargo source-to-hub line without a consumer. Require zero authored
+4. Create a cargo source-to-hub line without a consumer. Require zero authored
    demand. Add a hub-to-compatible-consumer line, then require cargo to arrive
    at hub stock and later board the downstream vehicle without creation or
    duplication.
-4. Allow at least one ordered `town.develop` batch and three all-peer
+5. Allow at least one ordered `town.develop` batch and three all-peer
    checkpoints. Keep both worlds running long enough to revisit several
    station barriers.
-5. Disconnect Player 2's companion while the games stay open. Require an
+6. Disconnect Player 2's companion while the games stay open. Require an
    immediate pause, reconnect within 120 seconds, complete backlog replay, no
    timeout, and a clean manual resume.
-6. Prepare one restore point. Require both peer receipts, a current v6 plan,
+7. Prepare one restore point. Require both peer receipts, a current v6 plan,
    and successful peer-specific reload. Confirm cargo inventory, active loads,
    finances, routes, canonical identities, and vehicle rounds survive, then
    complete a fresh post-restore checkpoint.
@@ -76,6 +84,18 @@ status; successful physical construction and operation; running economy; at
 least two synchronized vehicles; town development; passenger transfer route;
 complete cargo transfer route; cargo arrival and onward boarding; recovered
 reconnect without timeout; and a matching current receipt-bound restore plan.
+
+Before accepting the construction slice, also require the fresh-session native
+correlation gate:
+
+```powershell
+.\tools\verify_build_transition_gate.ps1 -Session <name>
+```
+
+It must report hook `0.19.0`, no dropped/pending native build events, no stale
+or ambiguous capture, increasing unique generations/tokens, both-peer input,
+construction/track/street/edge-object/bulldozer coverage, and one matching
+agreed checkpoint.
 
 ## Explicit alpha limits
 

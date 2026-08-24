@@ -1,5 +1,7 @@
 #include "tpf2mp/native_common.hpp"
 #include "tpf2mp/native_async_bridge.hpp"
+#include "tpf2mp/native_binding_catalog.hpp"
+#include "tpf2mp/native_build_correlation.hpp"
 #include "tpf2mp/native_command_codec.hpp"
 #include "tpf2mp/native_hook_status.hpp"
 #include "tpf2mp/native_launcher_barrier.hpp"
@@ -8,7 +10,6 @@
 
 #include <Windows.h>
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -19,6 +20,7 @@
 #include <deque>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -62,19 +64,6 @@ constexpr std::size_t kNativeRecentCommandEventLimit = 64;
 // One ordered town-development action admits up to 512 towns x 8 calls. Keep
 // that full protocol burst representable while retaining a hard finite cap.
 constexpr std::uint64_t kCommandAuthorizationLimit = 8192;
-constexpr int kNativeBindingRegistryBase = -0x54504800;
-constexpr std::array<std::string_view, 42> kInterestingBindings{
-    "sendCommand", "setGameSpeed", "setCalendarSpeed", "updateLogo", "createLine",
-    "deleteLine", "updateLine", "setLine", "reverseVehicle", "setUserStopped",
-    "setVehicleTargetMaintenanceState", "setVehicleShouldDepart", "sendToDepot", "sellVehicle",
-    "buyVehicle", "replaceVehicle", "buildProposal", "removeField", "createTowns", "removeTown",
-    "developTown", "setTownInfo", "instantlyUpdateTownCargoNeeds", "connectTownsAndIndustries",
-    "setSimBuildingManualDevelopment", "setSimBuildingClosureTimeStamp", "replaceTerrain", "setDate",
-    "saveGame", "setColor", "setName", "setVehicleManualDeparture", "bookJournalEntry",
-    "sendScriptEvent", "setNoCosts", "setAnimalState", "spawnAnimal", "debugSetSimPersonState",
-    "simPersonSystem", "simPersonAtTerminalSystem", "simCargoSystem", "simCargoAtTerminalSystem"};
-static_assert(kInterestingBindings.size() <= 64);
-
 using tpf2mp::native_command::CommandTypeName;
 using tpf2mp::native_command::DecodeSuppressedLineCommand;
 using tpf2mp::native_command::DecodeSuppressedVehicleCommand;
@@ -143,6 +132,7 @@ std::uint64_t g_build_gate_calls = 0;
 std::uint64_t g_build_gate_tag_mismatches = 0;
 int g_build_gate_last_tag = -1;
 DWORD g_build_gate_last_thread = 0;
+tpf2mp::native_build::SuppressedBuildQueue g_suppressed_builds{64};
 bool g_command_gate_enabled = false;
 std::array<std::uint64_t, kNativeCommandTypeCount> g_command_gate_authorizations{};
 std::array<std::uint64_t, kNativeCommandTypeCount> g_command_gate_allowed{};
@@ -295,6 +285,13 @@ std::string StatusJson() {
       .build_gate_tag_mismatches = g_build_gate_tag_mismatches,
       .build_gate_last_tag = g_build_gate_last_tag,
       .build_gate_last_thread = g_build_gate_last_thread,
+      .suppressed_build_queued = g_suppressed_builds.queued(),
+      .suppressed_build_captured = g_suppressed_builds.captured(),
+      .suppressed_build_consumed = g_suppressed_builds.consumed(),
+      .suppressed_build_dropped = g_suppressed_builds.dropped(),
+      .suppressed_build_last_generation = g_suppressed_builds.last_generation(),
+      .suppressed_build_armed_correlation = g_suppressed_builds.armed_correlation(),
+      .suppressed_build_last_correlation = g_suppressed_builds.last_correlation(),
       .command_gate_enabled = g_command_gate_enabled,
       .command_gate_tag_mismatches = g_command_gate_tag_mismatches,
       .command_gate_authorizations = g_command_gate_authorizations,
@@ -342,27 +339,6 @@ void WriteStatusFiles() {
   tpf2mp::AtomicWriteUtf8(tpf2mp::NativeStatusDirectory() / "latest.json", json, ignored, false);
 }
 
-bool IsInterestingBinding(const char* key) {
-  if (key == nullptr) return false;
-  return std::find(kInterestingBindings.begin(), kInterestingBindings.end(), key) !=
-         kInterestingBindings.end();
-}
-
-int InterestingBindingIndex(const char* key) {
-  if (key == nullptr) return -1;
-  const auto found = std::find(kInterestingBindings.begin(), kInterestingBindings.end(), key);
-  if (found == kInterestingBindings.end()) return -1;
-  return static_cast<int>(std::distance(kInterestingBindings.begin(), found));
-}
-
-int NativeBindingRegistrySlot(const std::size_t index) {
-  return kNativeBindingRegistryBase - static_cast<int>(index);
-}
-
-std::string NativeBindingGlobalName(const std::string_view name) {
-  return "tpf2mp_native_binding_" + std::string(name);
-}
-
 int NativeStatus(lua_State* state) {
   const auto json = StatusJson();
   g_lua_pushlstring(state, json.data(), json.size());
@@ -375,7 +351,7 @@ int NativeMarkContext(lua_State* state) {
   if (raw != nullptr && length <= 64) {
     StateLock lock;
     ObserveStateLocked(state).context.assign(raw, length);
-    tpf2mp::launcher::ObserveContext(state, std::string_view(raw, length), NativeBindingRegistrySlot(static_cast<std::size_t>(InterestingBindingIndex("sendScriptEvent"))), kPendingSendCommandFunction);
+    tpf2mp::launcher::ObserveContext(state, std::string_view(raw, length), tpf2mp::native_binding::RegistrySlot(static_cast<std::size_t>(tpf2mp::native_binding::Index("sendScriptEvent"))), kPendingSendCommandFunction);
   }
   RequestStatusWrite();
   return 0;
@@ -386,6 +362,7 @@ int NativeEnableBuildGate(lua_State*) {
     StateLock lock;
     g_build_gate_enabled = true;
     g_build_gate_authorizations = 0;
+    g_suppressed_builds.ResetPending();
   }
   RequestStatusWrite();
   return 0;
@@ -396,6 +373,7 @@ int NativeDisableBuildGate(lua_State*) {
     StateLock lock;
     g_build_gate_enabled = false;
     g_build_gate_authorizations = 0;
+    g_suppressed_builds.ResetPending();
   }
   RequestStatusWrite();
   return 0;
@@ -410,6 +388,66 @@ int NativeAuthorizeBuild(lua_State*) {
   }
   RequestStatusWrite();
   return 0;
+}
+
+// GUI proposal previews need only three scalar gate values. Serializing the
+// complete hook status (including command histories and per-tag counters) on
+// every mouse-move callback was substantially more expensive than the game
+// preview itself. Keep this ABI deliberately tiny and versioned.
+int NativeBuildGateSample(lua_State* state) {
+  bool enabled = false;
+  std::uint64_t suppressed = 0;
+  std::uint64_t tag_mismatches = 0;
+  std::uint64_t last_generation = 0;
+  std::size_t queued = 0;
+  std::uint64_t dropped = 0;
+  std::uint64_t armed_correlation = 0;
+  {
+    StateLock lock;
+    enabled = g_build_gate_enabled;
+    suppressed = g_build_gate_suppressed;
+    tag_mismatches = g_build_gate_tag_mismatches;
+    last_generation = g_suppressed_builds.last_generation();
+    queued = g_suppressed_builds.queued();
+    dropped = g_suppressed_builds.dropped();
+    armed_correlation = g_suppressed_builds.armed_correlation();
+  }
+  const std::string encoded = "B2|" + std::string(enabled ? "1" : "0") + "|" +
+                              std::to_string(suppressed) + "|" +
+                              std::to_string(tag_mismatches) + "|" +
+                              std::to_string(last_generation) + "|" +
+                              std::to_string(queued) + "|" +
+                              std::to_string(dropped) + "|" +
+                              std::to_string(armed_correlation);
+  g_lua_pushlstring(state, encoded.data(), encoded.size());
+  return 1;
+}
+
+int NativeArmBuildCorrelation(lua_State* state) {
+  std::size_t length = 0;
+  const char* raw = g_lua_tolstring(state, 1, &length);
+  std::uint64_t correlation = 0;
+  if (raw == nullptr || !tpf2mp::native_build::ParseCorrelationToken(
+                            std::string_view(raw, length), correlation)) {
+    correlation = 0;
+  }
+  {
+    StateLock lock;
+    g_suppressed_builds.Arm(correlation);
+  }
+  return 0;
+}
+
+int NativeTakeSuppressedBuildEvent(lua_State* state) {
+  std::optional<std::string> encoded;
+  {
+    StateLock lock;
+    encoded = g_suppressed_builds.TakeEncoded();
+  }
+  if (!encoded.has_value()) return 0;
+  g_lua_pushlstring(state, encoded->data(), encoded->size());
+  RequestStatusWrite();
+  return 1;
 }
 
 // Line records are captured only after their visitor applied, so clearing the
@@ -552,6 +590,7 @@ int NativeSuppressedPendingMask(lua_State* state) {
     if (!g_suppressed_game_speeds.empty()) mask |= 1;
     if (!g_suppressed_line_commands.empty() || g_suppressed_line_command_drops_reported < g_suppressed_line_command_dropped) mask |= 2;
     if (!g_suppressed_vehicle_commands.empty() || g_suppressed_vehicle_command_drops_reported < g_suppressed_vehicle_command_dropped) mask |= 4;
+    if (g_suppressed_builds.has_pending()) mask |= 8;
   }
   if (mask == 0) return 0; const auto text = std::to_string(mask);
   g_lua_pushlstring(state, text.data(), text.size()); return 1;
@@ -577,6 +616,8 @@ void RegisterNativeApi(lua_State* state) {
   tpf2mp::launcher::RegisterBootstrapApi(state, g_lua_pushlstring, g_lua_pushcclosure, g_lua_rawset, g_lua_rawgeti, g_lua_insert, g_lua_callk, g_lua_gettop, g_lua_settop);
   RegisterNativeFunction(state, "tpf2mp_native_mark_context", NativeMarkContext); RegisterNativeFunction(state, "tpf2mp_native_enable_build_gate", NativeEnableBuildGate);
   RegisterNativeFunction(state, "tpf2mp_native_disable_build_gate", NativeDisableBuildGate); RegisterNativeFunction(state, "tpf2mp_native_authorize_build", NativeAuthorizeBuild);
+  RegisterNativeFunction(state, "tpf2mp_native_build_gate_sample", NativeBuildGateSample);
+  RegisterNativeFunction(state, "tpf2mp_native_arm_build_correlation", NativeArmBuildCorrelation); RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_build", NativeTakeSuppressedBuildEvent);
   RegisterNativeFunction(state, "tpf2mp_native_enable_command_gate", NativeEnableCommandGate); RegisterNativeFunction(state, "tpf2mp_native_disable_command_gate", NativeDisableCommandGate);
   RegisterNativeFunction(state, "tpf2mp_native_authorize_command", NativeAuthorizeCommand); RegisterNativeFunction(state, "tpf2mp_native_revoke_command", NativeRevokeCommand);
   RegisterNativeFunction(state, "tpf2mp_native_set_command_observer", NativeSetCommandObserver); RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_game_speed", NativeTakeSuppressedGameSpeed);
@@ -635,7 +676,7 @@ int DetourLuaPrint(lua_State* state) {
 }
 
 void DetourLuaSetField(lua_State* state, int index, const char* key) {
-  const int binding_index = InterestingBindingIndex(key);
+  const int binding_index = tpf2mp::native_binding::Index(key);
   const bool has_stack_value = g_lua_gettop(state) >= 1;
   const bool capture_binding = binding_index > 0 && !g_native_registration &&
                                g_setup_command_depth > 0 && has_stack_value;
@@ -645,7 +686,7 @@ void DetourLuaSetField(lua_State* state, int index, const char* key) {
     StateLock lock;
     auto& observed = ObserveStateLocked(state);
     ++observed.setfield_calls;
-    if (IsInterestingBinding(key)) observed.interesting_bindings.emplace(key);
+    if (binding_index >= 0) observed.interesting_bindings.emplace(key);
   }
   if (capture_binding) {
     // Root a copy in this Lua state's registry while sol2 is constructing the
@@ -654,7 +695,7 @@ void DetourLuaSetField(lua_State* state, int index, const char* key) {
     // immediate table replacement caused in the first prototype.
     g_lua_pushvalue(state, -1);
     g_lua_rawseti(state, kLuaRegistryIndex,
-                  NativeBindingRegistrySlot(static_cast<std::size_t>(binding_index)));
+                  tpf2mp::native_binding::RegistrySlot(static_cast<std::size_t>(binding_index)));
     g_pending_binding_state = state;
     g_pending_binding_mask |= std::uint64_t{1} << static_cast<unsigned>(binding_index);
   }
@@ -677,7 +718,7 @@ void DetourLuaSetField(lua_State* state, int index, const char* key) {
     return;
   }
   g_original_setfield(state, index, key);
-  if (IsInterestingBinding(key)) RequestStatusWrite();
+  if (binding_index >= 0) RequestStatusWrite();
 }
 
 void InstallDeferredNativeBindings() {
@@ -690,13 +731,13 @@ void InstallDeferredNativeBindings() {
   const int original_top = g_lua_gettop(state);
   g_lua_rawgeti(state, kLuaRegistryIndex, kLuaGlobalsRegistryIndex);
   std::vector<std::string> mirrored;
-  for (std::size_t index = 1; index < kInterestingBindings.size(); ++index) {
+  for (std::size_t index = 1; index < tpf2mp::native_binding::Count(); ++index) {
     if ((mask & (std::uint64_t{1} << index)) == 0) continue;
-    const auto global_name = NativeBindingGlobalName(kInterestingBindings[index]);
+    const auto global_name = tpf2mp::native_binding::GlobalName(tpf2mp::native_binding::At(index));
     g_lua_pushlstring(state, global_name.data(), global_name.size());
-    g_lua_rawgeti(state, kLuaRegistryIndex, NativeBindingRegistrySlot(index));
+    g_lua_rawgeti(state, kLuaRegistryIndex, tpf2mp::native_binding::RegistrySlot(index));
     g_lua_rawset(state, -3);
-    mirrored.emplace_back(kInterestingBindings[index]);
+    mirrored.emplace_back(tpf2mp::native_binding::At(index));
   }
   g_lua_settop(state, original_top);
   {
@@ -897,12 +938,14 @@ bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {
     if (g_build_gate_enabled) {
       if (tag_mismatch) {
         ++g_build_gate_suppressed;
+        g_suppressed_builds.Capture(g_build_gate_last_tag);
         suppress = true;
       } else if (g_build_gate_authorizations > 0) {
         --g_build_gate_authorizations;
         ++g_build_gate_allowed;
       } else {
         ++g_build_gate_suppressed;
+        g_suppressed_builds.Capture(g_build_gate_last_tag);
         suppress = true;
       }
     }
@@ -1292,7 +1335,7 @@ DWORD WINAPI Worker(void*) {
 } // namespace
 
 extern "C" __declspec(dllexport) const char* TPF2MP_HookProfile() {
-  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.17.0";
+  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.19.0";
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

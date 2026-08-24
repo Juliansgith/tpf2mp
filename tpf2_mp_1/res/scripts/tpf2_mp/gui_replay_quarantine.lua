@@ -8,6 +8,9 @@ function M.begin(gui, proposalId)
     previews = 0,
     applies = 0,
   }
+  if type(gui.invalidateBuildCorrelation) == "function" then
+    gui.invalidateBuildCorrelation("canonical-replay-begin", { clearConstruction = true })
+  end
 end
 
 function M.finish(gui, proposalId)
@@ -21,6 +24,9 @@ end
 function M.reset(gui)
   assert(type(gui) == "table", "GUI state is required")
   gui.proposalReplayQuarantine = nil
+  if type(gui.invalidateBuildCorrelation) == "function" then
+    gui.invalidateBuildCorrelation("canonical-replay-reset", { clearConstruction = true })
+  end
 end
 
 function M.handleBuilderEvent(gui, id, isProposalCreate, isProposalApply, diagnosticLog)
@@ -32,7 +38,13 @@ function M.handleBuilderEvent(gui, id, isProposalCreate, isProposalApply, diagno
   -- signal/track replay, its proposal userdata can retain a native pointer to
   -- the edge just replaced by that replay.  Projecting that stale ghost caused
   -- Build 35924's internal-error minidump on the issuing peer.
-  gui.builderContext = nil
+  if type(gui.invalidateBuildCorrelation) == "function" then
+    gui.invalidateBuildCorrelation("canonical-replay-builder-callback", {
+      clearConstruction = true, silent = true,
+    })
+  else
+    gui.builderContext = nil
+  end
   gui.nativeBuildCapture = gui.nativeBuildCapture or {}
   if isProposalCreate then
     quarantine.previews = (quarantine.previews or 0) + 1

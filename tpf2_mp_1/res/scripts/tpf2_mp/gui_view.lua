@@ -180,6 +180,12 @@ function M.render(gui, snapshot, options)
       tonumber(capture.replayPreviewsQuarantined) or 0,
       tonumber(capture.replayAppliesRejected) or 0
     )
+    local correlation = gui.buildCorrelation or {}
+    lines[#lines + 1] = string.format(
+      "Build correlation: token %s | tool generation %d | native events %d | rejects %d (%d semantic) | invalidations %d | last %s",
+      tostring(correlation.activeCorrelation or "-"), tonumber(correlation.toolGeneration) or 0,
+      tonumber(capture.correlatedNativeEvents) or 0, tonumber(capture.correlationRejects) or 0,
+      tonumber(capture.semanticRejects) or 0, tonumber(capture.invalidations) or 0, tostring(correlation.lastInvalidationReason or "-"))
     local clock = snapshot.networkClock or {}
     lines[#lines + 1] = string.format(
       "Shared clock: requested %s | effective %s | generation %s | %s",

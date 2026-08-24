@@ -400,6 +400,15 @@ assert(projectedConstructionAccess.allowed == false
   and projectedConstructionAccess.blocked[1].localId == 903,
   "deep construction-removal projection did not protect a rival station edit")
 
+local unfamiliarWrapperAccess = edgeOwnership.checkProposalAccess(accessWorld, {
+  thirdPartyBuilder = { resultEnvelope = {
+    streetChanges = { edgesToRemove = { { entity = 901 } } },
+  } },
+}, "company:1")
+assert(unfamiliarWrapperAccess.allowed == false
+  and unfamiliarWrapperAccess.blocked[1].localId == 901,
+  "bounded ownership scan lost an unfamiliar mod proposal wrapper")
+
 local corruptCustodyAccess = edgeOwnership.checkProposalAccess(accessWorld, {
   proposal = { removedSegments = { ["1"] = { entity = 904 } } },
 }, "company:1")

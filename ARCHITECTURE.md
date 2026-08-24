@@ -15,7 +15,7 @@ Each Transport Fever 2 process contains two isolated Lua states:
 The companion process orders intents, coordinates all-peer prepare/physical/
 checkpoint barriers, and distributes commits. The native DLL observes or gates
 exact Build 35924 command visitors before an unsupported local mutation can
-escape host authority. Hook `0.17.0` also owns the bounded bridge worker: the
+escape host authority. Hook `0.19.0` also owns the bounded bridge worker: the
 game Lua thread signs and validates protocol envelopes but performs no numbered
 bridge file I/O when the exact hook is active. The native worker transports
 opaque bytes only; it never reads engine entities or applies commands.

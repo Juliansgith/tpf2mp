@@ -26,6 +26,8 @@ function M.compactStatus(payload)
   local setup = type(payload.setupCommandInterface) == "table" and payload.setupCommandInterface or {}
   local gates = type(payload.gates) == "table" and payload.gates or {}
   local buildGate = type(gates.buildProposal) == "table" and gates.buildProposal or {}
+  local suppressedBuilds = type(buildGate.suppressedQueue) == "table"
+    and buildGate.suppressedQueue or {}
   local commandGate = type(gates.commandVisitors) == "table" and gates.commandVisitors or {}
   local commandList = type(payload.commandList) == "table" and payload.commandList or {}
   local applyCommand = type(payload.applyCommand) == "table" and payload.applyCommand or {}
@@ -144,6 +146,16 @@ function M.compactStatus(payload)
         tagMismatches = math.max(0, tonumber(buildGate.tagMismatches) or 0),
         lastTag = tonumber(buildGate.lastTag),
         lastThread = math.max(0, tonumber(buildGate.lastThread) or 0),
+        correlationQueueAvailable = type(buildGate.suppressedQueue) == "table",
+        suppressedQueue = {
+          queued = math.max(0, tonumber(suppressedBuilds.queued) or 0),
+          captured = math.max(0, tonumber(suppressedBuilds.captured) or 0),
+          consumed = math.max(0, tonumber(suppressedBuilds.consumed) or 0),
+          dropped = math.max(0, tonumber(suppressedBuilds.dropped) or 0),
+          lastGeneration = math.max(0, tonumber(suppressedBuilds.lastGeneration) or 0),
+          armedCorrelation = math.max(0, tonumber(suppressedBuilds.armedCorrelation) or 0),
+          lastCorrelation = math.max(0, tonumber(suppressedBuilds.lastCorrelation) or 0),
+        },
       },
       commandVisitors = {
         enabled = commandGate.enabled == true,
@@ -191,21 +203,55 @@ function M.validatedNetworkAuthority(nativeStatus)
     and nativeStatus.validation or {}
   local nativeHooks = type(nativeStatus.hooks) == "table" and nativeStatus.hooks or {}
   local ready = nativeStatus.available == true
+    and nativeStatus.hookVersion == "0.19.0"
     and nativeStatus.active == true
     and nativeValidation.valid == true
     and nativeHooks.enabled == true
     and nativeHooks.buildProposalVisitor == true
     and (tonumber(nativeHooks.authorityCommandVisitors) or 0) == 31
     and buildStatus.enabled == true
+    and buildStatus.correlationQueueAvailable == true
+    and (tonumber(buildStatus.suppressedQueue and buildStatus.suppressedQueue.dropped) or 0) == 0
     and (tonumber(buildStatus.tagMismatches) or 0) == 0
     and commandStatus.enabled == true
     and (tonumber(commandStatus.hooked) or 0) == 31
     and (tonumber(commandStatus.tagMismatches) or 0) == 0
   return ready, {
     buildGateEnabled = buildStatus.enabled == true,
+    buildCorrelationQueue = buildStatus.correlationQueueAvailable == true,
     commandGateEnabled = commandStatus.enabled == true,
     commandVisitors = tonumber(commandStatus.hooked) or 0,
   }
+end
+
+function M.configureAuthority(mode)
+  local network = mode == "network"
+  local buildName = network and "tpf2mp_native_enable_build_gate"
+    or "tpf2mp_native_disable_build_gate"
+  local commandName = network and "tpf2mp_native_enable_command_gate"
+    or "tpf2mp_native_disable_command_gate"
+  local required = { buildName, commandName }
+  if network then
+    required[#required + 1] = "tpf2mp_native_revoke_command"
+    required[#required + 1] = "tpf2mp_native_arm_build_correlation"
+    required[#required + 1] = "tpf2mp_native_take_suppressed_build"
+  end
+  local missing = {}
+  for _, name in ipairs(required) do
+    if type(rawget(_G, name)) ~= "function" then missing[#missing + 1] = name end
+  end
+  if network and #missing > 0 then
+    return false, "network mode requires exact-build native authority gates: "
+      .. table.concat(missing, ", ")
+  end
+  for _, name in ipairs({ buildName, commandName }) do
+    local operation = rawget(_G, name)
+    if type(operation) == "function" then
+      local ok, err = pcall(operation)
+      if not ok then return false, "could not configure " .. name .. ": " .. tostring(err) end
+    end
+  end
+  return true
 end
 
 function M.markContext(context)

@@ -15,7 +15,7 @@ std::string SerializeHookStatus(const HookStatusView& status) {
   std::ostringstream output;
   output << "{\"schemaVersion\":1"
          << ",\"component\":\"tpf2mp-native-hook\""
-         << ",\"hookVersion\":\"0.17.0\""
+         << ",\"hookVersion\":\"0.19.0\""
          << ",\"profile\":\"" << tpf2mp::JsonEscape(std::string(tpf2mp::profile::kProfileName)) << "\""
          << ",\"processId\":" << status.process_id
          << ",\"stage\":\"" << tpf2mp::JsonEscape(status.stage) << "\""
@@ -143,6 +143,15 @@ std::string SerializeHookStatus(const HookStatusView& status) {
          << ",\"tagMismatches\":" << status.build_gate_tag_mismatches
          << ",\"lastTag\":" << status.build_gate_last_tag
          << ",\"lastThread\":" << status.build_gate_last_thread
+         << ",\"suppressedQueue\":{"
+         << "\"queued\":" << status.suppressed_build_queued
+         << ",\"captured\":" << status.suppressed_build_captured
+         << ",\"consumed\":" << status.suppressed_build_consumed
+         << ",\"dropped\":" << status.suppressed_build_dropped
+         << ",\"lastGeneration\":" << status.suppressed_build_last_generation
+         << ",\"armedCorrelation\":" << status.suppressed_build_armed_correlation
+         << ",\"lastCorrelation\":" << status.suppressed_build_last_correlation
+         << '}'
          << "},\"commandVisitors\":{"
          << "\"enabled\":" << (status.command_gate_enabled ? "true" : "false")
          << ",\"hooked\":" << status.hooks.authority_command_visitors_created

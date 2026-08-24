@@ -43,7 +43,7 @@ mod prefers `api.cmd.make.*` and uses the mirror only as a same-state fallback.
 
 The native command observers decode the `Command`/variant discriminator,
 classify all 37 tags, pair queued commands with their `ApplyCommand` result, and
-record direct applies which bypass `CommandList::Swap`. Hook 0.17.0 retains this
+record direct applies which bypass `CommandList::Swap`. Hook 0.19.0 retains this
 accounting path and adds pinned scalar capture for suppressed SetLine,
 BuyVehicle, lifecycle controls, and ReplaceVehicle plus a complete bounded
 SellVehicle vector before mutation. Reference run
@@ -76,6 +76,15 @@ globals:
 - `tpf2mp_native_enable_build_gate()` suppresses BuildProposal visitors by default;
 - `tpf2mp_native_authorize_build()` authorizes exactly one visitor while gated;
 - `tpf2mp_native_disable_build_gate()` disables the gate and clears authorizations.
+- `tpf2mp_native_arm_build_correlation(token)` arms the generation-bound GUI
+  preview token that the next suppressed visitor must carry. Token `0` disarms;
+- `tpf2mp_native_take_suppressed_build()` consumes the oldest pointer-free
+  `S1|generation|correlation|tag` event. Its 64-entry FIFO faults with a sticky
+  `F1` record and discards the ambiguous prefix on overflow;
+- `tpf2mp_native_build_gate_sample()` returns the versioned constant-size
+  `B2|enabled|suppressed|tagMismatches|lastGeneration|queued|dropped|armedCorrelation`
+  sample used by render-cadence proposal capture without serializing complete
+  hook history;
 - `tpf2mp_native_enable_command_gate()` enables rejection for 31 selected tags;
 - `tpf2mp_native_authorize_command(tag)` authorizes one matching visitor;
 - `tpf2mp_native_revoke_command(tag)` withdraws one unused authorization after
@@ -261,6 +270,8 @@ world while this component is experimental.
 
 - `include/tpf2mp/build_profile.hpp`: exact build/signature profile.
 - `src/native_common.cpp`: PE, SHA-256, signature, and atomic-status support.
+- `src/native_binding_catalog.cpp`: the bounded Lua command-binding names and
+  stable registry-slot mapping used by deferred native mirrors.
 - `src/injector.cpp`: exact-profile verification and remote `LoadLibraryW`.
 - `src/hook_dll.cpp`: fail-closed Lua/command hooks, timelines, mirrors,
   BuildProposal gate, and 31-tag consequential/autonomy command gate.

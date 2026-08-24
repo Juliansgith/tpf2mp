@@ -673,9 +673,9 @@ function M.install(gui, env)
   -- Keep only the immutable projected template reference and latest small
   -- placement sample here; the runtime copies and rebases the full graph once
   -- a native suppression proves that the player actually clicked.
-  gui.lightweightConstructionPending = function(snapshot, placement, companyCid, sourceId)
+  gui.lightweightConstructionPending = function(snapshot, placement, companyCid, sourceId, metadata)
     if type(snapshot) ~= "table" or type(placement) ~= "table" then return nil end
-    return {
+    local result = {
       companyCid = companyCid,
       sourceId = tostring(sourceId or "constructionBuilder"),
       frame = gui.frames,
@@ -684,6 +684,8 @@ function M.install(gui, env)
       deferredConstructionRebase = true,
       exact = false,
     }
+    for key, value in pairs(metadata or {}) do result[key] = value end
+    return result
   end
   
   gui.projectedFirst = function(value)
@@ -716,7 +718,12 @@ function M.install(gui, env)
     if type(snapshot) ~= "table" or type(placement) ~= "table" then
       return nil, "construction preview cache is unavailable"
     end
-    local construction = gui.projectedFirst(snapshot.__constructionAdditions)
+    -- Cached templates are immutable. Earlier code transformed the cache in
+    -- place; one late callback could therefore move a station graph and leave
+    -- it masquerading as the next road/track preview. Always materialise an
+    -- isolated click snapshot before changing geometry or parameters.
+    local result = util.deepCopy(snapshot)
+    local construction = gui.projectedFirst(result.__constructionAdditions)
     if type(construction) ~= "table" then return nil, "projected construction is unavailable" end
     local projectedTransform = construction.transf or construction.transform
     local old = gui.previewMatrix(projectedTransform)
@@ -754,7 +761,7 @@ function M.install(gui, env)
         if key ~= "__type" and key ~= "__truncated" then walk(nested, depth + 1) end
       end
     end
-    walk(snapshot, 0)
+    walk(result, 0)
     -- Portable constructions do not necessarily own a transport graph.  Stock
     -- decorative assets, for example, produce an ASSET_GROUP from the named
     -- .con and have no proposal nodes or edges to move.  Their authoritative
@@ -772,8 +779,8 @@ function M.install(gui, env)
     if type(projectedParams) == "table" then
       for field, value in pairs(placement.params or {}) do projectedParams[field] = value end
     end
-    if placement.cost ~= nil then snapshot.__observedCost = placement.cost end
-    return snapshot
+    if placement.cost ~= nil then result.__observedCost = placement.cost end
+    return result
   end
   
   gui.mergedAppliedProposalSnapshot = function(applied, preview)

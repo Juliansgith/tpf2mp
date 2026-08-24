@@ -628,6 +628,39 @@ function Add-Tpf2mpNativeHook {
         throw "Native hook injection failed for game PID $($GameProcess.Id) with exit code $injectorExitCode"
     }
     $statusPath = Join-Path (Join-Path ([IO.Path]::GetTempPath()) 'tpf2mp_native') "status-$($GameProcess.Id).json"
+    $expectedProperty = $NativePaths.PSObject.Properties['ExpectedHookVersion']
+    $expectedVersion = if ($expectedProperty) { [string]$expectedProperty.Value } else { '' }
+    if (-not [string]::IsNullOrWhiteSpace($expectedVersion)) {
+        $status = $null
+        $deadline = (Get-Date).AddSeconds(5)
+        do {
+            if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
+                try { $status = [IO.File]::ReadAllText($statusPath) | ConvertFrom-Json }
+                catch { $status = $null }
+            }
+            if (-not $status) { Start-Sleep -Milliseconds 50 }
+        } while (-not $status -and (Get-Date) -lt $deadline)
+        if (-not $status) {
+            throw "Native hook status was not published for game PID $($GameProcess.Id)."
+        }
+        if ([int64]$status.processId -ne [int64]$GameProcess.Id) {
+            throw "Native hook status belongs to PID $($status.processId), not launched game PID $($GameProcess.Id)."
+        }
+        $actualVersion = [string]$status.hookVersion
+        if ($actualVersion -ne $expectedVersion) {
+            throw "Native hook version mismatch for game PID $($GameProcess.Id): source/bundle requires $expectedVersion but the selected DLL reported $actualVersion. Rebuild the source native hook or update the installed release before loading a world."
+        }
+        $reportedDll = [string]$status.dllPath
+        if ([string]::IsNullOrWhiteSpace($reportedDll) `
+                -or -not (Resolve-Tpf2mpFullPath $reportedDll).Equals(
+                    (Resolve-Tpf2mpFullPath ([string]$NativePaths.Hook)),
+                    [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Native hook status for game PID $($GameProcess.Id) does not name the selected DLL."
+        }
+        if ($status.active -ne $true -or [string]$status.stage -ne 'active') {
+            throw "Native hook $actualVersion did not reach its active stage for game PID $($GameProcess.Id)."
+        }
+    }
     return [string]$statusPath
 }
 

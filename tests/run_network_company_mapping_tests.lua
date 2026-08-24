@@ -47,8 +47,11 @@ end
 tpf2mp_native_disable_command_gate = function() commandGateEnabled = false end
 tpf2mp_native_authorize_command = function() end
 tpf2mp_native_revoke_command = function() end
+tpf2mp_native_arm_build_correlation = function() end
+tpf2mp_native_take_suppressed_build = function() return nil end
 tpf2mp_native_status = function()
   return {
+    hookVersion = "0.19.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
@@ -57,7 +60,8 @@ tpf2mp_native_status = function()
       authorityCommandVisitors = 31,
     },
     gates = {
-      buildProposal = { enabled = buildGateEnabled },
+      buildProposal = { enabled = buildGateEnabled, tagMismatches = 0,
+        suppressedQueue = { queued = 0, captured = 0, consumed = 0, dropped = 0 } },
       commandVisitors = {
         enabled = commandGateEnabled,
         hooked = 31,

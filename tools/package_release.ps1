@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.38.6-alpha',
+    [string]$Version = '0.38.7-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -37,6 +37,7 @@ $cargoPresentationSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf
 $deliverySource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\delivery_snapshot.lua') -Raw
 $freightSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\freight_industry_model.lua') -Raw
 $projectSource = Get-Content -LiteralPath (Join-Path $projectRoot 'companion\pyproject.toml') -Raw
+$nativeHookSource = Get-Content -LiteralPath (Join-Path $projectRoot 'native\src\hook_dll.cpp') -Raw
 if ($modSource -notmatch 'local\s+minorVersion\s*=\s*(\d+)') { throw 'Could not derive the mod minor version.' }
 $modMinorVersion = [int]$Matches[1]
 if ($scriptSource -notmatch 'local\s+STATE_VERSION\s*=\s*(\d+)') { throw 'Could not derive the state schema version.' }
@@ -57,19 +58,28 @@ if ($freightSource -notmatch 'STATE_SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could 
 $freightIndustrySchemaVersion = [int]$Matches[1]
 if ($projectSource -notmatch '(?m)^version\s*=\s*"([^"]+)"') { throw 'Could not derive the companion version.' }
 $companionVersion = $Matches[1]
+if ($nativeHookSource -notmatch 'native hook (?<version>\d+\.\d+\.\d+)') {
+    throw 'Could not derive the native hook version.'
+}
+$nativeHookVersion = [string]$Matches.version
 if ($Version -match '^0\.(\d+)' -and [int]$Matches[1] -ne $modMinorVersion) {
     throw "Release version $Version does not match mod minor version $modMinorVersion."
 }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $projectRoot 'dist' }
 $dist = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+$packageNativeBuild = Join-Path $projectRoot 'runtime\native-package-build'
 
 if (-not $SkipTests) {
     & (Join-Path $PSScriptRoot 'run_tests.ps1')
     if ($LASTEXITCODE -ne 0) { throw "Automated suite failed with exit code $LASTEXITCODE" }
 }
 if (-not $SkipNativeBuild) {
-    & (Join-Path $PSScriptRoot 'build_native_hook.ps1') -GameExecutable $game
+    # A source-launched game maps runtime\native-build's DLL for its lifetime.
+    # Release compilation uses a distinct root so Windows cannot make a running
+    # old test session block creation of the next package.
+    & (Join-Path $PSScriptRoot 'build_native_hook.ps1') -GameExecutable $game `
+        -BuildDirectory $packageNativeBuild
     if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCODE" }
 }
 
@@ -99,7 +109,7 @@ New-Item -ItemType Directory -Force -Path $companionDist, $companionWork, $specR
     (Join-Path $projectRoot 'companion\entrypoint.py')
 if ($LASTEXITCODE -ne 0) { throw "Companion executable build failed with exit code $LASTEXITCODE" }
 
-$nativeBin = Join-Path $projectRoot 'runtime\native-build\Release'
+$nativeBin = Join-Path $packageNativeBuild 'Release'
 $requiredBinaries = @(
     (Join-Path $companionDist 'tpf2mp.exe'),
     (Join-Path $nativeBin 'tpf2mp_injector.exe'),
@@ -164,6 +174,7 @@ $toolNames = @(
     'start_network_session_retry.ps1', 'stop_network_session.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
     'analyze_alpha_live_evidence.ps1', 'run_alpha_live_acceptance.ps1',
+    'verify_build_transition_gate.ps1',
     'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
     'analyze_feeder_live_evidence.ps1', 'start_feeder_live_acceptance.ps1',
     'multiplayer_launcher.ps1',
@@ -187,6 +198,7 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_update.cmd') -Destinati
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination (Join-Path $releaseRoot 'LAUNCH_TPF2MP.cmd')
 $documentNames = @(
     'README.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
+    'TPF2MP_FULL_ALPHA_TEST_INSTRUCTIONS.txt',
     'DISTRIBUTION_AND_UPDATES.md',
     'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
     'tpf2-competitive-multiplayer-concept.md', 'tpf2-competitive-multiplayer-technical-plan.md',
@@ -307,6 +319,7 @@ $releaseManifest = [ordered]@{
     supportedNativeBuild = [ordered]@{
         game = 'Transport Fever 2 Build 35924 (Windows x64)'
         executableSha256 = '782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c'
+        hookVersion = $nativeHookVersion
     }
     files = $fileRecords
 }

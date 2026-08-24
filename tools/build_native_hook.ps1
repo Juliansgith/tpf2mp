@@ -2,13 +2,18 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [string]$GameExecutable = 'F:\SteamLibrary\steamapps\common\Transport Fever 2\TransportFever2.exe'
+    [string]$GameExecutable = 'F:\SteamLibrary\steamapps\common\Transport Fever 2\TransportFever2.exe',
+    [string]$BuildDirectory
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $source = Join-Path $projectRoot 'native'
-$build = Join-Path $projectRoot 'runtime\native-build'
+$build = if ($BuildDirectory) {
+    [IO.Path]::GetFullPath($BuildDirectory)
+} else {
+    Join-Path $projectRoot 'runtime\native-build'
+}
 $game = [IO.Path]::GetFullPath($GameExecutable)
 
 if (-not (Test-Path -LiteralPath $game -PathType Leaf)) {

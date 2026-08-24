@@ -31,6 +31,7 @@ function data()
   local networkPumpError = nil
   local networkPumpLastWall = nil
   local networkPumpFallbackFrame = 0
+  local networkPumpLastRegistrationFrame = 0
   local networkPumpReadySource = "none"
   local networkPumpReadyValue = "unchecked"
   local networkPumpNativePresent = false
@@ -43,6 +44,8 @@ function data()
   local networkPumpPausedRequired = true
   local networkWakeIssued = false
   local recoveryPrepareWakeIssued = false
+  local lastWorldStatusWall = nil
+  local lastWorldStatusFrame = 0
   local publish
 
   local function quote(value)
@@ -408,34 +411,42 @@ function data()
     return not (pending and effectivelyVisible(pending))
   end
 
-  publish = function(force)
+  publish = function(force, menuVisibilityHint)
+    local menuRoot = directItem("menuUI")
+    local menuVisible = menuVisibilityHint
+    if menuVisible == nil then menuVisible = visible(menuRoot) end
     local inGameSave = directItem("ingameMenu.saveGameButton")
     local inGameRoot = topAncestor(inGameSave or directItem("menu.fileMenuButton"))
+    -- Once the world is loaded, the hidden title-menu tree can contain thousands
+    -- of retained save-row widgets. Do not repeatedly walk it for controls that
+    -- cannot be visible; only the in-game Save surface remains relevant.
+    local expectedItem = menuVisible and expectedSaveItem() or nil
+    local indexReady = not menuVisible or saveIndexReady()
     local fields = {
       schemaVersion = "4",
       peer = quote(peer),
       session = quote(session),
       stage = quote(stage),
       frames = tostring(frames),
-      menuVisible = tostring(visible(item("menuUI"))),
+      menuVisible = tostring(menuVisible),
       entryInstalled = tostring(entryInstalled),
       entrySelected = tostring(entrySelected),
-      createNewGame = tostring(clickable("create-new-game")),
-      loadGame = tostring(clickable("load-game")),
-      startGame = tostring(clickable("start-game-button")),
-      nextGame = tostring(clickable("next-game-button")),
-      basicSettings = tostring(item("mainMenu.loadGame.basicSettings") ~= nil),
+      createNewGame = tostring(menuVisible and clickable("create-new-game") or false),
+      loadGame = tostring(menuVisible and clickable("load-game") or false),
+      startGame = tostring(menuVisible and clickable("start-game-button") or false),
+      nextGame = tostring(menuVisible and clickable("next-game-button") or false),
+      basicSettings = tostring(menuVisible and item("mainMenu.loadGame.basicSettings") ~= nil or false),
       expectedSave = quote(expectedSave),
       requireMenuEntry = tostring(requireMenuEntry),
-      expectedSaveVisible = tostring(expectedSaveItem() ~= nil),
-      saveIndexReady = tostring(saveIndexReady()),
-      createNewGameRect = rectJson(item("create-new-game")),
-      loadGameRect = rectJson(item("load-game")),
-      startGameRect = rectJson(item("start-game-button")),
-      nextGameRect = rectJson(item("next-game-button")),
-      multiplayerRect = rectJson(item("tpf2mp.mainMenuEntry")),
-      expectedSaveRect = rectJson(expectedSaveItem()),
-      menuRect = rectJson(directItem("menuUI")),
+      expectedSaveVisible = tostring(expectedItem ~= nil),
+      saveIndexReady = tostring(indexReady),
+      createNewGameRect = menuVisible and rectJson(item("create-new-game")) or "null",
+      loadGameRect = menuVisible and rectJson(item("load-game")) or "null",
+      startGameRect = menuVisible and rectJson(item("start-game-button")) or "null",
+      nextGameRect = menuVisible and rectJson(item("next-game-button")) or "null",
+      multiplayerRect = menuVisible and rectJson(item("tpf2mp.mainMenuEntry")) or "null",
+      expectedSaveRect = menuVisible and rectJson(expectedItem) or "null",
+      menuRect = menuVisible and rectJson(menuRoot) or "null",
       -- A hidden pause-menu parent leaves the stock Save button's own
       -- isVisible() flag true. Publish effective ancestor visibility so the
       -- recovery watcher cannot click a stale map-space rectangle.
@@ -536,6 +547,20 @@ function data()
   -- boundary.  The game script uses that event to emit/consume ordered network
   -- traffic without requiring a simulation tick.
   local function pumpPausedNetwork()
+    -- This Console state renders at uncapped FPS even after world load. All
+    -- inputs below are durable files or sticky native state; sampling them once
+    -- per wall-clock second preserves pause/recovery responsiveness while
+    -- removing hundreds of file opens and JSON scans per second across two
+    -- local instances.
+    local wallOk, wall = pcall(function() return os.time() end)
+    wall = wallOk and tonumber(wall) or nil
+    if wall then
+      if networkPumpLastWall and wall <= networkPumpLastWall then return end
+      networkPumpLastWall = wall
+    else
+      if frames - networkPumpFallbackFrame < 30 then return end
+      networkPumpFallbackFrame = frames
+    end
     local requestedGeneration = markerValue(root .. "/launcher/network-pump-generation") or "0"
     local generationChanged = requestedGeneration ~= networkPumpGeneration
     networkPumpGeneration = requestedGeneration
@@ -544,7 +569,14 @@ function data()
     -- single print crosses the pinned luaB_print hook and installs the native
     -- API into this exact Lua global table; without it, registration would be
     -- deferred until unrelated console output happened to occur.
-    if type(nativeReady) ~= "function" and frames % 120 == 0 then
+    -- pumpPausedNetwork is wall-clock throttled.  A frame-modulo condition here
+    -- can therefore miss forever (for example samples at frames 121, 241, ...),
+    -- leaving the long-lived Console state without the native API even though
+    -- the hook is active.  Retry once per pump sample until luaB_print installs
+    -- the API into this exact global table.
+    if type(nativeReady) ~= "function"
+      and networkPumpLastRegistrationFrame ~= frames then
+      networkPumpLastRegistrationFrame = frames
       print("[TPF2MP] registering native launcher bootstrap API")
       nativeReady = rawget(_G, "tpf2mp_native_launcher_bootstrap_ready")
     end
@@ -567,21 +599,9 @@ function data()
     local recoveryPrepareWake = prepareReady and not recoveryPrepareWakeIssued
     if not startClicked or not ready then return end
     -- A finite startup burst leaves a deliberately paused peer stale after
-    -- roughly one minute.  Keep issuing a cheap launcher pulse for the life of
-    -- the loaded world.  Wall time makes the cadence independent of render
-    -- FPS; the frame fallback only serves restricted compatible Lua states.
-    local wallOk, wall = pcall(function() return os.time() end)
-    wall = wallOk and tonumber(wall) or nil
-    if recoveryPrepareWake or generationChanged then
-      networkPumpLastWall = wall or networkPumpLastWall
-      networkPumpFallbackFrame = frames
-    elseif wall then
-      if networkPumpLastWall and wall <= networkPumpLastWall then return end
-      networkPumpLastWall = wall
-    else
-      if frames - networkPumpFallbackFrame < 30 then return end
-      networkPumpFallbackFrame = frames
-    end
+    -- roughly one minute. Keep issuing one cheap launcher pulse per second for
+    -- the life of the loaded world; generation/recovery changes use that same
+    -- bounded cadence and dispatch immediately when observed.
     networkPumpLastAttemptFrame = frames
     local ok, result = pcall(function()
       if not networkPumpPausedRequired and not recoveryPrepareWake then
@@ -778,7 +798,8 @@ function data()
       end
       if startClicked then pumpPausedNetwork() end
       if frames % 30 ~= 0 then return end
-      if visible(item("menuUI")) then
+      local menuVisible = visible(item("menuUI"))
+      if menuVisible then
         if not treeDumped and item("create-new-game") then
           treeDumped = true
           pcall(dumpMenuTree, "menu_tree.txt")
@@ -797,7 +818,18 @@ function data()
       elseif startClicked then
         stage = "world-transition"
       end
-      publish(false)
+      if not menuVisible and startClicked then
+        local wallOk, wall = pcall(function() return os.time() end)
+        wall = wallOk and tonumber(wall) or nil
+        if wall then
+          if lastWorldStatusWall and wall <= lastWorldStatusWall then return end
+          lastWorldStatusWall = wall
+        else
+          if frames - lastWorldStatusFrame < 60 then return end
+          lastWorldStatusFrame = frames
+        end
+      end
+      publish(false, menuVisible)
     end,
     handleEvent = function(id, name, param)
       -- Kept for Console-state lifecycle compatibility.

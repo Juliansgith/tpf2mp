@@ -100,9 +100,48 @@ function Get-Tpf2mpLatestLocalRestorePair {
     return $pair
 }
 
+function Get-Tpf2mpExpectedNativeHookVersion {
+    param([Parameter(Mandatory = $true)][string]$BundleRoot)
+    $bundle = Resolve-Tpf2mpFullPath $BundleRoot
+    $manifestPath = Join-Path $bundle 'release-manifest.json'
+    if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+        try {
+            $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            $nativeProperty = $manifest.PSObject.Properties['supportedNativeBuild']
+            $versionProperty = if ($nativeProperty -and $nativeProperty.Value) {
+                $nativeProperty.Value.PSObject.Properties['hookVersion']
+            } else { $null }
+            if ($versionProperty) {
+                $version = [string]$versionProperty.Value
+                if ($version -notmatch '^\d+\.\d+\.\d+$') {
+                    throw 'Release manifest contains an invalid native hook version.'
+                }
+                return $version
+            }
+        }
+        catch {
+            throw "Could not read the release native-hook version: $($_.Exception.Message)"
+        }
+        # Bundles published before the hook-version binding remain readable by
+        # their own launcher.  A current package always writes the field below.
+        return $null
+    }
+
+    $sourcePath = Join-Path $bundle 'native\src\hook_dll.cpp'
+    if (Test-Path -LiteralPath $sourcePath -PathType Leaf) {
+        $source = Get-Content -LiteralPath $sourcePath -Raw
+        if ($source -match 'native hook (?<version>\d+\.\d+\.\d+)') {
+            return [string]$Matches.version
+        }
+        throw 'Could not derive the required native hook version from source.'
+    }
+    return $null
+}
+
 function Get-Tpf2mpNativePaths {
     param([Parameter(Mandatory = $true)][string]$BundleRoot)
     $bundle = Resolve-Tpf2mpFullPath $BundleRoot
+    $expectedHookVersion = Get-Tpf2mpExpectedNativeHookVersion $bundle
     $roots = @(
         (Join-Path $bundle 'bin\native'),
         (Join-Path $bundle 'runtime\native-build\Release')
@@ -111,7 +150,12 @@ function Get-Tpf2mpNativePaths {
         $injector = Join-Path $root 'tpf2mp_injector.exe'
         $hook = Join-Path $root 'tpf2mp_hook_build35924.dll'
         if ((Test-Path -LiteralPath $injector -PathType Leaf) -and (Test-Path -LiteralPath $hook -PathType Leaf)) {
-            return [pscustomobject]@{ Root = $root; Injector = $injector; Hook = $hook }
+            return [pscustomobject]@{
+                Root = $root
+                Injector = $injector
+                Hook = $hook
+                ExpectedHookVersion = $expectedHookVersion
+            }
         }
     }
     throw 'Built native injector/hook was not found in the bundle or development runtime.'

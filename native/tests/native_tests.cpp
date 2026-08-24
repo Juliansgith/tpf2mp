@@ -1,5 +1,7 @@
 #include "tpf2mp/native_common.hpp"
 #include "tpf2mp/native_async_bridge.hpp"
+#include "tpf2mp/native_binding_catalog.hpp"
+#include "tpf2mp/native_build_correlation.hpp"
 #include "tpf2mp/native_command_codec.hpp"
 #include "tpf2mp/native_hook_status.hpp"
 #include "tpf2mp/native_launcher_barrier.hpp"
@@ -118,6 +120,18 @@ bool TestLauncherPump() {
 
 int main(int argc, char** argv) {
   static_assert(sizeof(void*) == 8, "native probe must be built for x64");
+  const int script_event_binding = tpf2mp::native_binding::Index("sendScriptEvent");
+  if (tpf2mp::native_binding::Count() != 42 || script_event_binding < 0 ||
+      tpf2mp::native_binding::At(static_cast<std::size_t>(script_event_binding)) !=
+          "sendScriptEvent" ||
+      !tpf2mp::native_binding::IsInteresting("buildProposal") ||
+      tpf2mp::native_binding::IsInteresting(nullptr) ||
+      tpf2mp::native_binding::Index("not-a-command") != -1 ||
+      tpf2mp::native_binding::RegistrySlot(1) == tpf2mp::native_binding::RegistrySlot(2) ||
+      tpf2mp::native_binding::GlobalName("setLine") != "tpf2mp_native_binding_setLine") {
+    std::cerr << "native Lua binding catalog is invalid\n";
+    return 1;
+  }
   static_assert(tpf2mp::profile::kSignatures.size() == 16);
   static_assert(tpf2mp::profile::kAuthorityCommandVisitors.size() == 31);
   static_assert(tpf2mp::profile::kSetGameSpeedValueOffset == 0);
@@ -465,6 +479,41 @@ int main(int argc, char** argv) {
     std::cerr << "lifecycle codec admitted a negative vehicle id\n";
     return 1;
   }
+  tpf2mp::native_build::SuppressedBuildQueue build_queue(2);
+  build_queue.Arm(101);
+  if (build_queue.Capture(15) != 1) {
+    std::cerr << "suppressed build generation did not start at one\n";
+    return 1;
+  }
+  build_queue.Arm(102);
+  if (build_queue.Capture(15) != 2 || build_queue.queued() != 2 ||
+      build_queue.TakeEncoded() != std::optional<std::string>("S1|1|101|15") ||
+      build_queue.TakeEncoded() != std::optional<std::string>("S1|2|102|15")) {
+    std::cerr << "suppressed build correlation FIFO lost event identity or order\n";
+    return 1;
+  }
+  build_queue.ResetPending();
+  build_queue.Arm(201);
+  build_queue.Capture(15);
+  build_queue.Capture(15);
+  build_queue.Capture(15);
+  const auto build_overflow = build_queue.TakeEncoded();
+  if (!build_overflow || *build_overflow != "F1|suppressed-build-queue-overflow|3" ||
+      build_queue.TakeEncoded().has_value() || build_queue.last_generation() != 5 ||
+      build_queue.captured() != 5 || build_queue.consumed() != 2 ||
+      build_queue.dropped() != 3) {
+    std::cerr << "suppressed build queue did not fail closed after overflow\n";
+    return 1;
+  }
+  std::uint64_t parsed_correlation = 0;
+  if (!tpf2mp::native_build::ParseCorrelationToken("18446744073709551615",
+                                                    parsed_correlation) ||
+      parsed_correlation != std::numeric_limits<std::uint64_t>::max() ||
+      tpf2mp::native_build::ParseCorrelationToken("-1", parsed_correlation) ||
+      tpf2mp::native_build::ParseCorrelationToken("12x", parsed_correlation)) {
+    std::cerr << "native build correlation token parser is invalid\n";
+    return 1;
+  }
   const std::string status_stage = "test";
   const std::string status_error;
   const std::filesystem::path status_dll = L"test.dll";
@@ -486,7 +535,14 @@ int main(int argc, char** argv) {
           .queued_tags = status_tags,
           .applied_tags = status_tags,
           .completed_commands = status_events,
-          .recent_completed_commands = status_events,
+           .recent_completed_commands = status_events,
+           .suppressed_build_queued = 2,
+           .suppressed_build_captured = 9,
+           .suppressed_build_consumed = 7,
+           .suppressed_build_dropped = 1,
+           .suppressed_build_last_generation = 9,
+           .suppressed_build_armed_correlation = 44,
+           .suppressed_build_last_correlation = 43,
           .command_gate_authorizations = status_tags,
           .command_gate_allowed = status_tags,
           .command_gate_suppressed = status_tags,
@@ -495,8 +551,11 @@ int main(int argc, char** argv) {
           .states = status_states,
       });
   if (status_json.find("\"schemaVersion\":1") == std::string::npos ||
+      status_json.find("\"hookVersion\":\"0.19.0\"") == std::string::npos ||
       status_json.find("\"processId\":7") == std::string::npos ||
-      status_json.find("\"stage\":\"test\"") == std::string::npos) {
+      status_json.find("\"stage\":\"test\"") == std::string::npos ||
+      status_json.find("\"lastGeneration\":9") == std::string::npos ||
+      status_json.find("\"armedCorrelation\":44") == std::string::npos) {
     std::cerr << "native hook status serializer is invalid\n";
     return 1;
   }

@@ -109,10 +109,6 @@ function Get-Tpf2mpOnlineRelease {
     return [pscustomobject]@{ selected = $selected; token = $token }
 }
 
-if (Get-Process -Name TransportFever2 -ErrorAction SilentlyContinue) {
-    throw 'Close every Transport Fever 2 instance before installing an update.'
-}
-
 $temporaryRoot = $null
 try {
     $selectedVersion = $null
@@ -176,6 +172,10 @@ try {
     if ($CheckOnly) {
         Write-Host "TPF2MP $newVersion is a verified local update (installed: $currentVersion)."
         exit 0
+    }
+
+    if (Get-Process -Name TransportFever2 -ErrorAction SilentlyContinue) {
+        throw 'Close every Transport Fever 2 instance before installing an update.'
     }
 
     $installArguments = @{

@@ -13,6 +13,10 @@ local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
 local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_scheduler"
 local constructionSubmission = require "tpf2_mp/gui_construction_submission"
+local proposalPredicates = require "tpf2_mp/gui_proposal_predicates"
+local buildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
+local buildCorrelationModule = require "tpf2_mp/gui_build_correlation"
+local guiBuildCaptureRuntimeModule = require "tpf2_mp/gui_build_capture_runtime"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "GUI event runtime dependencies are required")
@@ -217,65 +221,40 @@ function M.new(deps)
     return envelope, hasProposal and envelope or nil
   end
   
-  local BUILD_CHANGE_FIELDS = {
-    edgesToAdd = true, addedSegments = true, edgesToRemove = true, removedSegments = true,
-    nodesToAdd = true, addedNodes = true, nodesToRemove = true, removedNodes = true,
-    constructionsToAdd = true, toAdd = true, constructionsToRemove = true, toRemove = true,
-    edgeObjectsToAdd = true, edgeObjectsToRemove = true,
-  }
-  
-  local function projectedCollectionNonEmpty(value)
-    if type(value) ~= "table" then return false end
-    for key, nested in pairs(value) do
-      if key ~= "__type" and key ~= "__truncated" and nested ~= nil then return true end
-    end
-    return false
+  proposalPredicates.install(gui)
+  local buildGateSampler = buildGateSamplerModule.new(nativeHookStatus)
+  gui.nativeBuildGateSampler = buildGateSampler.status()
+  local currentBuildGateSuppressed = buildGateSampler.sample
+  local drainSuppressedBuildEvents = buildGateSampler.drain
+  local function clearConstructionPreviewCache()
+    gui.lastConstructionPreviewDecision = nil
+    gui.lastConstructionPreviewSnapshot = nil
+    gui.lastConstructionPreviewPlacement = nil
+    gui.lastConstructionPreviewSignature = nil
+    gui.lastConstructionPreviewModuleSentinels = nil
   end
-  
-  gui.proposalSnapshotHasChange = function(root)
-    local seen = {}
-    local function walk(value, depth)
-      if type(value) ~= "table" or seen[value] or depth > 10 then return false end
-      seen[value] = true
-      for key, nested in pairs(value) do
-        if BUILD_CHANGE_FIELDS[tostring(key)] and projectedCollectionNonEmpty(nested) then return true end
-      end
-      for key, nested in pairs(value) do
-        if key ~= "__type" and key ~= "__truncated" and walk(nested, depth + 1) then return true end
-      end
-      return false
+  local buildCorrelation = buildCorrelationModule.new(gui, {
+    maximumHistory = 64,
+    maximumAgeFrames = 600,
+    clearConstructionCache = clearConstructionPreviewCache,
+  })
+  gui.invalidateBuildCorrelation = function(reason, flags)
+    local previousCorrelation = gui.buildCorrelation and gui.buildCorrelation.activeCorrelation or nil
+    buildCorrelation.invalidate(reason, flags)
+    gui.nativeBuildCapture.invalidations = (gui.nativeBuildCapture.invalidations or 0) + 1
+    if not (flags and flags.silent == true) then
+      diagnosticLog("build-correlation-invalidated", {
+        reason = tostring(reason or "unspecified"), correlationId = previousCorrelation,
+        preserveWaiting = flags and flags.preserveWaiting == true or false,
+      })
     end
-    return walk(root, 0)
   end
-  
-  gui.proposalSnapshotHasConstructionChange = function(root)
-    local seen = {}
-    local function walk(value, depth)
-      if type(value) ~= "table" or seen[value] or depth > 10 then return false end
-      seen[value] = true
-      for key, nested in pairs(value) do
-        local name = tostring(key)
-        if (name == "constructionsToAdd" or name == "constructionsToRemove"
-          or name == "toAdd" or name == "toRemove")
-          and projectedCollectionNonEmpty(nested) then return true end
-      end
-      for key, nested in pairs(value) do
-        if key ~= "__type" and key ~= "__truncated" and walk(nested, depth + 1) then return true end
-      end
-      return false
-    end
-    return walk(root, 0)
-  end
-  
-  local function currentBuildGateSuppressed()
-    local hook = nativeHookStatus()
-    local gate = hook.gates and hook.gates.buildProposal or {}
-    if hook.available ~= true then return nil, "native hook status is unavailable" end
-    if gate.enabled ~= true then return nil, "native BuildProposal gate is disabled" end
-    if (tonumber(gate.tagMismatches) or 0) > 0 then
-      return nil, "native BuildProposal visitor reported an ABI tag mismatch"
-    end
-    return math.max(0, tonumber(gate.suppressed) or 0), nil, gate
+
+  local function detailedCaptureDiagnostics()
+    local current = config()
+    local snapshot = gui.snapshot or {}
+    return current.operationalCapture == true or current.networkAutoValidate == true
+      or snapshot.networkMode ~= "network"
   end
   
   local nativeBuildCaptureFailure
@@ -285,7 +264,7 @@ function M.new(deps)
     if not snapshot then return false, "native build capture had no proposal snapshot" end
     if pending.deferredConstructionRebase == true then
       local rebased, rebaseError = gui.rebaseConstructionPreviewSnapshot(
-        util.deepCopy(snapshot), pending.constructionPlacement
+        snapshot, pending.constructionPlacement
       )
       if not rebased then
         return nativeBuildCaptureFailure(
@@ -294,6 +273,29 @@ function M.new(deps)
         )
       end
       snapshot = rebased
+    end
+    local observedFamily = buildCorrelation.family(snapshot)
+    if pending.family ~= nil and observedFamily ~= "none"
+      and (observedFamily ~= pending.family
+        or not buildCorrelation.sourceAllows(pending.sourceId, observedFamily)) then
+      gui.nativeBuildCapture.semanticRejects = (gui.nativeBuildCapture.semanticRejects or 0) + 1
+      return nativeBuildCaptureFailure(
+        "suppressed build payload changed action family before replication",
+        {
+          correlationId = pending.correlationId,
+          expectedFamily = pending.family,
+          observedFamily = observedFamily,
+          sourceId = pending.sourceId,
+        }
+      )
+    end
+    if pending.templateSignature ~= nil and pending.constructionPlacement
+      and pending.constructionPlacement.templateSignature ~= pending.templateSignature then
+      gui.nativeBuildCapture.semanticRejects = (gui.nativeBuildCapture.semanticRejects or 0) + 1
+      return nativeBuildCaptureFailure(
+        "suppressed construction template signature changed before replication",
+        { correlationId = pending.correlationId }
+      )
     end
     local accessDecision = world.checkProposalAccess(state.world, snapshot, pending.companyCid)
     if not accessDecision.allowed then
@@ -308,6 +310,7 @@ function M.new(deps)
         localOnly = true,
       })
       gui.lastError = proposalAccessMessage(accessDecision)
+      if pending.correlationId then buildCorrelation.consume(pending.correlationId) end
       renderGui()
       return false, gui.lastError
     end
@@ -315,6 +318,7 @@ function M.new(deps)
     if gui.lastNetworkProposalDigest == captureDigest
       and gui.frames - (gui.lastNetworkProposalFrame or -1000) <= 30 then
       gui.nativeBuildCapture.duplicates = (gui.nativeBuildCapture.duplicates or 0) + 1
+      if pending.correlationId then buildCorrelation.consume(pending.correlationId) end
       return false, "duplicate"
     end
     gui.lastNetworkProposalDigest = captureDigest
@@ -325,26 +329,34 @@ function M.new(deps)
     else
       gui.nativeBuildCapture.previewFallbacks = (gui.nativeBuildCapture.previewFallbacks or 0) + 1
     end
-    queueAction({
-      type = "native.observed",
-      observation = "native.buildProposal.suppressedCapture",
-      companyCid = pending.companyCid,
-      ids = {},
-      sourceId = pending.sourceId,
-      eventShape = {
-        previewFrame = pending.frame,
-        captureFrame = gui.frames,
-        captureDigest = captureDigest,
-        exactApply = pending.exact == true,
-        deferredConstructionRebase = pending.deferredConstructionRebase == true,
-        suppressedCalls = pending.suppressedCalls or 1,
-        previewAgeFrames = math.max(0, gui.frames - (pending.frame or gui.frames)),
-        suppressionWaitFrames = math.max(0,
-          gui.frames - (pending.suppressionDetectedFrame or gui.frames)),
-      },
-      proposalSnapshot = snapshot,
-      localOnly = true,
-    })
+    if detailedCaptureDiagnostics() then
+      queueAction({
+        type = "native.observed",
+        observation = "native.buildProposal.suppressedCapture",
+        companyCid = pending.companyCid,
+        ids = {},
+        sourceId = pending.sourceId,
+        eventShape = {
+          previewFrame = pending.frame,
+          captureFrame = gui.frames,
+          captureDigest = captureDigest,
+          exactApply = pending.exact == true,
+          deferredConstructionRebase = pending.deferredConstructionRebase == true,
+          suppressedCalls = pending.suppressedCalls or 1,
+          correlationId = pending.correlationId,
+          toolGeneration = pending.toolGeneration,
+          actionFamily = pending.family,
+          nativeSuppressionGeneration = pending.nativeSuppressionGeneration,
+          previewAgeFrames = math.max(0, gui.frames - (pending.frame or gui.frames)),
+          suppressionWaitFrames = math.max(0,
+            gui.frames - (pending.suppressionDetectedFrame or gui.frames)),
+        },
+        proposalSnapshot = snapshot,
+        localOnly = true,
+      })
+      gui.nativeBuildCapture.captureDiagnostics =
+        (gui.nativeBuildCapture.captureDiagnostics or 0) + 1
+    end
     -- Canonical capture precedes lower-value diagnostics; constructions fail
     -- fast at a busy barrier instead of becoming delayed ghost work.
     table.insert(gui.queue, 1, {
@@ -353,15 +365,33 @@ function M.new(deps)
       proposalSnapshot = util.deepCopy(snapshot),
       queuePolicy = constructionSubmission.queuePolicy(gui, snapshot),
     })
+    diagnosticLog("build-correlation-accepted", {
+      correlationId = pending.correlationId,
+      nativeGeneration = pending.nativeSuppressionGeneration,
+      family = pending.family or observedFamily,
+      sourceId = pending.sourceId,
+      exact = pending.exact == true,
+      suppressedCalls = pending.suppressedCalls or 1,
+    })
+    if pending.correlationId then buildCorrelation.consume(pending.correlationId) end
+    local captureSource = tostring(pending.sourceId or ""):lower()
+    if captureSource:find("bulldoz", 1, true) or captureSource:find("demol", 1, true) then
+      gui.invalidateBuildCorrelation("bulldoze-capture-complete", {
+        clearConstruction = true,
+      })
+    end
     renderGui()
     return true
   end
   
   nativeBuildCaptureFailure = function(message, details)
     gui.nativeBuildCapture.orphaned = (gui.nativeBuildCapture.orphaned or 0) + 1
-    gui.pendingNetworkBuildPreview = nil
-    gui.pendingNetworkBuildExact = nil
-    gui.pendingNetworkBuildSuppression = nil
+    gui.nativeBuildCapture.correlationRejects =
+      (gui.nativeBuildCapture.correlationRejects or 0) + 1
+    gui.invalidateBuildCorrelation("capture-failure", { clearConstruction = true })
+    diagnosticLog("build-correlation-rejected", {
+      error = tostring(message), details = details,
+    })
     queueAction({
       type = "native.observed",
       observation = "native.buildProposal.captureError",
@@ -376,175 +406,17 @@ function M.new(deps)
     return false
   end
   
-  gui.finishSuppressedNativeBuildCapture = function()
-    local waiting = gui.pendingNetworkBuildSuppression
-    if not waiting then return false end
-    local pending = waiting.pending
-    if not pending then
-      return nativeBuildCaptureFailure(
-        "a suppressed native build lost its correlated proposal snapshot; no command was replicated",
-        { suppressed = waiting.suppressed }
-      )
-    end
-    if pending.exact ~= true
-      and gui.frames - (waiting.detectedFrame or gui.frames) < gui.nativeBuildApplySettleFrames then
-      return false
-    end
-    gui.pendingNetworkBuildSuppression = nil
-    return queueNetworkProposalCapture(pending)
-  end
-  
-  local function processSuppressedNativeBuildCapture(force)
-    local snapshotState = gui.snapshot or {}
-    if snapshotState.networkMode ~= "network" then
-      gui.pendingNetworkBuildPreview = nil
-      gui.pendingNetworkBuildExact = nil
-      gui.pendingNetworkBuildSuppression = nil
-      gui.buildGateSuppressedSeen = nil
-      return false
-    end
-    if gui.finishSuppressedNativeBuildCapture() then return true end
-    if not force and not gui.pendingNetworkBuildPreview and not gui.pendingNetworkBuildExact
-      and not gui.pendingNetworkBuildSuppression then return false end
-    if not force and gui.frames - (gui.lastBuildGatePollFrame or -1000) < 2 then return false end
-    gui.lastBuildGatePollFrame = gui.frames
-    local current, statusError = currentBuildGateSuppressed()
-    if current == nil then
-      if gui.pendingNetworkBuildPreview then
-        gui.lastError = "cannot correlate vanilla build: " .. tostring(statusError)
-        renderGui()
-      end
-      return false
-    end
-    if gui.buildGateSuppressedSeen == nil then
-      gui.buildGateSuppressedSeen = current
-      return false
-    end
-    if current < gui.buildGateSuppressedSeen then
-      gui.nativeBuildCapture.counterResets = (gui.nativeBuildCapture.counterResets or 0) + 1
-      gui.buildGateSuppressedSeen = current
-      gui.pendingNetworkBuildPreview = nil
-      gui.pendingNetworkBuildExact = nil
-      gui.lastError = "native BuildProposal suppression counter reset; discarded the pending preview"
-      renderGui()
-      return false
-    end
-    local delta = current - gui.buildGateSuppressedSeen
-    if delta == 0 then return gui.finishSuppressedNativeBuildCapture() end
-    gui.buildGateSuppressedSeen = current
-    local exact = gui.pendingNetworkBuildExact
-    if exact and gui.frames - (exact.frame or gui.frames) > gui.nativeBuildExactLatchFrames then
-      exact = nil
-      gui.pendingNetworkBuildExact = nil
-    end
-    local pending = exact or gui.pendingNetworkBuildPreview
-    local waiting = gui.pendingNetworkBuildSuppression
-    if waiting and not pending then
-      local constructionBatch = delta <= 16 and waiting.pending
-        and gui.proposalSnapshotHasConstructionChange(waiting.pending.proposalSnapshot)
-      if not constructionBatch then
-        return nativeBuildCaptureFailure(
-          "another native build was suppressed before the prior click acquired its apply payload",
-          { suppressed = current, suppressedDelta = delta }
-        )
-      end
-      waiting.pending.suppressedCalls = (waiting.pending.suppressedCalls or 1) + delta
-      waiting.suppressed = current
-      gui.nativeBuildCapture.coalescedConstructionSuppressions =
-        (gui.nativeBuildCapture.coalescedConstructionSuppressions or 0) + delta
-      return gui.finishSuppressedNativeBuildCapture()
-    end
-    if delta ~= 1 then
-      local constructionBatch = delta <= 16 and pending
-        and gui.proposalSnapshotHasConstructionChange(pending.proposalSnapshot)
-      if not constructionBatch then
-        return nativeBuildCaptureFailure(
-          "multiple native builds were suppressed before they could be correlated; no command was replicated",
-          { suppressedDelta = delta }
-        )
-      end
-      pending.suppressedCalls = delta
-      gui.nativeBuildCapture.coalescedConstructionSuppressions =
-        (gui.nativeBuildCapture.coalescedConstructionSuppressions or 0) + delta - 1
-    end
-    if not pending then
-      return nativeBuildCaptureFailure(
-        "a native build was suppressed without a matching pre-commit proposal; no command was replicated",
-        { suppressed = current }
-      )
-    end
-    gui.pendingNetworkBuildPreview = nil
-    gui.pendingNetworkBuildExact = nil
-    -- A waiting capture with no replacement pending was handled above. Reaching
-    -- this branch with both is an exact builder.apply upgrade of that capture.
-    gui.pendingNetworkBuildSuppression = {
-      pending = pending,
-      detectedFrame = gui.frames,
-      suppressed = current,
-    }
-    pending.suppressionDetectedFrame = gui.frames
-    pending.suppressed = current
-    return gui.finishSuppressedNativeBuildCapture()
-  end
-  
-  local function armNetworkBuildCapture(snapshot, companyCid, sourceId, exact)
-    local snapshotState = gui.snapshot or {}
-    if snapshotState.networkMode ~= "network" or not gui.proposalSnapshotHasChange(snapshot) then return false end
-    -- Settle a previous commit before a newer mouse-move preview replaces it.
-    processSuppressedNativeBuildCapture(true)
-    local suppressed, statusError = currentBuildGateSuppressed()
-    if suppressed == nil then
-      gui.lastError = "cannot arm vanilla build capture: " .. tostring(statusError)
-      renderGui()
-      return false
-    end
-    if gui.buildGateSuppressedSeen == nil then gui.buildGateSuppressedSeen = suppressed end
-    local pending = {
-      companyCid = companyCid,
-      sourceId = tostring(sourceId or "builder"),
-      frame = gui.frames,
-      digest = hash.value(snapshot),
-      proposalSnapshot = util.deepCopy(snapshot),
-      exact = exact == true,
-    }
-    -- If the native visitor reported suppression just before builder.apply, the
-    -- waiting preview is atomically upgraded to this exact click payload.
-    if pending.exact and gui.pendingNetworkBuildSuppression then
-      pending.suppressionDetectedFrame = gui.pendingNetworkBuildSuppression.detectedFrame
-      pending.suppressed = gui.pendingNetworkBuildSuppression.suppressed
-      gui.pendingNetworkBuildSuppression.pending = pending
-      gui.pendingNetworkBuildPreview = nil
-      gui.pendingNetworkBuildExact = nil
-      return gui.finishSuppressedNativeBuildCapture()
-    end
-    if pending.exact then
-      gui.pendingNetworkBuildExact = pending
-      processSuppressedNativeBuildCapture(true)
-    else
-      gui.pendingNetworkBuildPreview = pending
-    end
-    return true
-  end
-
-  local function armLightweightConstructionPreview(snapshot, placement, companyCid, sourceId)
-    local snapshotState = gui.snapshot or {}
-    if snapshotState.networkMode ~= "network" or type(placement) ~= "table"
-      or not gui.proposalSnapshotHasConstructionChange(snapshot) then return false end
-    if gui.buildGateSuppressedSeen == nil then
-      local suppressed, statusError = currentBuildGateSuppressed()
-      if suppressed == nil then
-        gui.lastError = "cannot arm vanilla construction capture: " .. tostring(statusError)
-        renderGui()
-        return false
-      end
-      gui.buildGateSuppressedSeen = suppressed
-    end
-    gui.pendingNetworkBuildPreview = gui.lightweightConstructionPending(
-      snapshot, placement, companyCid, sourceId)
-    gui.nativeBuildCapture.constructionPreviewsArmed = (gui.nativeBuildCapture.constructionPreviewsArmed or 0) + 1
-    return true
-  end
-  
+  local buildCaptureRuntime = guiBuildCaptureRuntimeModule.new({
+    gui = gui,
+    sampler = buildGateSampler,
+    correlation = buildCorrelation,
+    queueCapture = queueNetworkProposalCapture,
+    captureFailure = nativeBuildCaptureFailure,
+    renderGui = renderGui,
+  })
+  local processSuppressedNativeBuildCapture = buildCaptureRuntime.process
+  local armNetworkBuildCapture = buildCaptureRuntime.arm
+  local armLightweightConstructionPreview = buildCaptureRuntime.armLightweight
   local function installNativeCommandObserver()
     local setter = rawget(_G, "tpf2mp_native_set_command_observer")
     if type(setter) ~= "function" then return false end
@@ -571,12 +443,13 @@ function M.new(deps)
           -- Canonical replay already has one-shot authorization; do not reflect
           -- its sendCommand call back as fresh input.
           if gui.issuingCanonicalProposal then return true end
-          local hook = nativeHookStatus()
-          local gate = hook.gates and hook.gates.buildProposal or {}
-          if gate.enabled ~= true then
-            gui.lastError = "network BuildProposal capture observed while the native gate was disabled"
+          local suppressed, gateError = currentBuildGateSuppressed()
+          if suppressed == nil then
+            gui.lastError = "network BuildProposal capture cannot verify the native gate: "
+              .. tostring(gateError)
             return false
           end
+          if gui.buildGateSuppressedSeen == nil then gui.buildGateSuppressedSeen = suppressed end
           armNetworkBuildCapture(proposalSnapshot, snapshotState.activeCompanyCid, "api.cmd.sendCommand")
         end
         return true
@@ -973,6 +846,9 @@ function M.new(deps)
       nativeBuildGate = type(rawget(_G, "tpf2mp_native_enable_build_gate")) == "function"
         and type(rawget(_G, "tpf2mp_native_disable_build_gate")) == "function" or false,
       nativeBuildAuthorize = type(rawget(_G, "tpf2mp_native_authorize_build")) == "function",
+      nativeBuildCorrelationApi =
+        type(rawget(_G, "tpf2mp_native_arm_build_correlation")) == "function"
+        and type(rawget(_G, "tpf2mp_native_take_suppressed_build")) == "function",
       nativeCommandGate = type(rawget(_G, "tpf2mp_native_enable_command_gate")) == "function"
         and type(rawget(_G, "tpf2mp_native_disable_command_gate")) == "function" or false,
       nativeCommandAuthorize = type(rawget(_G, "tpf2mp_native_authorize_command")) == "function",
@@ -1056,6 +932,7 @@ function M.new(deps)
 
   local nativeCaptureScheduler = guiNativeCaptureSchedulerModule.new({
     gui = gui,
+    build = function() return processSuppressedNativeBuildCapture(false) end,
     speed = gui.processSuppressedNativeGameSpeedCapture,
     line = gui.processSuppressedNativeLineCommandCapture,
     vehicle = gui.processSuppressedNativeVehicleCommandCapture,
@@ -1073,9 +950,10 @@ function M.new(deps)
         -- mistaken for one of the validator's already completed replays.
         local suppressed = currentBuildGateSuppressed()
         if suppressed ~= nil then gui.buildGateSuppressedSeen = suppressed end
-        gui.pendingNetworkBuildPreview = nil
-        gui.pendingNetworkBuildExact = nil
-        gui.builderContext = nil
+        drainSuppressedBuildEvents(64)
+        gui.invalidateBuildCorrelation("manual-network-handoff", {
+          clearConstruction = true,
+        })
         local handoffTypes = api.type and api.type.ComponentType or {}
         local handoffLines = componentEntitySet(handoffTypes.LINE)
         if handoffLines then gui.nativeLineKnownIds = handoffLines end
@@ -1118,9 +996,7 @@ function M.new(deps)
         end
       end
       if currentConfig.networkAutoValidate then
-        nativeCaptureScheduler.poll()
-        local captureOk, captureWork = pcall(processSuppressedNativeBuildCapture, false)
-        if not captureOk then gui.lastError = tostring(captureWork) end
+        nativeCaptureScheduler.poll(gui.frames)
         local proposalOk, proposalWork = pcall(processGuiProposalQueue)
         if not proposalOk then gui.lastError = tostring(proposalWork) end
         if proposalOk and not proposalWork then
@@ -1140,12 +1016,7 @@ function M.new(deps)
         local captureOk, captureError = pcall(processVehicleCaptures)
         if not captureOk then gui.lastError = tostring(captureError) end
       end
-      nativeCaptureScheduler.poll()
-      if gui.pendingNetworkBuildPreview or gui.pendingNetworkBuildExact
-        or gui.pendingNetworkBuildSuppression then
-        local buildCaptureOk, buildCaptureError = pcall(processSuppressedNativeBuildCapture, false)
-        if not buildCaptureOk then gui.lastError = tostring(buildCaptureError) end
-      end
+      nativeCaptureScheduler.poll(gui.frames)
       local proposalOk, proposalWork = true, false
       if proposalWorkPending() then
         proposalOk, proposalWork = pcall(processGuiProposalQueue)
@@ -1175,10 +1046,26 @@ function M.new(deps)
         local eventName = tostring(name or "")
         local isProposalCreate = eventName:find("builder.proposalCreate", 1, true) ~= nil
         local isProposalApply = eventName:find("builder.apply", 1, true) ~= nil
+        local shouldInvalidate, invalidationReason = buildCorrelation.invalidationEvent(id, name)
+        if shouldInvalidate and not isProposalCreate and not isProposalApply then
+          processSuppressedNativeBuildCapture(true)
+          gui.invalidateBuildCorrelation(invalidationReason, {
+            preserveWaiting = invalidationReason == "build-tool-control"
+              and gui.pendingNetworkBuildSuppression ~= nil,
+            clearConstruction = true,
+          })
+        end
         local quarantined, quarantineResult = replayQuarantine.handleBuilderEvent(gui, id, isProposalCreate, isProposalApply, diagnosticLog)
         if quarantined then return quarantineResult end
         local busy, busyResult = constructionSubmission.handleBuilderEvent(gui, id, isProposalCreate, isProposalApply, param, diagnosticLog)
         if busy then return busyResult end
+        local previewCaptureSettled = false
+        if isProposalCreate and gui.snapshot and gui.snapshot.networkMode == "network" then
+          -- Settle a click before the builder's next mouse-move preview can
+          -- replace its latch. The native fast sample makes this constant-time.
+          processSuppressedNativeBuildCapture(true)
+          previewCaptureSettled = true
+        end
         if config().operationalCapture and not isProposalCreate and not isProposalApply
           and operationalGuiMutation(id, name) then
           local envelope = expandedCommandEnvelope(param)
@@ -1246,8 +1133,8 @@ function M.new(deps)
           renderGui()
         elseif isProposalCreate then
           local activeCompanyCid = gui.snapshot and gui.snapshot.activeCompanyCid or nil
-          local networkConstructionPreview = gui.snapshot
-            and gui.snapshot.networkMode == "network" and gui.rawProposalHasConstruction(param)
+          local networkBuild = gui.snapshot and gui.snapshot.networkMode == "network"
+          local networkConstructionPreview = networkBuild and gui.rawProposalHasConstruction(param)
           local constructionPlacement = networkConstructionPreview
             and gui.constructionPreviewPlacement(param) or nil
           local matchingConstructionTemplate = constructionPlacement
@@ -1264,8 +1151,21 @@ function M.new(deps)
             gui.lastConstructionPreviewPlacement = constructionPlacement
             local cached = gui.lastConstructionPreviewDecision
             if cached and not cached.allowed then
-              gui.builderContext = nil
+              gui.invalidateBuildCorrelation("construction-access-denied", {
+                clearConstruction = true,
+              })
               return { errorMessages = { proposalAccessMessage(cached) }, warnings = {} }
+            end
+            local metadata = buildCorrelation.begin(
+              gui.lastConstructionPreviewSnapshot, activeCompanyCid, tostring(id),
+              constructionPlacement.templateSignature
+            )
+            if not buildCorrelation.sourceAllows(metadata.sourceId, metadata.family) then
+              nativeBuildCaptureFailure(
+                "builder source and construction preview family do not agree",
+                { sourceId = metadata.sourceId, family = metadata.family }
+              )
+              return { errorMessages = { "TPF2MP: stale build-tool preview rejected" }, warnings = {} }
             end
             gui.builderContext = {
               companyCid = activeCompanyCid,
@@ -1274,10 +1174,12 @@ function M.new(deps)
               -- builder.apply refreshes it once if this context is new.
               balanceBefore = gui.builderContext and gui.builderContext.balanceBefore or nil,
               proposalSnapshot = gui.lastConstructionPreviewSnapshot,
+              constructionPlacement = util.deepCopy(constructionPlacement),
             }
+            for key, value in pairs(metadata) do gui.builderContext[key] = value end
             armLightweightConstructionPreview(
               gui.lastConstructionPreviewSnapshot, constructionPlacement,
-              activeCompanyCid, tostring(id)
+              activeCompanyCid, tostring(id), metadata
             )
             return nil
           end
@@ -1307,7 +1209,9 @@ function M.new(deps)
               gui.lastConstructionPreviewDecision = util.deepCopy(accessDecision)
             end
             if not accessDecision.allowed then
-              gui.builderContext = nil
+              gui.invalidateBuildCorrelation("proposal-access-denied", {
+                clearConstruction = networkConstructionPreview,
+              })
               if gui.frames - gui.lastAccessDenialProbeFrame >= 15 then
                 gui.lastAccessDenialProbeFrame = gui.frames
                 queueAction({
@@ -1324,14 +1228,31 @@ function M.new(deps)
               return { errorMessages = { proposalAccessMessage(accessDecision) }, warnings = {} }
             end
           end
+          local metadata = networkBuild and buildCorrelation.begin(
+            observedSnapshot, activeCompanyCid, tostring(id),
+            constructionPlacement and constructionPlacement.templateSignature or nil
+          ) or {}
+          if networkBuild and not buildCorrelation.sourceAllows(metadata.sourceId, metadata.family) then
+            nativeBuildCaptureFailure(
+              "builder source and proposal action family do not agree",
+              { sourceId = metadata.sourceId, family = metadata.family }
+            )
+            return { errorMessages = { "TPF2MP: stale build-tool preview rejected" }, warnings = {} }
+          end
           gui.builderContext = {
             companyCid = activeCompanyCid,
             balanceBefore = guiNativeBalance(),
             proposalSnapshot = observedSnapshot,
+            constructionPlacement = constructionPlacement and util.deepCopy(constructionPlacement) or nil,
           }
-          armNetworkBuildCapture(observedSnapshot, activeCompanyCid, tostring(id))
-          if gui.frames - gui.lastProposalProbeFrame >= 15 then
+          for key, value in pairs(metadata) do gui.builderContext[key] = value end
+          armNetworkBuildCapture(observedSnapshot, activeCompanyCid, tostring(id), false,
+            previewCaptureSettled, metadata)
+          if detailedCaptureDiagnostics()
+            and gui.frames - gui.lastProposalProbeFrame >= 15 then
             gui.lastProposalProbeFrame = gui.frames
+            gui.nativeBuildCapture.previewDiagnostics =
+              (gui.nativeBuildCapture.previewDiagnostics or 0) + 1
             queueAction({
               type = "native.observed",
               observation = "builder.proposalCreate",
@@ -1346,20 +1267,42 @@ function M.new(deps)
         elseif isProposalApply then
           local context = gui.builderContext or {}
           local appliedSnapshot = proposalSnapshot(param)
+          local networkBuild = gui.snapshot and gui.snapshot.networkMode == "network"
           local activeCompanyCid = context.companyCid
             or (gui.snapshot and gui.snapshot.activeCompanyCid or nil)
           local balanceBefore = context.balanceBefore
           if balanceBefore == nil then balanceBefore = guiNativeBalance() end
           local previewSnapshot = context.proposalSnapshot or (gui.pendingNetworkBuildPreview
             and gui.pendingNetworkBuildPreview.proposalSnapshot or nil)
+          local waiting = networkBuild and gui.pendingNetworkBuildSuppression or nil
+          if waiting and tonumber(waiting.correlationId) ~= tonumber(context.correlationId) then
+            -- The next hover arrived before this delayed apply. The native FIFO
+            -- already owns the clicked preview, so do not let this later ghost
+            -- replace it; its bounded fallback will settle independently.
+            gui.builderContext = nil
+            return nil
+          end
+          local applyValid, applyError = true, nil
+          if networkBuild then
+            applyValid, applyError = buildCorrelation.validateApply(
+              context, tostring(id), appliedSnapshot, activeCompanyCid
+            )
+          end
+          if not applyValid then
+            nativeBuildCaptureFailure(applyError, {
+              correlationId = context.correlationId,
+              sourceId = tostring(id),
+            })
+            return { errorMessages = { "TPF2MP: uncorrelated build click rejected" }, warnings = {} }
+          end
           -- Matching construction previews keep only their latest lightweight
           -- placement. Materialise that transform at the click boundary, once,
           -- before the suppressed empty builder.apply payload is merged.
           if previewSnapshot ~= nil
             and previewSnapshot == gui.lastConstructionPreviewSnapshot
-            and gui.lastConstructionPreviewPlacement ~= nil then
+            and context.constructionPlacement ~= nil then
             local rebased, rebaseError = gui.rebaseConstructionPreviewSnapshot(
-              gui.lastConstructionPreviewSnapshot, gui.lastConstructionPreviewPlacement
+              gui.lastConstructionPreviewSnapshot, context.constructionPlacement
             )
             if not rebased then
               gui.builderContext = nil
@@ -1370,13 +1313,13 @@ function M.new(deps)
               )
               return { "TPF2MP: construction click could not be serialized safely" }
             end
-            gui.lastConstructionPreviewSnapshot = rebased
             previewSnapshot = rebased
           end
           local captureSnapshot = gui.mergedAppliedProposalSnapshot(
             appliedSnapshot, previewSnapshot
           )
-          armNetworkBuildCapture(captureSnapshot, activeCompanyCid, tostring(id), true)
+          armNetworkBuildCapture(
+            captureSnapshot, activeCompanyCid, tostring(id), true, false, context)
           queueAction({
             type = "native.observed",
             observation = "builder.apply",
@@ -1394,6 +1337,10 @@ function M.new(deps)
             localOnly = true,
           })
           gui.builderContext = nil
+          local lowerSource = tostring(id or ""):lower()
+          if lowerSource:find("bulldoz", 1, true) or lowerSource:find("demol", 1, true) then
+            clearConstructionPreviewCache()
+          end
         elseif (id == "vehicleManager" or tostring(id):match("vehicle")) and (name == "accept" or tostring(name):match("accept")) then
           if gui.snapshot and gui.snapshot.networkMode == "network" then
             local entity = type(param) == "table" and tonumber(param.entity) or -1
@@ -1445,12 +1392,39 @@ function M.new(deps)
       return result
   end
 
+  local function snapshotChanged(previous, current)
+    constructionSubmission.refresh(gui, current)
+    if type(previous) ~= "table" then return end
+    local previousSession = previous.session or previous.sessionId
+    local currentSession = type(current) == "table" and (current.session or current.sessionId) or nil
+    local companyChanged = tostring(previous.activeCompanyCid or "")
+      ~= tostring(type(current) == "table" and current.activeCompanyCid or "")
+    local modeChanged = tostring(previous.networkMode or "")
+      ~= tostring(type(current) == "table" and current.networkMode or "")
+    local sessionChanged = tostring(previousSession or "") ~= tostring(currentSession or "")
+    local previousError = tostring(previous.lastError or "")
+    local currentError = tostring(type(current) == "table" and current.lastError or "")
+    local newAuthoritativeError = currentError ~= "" and currentError ~= previousError
+      and (currentError:lower():find("proposal", 1, true)
+        or currentError:lower():find("build", 1, true)
+        or currentError:lower():find("construction", 1, true))
+    if companyChanged or modeChanged or sessionChanged or newAuthoritativeError then
+      gui.invalidateBuildCorrelation(
+        companyChanged and "active-company-change"
+          or (modeChanged and "network-mode-change"
+            or (sessionChanged and "session-change" or "authoritative-build-rejection")),
+        { clearConstruction = true }
+      )
+    end
+  end
+
   return {
     init = guiInit,
     update = guiUpdate,
     handleEvent = guiHandleEvent,
     capabilityProbe = guiCapabilityProbe,
     resetReplayWork = guiReplayRuntime.resetWork,
+    snapshotChanged = snapshotChanged,
   }
 end
 

@@ -231,6 +231,8 @@ $state = [ordered]@{
     gamePid = $null
     gameExecutable = $game
     gameStartedAtUtc = $null
+    launcherClosedGame = $false
+    launcherCleanupReason = $null
     menuCoordinatorPid = $null
     menuCoordinatorStdout = $null
     menuCoordinatorStderr = $null
@@ -428,15 +430,21 @@ try {
     $state | ConvertTo-Json -Depth 12
 }
 catch {
+    $failure = $_
     $state.status = 'failed'
-    $state.error = $_.Exception.Message
-    [void](Write-Tpf2mpSessionState $safeSession $peer $state)
+    $state.error = $failure.Exception.Message
     if ($gameProcess) {
         try {
             $gameProcess.Refresh()
             if (-not $gameProcess.HasExited) {
+                Write-Warning (
+                    "Launch failed before the authority boundary was ready; " `
+                    + "the launcher is closing partial game PID $($gameProcess.Id) so it cannot be mistaken for a playable session."
+                )
                 Stop-Process -Id $gameProcess.Id -Force -ErrorAction SilentlyContinue
                 [void]$gameProcess.WaitForExit(10000)
+                $state.launcherClosedGame = $true
+                $state.launcherCleanupReason = 'failed-before-world-ready'
             }
         }
         catch { }
@@ -458,5 +466,6 @@ catch {
             [void]$cleanupProcess.WaitForExit(5000)
         }
     }
-    throw
+    [void](Write-Tpf2mpSessionState $safeSession $peer $state)
+    throw $failure
 }

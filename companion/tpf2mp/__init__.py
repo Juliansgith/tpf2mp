@@ -3,4 +3,4 @@
 from .protocol import PROTOCOL_VERSION
 
 __all__ = ["PROTOCOL_VERSION"]
-__version__ = "0.38.6-alpha"
+__version__ = "0.38.7-alpha"

@@ -1,9 +1,9 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-22 for prototype `0.38.6-alpha`, state schema `31`,
+Last updated: 2026-08-22 for prototype `0.38.7-alpha`, state schema `31`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
-schema `5`, construction proposal schema `7`, and native hook `0.17.0`.
+schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
 
 ## Executive status
 
@@ -116,7 +116,8 @@ P1 and 128 FPS on P2. The former persistent 4-5x host/client regression is no
 longer present in the reproduced world; dense-network frame-time percentiles
 remain a future scalability benchmark.
 
-Hook `0.17.0` addresses the next measured hot path without weakening the
+Hook `0.19.0` addresses measured native-bridge and build-preview hot paths
+without weakening the
 durable protocol. Signed envelopes are now queued in memory on the game thread;
 the hook worker performs numbered outbox publication and exact-successor inbox
 reads in bounded batches. Stable content/freight probes, idle vehicle scans,
@@ -130,6 +131,20 @@ with bounded side-by-side render surfaces. Native build/CTest and the complete
 offline suite pass. This is not yet an FPS claim: the profiled live pair
 predated 0.17, so same-camera running measurements belong to the next
 fresh launch.
+
+The first ordinary-user construction pass then isolated the remaining tool-
+active frame collapse. Build 35924 emits proposal previews at render cadence;
+the GUI path was recursively scanning and copying projected graphs, serializing
+the complete native status, and emitting two durable diagnostic records even
+when the player merely hovered. The resident title-menu bootstrap additionally
+walked hidden save widgets and reread launcher files at uncapped render cadence.
+Hook 0.19 exposes a versioned constant-size build-gate sample plus a bounded,
+generation-bound suppressed-build correlation queue; normal network
+hover now retains one detached snapshot, defers hashing/copying until native
+click evidence, uses bounded wrapper/source predicates, and emits diagnostics
+only in research/validation modes. Hidden menu/status and idle capture polling
+now have explicit bounded cadence. Exact suppression correlation, rival-owner
+denial, click payloads, consensus, and checkpoints remain unchanged.
 
 The subsequent populated multi-train soak exposed authority loss rather than a
 native pathing deadlock: a concurrent Windows audit read held the journal long
@@ -503,7 +518,7 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Native authority layer
 
-- Hook `0.17.0` accepts only the exact Build 35924 executable SHA-256 and PE
+- Hook `0.19.0` accepts only the exact Build 35924 executable SHA-256 and PE
   profile.
 - It validates 17 unique code signatures/RVAs and 31 selected entries in the
   complete 37-tag command visitor table before enabling hooks.
