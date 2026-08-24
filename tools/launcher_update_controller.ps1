@@ -4,6 +4,28 @@ Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'update_common.ps1')
 . (Join-Path $PSScriptRoot 'launcher_worker_result.ps1')
 
+function Read-Tpf2mpLauncherLogText {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    $stream = $null
+    $reader = $null
+    try {
+        $sharing = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+        $stream = [IO.FileStream]::new(
+            $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $sharing)
+        $reader = [IO.StreamReader]::new(
+            $stream, [Text.Encoding]::UTF8, $true, 4096, $true)
+        return $reader.ReadToEnd()
+    }
+    catch [IO.IOException] { return $null }
+    catch [UnauthorizedAccessException] { return $null }
+    finally {
+        if ($reader) { $reader.Dispose() }
+        if ($stream) { $stream.Dispose() }
+    }
+}
+
 function Get-Tpf2mpReleaseUpdateCheckResult {
     [CmdletBinding()]
     param(
@@ -138,6 +160,7 @@ function Initialize-Tpf2mpLauncherUpdateController {
     $readExitCode = ${function:Get-Tpf2mpCompletedProcessExitCode}
     $readCheckResult = ${function:Get-Tpf2mpReleaseUpdateCheckResult}
     $readInstalledResult = ${function:Get-Tpf2mpVerifiedReleaseUpdateResult}
+    $readLogText = ${function:Read-Tpf2mpLauncherLogText}
     $restartInstalledLauncher = ${function:Start-Tpf2mpInstalledLauncherAfterUpdate}
     $state = [pscustomobject]@{
         Work = $null; Mode = $null; StdoutLength = 0; StderrLength = 0; Started = $false
@@ -173,7 +196,8 @@ function Initialize-Tpf2mpLauncherUpdateController {
                 @{ Path = 'StderrPath'; Length = 'StderrLength' })) {
             $path = [string]$state.Work.($field.Path)
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
-            $content = [IO.File]::ReadAllText($path)
+            $content = & $readLogText -Path $path
+            if ($null -eq $content) { continue }
             $offset = [int]$state.($field.Length)
             if ($content.Length -gt $offset) {
                 & $writeLog $content.Substring($offset)

@@ -14,6 +14,20 @@ $env:LOCALAPPDATA = $localAppData
 try {
     . (Join-Path $ProjectRoot 'tools\launcher_update_controller.ps1')
 
+    $lockedLog = Join-Path $caseRoot 'live-worker.stdout.log'
+    [IO.File]::WriteAllText($lockedLog, 'worker still running', [Text.UTF8Encoding]::new($false))
+    $exclusive = [IO.File]::Open(
+        $lockedLog, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        if ($null -ne (Read-Tpf2mpLauncherLogText -Path $lockedLog)) {
+            throw 'Launcher trusted a worker log while its writer held an exclusive handle.'
+        }
+    }
+    finally { $exclusive.Dispose() }
+    if ((Read-Tpf2mpLauncherLogText -Path $lockedLog) -cne 'worker still running') {
+        throw 'Launcher could not read the worker log after its writer released the handle.'
+    }
+
     $stdout = Join-Path $caseRoot 'check.stdout.log'
     $stderr = Join-Path $caseRoot 'check.stderr.log'
     [IO.File]::WriteAllText($stderr, '', [Text.UTF8Encoding]::new($false))
