@@ -20,6 +20,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
 . (Join-Path $PSScriptRoot 'relay_port_common.ps1')
+. (Join-Path $PSScriptRoot 'relay_diagnostic_process.ps1')
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 $safeSession = Assert-Tpf2mpSessionId $Session
@@ -56,9 +57,13 @@ $relayStderr = Join-Path $sessionRoot 'relay-tunnel.stderr.log'
 $diagnosticStatus = Join-Path $sessionRoot 'relay-diagnostics-status.json'
 $diagnosticStdout = Join-Path $sessionRoot 'relay-diagnostics.stdout.log'
 $diagnosticStderr = Join-Path $sessionRoot 'relay-diagnostics.stderr.log'
+$startupDiagnosticStatus = Join-Path $sessionRoot 'relay-startup-diagnostics-status.json'
+$startupDiagnosticStdout = Join-Path $sessionRoot 'relay-startup-diagnostics.stdout.log'
+$startupDiagnosticStderr = Join-Path $sessionRoot 'relay-startup-diagnostics.stderr.log'
 $manifest = Join-Path $sessionRoot 'match-manifest.json'
 $relayProcess = $null
-$diagnosticProcess = $null
+$startupDiagnostic = $null
+$diagnostic = $null
 $baseStarted = $false
 
 function Start-RelayTunnelProcess([bool]$IncludeSave) {
@@ -116,40 +121,6 @@ function Wait-RelayTunnelReady($Process, [bool]$IncludeSave) {
     throw "Secure relay tunnel did not become ready within 20 seconds: $last"
 }
 
-function Start-RelayDiagnostics {
-    $state = Read-Tpf2mpSessionState $safeSession $peer
-    if (-not $state) { throw 'Base network session state disappeared before diagnostics startup.' }
-    $resolvedMods = Find-Tpf2mpLocalModsPath $LocalModsPath
-    $localGameData = Split-Path -Parent $resolvedMods
-    $gameLog = Join-Path $localGameData 'crash_dump\stdout.txt'
-    $sourceArguments = @()
-    foreach ($source in @(
-        [pscustomobject]@{ Name = 'companion.stdout'; Path = [string]$state.stdout },
-        [pscustomobject]@{ Name = 'companion.stderr'; Path = [string]$state.stderr },
-        [pscustomobject]@{ Name = 'companion.status'; Path = (Join-Path ([string]$state.bridgePath) 'companion_state\companion_status.json') },
-        [pscustomobject]@{ Name = 'game.stdout'; Path = $gameLog },
-        [pscustomobject]@{ Name = 'native.status'; Path = if ($state.PSObject.Properties['nativeStatusPath']) { [string]$state.nativeStatusPath } else { $null } },
-        [pscustomobject]@{ Name = 'launcher.menu'; Path = (Join-Path ([string]$state.bridgePath) 'launcher\menu_status.json') },
-        [pscustomobject]@{ Name = 'recovery.status'; Path = if ($state.PSObject.Properties['recoveryWatcherStatusPath']) { [string]$state.recoveryWatcherStatusPath } else { $null } },
-        [pscustomobject]@{ Name = 'relay.tunnel'; Path = $relayStatus }
-    )) {
-        if ($source.Path) { $sourceArguments += @('--source', ($source.Name + '=' + $source.Path)) }
-    }
-    $arguments = @(
-        'relay-diagnostics', '--credentials', $credentialsPath,
-        '--status', $diagnosticStatus, '--interval', '2'
-    ) + $sourceArguments
-    $commandLine = ConvertTo-Tpf2mpCommandLine (@($companion.Prefix) + $arguments)
-    $previousLoopback = $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK
-    try {
-        if ($AllowInsecureLoopback) { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = '1' }
-        return Start-Process -FilePath $companion.FilePath -ArgumentList $commandLine `
-            -PassThru -WindowStyle Hidden -RedirectStandardOutput $diagnosticStdout `
-            -RedirectStandardError $diagnosticStderr
-    }
-    finally { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = $previousLoopback }
-}
-
 try {
     $includeSave = -not $RestorePlan -and ($Role -eq 'Host' -or -not $StartingSave)
     if ($Role -eq 'Join') {
@@ -173,6 +144,20 @@ try {
             $StartingSave = [string](Get-Content -LiteralPath $syncReceipt -Raw | ConvertFrom-Json).savePath
         }
     }
+
+    # Capture menu/bootstrap failures before start_network_session reaches its
+    # world-ready return. Missing source files are intentionally followed when
+    # they appear, so the reporter can start before the game and companion.
+    $startupBridge = Resolve-Tpf2mpFullPath `
+        (Join-Path ([IO.Path]::GetTempPath()) "tpf2mp_bridge\$safeSession\$peer")
+    $startupSources = New-Tpf2mpRelayDiagnosticSources -SessionRoot $sessionRoot `
+        -BridgePath $startupBridge -RelayStatusPath $relayStatus `
+        -LocalModsPath $LocalModsPath -Startup
+    $startupDiagnostic = Start-Tpf2mpRelayDiagnosticProcess -Companion $companion `
+        -CredentialsPath $credentialsPath -Sources $startupSources `
+        -StatusPath $startupDiagnosticStatus -StdoutPath $startupDiagnosticStdout `
+        -StderrPath $startupDiagnosticStderr -ExpectedSessionId $safeSession `
+        -ExpectedRole $expectedRole -AllowInsecureLoopback:$AllowInsecureLoopback
 
     $launchArguments = @{
         Role = $Role
@@ -204,37 +189,19 @@ try {
         [void](Wait-RelayTunnelReady $relayProcess $includeSave)
     }
 
-    $diagnosticProcess = Start-RelayDiagnostics
-    $diagnosticDeadline = (Get-Date).AddSeconds(10)
-    $diagnosticServicePid = $null
-    do {
-        $diagnosticProcess.Refresh()
-        if ($diagnosticProcess.HasExited) {
-            $errorText = if (Test-Path -LiteralPath $diagnosticStderr) {
-                Get-Content -LiteralPath $diagnosticStderr -Raw
-            } else { '' }
-            throw "Relay diagnostics exited during startup: $errorText"
-        }
-        if (Test-Path -LiteralPath $diagnosticStatus -PathType Leaf) {
-            try {
-                $diagnosticState = Get-Content -LiteralPath $diagnosticStatus -Raw | ConvertFrom-Json
-                if ([string]$diagnosticState.sessionId -ceq [string]$credentialData.sessionId `
-                        -and [string]$diagnosticState.role -ceq $expectedRole `
-                        -and [string]$diagnosticState.state -in @('running', 'retrying')) {
-                    $diagnosticServicePid = [int]$diagnosticState.pid
-                    break
-                }
-            }
-            catch { }
-        }
-        Start-Sleep -Milliseconds 100
-    } while ((Get-Date) -lt $diagnosticDeadline)
-    if (-not $diagnosticServicePid) {
-        throw 'Relay diagnostics did not publish a valid status within 10 seconds.'
-    }
-
     $relayState = Get-Content -LiteralPath $relayStatus -Raw | ConvertFrom-Json
     $state = Read-Tpf2mpSessionState $safeSession $peer
+    Stop-Tpf2mpRelayDiagnosticProcess -Handle $startupDiagnostic -Companion $companion `
+        -CredentialsPath $credentialsPath
+    $startupDiagnostic = $null
+    $diagnosticSources = New-Tpf2mpRelayDiagnosticSources -SessionRoot $sessionRoot `
+        -BridgePath ([string]$state.bridgePath) -RelayStatusPath $relayStatus `
+        -LocalModsPath $LocalModsPath -SessionState $state
+    $diagnostic = Start-Tpf2mpRelayDiagnosticProcess -Companion $companion `
+        -CredentialsPath $credentialsPath -Sources $diagnosticSources `
+        -StatusPath $diagnosticStatus -StdoutPath $diagnosticStdout `
+        -StderrPath $diagnosticStderr -ExpectedSessionId $safeSession `
+        -ExpectedRole $expectedRole -AllowInsecureLoopback:$AllowInsecureLoopback
     $state | Add-Member -NotePropertyName transportMode -NotePropertyValue 'secure-relay' -Force
     $state | Add-Member -NotePropertyName relayUrl -NotePropertyValue ([string]$credentialData.relayUrl) -Force
     $state | Add-Member -NotePropertyName relayAllowInsecureLoopback -NotePropertyValue ([bool]$AllowInsecureLoopback) -Force
@@ -248,8 +215,8 @@ try {
     $state | Add-Member -NotePropertyName relayTunnelStatusPath -NotePropertyValue $relayStatus -Force
     $state | Add-Member -NotePropertyName relayTunnelStdout -NotePropertyValue $relayStdout -Force
     $state | Add-Member -NotePropertyName relayTunnelStderr -NotePropertyValue $relayStderr -Force
-    $state | Add-Member -NotePropertyName relayDiagnosticsLauncherPid -NotePropertyValue $diagnosticProcess.Id -Force
-    $state | Add-Member -NotePropertyName relayDiagnosticsPid -NotePropertyValue $diagnosticServicePid -Force
+    $state | Add-Member -NotePropertyName relayDiagnosticsLauncherPid -NotePropertyValue $diagnostic.LauncherPid -Force
+    $state | Add-Member -NotePropertyName relayDiagnosticsPid -NotePropertyValue $diagnostic.ServicePid -Force
     $state | Add-Member -NotePropertyName relayDiagnosticsStatusPath -NotePropertyValue $diagnosticStatus -Force
     $state | Add-Member -NotePropertyName relayDiagnosticsStdout -NotePropertyValue $diagnosticStdout -Force
     $state | Add-Member -NotePropertyName relayDiagnosticsStderr -NotePropertyValue $diagnosticStderr -Force
@@ -260,15 +227,24 @@ try {
     Write-Host 'Structured diagnostics are enabled; native crash dumps are never uploaded automatically.'
 }
 catch {
-    foreach ($process in @($diagnosticProcess, $relayProcess)) {
-        if ($process) {
-            try {
-                $process.Refresh()
-                if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
-            }
-            catch { }
-        }
+    if ($startupDiagnostic -and -not $baseStarted `
+            -and (Test-Path -LiteralPath (Join-Path $sessionRoot 'session-state.json'))) {
+        # Give the two-second reporter one final opportunity to publish the
+        # launcher's fail-closed state before cleaning up its process.
+        Start-Sleep -Milliseconds 2200
     }
+    Stop-Tpf2mpRelayDiagnosticProcess -Handle $startupDiagnostic -Companion $companion `
+        -CredentialsPath $credentialsPath
+    Stop-Tpf2mpRelayDiagnosticProcess -Handle $diagnostic -Companion $companion `
+        -CredentialsPath $credentialsPath
+    $relayServicePid = 0
+    if (Test-Path -LiteralPath $relayStatus -PathType Leaf) {
+        try { $relayServicePid = [int](Get-Content -LiteralPath $relayStatus -Raw | ConvertFrom-Json).pid }
+        catch { }
+    }
+    $relayLauncherPid = if ($relayProcess) { [int]$relayProcess.Id } else { 0 }
+    Stop-Tpf2mpVerifiedRelayProcesses -ProcessIds @($relayLauncherPid, $relayServicePid) `
+        -Companion $companion -CredentialsPath $credentialsPath -CommandName relay-tunnel
     if ($baseStarted) {
         try {
             & (Join-Path $PSScriptRoot 'stop_network_session.ps1') `

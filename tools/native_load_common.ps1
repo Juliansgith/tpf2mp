@@ -727,13 +727,25 @@ function Wait-Tpf2mpMainMenuEntry {
             -Context 'before the TPF2MP main-menu entry was ready')
         $status = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
         if ($status -and $status.error) { throw "Menu bootstrap failed: $($status.error)" }
-        if ($status -and $status.stage -eq 'main-menu' -and $status.entryInstalled -eq $true `
-            -and $status.components -and $status.components.multiplayerRect) {
-            return $status
+        if ($status -and $status.entryInstalled -eq $true -and $status.components) {
+            $entryReady = $status.stage -eq 'main-menu' -and $status.components.multiplayerRect
+            # A human can click MULTIPLAYER between two 100-ms launcher polls.
+            # That advances the durable menu state immediately; requiring the
+            # earlier main-menu stage forever after the click turns a valid
+            # selection into a 120-second timeout. Accept the receipted later
+            # state and let Invoke-Tpf2mpPinnedSaveLoad continue from it.
+            $selectionReceipt = Test-Path -LiteralPath `
+                (Join-Path $BridgePath 'launcher\menu-entry-selected') -PathType Leaf
+            $selected = ($status.PSObject.Properties['entrySelected'] `
+                    -and $status.entrySelected -eq $true) -or $selectionReceipt
+            $selectionReady = $selected `
+                -and $status.stage -in @('multiplayer-entry-selected', 'ready-to-click-load-game') `
+                -and $status.components.loadGameRect
+            if ($entryReady -or $selectionReady) { return $status }
         }
         Start-Sleep -Milliseconds 100
     }
-    throw "Game PID $($GameProcess.Id) did not expose the TPF2MP MULTIPLAYER entry within $TimeoutSeconds seconds."
+    throw "Game PID $($GameProcess.Id) did not expose or receipt the TPF2MP MULTIPLAYER entry within $TimeoutSeconds seconds."
 }
 
 function Invoke-Tpf2mpUiRectangleClick {

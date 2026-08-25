@@ -162,6 +162,10 @@ try {
         -ProjectRoot $projectRoot
     if (-not $?) { throw 'Relay loopback port allocation tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_relay_diagnostic_process_tests.ps1') `
+        -ProjectRoot $projectRoot
+    if (-not $?) { throw 'Relay diagnostic process tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_release_manifest_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Release manifest validation tests failed' }
@@ -396,6 +400,16 @@ return { ["tpf2_mp.lua"] = { companies = {
     if ((Read-Tpf2mpMenuStatus -BridgePath $statusBridge -Session 'test' -Peer 'player1').stage -ne 'main-menu') {
         throw 'Complete menu status was not accepted.'
     }
+    [IO.File]::WriteAllText((Join-Path $statusLauncher 'menu-entry-selected'), 'selected')
+    [IO.File]::WriteAllText((Join-Path $statusLauncher 'menu_status.json'), @'
+{"schemaVersion":4,"session":"test","peer":"player1","stage":"ready-to-click-load-game","entryInstalled":true,"entrySelected":true,"components":{"multiplayerRect":{"x":1,"y":1,"w":10,"h":10},"loadGameRect":{"x":1,"y":20,"w":10,"h":10}},"error":null}
+'@)
+    $alreadySelected = Wait-Tpf2mpMainMenuEntry -GameProcess (Get-Process -Id $PID) `
+        -BridgePath $statusBridge -Session 'test' -Peer 'player1' -TimeoutSeconds 1
+    if ($alreadySelected.stage -ne 'ready-to-click-load-game') {
+        throw 'Launcher did not recover an already-receipted MULTIPLAYER selection.'
+    }
+    Write-Host 'PASS launcher recovers a MULTIPLAYER click that wins the readiness poll'
     $fakeInjector = Join-Path $temporary 'fake-native-injector.cmd'
     [IO.File]::WriteAllText($fakeInjector, "@echo off`r`necho profile=fake-build`r`necho hook active`r`nexit /b 0`r`n",
         [Text.ASCIIEncoding]::new())

@@ -1,0 +1,153 @@
+Set-StrictMode -Version Latest
+
+function New-Tpf2mpRelayDiagnosticSources {
+    param(
+        [Parameter(Mandatory = $true)][string]$SessionRoot,
+        [Parameter(Mandatory = $true)][string]$BridgePath,
+        [Parameter(Mandatory = $true)][string]$RelayStatusPath,
+        [string]$LocalModsPath,
+        [object]$SessionState,
+        [switch]$Startup
+    )
+    $sources = [ordered]@{
+        'launcher.session' = Join-Path $SessionRoot 'session-state.json'
+        'companion.stdout' = Join-Path $SessionRoot 'companion.stdout.log'
+        'companion.stderr' = Join-Path $SessionRoot 'companion.stderr.log'
+        'companion.status' = Join-Path $BridgePath 'companion_state\companion_status.json'
+        'launcher.menu' = Join-Path $BridgePath 'launcher\menu_status.json'
+        'relay.tunnel' = $RelayStatusPath
+    }
+    if ($Startup) { return $sources }
+
+    $resolvedMods = Find-Tpf2mpLocalModsPath $LocalModsPath
+    $localGameData = Split-Path -Parent $resolvedMods
+    $sources['game.stdout'] = Join-Path $localGameData 'crash_dump\stdout.txt'
+    if ($SessionState -and $SessionState.PSObject.Properties['nativeStatusPath'] `
+            -and $SessionState.nativeStatusPath) {
+        $sources['native.status'] = [string]$SessionState.nativeStatusPath
+    }
+    if ($SessionState -and $SessionState.PSObject.Properties['recoveryWatcherStatusPath'] `
+            -and $SessionState.recoveryWatcherStatusPath) {
+        $sources['recovery.status'] = [string]$SessionState.recoveryWatcherStatusPath
+    }
+    return $sources
+}
+
+function Start-Tpf2mpRelayDiagnosticProcess {
+    param(
+        [Parameter(Mandatory = $true)]$Companion,
+        [Parameter(Mandatory = $true)][string]$CredentialsPath,
+        [Parameter(Mandatory = $true)][Collections.IDictionary]$Sources,
+        [Parameter(Mandatory = $true)][string]$StatusPath,
+        [Parameter(Mandatory = $true)][string]$StdoutPath,
+        [Parameter(Mandatory = $true)][string]$StderrPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedSessionId,
+        [Parameter(Mandatory = $true)][ValidateSet('host', 'join')][string]$ExpectedRole,
+        [ValidateRange(1, 60)][int]$StartupTimeoutSeconds = 10,
+        [switch]$AllowInsecureLoopback
+    )
+    $sourceArguments = @()
+    foreach ($name in @($Sources.Keys | Sort-Object)) {
+        $path = [string]$Sources[$name]
+        if ($path) { $sourceArguments += @('--source', ($name + '=' + $path)) }
+    }
+    $arguments = @(
+        'relay-diagnostics', '--credentials', $CredentialsPath,
+        '--status', $StatusPath, '--interval', '2'
+    ) + $sourceArguments
+    $commandLine = ConvertTo-Tpf2mpCommandLine (@($Companion.Prefix) + $arguments)
+    $previousLoopback = $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK
+    try {
+        if ($AllowInsecureLoopback) { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = '1' }
+        $launcher = Start-Process -FilePath $Companion.FilePath -ArgumentList $commandLine `
+            -PassThru -WindowStyle Hidden -RedirectStandardOutput $StdoutPath `
+            -RedirectStandardError $StderrPath
+    }
+    finally { $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK = $previousLoopback }
+
+    try {
+        $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
+        do {
+            $launcher.Refresh()
+            if ($launcher.HasExited) {
+                $errorText = if (Test-Path -LiteralPath $StderrPath) {
+                    Get-Content -LiteralPath $StderrPath -Raw
+                } else { '' }
+                throw "Relay diagnostics exited during startup: $errorText"
+            }
+            if (Test-Path -LiteralPath $StatusPath -PathType Leaf) {
+                try {
+                    $status = Get-Content -LiteralPath $StatusPath -Raw | ConvertFrom-Json
+                    if ([string]$status.sessionId -ceq $ExpectedSessionId `
+                            -and [string]$status.role -ceq $ExpectedRole `
+                            -and [string]$status.state -in @('running', 'retrying')) {
+                        return [pscustomobject][ordered]@{
+                            LauncherPid = $launcher.Id
+                            ServicePid = [int]$status.pid
+                            StatusPath = $StatusPath
+                            StdoutPath = $StdoutPath
+                            StderrPath = $StderrPath
+                        }
+                    }
+                }
+                catch { }
+            }
+            Start-Sleep -Milliseconds 100
+        } while ((Get-Date) -lt $deadline)
+        throw "Relay diagnostics did not publish a valid status within $StartupTimeoutSeconds seconds."
+    }
+    catch {
+        $candidateIds = @([int]$launcher.Id)
+        $children = Get-CimInstance Win32_Process `
+            -Filter "ParentProcessId = $($launcher.Id)" -ErrorAction SilentlyContinue
+        $candidateIds += @($children | ForEach-Object { [int]$_.ProcessId })
+        if (Test-Path -LiteralPath $StatusPath -PathType Leaf) {
+            try { $candidateIds += [int](Get-Content -LiteralPath $StatusPath -Raw | ConvertFrom-Json).pid }
+            catch { }
+        }
+        Stop-Tpf2mpVerifiedRelayProcesses -ProcessIds $candidateIds `
+            -Companion $Companion -CredentialsPath $CredentialsPath `
+            -CommandName relay-diagnostics
+        throw
+    }
+}
+
+function Stop-Tpf2mpVerifiedRelayProcesses {
+    param(
+        [int[]]$ProcessIds,
+        [Parameter(Mandatory = $true)]$Companion,
+        [Parameter(Mandatory = $true)][string]$CredentialsPath,
+        [Parameter(Mandatory = $true)][ValidateSet('relay-diagnostics', 'relay-tunnel')][string]$CommandName
+    )
+    if (-not $ProcessIds) { return }
+    $expectedExecutable = Resolve-Tpf2mpFullPath ([string]$Companion.FilePath)
+    $credentialPattern = [Regex]::Escape((Resolve-Tpf2mpFullPath $CredentialsPath))
+    $seen = [Collections.Generic.HashSet[int]]::new()
+    # PyInstaller's supervisor is stopped before its extracted service child,
+    # otherwise it can briefly create a replacement child during handoff.
+    foreach ($processId in $ProcessIds) {
+        if ($processId -le 0) { continue }
+        if (-not $seen.Add($processId)) { continue }
+        $native = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+        if (-not $native -or -not $native.ExecutablePath -or -not $native.CommandLine) { continue }
+        $actualExecutable = Resolve-Tpf2mpFullPath ([string]$native.ExecutablePath)
+        $matches = [string]::Equals($actualExecutable, $expectedExecutable,
+                [StringComparison]::OrdinalIgnoreCase) `
+            -and [string]$native.CommandLine -match ([Regex]::Escape($CommandName)) `
+            -and [string]$native.CommandLine -match $credentialPattern
+        if ($matches) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Stop-Tpf2mpRelayDiagnosticProcess {
+    param(
+        [object]$Handle,
+        [Parameter(Mandatory = $true)]$Companion,
+        [Parameter(Mandatory = $true)][string]$CredentialsPath
+    )
+    if (-not $Handle) { return }
+    Stop-Tpf2mpVerifiedRelayProcesses `
+        -ProcessIds @([int]$Handle.LauncherPid, [int]$Handle.ServicePid) `
+        -Companion $Companion -CredentialsPath $CredentialsPath `
+        -CommandName relay-diagnostics
+}

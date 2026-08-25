@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.40.1-alpha',
+    [string]$Version = '0.40.2-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -184,6 +184,7 @@ $toolNames = @(
     'watch_network_autosave_guard.ps1', 'start_network_session.ps1',
     'start_network_session_retry.ps1', 'sync_starting_save.ps1', 'stop_network_session.ps1',
     'new_relay_session.ps1', 'accept_relay_invite.ps1', 'start_relay_network_session.ps1',
+    'relay_diagnostic_process.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
     'analyze_alpha_live_evidence.ps1', 'run_alpha_live_acceptance.ps1',
     'verify_build_transition_gate.ps1',
@@ -211,7 +212,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination
 Copy-Item -LiteralPath (Join-Path $projectRoot 'relay-config.json') -Destination (Join-Path $releaseRoot 'relay-config.json')
 $documentNames = @(
     'README.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
-    'SECURE_RELAY.md', 'RELEASE_NOTES_0.40.1-alpha.md', 'RELEASE_NOTES_0.40.0-alpha.md',
+    'SECURE_RELAY.md', 'RELEASE_NOTES_0.40.2-alpha.md', 'RELEASE_NOTES_0.40.1-alpha.md',
+    'RELEASE_NOTES_0.40.0-alpha.md',
     'TPF2MP_FULL_ALPHA_TEST_INSTRUCTIONS.txt',
     'DISTRIBUTION_AND_UPDATES.md',
     'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
