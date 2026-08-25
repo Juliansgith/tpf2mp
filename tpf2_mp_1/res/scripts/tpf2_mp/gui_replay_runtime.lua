@@ -7,6 +7,7 @@ local proposalRejectionSnapshot = require "tpf2_mp/gui_proposal_rejection_snapsh
 local replayWorkIndex = require "tpf2_mp/gui_replay_work_index"
 local proposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 local originOperationRecovery = require "tpf2_mp/gui_origin_operation_recovery"
+local lineSelection = require "tpf2_mp/gui_line_selection"
 
 local M = {}
 
@@ -81,7 +82,7 @@ function M.new(deps)
   end
   
   local function guiSelectedLine(param)
-    local candidates = collectNumeric(param)
+    local candidates = lineSelection.candidates(param, safeField)
     for _, id in ipairs(candidates) do
       local ok, entity = pcall(game.interface.getEntity, id)
       if ok and entity and string.upper(tostring(entity.type or "")) == "LINE" then return id end
@@ -90,7 +91,6 @@ function M.new(deps)
     end
     return nil
   end
-  
   
   local function scheduleVehicleCapture(id, param)
     local captureId = string.format("%s:gui-vehicle:%d", tostring((gui.snapshot or {}).sessionId or "local"), gui.nextCaptureId)

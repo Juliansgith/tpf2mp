@@ -23,6 +23,8 @@ local issuedCanonicalCommands = {}
 local lineEntities = {}
 local lineEnumerations = 0
 local nativeStatusReads = 0
+local gameEntityReads = 0
+local lineComponentReads = 0
 
 tpf2mp_native_status = function()
   nativeStatusReads = nativeStatusReads + 1
@@ -183,6 +185,7 @@ game = {
   interface = {
     getPlayer = function() return 100 end,
     getEntity = function(id)
+      gameEntityReads = gameEntityReads + 1
       if id == 100 then return { id = 100, type = "PLAYER", balance = 10000000, loan = 10000000 } end
       return nil
     end,
@@ -236,6 +239,7 @@ api = {
   engine = {
     entityExists = function() return false end,
     getComponent = function(id, componentType)
+      if componentType == "LINE" then lineComponentReads = lineComponentReads + 1 end
       if componentType == "LINE" and (id == 700 or id == 702 or lineEntities[id]) then
         return { stops = {} }
       end
@@ -593,6 +597,24 @@ assert(deniedEntityEvent.param.observation == "entity.accessDenied"
 
 local ownLine = script.guiHandleEvent("lineManager", "delete", { lineEntity = 700 })
 assert(ownLine == nil, "active company's own line action was vetoed")
+local lineReadsBeforeStopEdit = lineComponentReads
+assert(script.guiHandleEvent("lineManager", "addStop", {
+  lineEntity = 700,
+  stop = { stationEntity = 901, terminal = 0 },
+}) == nil, "line stop edit changed the native event contract")
+assert(lineComponentReads == lineReadsBeforeStopEdit + 1,
+  "line stop edit did not retain its explicit line carrier")
+local entityReadsBeforeHover = gameEntityReads
+local lineReadsBeforeHover = lineComponentReads
+for _ = 1, 240 do
+  assert(script.guiHandleEvent("mainView", "hover", {
+    worldPosition = { x = 700, y = 702, z = 100 },
+    screenPosition = { x = 799, y = 701 },
+    frame = 700,
+  }) == nil, "ordinary main-view hover changed the native event contract")
+end
+assert(gameEntityReads == entityReadsBeforeHover and lineComponentReads == lineReadsBeforeHover,
+  "main-view hover probed coordinate values as native line entity IDs")
 script.guiHandleEvent("mainView", "select", {})
 local retainedLineVisible = false
 for _, view in ipairs(textViews) do

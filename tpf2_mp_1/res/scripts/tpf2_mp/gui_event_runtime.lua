@@ -114,6 +114,22 @@ function M.new(deps)
     end
     return false
   end
+
+  -- Native main-view hover payloads contain many coordinates, dimensions and
+  -- transient UI indices.  They are not entity-selection envelopes.  Passing
+  -- every number through game.interface.getEntity/api.engine.getComponent is
+  -- both needlessly expensive and unsafe: the engine-side component getter is
+  -- not specified for arbitrary numeric values.  Only inspect a payload for a
+  -- line ID when the event contract can actually carry a line selection or a
+  -- line mutation.
+  local function lineSelectionEvent(id, name)
+    local source = tostring(id or ""):lower()
+    local event = tostring(name or ""):lower()
+    if source == "mainview" then return event == "select" end
+    if not source:find("line", 1, true) then return false end
+    return event == "select" or mutatingEntityEvent(id, name)
+      or operationalGuiMutation(id, name)
+  end
   
   local function eventEntityIds(param)
     local result, seenIds, seenTables = {}, {}, {}
@@ -1097,7 +1113,9 @@ function M.new(deps)
           and (id == "finances.borrow" or id == "finances.repay")
         if not isProposalCreate and not isProposalApply and not isFinanceLock then
           local entityAccess = checkEntityEventAccess(id, name, param)
-          gui.selectedLineId = guiSelectedLine(param) or gui.selectedLineId
+          if lineSelectionEvent(id, name) then
+            gui.selectedLineId = guiSelectedLine(param) or gui.selectedLineId
+          end
           if not entityAccess.allowed then
             if gui.frames - gui.lastEntityAccessDenialProbeFrame >= 15 then
               gui.lastEntityAccessDenialProbeFrame = gui.frames
@@ -1124,8 +1142,6 @@ function M.new(deps)
           if selectedKind == "vehicle" then gui.selectedVehicleId = selectedEntity
           elseif selectedKind == "depot" then gui.selectedDepotId = selectedEntity
           elseif selectedKind == "line" then gui.selectedLineId = selectedEntity end
-          local selected = guiSelectedLine(param)
-          if selected then gui.selectedLineId = selected end
           -- The prototype inspector remains available from its explicit HUD and
           -- pause-menu entries, but ordinary stock selections must not cover the
           -- vanilla Line Manager during a human multiplayer session.
