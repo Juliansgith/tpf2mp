@@ -19,6 +19,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
+. (Join-Path $PSScriptRoot 'relay_port_common.ps1')
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 $safeSession = Assert-Tpf2mpSessionId $Session
@@ -36,6 +37,14 @@ $loopbackAllowed = $AllowInsecureLoopback `
     -and [string]$credentialData.relayUrl -match '^http://(?:127\.0\.0\.1|localhost|\[?::1\]?):\d+(?:/|$)'
 if (-not $secureRelay -and -not $loopbackAllowed) {
     throw 'Relay credentials must use secure HTTPS outside an explicit loopback test.'
+}
+
+$requestedPort = $Port
+if ($Role -eq 'Join') {
+    $Port = Find-Tpf2mpFreeLoopbackPortPair -PreferredPort $requestedPort
+    if ($Port -ne $requestedPort) {
+        Write-Host "Relay Join remapped occupied local ports $requestedPort/$($requestedPort + 1) to $Port/$($Port + 1)."
+    }
 }
 
 $companion = Get-Tpf2mpCompanionCommand $bundle
@@ -230,6 +239,8 @@ try {
     $state | Add-Member -NotePropertyName relayUrl -NotePropertyValue ([string]$credentialData.relayUrl) -Force
     $state | Add-Member -NotePropertyName relayAllowInsecureLoopback -NotePropertyValue ([bool]$AllowInsecureLoopback) -Force
     $state | Add-Member -NotePropertyName relaySessionId -NotePropertyValue ([string]$credentialData.sessionId) -Force
+    $state | Add-Member -NotePropertyName relayRequestedPort -NotePropertyValue $requestedPort -Force
+    $state | Add-Member -NotePropertyName relayLocalPort -NotePropertyValue $Port -Force
     $state | Add-Member -NotePropertyName supportId -NotePropertyValue ([string]$credentialData.sessionId) -Force
     $state | Add-Member -NotePropertyName relayCredentials -NotePropertyValue $credentialsPath -Force
     $state | Add-Member -NotePropertyName relayTunnelLauncherPid -NotePropertyValue $relayProcess.Id -Force

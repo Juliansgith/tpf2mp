@@ -105,6 +105,7 @@ $budgets = [ordered]@{
     'companion\tpf2mp\local_restore.py' = 150
     'tools\run_latest_local_restore_acceptance.ps1' = 120
     'tools\start_relay_network_session.ps1' = 300
+    'tools\relay_port_common.ps1' = 60
     'tools\new_relay_session.ps1' = 70
     'tools\accept_relay_invite.ps1' = 60
     'tools\sync_starting_save.ps1' = 120

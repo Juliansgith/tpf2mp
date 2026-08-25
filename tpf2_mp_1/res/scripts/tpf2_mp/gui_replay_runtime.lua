@@ -306,7 +306,7 @@ function M.new(deps)
               return
             end
             gui.pendingProposalCaptures[#gui.pendingProposalCaptures + 1] = {
-              proposalId = proposalId,
+              proposalId = proposalId, captureStartedFrame = gui.frames,
               createdEdgeIds = setDifference(afterEdges, beforeEdges),
               createdNodeIds = setDifference(afterNodes, beforeNodes),
               issuerBalanceBefore = issuerBalanceBefore,
@@ -328,7 +328,9 @@ function M.new(deps)
               -- A short "stable" window before that debit is a false zero, so
               -- do not begin settlement sampling until a conservative delay.
               minimumFrame = gui.frames + (exactConstruction and 1 or 90),
-              maximumFrame = gui.frames + 360,
+              canonicalFinanceFallbackFrame = state.networkMode == "network"
+                and (gui.frames + proposalResultCapture.NETWORK_FINANCE_GRACE_FRAMES) or nil,
+              maximumFrame = gui.frames + proposalResultCapture.HARD_DEADLINE_FRAMES,
             }
           end, "mod.network.replay-build-proposal")
         gui.issuingCanonicalProposal = nil

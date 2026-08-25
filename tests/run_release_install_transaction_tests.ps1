@@ -111,7 +111,9 @@ if (@(Get-ChildItem -LiteralPath $modsRoot -Force | Where-Object {
         }).Count -gt 0) {
     throw 'Failed install left mod staging residue.'
 }
-if (@(Get-ChildItem -LiteralPath (Join-Path $installRoot 'backups') -Force).Count -gt 0) {
+$failedBackupRoot = Join-Path $installRoot 'backups'
+if ((Test-Path -LiteralPath $failedBackupRoot) `
+        -and @(Get-ChildItem -LiteralPath $failedBackupRoot -Force).Count -gt 0) {
     throw 'Failed install left a detached prior bundle in backups after rollback.'
 }
 foreach ($name in @('installed_entrypoint.ps1', 'LAUNCH_TPF2MP.cmd', 'UPDATE_TPF2MP.cmd',

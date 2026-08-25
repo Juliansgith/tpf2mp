@@ -3374,6 +3374,14 @@ local script = {
         proposalId = proposalId,
         success = invoked and success == true,
         error = state.lastError,
+        financeMutationObserved = type(param) == "table"
+          and param.financeMutationObserved == true,
+        financeFallbackUsed = type(param) == "table"
+          and param.financeFallbackUsed == true,
+        financeHardDeadlineUsed = type(param) == "table"
+          and param.financeHardDeadlineUsed == true,
+        settlementFrames = type(param) == "table"
+          and tonumber(param.settlementFrames) or nil,
         tick = state.tick,
       })
       publishSnapshot()

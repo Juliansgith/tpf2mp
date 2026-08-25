@@ -1391,7 +1391,10 @@ local replayRuntime = replayRuntimeModule.new({
 })
 assert(replayRuntime.processProposalQueue() == true
     and replayGui.proposalReplayQuarantine
-    and replayGui.proposalReplayQuarantine.proposalId == "gui-replay-quarantine",
+    and replayGui.proposalReplayQuarantine.proposalId == "gui-replay-quarantine"
+    and replayGui.pendingProposalCaptures[1].captureStartedFrame == 500
+    and replayGui.pendingProposalCaptures[1].canonicalFinanceFallbackFrame == 590
+    and replayGui.pendingProposalCaptures[1].maximumFrame == 860,
   "canonical BuildProposal replay did not arm its stale-builder quarantine")
 
 local quarantineLogs = {}

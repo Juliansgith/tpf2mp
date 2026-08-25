@@ -158,6 +158,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Network autosave guard tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_relay_port_tests.ps1') `
+        -ProjectRoot $projectRoot
+    if (-not $?) { throw 'Relay loopback port allocation tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_release_manifest_tests.ps1') `
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Release manifest validation tests failed' }

@@ -162,6 +162,7 @@ do
   } }
   local pending = {
     minimumFrame = 1, maximumFrame = 20, proposalId = "exact:capture",
+    captureStartedFrame = 0,
     issuerPlayerId = 1, nativeOwnerPlayerId = 1,
     issuerBalanceBefore = 1000, nativeOwnerBalanceBefore = 1000,
     lastIssuerBalance = 1000, lastNativeOwnerBalance = 1000,
@@ -189,10 +190,111 @@ do
   local capturedDelta = assert(constructionDeltaAttestation.normalise(
     payload.constructionDelta, 16))
   assert(captures == 1 and payload.issuerBalanceAfter == 900
+      and payload.financeMutationObserved == true
+      and payload.financeFallbackUsed == false
+      and payload.financeHardDeadlineUsed == false
+      and payload.settlementFrames == 5
       and type(payload.constructionDelta) == "string"
       and capturedDelta.added.construction[1] == 20
       and capturedDelta.added.node[1] == 21,
     "stable GUI construction result did not carry its exact component delta")
+end
+
+do
+  local balance, captures = 1000, 0
+  local before = { sets = {
+    constructions = {}, stations = {}, stationGroups = {}, depots = {}, assets = {},
+    edgeObjects = {}, nodes = {}, edges = {},
+  } }
+  local pending = {
+    minimumFrame = 1, canonicalFinanceFallbackFrame = 5, maximumFrame = 20,
+    captureStartedFrame = 0, proposalId = "exact:network-neutral-wallet",
+    issuerPlayerId = 1, nativeOwnerPlayerId = 1,
+    issuerBalanceBefore = 1000, nativeOwnerBalanceBefore = 1000,
+    lastIssuerBalance = 1000, lastNativeOwnerBalance = 1000,
+    stableFrames = 0, requireBalanceMutation = true, exactConstruction = true,
+    beforeWorld = before, createdEdgeIds = { 22 }, createdNodeIds = { 21 },
+  }
+  local deps = {
+    balanceOf = function() return balance end,
+    componentTypes = function() return {} end,
+    captureWorld = function()
+      captures = captures + 1
+      local sets = util.deepCopy(before.sets)
+      sets.constructions[20], sets.nodes[21], sets.edges[22] = true, true, true
+      return { sets = sets }
+    end,
+  }
+  for frame = 1, 4 do
+    assert(guiProposalResultCapture.sample(pending, frame, deps) == nil,
+      "network construction accepted a neutral wallet before its canonical grace boundary")
+  end
+  local payload = assert(guiProposalResultCapture.sample(pending, 5, deps))
+  assert(captures == 1 and payload.issuerBalanceAfter == 1000
+      and payload.financeMutationObserved == false
+      and payload.financeFallbackUsed == true
+      and payload.financeHardDeadlineUsed == false
+      and payload.settlementFrames == 5,
+    "network construction did not settle from its signed cost after stable neutral-wallet samples")
+end
+
+do
+  local balance = 1000
+  local pending = {
+    minimumFrame = 1, canonicalFinanceFallbackFrame = 8, maximumFrame = 20,
+    captureStartedFrame = 0, proposalId = "exact:delayed-native-debit",
+    issuerPlayerId = 1, nativeOwnerPlayerId = 1,
+    issuerBalanceBefore = 1000, nativeOwnerBalanceBefore = 1000,
+    lastIssuerBalance = 1000, lastNativeOwnerBalance = 1000,
+    stableFrames = 0, requireBalanceMutation = true, exactConstruction = false,
+    createdEdgeIds = {}, createdNodeIds = {},
+  }
+  local deps = {
+    balanceOf = function() return balance end,
+    componentTypes = function() return {} end,
+    captureWorld = function() error("non-exact capture unexpectedly traversed the world") end,
+  }
+  for frame = 1, 3 do
+    assert(guiProposalResultCapture.sample(pending, frame, deps) == nil,
+      "construction accepted before its delayed native debit")
+  end
+  balance = 900
+  for frame = 4, 6 do
+    assert(guiProposalResultCapture.sample(pending, frame, deps) == nil,
+      "construction accepted an unstable delayed native debit")
+  end
+  local payload = assert(guiProposalResultCapture.sample(pending, 7, deps))
+  assert(payload.financeMutationObserved == true
+      and payload.financeFallbackUsed == false
+      and payload.financeHardDeadlineUsed == false
+      and payload.settlementFrames == 7,
+    "native debit inside the network grace window did not remain authoritative observation evidence")
+end
+
+do
+  local pending = {
+    minimumFrame = 1, maximumFrame = 5, captureStartedFrame = 0,
+    proposalId = "exact:legacy-hard-deadline",
+    issuerPlayerId = 1, nativeOwnerPlayerId = 1,
+    issuerBalanceBefore = 1000, nativeOwnerBalanceBefore = 1000,
+    lastIssuerBalance = 1000, lastNativeOwnerBalance = 1000,
+    stableFrames = 0, requireBalanceMutation = true, exactConstruction = false,
+    createdEdgeIds = {}, createdNodeIds = {},
+  }
+  local deps = {
+    balanceOf = function() return 1000 end,
+    componentTypes = function() return {} end,
+    captureWorld = function() error("hard-deadline capture unexpectedly traversed the world") end,
+  }
+  for frame = 1, 4 do
+    assert(guiProposalResultCapture.sample(pending, frame, deps) == nil,
+      "standalone-compatible capture bypassed its original hard deadline")
+  end
+  local payload = assert(guiProposalResultCapture.sample(pending, 5, deps))
+  assert(payload.financeMutationObserved == false
+      and payload.financeFallbackUsed == false
+      and payload.financeHardDeadlineUsed == true,
+    "legacy hard-deadline behaviour changed when no network fallback was configured")
 end
 
 do

@@ -821,13 +821,11 @@ function M.new(deps)
         return values
       end)(),
     }
-    -- The GUI result is deliberately held for at least 90 GUI frames and until
-    -- its wallet samples stabilize. It therefore already carries the delayed
-    -- Build 35924 journal observation needed by routeProposalFinance. Waiting a
-    -- second 180 engine updates here added roughly 35-40 seconds to every live
-    -- build even though network consensus uses the signed quoted cost. Complete
-    -- from that settled observation immediately; periodic account reconciliation
-    -- remains the safety net for a genuinely later native cache entry.
+    -- The GUI result observes a delayed Build 35924 journal debit when it arrives
+    -- inside the conservative grace window. In network mode it may instead use
+    -- the signed quoted cost after stable zero-delta samples: canonical consensus
+    -- owns finance there, and periodic account reconciliation repairs a genuinely
+    -- later native cache entry. Do not add a second engine-thread finance wait.
     return completeProposalFinance(record, result, finalEdgeIds, createdNodeIds, payload)
   end
   
