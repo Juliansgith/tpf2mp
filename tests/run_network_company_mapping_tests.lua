@@ -1124,8 +1124,9 @@ depotBuildFixture = {
 }
 writeCommit(21, "player2", { type = "proposal.build", transaction = depotTransaction })
 script.update()
-requestConstructionHelperFallback(
-  script.save().world.proposals.byId[proposalId("player2", 21)])
+local queuedDepotRecord = assert(script.save().world.proposals.byId[proposalId("player2", 21)])
+assert(queuedDepotRecord.replayPath ~= "gui-build-proposal",
+  "depot escaped the selectable helper-built construction path")
 for _ = 1, 6 do script.update() end
 local depotRecord = assert(script.save().world.proposals.byId[proposalId("player2", 21)])
 assert(depotRecord.status == "applied" and #depotRecord.result.outputs == 5,

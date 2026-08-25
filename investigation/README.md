@@ -2,6 +2,11 @@
 
 Last updated: 2026-08-24 (Europe/Amsterdam), prototype `0.39.0-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
 
+[Typed depot replay selection crash (2026-08-25)](DEPOT_SELECTION_TYPED_REPLAY_CRASH_2026-08-25.md)
+records the identical stock `contexthelper.lua` `mainView/select` crash on both
+peers, rules out relay transport and a transient replay race, and narrows fresh
+depots to the previously live-proven helper construction path.
+
 [Secure relay transport and support diagnostics (2026-08-24)](SECURE_RELAY_2026-08-24.md)
 records the separate service boundary, invitation/credential model, outbound WSS
 bridges, automatic save transport, privacy-bounded diagnostics, deployment

@@ -448,10 +448,14 @@ do
   collateralRecord.transaction.constructions[1].collateral = {
     { kind = "construction", cid = "construction:pre:town-building" },
   }
+  local depotRecord = { transaction = util.deepCopy(transaction) }
+  depotRecord.transaction.constructions[1].kind = "depot"
+  depotRecord.transaction.constructions[1].fileName = "depot/train_depot_era_a.con"
   assert(not constructionReplayState.isExact(upgradeRecord, proposalCodec)
       and not constructionReplayState.isExact(removeRecord, proposalCodec)
-      and not constructionReplayState.isExact(collateralRecord, proposalCodec),
-    "unproven construction upgrade/removal/collateral escaped the helper fallback")
+      and not constructionReplayState.isExact(collateralRecord, proposalCodec)
+      and not constructionReplayState.isExact(depotRecord, proposalCodec),
+    "unproven construction upgrade/removal/collateral/depot escaped the helper fallback")
 end
 
 do

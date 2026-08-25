@@ -36,15 +36,13 @@ function M.isExact(record, codec)
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
   local edgeObjects = type(transaction) == "table"
     and type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
-  -- Assigning a typed ConstructionEntity to SimpleProposal.constructionsToAdd
-  -- makes Build 35924 expand the construction's generated graph itself.  The
-  -- exact GUI path owns only isolated fresh builds. Build 35924 rejects some
-  -- typed station proposals that also name town-building collateral, while the
-  -- established helper retires that collateral before replaying the absolute
-  -- transform. Upgrades/removals retain the helper until separately proven.
+  -- Typed ConstructionEntity expands its graph; exact replay owns only isolated
+  -- fresh builds. Collateral needs staged demolition, while typed depots crash
+  -- stock selection. Keep depots/upgrades/removals on the proven helper path.
   return type(transaction) == "table"
     and transaction.schemaVersion == codec.CONSTRUCTION_SCHEMA_VERSION
     and type(construction) == "table" and construction.mode == "build"
+    and construction.kind ~= "depot"
     and #(construction.collateral or {}) == 0
     and #(edgeObjects.add or {}) == 0 and #(edgeObjects.retain or {}) == 0
     and not codec.isTopologyConstructionRemoval(transaction)
