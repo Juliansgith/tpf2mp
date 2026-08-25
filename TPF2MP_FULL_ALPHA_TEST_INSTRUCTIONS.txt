@@ -4,7 +4,7 @@ TPF2MP FULL PLAYABLE-ALPHA TEST INSTRUCTIONS
 Target
 ------
 Transport Fever 2 Build 35924 (Windows x64)
-TPF2MP 0.40.3-alpha or the current development build
+TPF2MP 0.40.4-alpha or the current development build
 Two players over the secure relay, trusted LAN/private VPN, or two instances
 on one PC
 
