@@ -162,6 +162,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Session lifecycle cleanup tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_network_session_retry_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Connected-client native-menu retry tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_relay_port_tests.ps1') `
         -ProjectRoot $projectRoot
     if (-not $?) { throw 'Relay loopback port allocation tests failed' }

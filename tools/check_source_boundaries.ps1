@@ -122,6 +122,7 @@ $budgets = [ordered]@{
     'tools\network_common.ps1' = 600
     'tools\multiplayer_launcher.ps1' = 1150
     'tools\start_network_session.ps1' = 620
+    'tools\network_session_retry_cleanup.ps1' = 120
     'tools\stop_network_session.ps1' = 340
     'tools\session_lifecycle.ps1' = 180
     'tools\watch_network_session_lifecycle.ps1' = 120

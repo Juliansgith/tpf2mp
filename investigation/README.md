@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-26 (Europe/Amsterdam), `0.40.8-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-26 (Europe/Amsterdam), `0.40.9-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Connected-client native menu retry (2026-08-26)](CONNECTED_CLIENT_NATIVE_MENU_RETRY_2026-08-26.md)
+records the live Player 2 Load Game transition stall, launcher-owned process
+termination, same-attempt bridge residue, evidence-preserving transactional
+cleanup, host-history replay boundary, regression, and remaining live gate.
 
 [Physical proposal / vehicle-release serialization (2026-08-26)](PHYSICAL_PROPOSAL_VEHICLE_RELEASE_SERIALIZATION_2026-08-26.md)
 records the live road-build/train-release ordering race, transient unequal core

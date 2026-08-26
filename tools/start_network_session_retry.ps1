@@ -25,6 +25,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'network_session_retry_cleanup.ps1')
 $sessionScript = Join-Path $PSScriptRoot 'start_network_session.ps1'
 if (-not (Test-Path -LiteralPath $sessionScript -PathType Leaf)) {
     throw "Network-session launcher is missing: $sessionScript"
@@ -56,6 +57,10 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
             "Native save manager attempt $attempt/$MaxAttempts failed safely; " `
             + "the exact role/session/save will be retried automatically: $message"
         )
+        $peer = if ($Role -eq 'Host') { 'player1' } else { 'player2' }
+        $cleanup = Reset-Tpf2mpFailedNativeMenuAttempt -Session $Session -Peer $peer `
+            -Attempt $attempt -StopScriptPath (Join-Path $PSScriptRoot 'stop_network_session.ps1')
+        Write-Host "Failed attempt evidence archived at $($cleanup.evidenceRoot)."
         Start-Sleep -Seconds 2
     }
 }
