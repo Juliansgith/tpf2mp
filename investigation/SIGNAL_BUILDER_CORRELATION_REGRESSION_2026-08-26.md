@@ -2,8 +2,8 @@
 
 Date: 2026-08-26 (Europe/Amsterdam)
 
-Status: fixed and fully offline-tested after live relay discovery; fresh
-two-computer release proof remains required.
+Status: corrected twice and fully offline-tested after live relay discovery;
+fresh `0.41.1-alpha` two-computer proof remains required.
 
 ## Live evidence
 
@@ -21,25 +21,30 @@ hardening.
 ## Cause
 
 Transport Fever 2 Build 35924 reports the vanilla signal/waypoint tool under
-the live GUI source id `streetTerminalBuilder`. Its proposal is correctly
-classified as an `edge-object` change. The source guard matched the word
-`terminal` before the word `street` and required a `construction` proposal,
-therefore rejecting every valid signal ghost as if it came from a stale station
-tool.
+the live GUI source id `streetTerminalBuilder`. Its simplest projected shape is
+an `edge-object` change. The source guard matched the word `terminal` before the
+word `street` and required a `construction` proposal, therefore rejecting every
+valid signal ghost as if it came from a stale station tool.
+
+The first `0.41.0-alpha` repair covered that simple shape, but the synthetic GUI
+regression only checked the event's nil return contract. In fresh relay session
+`mp-fe91932968bf9db3`, the real carrier-edge rewrite was classified as
+`mixed-transport`; 345 captured rejections carried that exact
+`streetTerminalBuilder`/`mixed-transport` pair. The original test therefore
+proved too little and the release remained broken.
 
 ## Repair
 
-`streetTerminalBuilder` is now treated as the one live-proven dual-use terminal
-builder: it may carry either a construction proposal or an edge-object proposal.
-Other station, construction, depot, and asset builders remain construction-only,
-so the semantic anti-reordering guard is not generally weakened.
+`streetTerminalBuilder` is now treated as the one exact live-proven stock
+terminal builder that may carry construction, edge-object, or mixed-transport
+proposals. Other terminal, station, construction, depot, and asset builders
+remain construction-only, so the semantic anti-reordering guard is not
+generally weakened.
 
-Unit coverage proves the exact source/family pair and rejects an edge-object
-payload from `constructionBuilder`. GUI integration coverage sends a network
-signal preview through the real event runtime and requires that it is admitted.
-The complete repository suite passes: 140 Lua tests, 7 transport-network tests,
-3 alpha-readiness tests, all cross-language parity/stress vectors, and the full
-network/company integration scenarios.
+Unit coverage proves both observed source/family pairs and rejects a mixed
+payload from another terminal builder. GUI integration coverage now sends the
+live mixed-topology shape through the real event runtime and requires a nonzero
+native correlation token; this fails on the `0.41.0-alpha` implementation.
 
 ## Fresh live acceptance
 

@@ -110,15 +110,20 @@ function M.sourceAllows(sourceId, family)
     return family == "removal" or family == "construction"
       or family == "track" or family == "street" or family == "mixed-transport"
   end
-  local terminalBuilder = source:find("terminal", 1, true) ~= nil
+  local stockStreetTerminalBuilder = source == "streetterminalbuilder"
+  if stockStreetTerminalBuilder then
+    -- Build 35924 uses this one stock builder for signals and waypoints.  A
+    -- stationary ghost can be edge-object-only, while the live click may
+    -- expose the carrier-edge rewrite as mixed street/track topology.  Keep
+    -- the exception exact to this native source ID; other terminal builders
+    -- remain construction-only below.
+    return family == "construction" or family == "edge-object"
+      or family == "mixed-transport"
+  end
   if source:find("construction", 1, true) or source:find("station", 1, true)
-    or terminalBuilder or source:find("depot", 1, true)
+    or source:find("terminal", 1, true) or source:find("depot", 1, true)
     or source:find("asset", 1, true) then
-    -- Build 35924 routes signals and waypoints through
-    -- `streetTerminalBuilder`, despite their proposal being an edge-object
-    -- edit rather than a construction. Keep ordinary station/depot builders
-    -- construction-only while admitting that one live-proven dual-use name.
-    return family == "construction" or (terminalBuilder and family == "edge-object")
+    return family == "construction"
   end
   if source:find("track", 1, true) or source:find("rail", 1, true) then
     return family == "track" or family == "edge-object" or family == "removal"

@@ -584,8 +584,22 @@ local newSignal = script.guiHandleEvent("streetTerminalBuilder", "builder.propos
     { edgeEntity = 700, category = 0, model = "railroad/signal_path_a.mdl" },
   } } },
 })
-assert(newSignal == nil,
+assert(newSignal == nil and tonumber(nativeBuildArmedCorrelation) > 0,
   "Build 35924's streetTerminalBuilder was misclassified as a stale station preview")
+local liveSignalSplit = script.guiHandleEvent(
+  "streetTerminalBuilder", "builder.proposalCreate", {
+    proposal = { streetProposal = {
+      edgesToAdd = {
+        { type = 1, trackEdge = { trackType = 0 } },
+        { type = 0, streetEdge = { streetType = 0 } },
+      },
+      edgeObjectsToAdd = {
+        { edgeEntity = 700, category = 0, model = "railroad/signal_path_a.mdl" },
+      },
+    } },
+  })
+assert(liveSignalSplit == nil and tonumber(nativeBuildArmedCorrelation) > 0,
+  "the live mixed-topology signal preview was rejected as a stale build tool")
 
 local rivalConstruction = script.guiHandleEvent("constructionBuilder", "builder.proposalCreate.preview", {
   proposal = { toRemove = { { entity = 702 } } },

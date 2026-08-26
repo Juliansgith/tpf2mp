@@ -1341,6 +1341,23 @@ do
       and guiBuildCorrelationModule.sourceAllows("streetTerminalBuilder", "edge-object") == true
       and guiBuildCorrelationModule.sourceAllows("constructionBuilder", "edge-object") == false,
     "the live signal/waypoint builder id was rejected as a stale construction preview")
+  local liveSignalSplit = {
+    streetProposal = {
+      edgesToAdd = {
+        ["1"] = { type = 1, trackEdge = { trackType = 0 } },
+        ["2"] = { type = 0, streetEdge = { streetType = 0 } },
+      },
+      edgeObjectsToAdd = { ["1"] = {
+        edgeEntity = 77, model = "railroad/signal_path_a.mdl",
+      } },
+    },
+  }
+  assert(guiBuildCorrelationModule.family(liveSignalSplit) == "mixed-transport"
+      and guiBuildCorrelationModule.sourceAllows(
+        "streetTerminalBuilder", "mixed-transport") == true
+      and guiBuildCorrelationModule.sourceAllows(
+        "stationTerminalBuilder", "mixed-transport") == false,
+    "the live carrier-edge signal shape was rejected or widened to every terminal builder")
   local applyOk, applyError = correlation.validateApply({
     correlationId = trackMetadata.correlationId,
     sourceId = "trackBuilder", companyCid = "company:1", family = "track", frame = 11,
