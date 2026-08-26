@@ -6,6 +6,7 @@ local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
 local townReadingModule = require "tpf2_mp/world_town_reading"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
+local stationAccessModule = require "tpf2_mp/world_station_access"
 local lineReadingModule = require "tpf2_mp/world_line_reading"
 local industryReadingModule = require "tpf2_mp/world_industry_reading"
 local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
@@ -1395,6 +1396,13 @@ local stationReading = stationReadingModule.new({
 })
 local stationGroupTown = stationReading.stationGroupTown
 M.stationGroupTown = stationGroupTown
+local stationAccess = stationAccessModule.new({
+  getApi = function() return api end,
+  entityNumber = entityNumber,
+  sortedNumbers = sortedNumbers,
+})
+local stationGroupPassengerAccess = stationAccess.stationGroupPassengerAccess
+M.stationGroupPassengerAccess = stationGroupPassengerAccess
 local lineReading = lineReadingModule.new({
   getApi = function() return api end,
   entityNumber = entityNumber,
@@ -1454,6 +1462,7 @@ local corridorBinding = corridorBindingModule.new({
   lineStopGroups = lineStopGroups,
   lineServiceKind = lineServiceKind,
   stationGroupTown = stationGroupTown,
+  stationGroupPassengerAccess = stationGroupPassengerAccess,
   townCapacity = townCapacity,
   townBuildingCount = townBuildingCount,
   lineVehicleIds = lineVehicleIds,
@@ -1475,6 +1484,7 @@ M.runOrderedDevelopment = corridorBinding.runOrderedDevelopment
 M.settleDevelopment = corridorBinding.settleDevelopment
 M.autoRegisterLine = corridorBinding.autoRegisterLine
 M.autoRegisterExistingServices = corridorBinding.autoRegisterExistingServices
+M.proposalMayChangePassengerAccess = corridorBindingModule.proposalMayChangePassengerAccess
 M.accumulateDevelopment = corridorBindingModule.accumulateDevelopment
 M.TOWN_DEVELOPMENT = corridorBindingModule.TOWN_DEVELOPMENT
 

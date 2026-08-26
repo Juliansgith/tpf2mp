@@ -1,6 +1,6 @@
 local util, transportManager = require "tpf2_mp/util", require "tpf2_mp/gui_transport_manager"
 local matchInitialisePolicy, constructionSubmission = require "tpf2_mp/match_initialise_policy", require "tpf2_mp/gui_construction_submission"
-local faultRecovery = require "tpf2_mp/gui_fault_recovery"
+local faultRecovery, stationAccessText = require "tpf2_mp/gui_fault_recovery", require "tpf2_mp/gui_station_access_text"
 
 local M = {}
 
@@ -27,8 +27,7 @@ local function milestoneStatus(probe)
   return "waiting for first load"
 end
 
--- Log-scale crowd glyphs: one large block is five hundred people, one medium
--- is one hundred, one small is twenty. Reading magnitude beats counting.
+-- Log-scale crowd glyphs make magnitude legible without counting icons.
 function M.crowdIcons(count)
   local remaining = math.max(0, tonumber(count) or 0)
   local text = ""
@@ -323,6 +322,7 @@ function M.render(gui, snapshot, options)
       total.marketWins or 0
     )
   end
+  stationAccessText.append(lines, snapshot)
   local shownMarkets = 0
   local marketOrder = util.sortedKeys(results.markets or {})
   if #marketOrder > 0 then

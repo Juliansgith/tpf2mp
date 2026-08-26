@@ -220,12 +220,30 @@ function M.departureSlots(service, gameTimeSeconds, stopIndex)
   }
 end
 
+-- Street changes can alter a station's native catchment; construction changes
+-- can create, edit, remove, or relocate the station itself. Removed edges do
+-- not retain a portable carrier tag, so treat them conservatively. The caller
+-- debounces registrations per line in the authored follow-up FIFO.
+function M.proposalMayChangePassengerAccess(transaction)
+  if type(transaction) ~= "table" then return false end
+  if type(transaction.constructions) == "table" and #transaction.constructions > 0 then
+    return true
+  end
+  for _, edge in ipairs(transaction.edges or {}) do
+    if edge.carrier == "street" then return true end
+  end
+  local remove = type(transaction.remove) == "table" and transaction.remove or {}
+  return type(remove.edges) == "table" and #remove.edges > 0
+end
+
 function M.new(deps)
   assert(type(deps) == "table", "corridor binding dependencies are required")
   local bindExisting = assert(deps.bindExisting, "bindExisting dependency is required")
   local lineStopGroups = assert(deps.lineStopGroups, "lineStopGroups dependency is required")
   local lineServiceKind = assert(deps.lineServiceKind, "lineServiceKind dependency is required")
   local stationGroupTown = assert(deps.stationGroupTown, "stationGroupTown dependency is required")
+  local stationGroupPassengerAccess = assert(
+    deps.stationGroupPassengerAccess, "stationGroupPassengerAccess dependency is required")
   local townCapacity = assert(deps.townCapacity, "townCapacity dependency is required")
   local townBuildingCount = assert(
     deps.townBuildingCount, "townBuildingCount dependency is required")
@@ -749,6 +767,17 @@ function M.new(deps)
     if not townCidA or not townCidB then
       return false, "one or more endpoint towns have no canonical binding"
     end
+    local accessA = stationGroupPassengerAccess(groups[1], townA) or {}
+    local accessB = stationGroupPassengerAccess(groups[#groups], townB) or {}
+    local accessReadyA, accessReadyB = accessA.ready == true, accessB.ready == true
+    local reachableA = math.max(0, util.integer(accessA.reachableBuildings, 0))
+    local reachableB = math.max(0, util.integer(accessB.reachableBuildings, 0))
+    local townBuildingsA = math.max(reachableA,
+      util.integer(accessA.townBuildingCount, 0))
+    local townBuildingsB = math.max(reachableB,
+      util.integer(accessB.townBuildingCount, 0))
+    local accessEligible = accessReadyA and accessReadyB
+      and reachableA > 0 and reachableB > 0
     local localPassenger = townCidA == townCidB
     local first, second = townCidA, townCidB
     if second < first then first, second = second, first end
@@ -834,6 +863,10 @@ function M.new(deps)
         or revenue.defaultFareCents(computed and computed.distanceMeters, "passenger"),
       capacity = capacity,
       quality = math.max(20, 120 - math.max(0, #groups - 2) * 10),
+      -- Movement alone is not proof of passenger access. A service may enter
+      -- the authored ledger only when both endpoint station groups reach at
+      -- least one building through the native street catchment graph.
+      enabled = accessEligible,
       annualVehicleUpkeepCents = annualVehicleUpkeepCents,
       metadata = {
         vehicleCount = vehicles,
@@ -852,6 +885,13 @@ function M.new(deps)
         vehicleCids = vehicleCids,
         pricedVehicleCount = pricedVehicles,
         vehicleUpkeepCoverageComplete = pricedVehicles == vehicles,
+        stationAccessSchema = 1,
+        stationAccessSource = accessReadyA and accessReadyB
+          and "native-street-catchment" or "unavailable",
+        endpointAccessReady = { accessReadyA, accessReadyB },
+        endpointReachableBuildings = { reachableA, reachableB },
+        endpointTownBuildings = { townBuildingsA, townBuildingsB },
+        stationAccessEligible = accessEligible,
       },
     })
     local network = multihopNetwork.rebuildPassenger(economyState)
@@ -860,6 +900,8 @@ function M.new(deps)
       vehicleCount = vehicles, factsSource = factsSource,
       carrier = consistFacts and consistFacts.carrier or nil,
       marketScope = localPassenger and "local" or "corridor",
+      stationAccessEligible = accessEligible,
+      endpointReachableBuildings = { reachableA, reachableB },
       networkRouteCount = network.routeCount,
     }
   end

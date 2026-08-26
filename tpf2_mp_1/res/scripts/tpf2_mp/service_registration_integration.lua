@@ -34,7 +34,21 @@ function M.new(deps)
     })
   end
 
-  return { line = line, existing = existing }
+  local function afterProposalOutcome(action)
+    if type(action) ~= "table" or action.success ~= true then return false end
+    local state = getState()
+    local record = state.world.proposals.byId[tostring(action.proposalId or "")]
+    if not record or not world.proposalMayChangePassengerAccess(record.transaction) then
+      return false
+    end
+    -- Exact access is a native world fact, so derive it only after physical
+    -- consensus. `existing` uses the coalesced authored follow-up FIFO.
+    existing("passenger-access:" .. tostring(action.proposalId or "unknown"))
+    return true
+  end
+
+  return { line = line, existing = existing,
+    afterProposalOutcome = afterProposalOutcome }
 end
 
 return M

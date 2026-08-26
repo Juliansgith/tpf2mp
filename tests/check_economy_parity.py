@@ -216,6 +216,7 @@ def main() -> None:
                 "nextBoundaryGameTimeSeconds": start + period,
             }
         _apply_overrides(economy, scenario.get("overrides", {}))
+        economy["deliveryCursors"] = copy.deepcopy(scenario.get("deliveryCursors", {}))
         for service in scenario.get("reupserts", []):
             checkpoint._upsert_service_v2(economy, service)
 
@@ -245,7 +246,7 @@ def main() -> None:
         _same(f"{label} final state", _digest_view(economy), scenario["final"])
         model = {"economy": economy, "companies": scenario["companies"]}
         _same(f"{label} scoreboard", checkpoint._scoreboard(model), scenario["scoreboard"])
-    print(f"PASS {len(vectors['scenarios'])} cross-language v2-v9 economy parity scenarios")
+    print(f"PASS {len(vectors['scenarios'])} cross-language v2-v10 economy parity scenarios")
 
 
 if __name__ == "__main__":

@@ -1443,11 +1443,9 @@ handlers["network.checkpoint_outcome"] = function(action)
   return success, util.deepCopy(record)
 end
 
--- A loaded save can contain complete routes with no later line/vehicle operation.
--- Register them after match initialisation; operation-driven registration alone
--- would leave a perfectly valid service invisible to the authored economy. Wait until
--- the initial two-peer checkpoint has converged, then let each owning peer
--- enqueue only its own runnable pre-existing lines.  The normal ordered
+-- A loaded save can contain complete routes with no later line/vehicle operation,
+-- so scan after the initial two-peer checkpoint converges. Each owning peer
+-- enqueues only its own runnable pre-existing lines. The normal ordered
 -- line.register path still derives and carries the facts; this scan never
 -- authors market data independently on both peers.
 local serviceRegistrationIntegration = serviceRegistrationIntegrationModule.new({
@@ -2792,6 +2790,7 @@ applyCommitted = function(action, actor, commitSeq)
         error = tostring(checkpointError),
       })
     end
+    serviceRegistrationIntegration.afterProposalOutcome(action)
   elseif success and action.type == "network.operation_outcome"
     and action.success == true and authoritySeq then
     -- Both worlds have now agreed on this operation's physical result, so the

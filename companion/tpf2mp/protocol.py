@@ -1385,7 +1385,9 @@ def validate_action(action: Any) -> dict[str, Any]:
         if not isinstance(vehicle_costs, dict):
             raise ProtocolError("line.register vehicleCosts must be an object")
         service_metadata = action["service"].get("metadata", {})
-        metadata_error = validate_line_metadata(market_metadata, service_metadata)
+        metadata_error = validate_line_metadata(
+            market_metadata, service_metadata, action["service"].get("enabled", True),
+        )
         if metadata_error:
             raise ProtocolError(metadata_error)
         service_vehicle_values = _lua_array(

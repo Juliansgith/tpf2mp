@@ -903,7 +903,10 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         raise ProtocolError(f"replay service references unknown market: {market_cid}")
     existing = economy.setdefault("services", {}).get(line_cid)
     same_market = isinstance(existing, dict) and existing.get("marketCid") == market_cid
-    if isinstance(existing, dict) and not same_market:
+    enabled = service.get("enabled") is not False
+    enabled_changed = isinstance(existing, dict) \
+        and (existing.get("enabled") is not False) != enabled
+    if isinstance(existing, dict) and (not same_market or enabled_changed):
         economy.setdefault("deliveryCursors", {}).pop(line_cid, None)
     fare_cents = _integer(service.get("fareCents"), 1000, 0, 100_000_000)
     share_ppm: int | None
@@ -956,7 +959,7 @@ def _upsert_service_v2(economy: dict[str, Any], service: Mapping[str, Any]) -> N
         "capacity": _integer(service.get("capacity"), 100, 0, 1_000_000_000),
         "quality": _integer(service.get("quality"), 100, 0, 1000),
         "transfers": _integer(service.get("transfers"), 0, 0, 8),
-        "enabled": service.get("enabled") is not False,
+        "enabled": enabled,
         "annualVehicleUpkeepCents": annual_vehicle_upkeep,
         "upkeepResid": upkeep_resid,
         "shareResid": share_resid,

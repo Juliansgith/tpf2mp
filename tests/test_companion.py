@@ -1700,6 +1700,12 @@ class ProtocolTests(unittest.TestCase):
                     "endpointTownCids": ["town:pre:testville", "town:pre:testville"],
                     "stationGroupCids": ["station_group:a", "station_group:b"],
                     "vehicleCids": [],
+                    "stationAccessSchema": 1,
+                    "stationAccessSource": "native-street-catchment",
+                    "endpointAccessReady": [True, True],
+                    "endpointReachableBuildings": [25, 30],
+                    "endpointTownBuildings": [100, 100],
+                    "stationAccessEligible": True,
                 },
             },
         }
@@ -1721,6 +1727,24 @@ class ProtocolTests(unittest.TestCase):
         local_loop["service"]["metadata"]["stationGroupCids"] = ["station_group:a"]
         with self.assertRaisesRegex(ProtocolError, "station groups"):
             validate_action(local_loop)
+        phantom = json.loads(json.dumps(action))
+        phantom["service"]["metadata"]["endpointReachableBuildings"][1] = 0
+        with self.assertRaisesRegex(ProtocolError, "eligibility"):
+            validate_action(phantom)
+        enabled_mismatch = json.loads(json.dumps(action))
+        enabled_mismatch["service"]["enabled"] = False
+        with self.assertRaisesRegex(ProtocolError, "enabled state"):
+            validate_action(enabled_mismatch)
+        unavailable = json.loads(json.dumps(action))
+        unavailable["service"]["enabled"] = False
+        unavailable["service"]["metadata"].update({
+            "stationAccessSource": "unavailable",
+            "endpointAccessReady": [True, False],
+            "endpointReachableBuildings": [25, 0],
+            "endpointTownBuildings": [100, 0],
+            "stationAccessEligible": False,
+        })
+        self.assertFalse(validate_action(unavailable)["service"]["enabled"])
 
     def test_canonical_vehicle_lifecycle_scalar_contract(self) -> None:
         cases = {
@@ -7598,6 +7622,82 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertEqual(host.vehicle_sync_unscheduled_releases, 1)
             host._record_non_intent(vehicle_sync_record("player1", 8, "released", game_time=121.0))
             self.assertEqual(host.vehicle_sync_releases, 1, "release retry counted twice")
+
+    def test_vehicle_release_waits_for_physical_proposal_and_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "vehicle-release-proposal-serialization"
+            bridge = GameBridge(root / "host", session, "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            now = time.monotonic()
+            host.clock_requested_speed = host.clock_effective_speed = 1
+            host.clock_health = {
+                peer: {
+                    "receivedAt": now, "engineTick": 10, "lastCommitSeq": 0,
+                    "gameTime": 100.0, "observedSpeed": 1,
+                    "tickRate": 60.0, "gameRate": 1.0,
+                }
+                for peer in ("player1", "player2")
+            }
+            transaction = proposal_transaction("company:1")
+            intent = sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "proposal.prepare", "transaction": transaction,
+                }},
+            })
+            _, build = pass_proposal_prepare(host, intent)
+            build_seq = int(build["seq"])
+
+            host._record_non_intent(vehicle_sync_record("player1", 20, "held"))
+            host._record_non_intent(vehicle_sync_record("player2", 21, "held"))
+            tracker = next(iter(host.vehicle_sync_rounds.values()))
+            self.assertEqual(tracker["status"], "waiting-authority")
+            self.assertFalse(any(
+                item["payload"]["action"].get("type") == "vehicle.sync_release"
+                for item in host.commits.values()
+            ))
+
+            for peer, local_seq in (("player1", 22), ("player2", 23)):
+                completion = proposal_completion(
+                    session, peer, local_seq, transaction, commit_seq=build_seq,
+                )
+                completion["payload"]["proposalId"] = (
+                    host.proposal_consensus[build_seq]["proposalId"]
+                )
+                completion["payload"]["resultDigest"] = (
+                    proposal_completion_result_digest(completion["payload"])
+                )
+                host._record_non_intent(completion)
+            outcome_seq = build_seq + 1
+            self.assertEqual(
+                host.commits[outcome_seq]["payload"]["action"]["type"],
+                "network.proposal_outcome",
+            )
+            host.synchronization.expire(time.monotonic())
+            self.assertEqual(tracker["status"], "waiting-authority")
+
+            reason = f"physical-consensus:{session}:player1:{build_seq}"
+            host._record_non_intent(consensus_checkpoint(
+                session, "player1", 24, outcome_seq, reason,
+            ))
+            host._record_non_intent(consensus_checkpoint(
+                session, "player2", 25, outcome_seq, reason,
+            ))
+            checkpoint_outcome_seq = outcome_seq + 1
+            self.assertEqual(
+                host.commits[checkpoint_outcome_seq]["payload"]["action"]["type"],
+                "network.checkpoint_outcome",
+            )
+            host.synchronization.expire(time.monotonic())
+            release = host.commits[checkpoint_outcome_seq + 1]["payload"]["action"]
+            self.assertEqual(release["type"], "vehicle.sync_release")
+            self.assertEqual(tracker["status"], "release-ordered")
+            self.assertIsNone(host.session_fault)
 
     def test_acknowledged_shared_pause_suspends_vehicle_round_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -77,6 +77,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_view.lua' = 600
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_fault_recovery.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_text.lua' = 300
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_station_access_text.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_lists.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
     'companion\tpf2mp\network.py' = 1460

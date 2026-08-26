@@ -9,7 +9,7 @@ local multihopNetwork = require "tpf2_mp/multihop_network"
 
 local M = {}
 
-M.VERSION = 9
+M.VERSION = 10
 M.EPOCH_SECONDS = 300
 M.HOURS_PER_YEAR = costs.HOURS_PER_YEAR
 M.FINANCIAL_YEAR_SECONDS = costs.FINANCIAL_YEAR_SECONDS
@@ -265,6 +265,30 @@ function M.migrate(state)
   state.markets = state.markets or {}
   townDemand.migrate(state)
   state.services = state.services or {}
+  if previousVersion < 10 then
+    -- Pre-v10 passenger services were allowed to infer a whole town's demand
+    -- from station-to-town membership alone. Until the owning peer re-registers
+    -- the line with an exact native street-catchment proof, quarantine it and
+    -- discard its old delivery cursor. This makes old saves fail closed rather
+    -- than preserving the disconnected-station revenue exploit for one epoch.
+    for lineCid, service in pairs(state.services) do
+      local market = state.markets[service.marketCid]
+      if market and market.kind ~= "cargo" then
+        local metadata = type(service.metadata) == "table" and service.metadata or {}
+        if metadata.stationAccessSchema ~= 1 then
+          service.enabled = false
+          metadata.stationAccessSchema = 1
+          metadata.stationAccessSource = "legacy-unverified"
+          metadata.endpointAccessReady = { false, false }
+          metadata.endpointReachableBuildings = { 0, 0 }
+          metadata.endpointTownBuildings = { 0, 0 }
+          metadata.stationAccessEligible = false
+          service.metadata = metadata
+          state.deliveryCursors[lineCid] = nil
+        end
+      end
+    end
+  end
   state.version = M.VERSION
   return state
 end
@@ -422,10 +446,14 @@ function M.upsertService(state, service)
   assert(type(service.companyCid) == "string" and service.companyCid ~= "", "companyCid required")
   local existing = state.services[service.lineCid]
   local sameMarket = existing and existing.marketCid == service.marketCid
-  if existing and not sameMarket and state.deliveryCursors then
+  local enabled = service.enabled ~= false
+  local enabledChanged = existing
+    and (existing.enabled ~= false) ~= enabled
+  if existing and (not sameMarket or enabledChanged) and state.deliveryCursors then
     -- Passenger and cargo presentation counters are independent monotonic
-    -- spaces. Reusing a line for a different market must not compare the new
-    -- ledger with the old market cursor or retain the old competitive stock.
+    -- spaces. Reusing a line for a different market, or retiring/reactivating
+    -- its presentation after an access change, must not compare the new
+    -- ledger with an old cursor or retain an unpayable completed-trip residue.
     state.deliveryCursors[service.lineCid] = nil
   end
   local fareCents = copyInteger(service.fareCents, 1000, 0, 100000000)
@@ -461,7 +489,7 @@ function M.upsertService(state, service)
     capacity = copyInteger(service.capacity, 100, 0, 1000000000),
     quality = copyInteger(service.quality, 100, 0, 1000),
     transfers = copyInteger(service.transfers, 0, 0, 8),
-    enabled = service.enabled ~= false,
+    enabled = enabled,
     annualVehicleUpkeepCents = copyInteger(service.annualVehicleUpkeepCents,
       existing and existing.annualVehicleUpkeepCents or 0, 0, M.ACCUMULATOR_LIMIT),
     upkeepResid = existing and copyInteger(existing.upkeepResid, 0, 0, residueLimit)

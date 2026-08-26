@@ -1220,6 +1220,41 @@ do
   assert(guiBuildCorrelationModule.sourceAllows("trackBuilder", "construction") == false
       and guiBuildCorrelationModule.sourceAllows("constructionBuilder", "construction") == true,
     "builder-family semantic guard admitted a station payload as a track click")
+
+  local roadWithCollateralBuilding = {
+    streetProposal = { edgesToAdd = { ["1"] = {
+      type = 0, streetEdge = { streetType = 0 },
+    } } },
+    __constructionRemovals = { ["1"] = {
+      fileName = "building/residential/test.con",
+    } },
+  }
+  local trackWithCollateralBuilding = {
+    streetProposal = { edgesToAdd = { ["1"] = {
+      type = 1, trackEdge = { trackType = 0 },
+    } } },
+    __constructionRemovals = { ["1"] = {
+      fileName = "building/commercial/test.con",
+    } },
+  }
+  local stationWithTrack = {
+    streetProposal = { edgesToAdd = { ["1"] = {
+      type = 1, trackEdge = { trackType = 0 },
+    } } },
+    __constructionAdditions = { ["1"] = {
+      fileName = "station/rail/test.con",
+    } },
+  }
+  assert(guiBuildCorrelationModule.family(roadWithCollateralBuilding) == "street"
+      and guiBuildCorrelationModule.sourceAllows("streetBuilder",
+        guiBuildCorrelationModule.family(roadWithCollateralBuilding)) == true,
+    "collateral building demolition changed a road preview into a stale construction")
+  assert(guiBuildCorrelationModule.family(trackWithCollateralBuilding) == "track"
+      and guiBuildCorrelationModule.sourceAllows("trackBuilder",
+        guiBuildCorrelationModule.family(trackWithCollateralBuilding)) == true,
+    "collateral building demolition changed a track preview into a stale construction")
+  assert(guiBuildCorrelationModule.family(stationWithTrack) == "construction",
+    "a station addition was misclassified as its collateral track topology")
   local applyOk, applyError = correlation.validateApply({
     correlationId = trackMetadata.correlationId,
     sourceId = "trackBuilder", companyCid = "company:1", family = "track", frame = 11,
@@ -1610,8 +1645,15 @@ do
           lineCid = "line:event:economy:1", marketCid = "market:test",
           companyCid = "company:1", name = "Fast Link", fareCents = 1200,
           journeySeconds = 900, headwaySeconds = 600, capacity = 80,
+          enabled = false,
           metadata = { topSpeedKmh = 160, cruiseSpeedKmh = 112,
-            vehicleCount = 1, departuresPerHourPerDirection = 6 },
+            vehicleCount = 1, departuresPerHourPerDirection = 6,
+            stationAccessSchema = 1,
+            stationAccessSource = "native-street-catchment",
+            stationAccessEligible = false,
+            endpointAccessReady = { true, true },
+            endpointReachableBuildings = { 0, 17 },
+            endpointTownBuildings = { 420, 500 } },
         },
       },
       vehicleCosts = {
@@ -1655,6 +1697,9 @@ do
       and view.services["line:event:economy:1"].fareAtOutsideParityCents == 2313
       and view.services["line:event:economy:1"].hourlyMarketDemand == 640
       and view.services["line:event:economy:1"].modelTownSizeA == 420
+      and view.services["line:event:economy:1"].enabled == false
+      and view.services["line:event:economy:1"].stationAccessEligible == false
+      and view.services["line:event:economy:1"].endpointReachableBuildings[2] == 17
       and view.economyDifficulty == "easy",
     "economy presentation did not project exact selected-line/vehicle figures")
 end
@@ -4329,6 +4374,13 @@ do
     match = { status = "running", rules = {} },
     bridge = { companion = { connected = true, status = "connected" } },
     companyOrder = {},
+    economyPresentation = { services = {
+      ["line:isolated"] = {
+        name = "Isolated Shuttle", enabled = false, stationAccessSchema = 1,
+        endpointAccessReady = { true, true },
+        endpointReachableBuildings = { 0, 7 },
+      },
+    } },
     cargoPresentation = {
       lines = {
         ["line:cargo:a"] = { retired = false },
@@ -4364,6 +4416,10 @@ do
       "Automatic load receipts: freight PROVED 8 on line:cargo:a round 3 | local passenger stale witness; waiting to retry",
       1, true),
     "GUI did not expose automatic passenger/cargo proof progress")
+  assert(details.value:find(
+      "NO PASSENGER ACCESS: Isolated Shuttle is economy-disabled | endpoint buildings 0/7 | catchment reads ready/ready | trains still cost upkeep",
+      1, true),
+    "GUI did not explain why an isolated passenger line earns no revenue")
 
   -- The panel must present the model as the contest and native agents as
   -- scenery, so a player never has to infer which layer is authoritative.

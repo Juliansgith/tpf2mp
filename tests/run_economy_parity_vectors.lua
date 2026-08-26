@@ -111,6 +111,7 @@ local function addScenario(spec)
       spec.scheduler.epochSeconds)
   end
   applyOverrides(state, spec.overrides)
+  state.deliveryCursors = util.deepCopy(spec.deliveryCursors or {})
   for _, service in ipairs(spec.reupserts or {}) do economy.upsertService(state, service) end
 
   local companies = {}
@@ -135,6 +136,7 @@ local function addScenario(spec)
     services = util.deepCopy(spec.services),
     overrides = util.deepCopy(spec.overrides or {}),
     reupserts = util.deepCopy(spec.reupserts or {}),
+    deliveryCursors = util.deepCopy(spec.deliveryCursors or {}),
     companyCosts = util.deepCopy(spec.companyCosts or {}),
     vehicleCosts = util.deepCopy(spec.vehicleCosts or {}),
     scheduler = util.deepCopy(spec.scheduler),
@@ -177,6 +179,27 @@ addScenario({
       quality = 100, transfers = 0 },
   },
   epochs = 40,
+})
+
+addScenario({
+  id = "v10-access-retirement-clears-delivery-cursor",
+  markets = {
+    { cid = "market:access", name = "Access", demand = 100 },
+  },
+  services = {
+    { lineCid = "line:access", marketCid = "market:access", companyCid = "company:1",
+      name = "Access line", headwaySeconds = 600, journeySeconds = 1200,
+      fareCents = 1000, capacity = 100, quality = 100, enabled = true },
+  },
+  deliveryCursors = {
+    ["line:access"] = { deliveredPassengers = 12, earnedRevenueCents = 12000 },
+  },
+  reupserts = {
+    { lineCid = "line:access", marketCid = "market:access", companyCid = "company:1",
+      name = "Access line", headwaySeconds = 600, journeySeconds = 1200,
+      fareCents = 1000, capacity = 100, quality = 100, enabled = false },
+  },
+  epochs = 1,
 })
 
 addScenario({

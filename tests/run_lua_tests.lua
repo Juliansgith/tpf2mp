@@ -41,6 +41,7 @@ local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local matchRuntimeModule = require "tpf2_mp/match_runtime"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
+local stationAccessModule = require "tpf2_mp/world_station_access"
 local validationConstruction = require "tpf2_mp/validation_construction"
 local performanceRuntime = require "tpf2_mp/performance_runtime"
 local guiReplayWorkIndex = require "tpf2_mp/gui_replay_work_index"
@@ -3142,7 +3143,7 @@ test("economy v2 migration arms the first-settlement fare guard", function()
   state.version = 2
   state.params.alphaDownPm = 250
   local migrated = economy.migrate(state)
-  equal(migrated.version, 9)
+  equal(migrated.version, 10)
   equal(migrated.params.alphaDownPm, 500)
   equal(migrated.services["line:a"].lastFareCents, nil)
   -- The version-4 market step must be passenger-equivalent: same wait weight and
@@ -3151,6 +3152,10 @@ test("economy v2 migration arms the first-settlement fare guard", function()
   equal(market.kind, "passenger")
   equal(market.waitWeightPm, 2000)
   equal(market.transferSeconds, 480)
+  equal(migrated.services["line:a"].enabled, false,
+    "a legacy passenger line remained revenue-eligible without an access proof")
+  equal(migrated.services["line:a"].metadata.stationAccessSource,
+    "legacy-unverified")
 end)
 
 test("local road and tram lines improve only their own connected corridor endpoints", function()
@@ -3327,6 +3332,87 @@ test("station-group town reading keeps the station map as a fallback", function(
   truthy(diagnostic:find("matched=0", 1, true), "failure omitted group-match evidence")
 end)
 
+test("station access counts only town buildings on native reachable street edges", function()
+  local components = {
+    STATION_GROUP = {
+      [901] = { stations = { 41, 42 } },
+      [902] = { stations = { 43 } },
+    },
+    TOWN_BUILDING = {
+      [501] = { town = 700, parcels = { 601 } },
+      [502] = { town = 700, parcels = { 602, 603 } },
+      [503] = { town = 700, parcels = { 604 } },
+      [504] = { town = 701, parcels = { 605 } },
+    },
+    PARCEL = {
+      [601] = { streetSegment = { entity = 1001, index = 0 } },
+      [602] = { streetSegment = { entity = 1002, index = 0 } },
+      [603] = { streetSegment = { entity = 1001, index = 1 } },
+      [604] = { streetSegment = { entity = 1999, index = 0 } },
+      [605] = { streetSegment = { entity = 1001, index = 0 } },
+    },
+  }
+  local fakeApi = {
+    type = { ComponentType = {
+      STATION_GROUP = "STATION_GROUP", TOWN_BUILDING = "TOWN_BUILDING",
+      PARCEL = "PARCEL",
+    } },
+    engine = {
+      getComponent = function(id, kind)
+        return components[kind] and components[kind][id] or nil
+      end,
+      forEachEntityWithComponent = function(visitor, kind)
+        for id in pairs(components[kind] or {}) do visitor(id) end
+      end,
+      system = { catchmentAreaSystem = { getStation2edgesMap = function()
+        return {
+          [41] = { { { entity = 1001, index = 0 }, 5 } },
+          -- Exercise the zero-based pair spelling observed in engine userdata.
+          [42] = { { [0] = { entity = 1002, index = 1 }, [1] = 9 } },
+        }
+      end } },
+    },
+  }
+  local reader = stationAccessModule.new({
+    getApi = function() return fakeApi end,
+    entityNumber = function(value)
+      if type(value) == "number" then return value end
+      return type(value) == "table" and tonumber(value.entity or value.id) or nil
+    end,
+    sortedNumbers = function(values)
+      local result = {}
+      for _, value in pairs(type(values) == "table" and values or {}) do
+        result[#result + 1] = tonumber(value)
+      end
+      table.sort(result)
+      return result
+    end,
+  })
+  local access = reader.stationGroupPassengerAccess(901, 700)
+  truthy(access.ready)
+  equal(access.stationCount, 2)
+  equal(access.catchmentEdgeCount, 2)
+  equal(access.townBuildingCount, 3)
+  equal(access.reachableBuildings, 2,
+    "a multi-parcel building was counted more than once or another town leaked in")
+  local isolated = reader.stationGroupPassengerAccess(902, 700)
+  truthy(isolated.ready, "a valid isolated station is a zero-access fact, not a read failure")
+  equal(isolated.catchmentEdgeCount, 0)
+  equal(isolated.reachableBuildings, 0)
+end)
+
+test("station access fails closed when the native catchment API is unavailable", function()
+  local reader = stationAccessModule.new({
+    getApi = function() return { engine = { system = {} } } end,
+    entityNumber = tonumber,
+    sortedNumbers = function() return {} end,
+  })
+  local access = reader.stationGroupPassengerAccess(901, 700)
+  equal(access.ready, false)
+  equal(access.reachableBuildings, 0)
+  equal(access.errorCode, "catchment-api-unavailable")
+end)
+
 test("line transport-mode reading distinguishes passenger, cargo, and indexed mixed groups", function()
   local components = {
     LINE = {
@@ -3406,6 +3492,9 @@ test("freight service binding fails closed without a named cargo consist", funct
     lineStopGroups = function() return { 901, 902 } end,
     lineServiceKind = function() return "cargo", "indexed station" end,
     stationGroupTown = function() error("cargo line reached passenger town binding") end,
+    stationGroupPassengerAccess = function()
+      error("cargo line reached passenger access binding")
+    end,
     townCapacity = function() return 100 end,
     townBuildingCount = function() return 100 end,
     lineVehicleCount = function() return 0 end,
@@ -3636,6 +3725,21 @@ test("vehicle replacement automatically refreshes its assigned service facts", f
   equal(#submitted, 1, "the non-owning peer independently derived replacement facts")
 end)
 
+test("only station and street topology changes request passenger access refresh", function()
+  truthy(world.proposalMayChangePassengerAccess({
+    edges = { { carrier = "street" } }, remove = { edges = {} },
+  }))
+  truthy(world.proposalMayChangePassengerAccess({
+    edges = {}, remove = { edges = {} }, constructions = { { kind = "station" } },
+  }))
+  truthy(world.proposalMayChangePassengerAccess({
+    edges = {}, remove = { edges = { "edge:pre:unknown-carrier" } },
+  }), "an untyped removed road could silently retain stale access")
+  equal(world.proposalMayChangePassengerAccess({
+    edges = { { carrier = "track" } }, remove = { edges = {} },
+  }), false, "ordinary rail construction caused a registration storm")
+end)
+
 test("initial checkpoint revalidates every runnable pre-existing company line", function()
   local registry = canonical.newState()
   truthy(canonical.bind(registry, "line:pre:own", "line", 700))
@@ -3782,11 +3886,16 @@ test("same-town road service registers a local authored passenger market", funct
       metadata = { owner = "company:1", annualVehicleUpkeepCents = 100000 },
     },
   } }
+  local accessByGroup = {
+    [901] = { ready = true, reachableBuildings = 25, townBuildingCount = 100 },
+    [902] = { ready = true, reachableBuildings = 25, townBuildingCount = 100 },
+  }
   local binding = corridorBindingModule.new({
     bindExisting = function(_, localId) return ids[localId] end,
     lineStopGroups = function() return { 901, 902 } end,
     lineServiceKind = function() return "passenger", "indexed station" end,
     stationGroupTown = function() return 700 end,
+    stationGroupPassengerAccess = function(groupId) return accessByGroup[groupId] end,
     townCapacity = function() return 100, { 100, 100, 100 } end,
     townBuildingCount = function() return 100 end,
     lineVehicleIds = function() return { 501 } end,
@@ -3814,6 +3923,10 @@ test("same-town road service registers a local authored passenger market", funct
   equal(service.metadata.carrier, "ROAD")
   equal(service.metadata.marketScope, "local")
   truthy(service.capacity > 0, "local road service received no authored capacity")
+  truthy(service.enabled, "a line with reachable buildings was quarantined")
+  equal(service.metadata.endpointReachableBuildings[1], 25)
+  equal(service.metadata.endpointReachableBuildings[2], 25)
+  equal(service.metadata.stationAccessEligible, true)
   local presentation = passengerPresentation.newState()
   local reconciled, line = passengerPresentation.reconcileService(
     presentation, economyState, "line:event:bus:1")
@@ -3828,11 +3941,31 @@ test("same-town road service registers a local authored passenger market", funct
   equal(economyState.towns["town:pre:local"].size, 401)
   equal(economyState.towns["town:pre:local"].growthResid, 100)
 
+  economyState.deliveryCursors["line:event:bus:1"] = {
+    deliveredPassengers = 125, earnedRevenueCents = 50000,
+  }
+  accessByGroup[902] = {
+    ready = true, reachableBuildings = 0, townBuildingCount = 100,
+  }
+  local isolatedOk, isolatedResult = binding.makeLineService(
+    registry, economy, economyState, 77, "company:1", {})
+  truthy(isolatedOk, isolatedResult)
+  local isolatedService = economyState.services["line:event:bus:1"]
+  equal(isolatedService.enabled, false,
+    "a station endpoint with no reachable buildings remained revenue-eligible")
+  equal(isolatedService.metadata.stationAccessEligible, false)
+  equal(isolatedService.metadata.endpointReachableBuildings[2], 0)
+  equal(economyState.deliveryCursors["line:event:bus:1"], nil,
+    "retiring the presentation retained a payable delivery cursor")
+
   local emptyFallback = corridorBindingModule.new({
     bindExisting = function(_, localId) return ids[localId] end,
     lineStopGroups = function() return { 901, 902 } end,
     lineServiceKind = function() return "passenger", "indexed station" end,
     stationGroupTown = function() return 700 end,
+    stationGroupPassengerAccess = function()
+      return { ready = true, reachableBuildings = 25, townBuildingCount = 100 }
+    end,
     townCapacity = function() return 100, { 100, 100, 100 } end,
     townBuildingCount = function() return 100 end,
     lineVehicleIds = function() return {} end,

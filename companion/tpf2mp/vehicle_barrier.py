@@ -244,7 +244,16 @@ class VehicleStationBarrier:
     def _maybe_emit_release(self, tracker: dict[str, Any]) -> None:
         now = time.monotonic()
         self.deadlines.synchronize(self.host.vehicle_sync_rounds.values(), now)
-        if tracker.get("status") not in {"ready-to-release", "waiting-clock"}:
+        if tracker.get("status") not in {"ready-to-release", "waiting-clock", "waiting-authority"}:
+            return
+        # Physical completions and their checkpoint snapshots must observe one
+        # serial authored state.  A station release changes that state, so hold
+        # it until the active consensus boundary has closed on every peer.
+        if self.host.session_fault or self.host.reconnect.active() or any((
+            self.host._pending_prepare(), self.host._pending_proposal(),
+            self.host._pending_operation(), self.host._pending_checkpoint(),
+        )):
+            tracker["status"] = "waiting-authority"
             return
         if self.host.clock_rendezvous:
             tracker["status"] = "waiting-clock"
@@ -345,7 +354,7 @@ class VehicleStationBarrier:
 
     def flush(self) -> None:
         for tracker in list(self.host.vehicle_sync_rounds.values()):
-            if tracker.get("status") in {"ready-to-release", "waiting-clock"}:
+            if tracker.get("status") in {"ready-to-release", "waiting-clock", "waiting-authority"}:
                 self._maybe_emit_release(tracker)
 
     def resolve_ack(
@@ -393,6 +402,7 @@ class VehicleStationBarrier:
     def expire(self, now: float) -> None:
         if self.deadlines.synchronize(self.host.vehicle_sync_rounds.values(), now):
             return
+        self.flush()
         for tracker in list(self.host.vehicle_sync_rounds.values()):
             if tracker.get("status") not in {"complete", "faulted"} \
                     and now >= float(tracker["deadline"]):

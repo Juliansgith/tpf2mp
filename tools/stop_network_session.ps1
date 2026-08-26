@@ -16,6 +16,21 @@ $safeSession = Assert-Tpf2mpSessionId $Session
 $state = Read-Tpf2mpSessionState $safeSession $Peer
 if (-not $state) { throw "No launcher state exists for session '$safeSession' and $Peer." }
 
+function Stop-Tpf2mpVerifiedProcess {
+    param([Parameter(Mandatory = $true)][Diagnostics.Process]$Process)
+    $processId = $Process.Id
+    try {
+        Stop-Process -Id $processId -Force -ErrorAction Stop
+    }
+    catch {
+        # Exiting after identity verification is a successful teardown, not a
+        # cleanup fault. Preserve every other error while refusing PID reuse.
+        if (Get-Process -Id $processId -ErrorAction SilentlyContinue) { throw }
+        return
+    }
+    try { [void]$Process.WaitForExit(5000) } catch { }
+}
+
 if ($ArchiveSavePath) {
     & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $Peer `
         -SavePath $ArchiveSavePath -BundleRoot (Split-Path -Parent $PSScriptRoot)
@@ -153,8 +168,7 @@ foreach ($companionPid in @($companionPids | Select-Object -Unique)) {
     $process = Get-Tpf2mpVerifiedCompanionProcess -ProcessId $companionPid `
         -Session $safeSession -Peer $Peer -ExecutablePath $expectedExecutable
     if ($process) {
-        Stop-Process -Id $process.Id -Force -ErrorAction Stop
-        $process.WaitForExit(5000) | Out-Null
+        Stop-Tpf2mpVerifiedProcess $process
     }
 }
 if ($expectedExecutable) {
@@ -179,7 +193,7 @@ if ($expectedExecutable) {
         foreach ($matchingPid in $matchingPids) {
             $matchingProcess = Get-Tpf2mpVerifiedCompanionProcess -ProcessId $matchingPid `
                 -Session $safeSession -Peer $Peer -ExecutablePath $expectedExecutable
-            if ($matchingProcess) { Stop-Process -Id $matchingProcess.Id -Force -ErrorAction Stop }
+            if ($matchingProcess) { Stop-Tpf2mpVerifiedProcess $matchingProcess }
         }
     }
     Start-Sleep -Milliseconds 500

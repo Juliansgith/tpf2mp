@@ -346,7 +346,9 @@ captured table reference would therefore mutate stale state after loading.
   `clock_governor.py` owns the adaptive slowest-peer policy and hysteresis; it
   compares measured game-time progress, never render/update frame rate.
   `vehicle_barrier.py` owns canonical train station rounds and uses the same
-  debounced skew predicate before release. Clock skew may drive authority only
+  debounced skew predicate before release. A ready departure also waits behind
+  physical proposal/operation and checkpoint consensus, so its core mutation
+  cannot enter different peers' asynchronous completion snapshots. Clock skew may drive authority only
   when all fresh health samples describe the same current clock generation;
   mixed-generation projection is diagnostic.
 - `bridge.py`, `checkpoint.py`, `restore.py`, and `recovery.py` own durable local

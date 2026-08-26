@@ -1,6 +1,17 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-26 (Europe/Amsterdam), `0.40.6-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-26 (Europe/Amsterdam), `0.40.7-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Physical proposal / vehicle-release serialization (2026-08-26)](PHYSICAL_PROPOSAL_VEHICLE_RELEASE_SERIALIZATION_2026-08-26.md)
+records the live road-build/train-release ordering race, transient unequal core
+digests, authority-bound departure queue, restart-safe retry path, exact
+regression, and fresh-session live gate.
+
+[Phantom passenger access (2026-08-26)](PHANTOM_PASSENGER_ACCESS_2026-08-26.md)
+records the live disconnected-station revenue exploit, whole-town access root
+cause, exact native street-catchment proof, fail-closed economy-v10 migration,
+automatic topology revalidation, player-facing warning, and remaining
+coverage/feeder-union slice.
 
 [Rapid line edits and snapped-depot replay (2026-08-26)](RAPID_LINE_EDIT_AND_SNAPPED_DEPOT_2026-08-26.md)
 records the origin-applied CreateLine/UpdateLine dependency race, raw-capture

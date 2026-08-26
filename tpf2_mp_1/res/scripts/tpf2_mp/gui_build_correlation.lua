@@ -44,14 +44,19 @@ end
 function M.family(snapshot)
   if type(snapshot) ~= "table" then return "none" end
   local known = containers(snapshot)
-  local construction, edgeObject, removal = false, false, false
+  local constructionAdd, constructionRemove = false, false
+  local edgeObject, removal = false, false
   local track, street, anyChange = false, false, false
   for _, value in ipairs(known) do
     for _, field in ipairs({
-      "constructionsToAdd", "toAdd", "constructionsToRemove", "toRemove",
-      "__constructionAdditions", "__constructionRemovals",
+      "constructionsToAdd", "toAdd", "__constructionAdditions",
     }) do
-      if nonEmpty(value[field]) then construction, anyChange = true, true end
+      if nonEmpty(value[field]) then constructionAdd, anyChange = true, true end
+    end
+    for _, field in ipairs({
+      "constructionsToRemove", "toRemove", "__constructionRemovals",
+    }) do
+      if nonEmpty(value[field]) then constructionRemove, anyChange = true, true end
     end
     for _, field in ipairs({ "edgeObjectsToAdd", "edgeObjectsToRemove" }) do
       if nonEmpty(value[field]) then edgeObject, anyChange = true, true end
@@ -75,10 +80,17 @@ function M.family(snapshot)
       if nonEmpty(value[field]) then anyChange = true end
     end
   end
-  if construction then return "construction" end
+  -- A road or track proposal may remove buildings as collateral.  The native
+  -- preview still belongs to streetBuilder/trackBuilder in that case; treating
+  -- any construction removal as the primary family rejects every hover sample
+  -- over a house as a stale-tool mismatch.  A construction addition remains
+  -- primary (stations and depots also contain transport edges), while a
+  -- removal-only proposal remains a construction/bulldozer action.
+  if constructionAdd then return "construction" end
   if track and street then return "mixed-transport" end
   if track then return "track" end
   if street then return "street" end
+  if constructionRemove then return "construction" end
   if edgeObject then return "edge-object" end
   if removal then return "removal" end
   if anyChange then return "unknown-change" end
