@@ -1,6 +1,6 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.40.4-alpha` is a restricted two-player competitive build for the
+TPF2MP `0.40.5-alpha` is a restricted two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
 trust each other. Its preferred transport is the TPF2MP secure relay: both
 players make outbound WSS connections, so neither player opens a port. Direct
@@ -38,7 +38,10 @@ See [DISTRIBUTION_AND_UPDATES.md](DISTRIBUTION_AND_UPDATES.md).
 
 ## Start a match
 
-1. Open `TPF2MP Multiplayer` (or `LAUNCH_TPF2MP.cmd`) on both computers.
+1. Open `TPF2MP Multiplayer` (or `LAUNCH_TPF2MP.cmd`) on both computers. Keep
+   each launcher open for its whole match. Closing it now cleanly ends its exact
+   game, companion, relay tunnel, diagnostics, recovery helpers, and autosave
+   guard; it never leaves a hidden multiplayer session behind.
 2. Leave **Use secure relay** checked. Player 1 selects the starting save and
    clicks **CREATE SESSION**, then **COPY CODE** and sends that opaque code to
    Player 2. The displayed `mp-...` value is the non-secret support ID.
@@ -52,6 +55,12 @@ See [DISTRIBUTION_AND_UPDATES.md](DISTRIBUTION_AND_UPDATES.md).
    through the ordinary Load Game button.
 6. Open the in-game Multiplayer panel and select **Alpha Status**. Begin only
    after both games say `READY` and show no blocker.
+
+Starting another Host or Join from the launcher replaces a prior verified
+TPF2MP session on that computer. It closes only processes whose executable,
+PID, start time, role, and session state all match; an unknown process is never
+terminated merely because it uses the same port. **Stop session** performs the
+same complete teardown immediately.
 
 Each peer has its own company, wallet, assets, lines, and vehicles. Roads may
 connect to public roads; private rival track, stations, depots, constructions,

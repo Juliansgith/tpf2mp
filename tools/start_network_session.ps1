@@ -15,12 +15,18 @@ param(
     [ValidateRange(5, 600)][int]$CompletionTimeoutSeconds = 45,
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [switch]$TownDevelopment,
-    [switch]$NoLaunchGame
+    [switch]$NoLaunchGame,
+    [ValidateRange(0, [int]::MaxValue)][int]$OwnerLauncherProcessId = 0,
+    [string]$OwnerLauncherExecutable,
+    [string]$OwnerLauncherStartedAtUtc,
+    [switch]$ReplaceExistingSession,
+    [switch]$DeferLifecycleSupervisor
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
 . (Join-Path $PSScriptRoot 'network_autosave_guard.ps1')
+. (Join-Path $PSScriptRoot 'session_lifecycle.ps1')
 
 $agentModeExplicit = $PSBoundParameters.ContainsKey('AgentMode')
 $townDevelopmentExplicit = $PSBoundParameters.ContainsKey('TownDevelopment')
@@ -43,11 +49,22 @@ if ($RestorePlan) {
 }
 $safeSession = Assert-Tpf2mpSessionId $Session
 $peer = if ($Role -eq 'Host') { 'player1' } else { 'player2' }
+$autosaveGuardLeasePath = Join-Path (Join-Path $env:LOCALAPPDATA 'TPF2MP') 'network-autosave-guard.json'
+if ($OwnerLauncherProcessId -gt 0 `
+        -and (-not $OwnerLauncherExecutable -or -not $OwnerLauncherStartedAtUtc)) {
+    throw 'Launcher process ownership metadata is incomplete.'
+}
 if ($Role -eq 'Join' -and ($HostAddress -notmatch '^[A-Za-z0-9.:-]{1,253}$')) {
     throw 'Host address contains unsupported characters.'
 }
 if ($BindAddress -notmatch '^[A-Za-z0-9.:-]{1,253}$') { throw 'Bind address contains unsupported characters.' }
 
+if ($ReplaceExistingSession) {
+    Invoke-Tpf2mpReplaceManagedSessionConflicts -Session $safeSession -Peer $peer `
+        -HostPort $(if ($Role -eq 'Host') { $Port } else { 0 }) `
+        -AutosaveGuardLeasePath $autosaveGuardLeasePath `
+        -StopScriptPath (Join-Path $PSScriptRoot 'stop_network_session.ps1')
+}
 $existingState = Read-Tpf2mpSessionState $safeSession $peer
 if ($existingState) {
     $existingPids = @()
@@ -140,7 +157,6 @@ $menuBootstrap = $null
 $directLaunch = $null
 $autosaveGuard = $null
 $autosaveGuardWatcher = $null
-$autosaveGuardLeasePath = Join-Path (Join-Path $env:LOCALAPPDATA 'TPF2MP') 'network-autosave-guard.json'
 if ($StartingSave) {
     $startingSaveOriginal = Resolve-Tpf2mpFullPath $StartingSave
     if ($restorePlanData) {
@@ -494,6 +510,13 @@ try {
         $state.recoveryWatcherStderr = $recoveryWatcherStderr
     }
     [void](Write-Tpf2mpSessionState $safeSession $peer $state)
+    if ($gameProcess -and -not $DeferLifecycleSupervisor) {
+        [void](Start-Tpf2mpSessionLifecycleSupervisor -Session $safeSession -Peer $peer `
+            -State $state -BundleRoot $bundle `
+            -OwnerLauncherProcessId $OwnerLauncherProcessId `
+            -OwnerLauncherExecutable $OwnerLauncherExecutable `
+            -OwnerLauncherStartedAtUtc $OwnerLauncherStartedAtUtc)
+    }
     Write-Host "TPF2MP $Role session ready: $safeSession ($peer), fingerprint $fingerprint"
     Write-Host "Bridge: $bridge"
     if ($StartingSave -and -not $NoLaunchGame) {

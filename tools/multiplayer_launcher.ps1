@@ -56,6 +56,10 @@ $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.StartPosition = 'CenterScreen'
 
+$launcherOwner = Get-Process -Id $PID -ErrorAction Stop
+$script:launcherOwnerProcessId = $launcherOwner.Id
+$script:launcherOwnerExecutable = [string]$launcherOwner.Path
+$script:launcherOwnerStartedAtUtc = $launcherOwner.StartTime.ToUniversalTime().ToString('o')
 $title = New-Object Windows.Forms.Label
 $title.Text = "TPF2MP $bundleVersion  /  MULTIPLAYER"
 $title.Font = New-Object Drawing.Font('Segoe UI Semibold', 18)
@@ -65,7 +69,7 @@ $title.AutoSize = $true
 $form.Controls.Add($title)
 
 $subtitle = New-Object Windows.Forms.Label
-$subtitle.Text = 'Host or join a trusted two-company world. Diagnostics remain available below for local verification.'
+$subtitle.Text = 'Host or join a trusted two-company world. Keep this launcher open; closing it cleanly ends its game and session.'
 $subtitle.ForeColor = $muted
 $subtitle.Location = New-Object Drawing.Point(27, 56)
 $subtitle.Size = New-Object Drawing.Size(790, 30)
@@ -573,6 +577,14 @@ function Get-ValidatedInputs([bool]$RequireSave = $false, [bool]$IgnoreSave = $f
     }
     return [pscustomobject]@{ Session = $session; Port = $port; Save = $save }
 }
+function Add-LauncherSessionOwnership([object[]]$Arguments) {
+    return @($Arguments + @(
+        '-OwnerLauncherProcessId', [string]$script:launcherOwnerProcessId,
+        '-OwnerLauncherExecutable', $script:launcherOwnerExecutable,
+        '-OwnerLauncherStartedAtUtc', $script:launcherOwnerStartedAtUtc,
+        '-ReplaceExistingSession'
+    ))
+}
 
 $newSessionButton.Add_Click({
     Clear-RestorePlanSelection
@@ -736,6 +748,7 @@ $hostButton.Add_Click({
             }
             if ($input.Save) { $args += @('-StartingSave', $input.Save) }
             if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+            $args = Add-LauncherSessionOwnership $args
             Start-LauncherWorker (Join-Path $PSScriptRoot 'start_relay_network_session.ps1') `
                 $args 'relay-host-launch'
             Append-LauncherLog "Secure host launch started. Share the copied join code; support ID $($relay.Session)."
@@ -745,6 +758,7 @@ $hostButton.Add_Click({
             '-BindAddress', '0.0.0.0', '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
         if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+        $args = Add-LauncherSessionOwnership $args
         Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session_retry.ps1') $args 'host-launch'
         if (-not $script:restorePlanPath) {
             Append-LauncherLog "Host will share only this pinned save on TCP $($input.Port + 1) for the matching session."
@@ -776,6 +790,7 @@ $joinButton.Add_Click({
             }
             if ($input.Save) { $args += @('-StartingSave', $input.Save) }
             if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+            $args = Add-LauncherSessionOwnership $args
             Start-LauncherWorker (Join-Path $PSScriptRoot 'start_relay_network_session.ps1') `
                 $args 'relay-join-launch'
             Append-LauncherLog "Secure Join will receive and verify the host save automatically; support ID $($relay.Session)."
@@ -788,6 +803,7 @@ $joinButton.Add_Click({
             '-Port', $input.Port, '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
         if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+        $args = Add-LauncherSessionOwnership $args
         Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session_retry.ps1') $args 'join-launch'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot join') | Out-Null }
@@ -860,9 +876,10 @@ $stopButton.Add_Click({
             Append-LauncherLog "Requested clean stop for $session/player1 and player2."
         }
         else {
-            & (Join-Path $PSScriptRoot 'stop_network_session.ps1') -Session $session -Peer $script:lastPeer
-            $statusLabel.Text = 'Companion stopped; game left open.'
-            Append-LauncherLog "Stopped $session/$script:lastPeer."
+            & (Join-Path $PSScriptRoot 'stop_network_session.ps1') -Session $session `
+                -Peer $script:lastPeer -StopGame -StopReason 'launcher-stop-button'
+            $statusLabel.Text = 'Session and game stopped cleanly.'
+            Append-LauncherLog "Stopped $session/$script:lastPeer and its exact game process."
         }
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot stop') | Out-Null }

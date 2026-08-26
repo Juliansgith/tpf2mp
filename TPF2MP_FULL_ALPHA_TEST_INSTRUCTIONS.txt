@@ -4,7 +4,7 @@ TPF2MP FULL PLAYABLE-ALPHA TEST INSTRUCTIONS
 Target
 ------
 Transport Fever 2 Build 35924 (Windows x64)
-TPF2MP 0.40.4-alpha or the current development build
+TPF2MP 0.40.5-alpha or the current development build
 Two players over the secure relay, trusted LAN/private VPN, or two instances
 on one PC
 
@@ -73,6 +73,12 @@ For an installed-release user-flow test, open the desktop shortcut named:
 Do not mix a source launcher and an installed-release launcher in one match.
 
 Call the first launcher P1/HOST and the second P2/JOIN.
+
+Keep both launchers open for the entire match. Closing a launcher is now the
+clean end-session action: it closes only that launcher's exact verified game
+and stops its companion, relay tunnel, diagnostics, recovery helpers, and
+autosave guard. Starting another Host/Join safely replaces a previous verified
+TPF2MP session; it refuses to terminate an unknown process.
 
 In P1/HOST:
 
@@ -421,8 +427,10 @@ While both localhost games and companions are still running and READY:
 [ ] Take screenshots of both Alpha Status views and any visual mismatch.
 [ ] Use Open session files if logs/evidence need to be inspected.
 
-After evidence collection, exit both games and use Stop session / lab if a
-companion remains. Do not leave the two game instances running overnight.
+After evidence collection, click Stop session or close each launcher. Confirm
+its exact game also closes. No companion, relay tunnel, lifecycle watcher, or
+autosave guard should remain. Do not leave the two game instances running
+overnight.
 
 
 16. STOP IMMEDIATELY IF ANY OF THESE OCCUR

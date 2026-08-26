@@ -17,6 +17,10 @@ The launcher enables **Use secure relay** by default.
    required.
 5. Either player can report the visible `mp-...` support ID when something goes
    wrong. The support ID cannot authenticate or join a room.
+6. Keep each launcher open while playing. Closing it is an intentional clean
+   end-session action: its exact game, companion, tunnel, diagnostics, recovery
+   helpers, and autosave guard are stopped together. Starting a new match also
+   reclaims a previous session only when its recorded process identities verify.
 
 There is no fallback from relay to direct mode during a match. A tunnel loss
 enters the existing pause/reconnect fence; missed commits replay before the

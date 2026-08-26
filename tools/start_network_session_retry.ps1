@@ -16,6 +16,11 @@ param(
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [switch]$TownDevelopment,
     [switch]$NoLaunchGame,
+    [ValidateRange(0, [int]::MaxValue)][int]$OwnerLauncherProcessId = 0,
+    [string]$OwnerLauncherExecutable,
+    [string]$OwnerLauncherStartedAtUtc,
+    [switch]$ReplaceExistingSession,
+    [switch]$DeferLifecycleSupervisor,
     [ValidateRange(1, 3)][int]$MaxAttempts = 2
 )
 

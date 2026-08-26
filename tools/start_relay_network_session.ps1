@@ -14,13 +14,18 @@ param(
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [switch]$TownDevelopment,
     [switch]$NoLaunchGame,
-    [switch]$AllowInsecureLoopback
+    [switch]$AllowInsecureLoopback,
+    [ValidateRange(0, [int]::MaxValue)][int]$OwnerLauncherProcessId = 0,
+    [string]$OwnerLauncherExecutable,
+    [string]$OwnerLauncherStartedAtUtc,
+    [switch]$ReplaceExistingSession
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
 . (Join-Path $PSScriptRoot 'relay_port_common.ps1')
 . (Join-Path $PSScriptRoot 'relay_diagnostic_process.ps1')
+. (Join-Path $PSScriptRoot 'session_lifecycle.ps1')
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 $safeSession = Assert-Tpf2mpSessionId $Session
@@ -173,6 +178,11 @@ try {
         AgentMode = $AgentMode
         TownDevelopment = $TownDevelopment
         NoLaunchGame = $NoLaunchGame
+        OwnerLauncherProcessId = $OwnerLauncherProcessId
+        OwnerLauncherExecutable = $OwnerLauncherExecutable
+        OwnerLauncherStartedAtUtc = $OwnerLauncherStartedAtUtc
+        ReplaceExistingSession = $ReplaceExistingSession
+        DeferLifecycleSupervisor = -not $NoLaunchGame
     }
     foreach ($key in @($launchArguments.Keys)) {
         if ($null -eq $launchArguments[$key] -or $launchArguments[$key] -eq '') {
@@ -221,6 +231,13 @@ try {
     $state | Add-Member -NotePropertyName relayDiagnosticsStdout -NotePropertyValue $diagnosticStdout -Force
     $state | Add-Member -NotePropertyName relayDiagnosticsStderr -NotePropertyValue $diagnosticStderr -Force
     [void](Write-Tpf2mpSessionState $safeSession $peer $state)
+    if (-not $NoLaunchGame -and $state.gamePid) {
+        [void](Start-Tpf2mpSessionLifecycleSupervisor -Session $safeSession -Peer $peer `
+            -State $state -BundleRoot $bundle `
+            -OwnerLauncherProcessId $OwnerLauncherProcessId `
+            -OwnerLauncherExecutable $OwnerLauncherExecutable `
+            -OwnerLauncherStartedAtUtc $OwnerLauncherStartedAtUtc)
+    }
     Write-Host "secure_relay_ready=$($credentialData.sessionId)"
     Write-Host "support_id=$($credentialData.sessionId)"
     Write-Host "relay_tunnel_status=$relayStatus"

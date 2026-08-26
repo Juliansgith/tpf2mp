@@ -158,6 +158,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Network autosave guard tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_session_lifecycle_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Session lifecycle cleanup tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_relay_port_tests.ps1') `
         -ProjectRoot $projectRoot
     if (-not $?) { throw 'Relay loopback port allocation tests failed' }

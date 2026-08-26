@@ -4,11 +4,13 @@ param(
     [Parameter(Mandatory = $true)][ValidateSet('player1', 'player2')][string]$Peer,
     [string]$ArchiveSavePath,
     [switch]$StopGame,
-    [switch]$KeepCurrentWatcher
+    [switch]$KeepCurrentWatcher,
+    [string]$StopReason = 'manual-stop'
 )
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
+. (Join-Path $PSScriptRoot 'session_lifecycle.ps1')
 
 $safeSession = Assert-Tpf2mpSessionId $Session
 $state = Read-Tpf2mpSessionState $safeSession $Peer
@@ -18,6 +20,25 @@ if ($ArchiveSavePath) {
     & (Join-Path $PSScriptRoot 'archive_recovery_save.ps1') -Session $safeSession -Peer $Peer `
         -SavePath $ArchiveSavePath -BundleRoot (Split-Path -Parent $PSScriptRoot)
     if ($LASTEXITCODE -ne 0) { throw "Recovery archive failed with exit code $LASTEXITCODE; session was not stopped." }
+}
+
+if ($state.PSObject.Properties['lifecycleSupervisorPid'] -and $state.lifecycleSupervisorPid) {
+    $supervisorPid = [int]$state.lifecycleSupervisorPid
+    if ($supervisorPid -ne $PID) {
+        $supervisorNative = Get-CimInstance Win32_Process `
+            -Filter "ProcessId = $supervisorPid" -ErrorAction SilentlyContinue
+        $sessionPattern = '(?:^|\s)-Session(?:\s+|=)' + [Regex]::Escape($safeSession) + '(?=\s|$)'
+        $peerPattern = '(?:^|\s)-Peer(?:\s+|=)' + [Regex]::Escape($Peer) + '(?=\s|$)'
+        if ($supervisorNative `
+                -and [string]$supervisorNative.CommandLine -match 'watch_network_session_lifecycle\.ps1' `
+                -and [string]$supervisorNative.CommandLine -match $sessionPattern `
+                -and [string]$supervisorNative.CommandLine -match $peerPattern) {
+            Stop-Process -Id $supervisorPid -Force -ErrorAction SilentlyContinue
+        }
+        elseif ($supervisorNative) {
+            Write-Warning "Recorded lifecycle PID $supervisorPid no longer matches this session; it was not touched."
+        }
+    }
 }
 
 if ($state.PSObject.Properties['menuCoordinatorPid'] -and $state.menuCoordinatorPid) {
@@ -199,10 +220,52 @@ if ($StopGame -and $state.gamePid) {
         else {
             Write-Warning "Game PID $($game.Id) rejected a normal close request; terminating only that verified session PID."
             Stop-Process -Id $game.Id -Force -ErrorAction Stop
+            [void]$game.WaitForExit(10000)
         }
     }
     elseif ($game -and -not $game.HasExited) {
         Write-Warning "PID $($state.gamePid) no longer matches the recorded game path/start time; it was not touched."
+    }
+}
+
+$gameStillRunning = $false
+if ($state.gamePid -and $state.gameExecutable -and $state.gameStartedAtUtc) {
+    $gameStillRunning = Test-Tpf2mpExactProcessIdentity -ProcessId ([int]$state.gamePid) `
+        -ExecutablePath ([string]$state.gameExecutable) `
+        -StartedAtUtc ([string]$state.gameStartedAtUtc)
+}
+if (-not $gameStillRunning) {
+    if ($state.PSObject.Properties['autosaveGuardWatcherPid'] -and $state.autosaveGuardWatcherPid) {
+        $guardWatcherPid = [int]$state.autosaveGuardWatcherPid
+        $guardWatcher = Get-Process -Id $guardWatcherPid -ErrorAction SilentlyContinue
+        if ($guardWatcher -and -not $guardWatcher.HasExited) {
+            [void]$guardWatcher.WaitForExit(5000)
+            $guardWatcher.Refresh()
+        }
+        if ($guardWatcher -and -not $guardWatcher.HasExited) {
+            $guardNative = Get-CimInstance Win32_Process `
+                -Filter "ProcessId = $guardWatcherPid" -ErrorAction SilentlyContinue
+            $leasePattern = if ($state.autosaveGuardLeasePath) {
+                [Regex]::Escape([string]$state.autosaveGuardLeasePath)
+            } else { $null }
+            if ($guardNative -and [string]$guardNative.CommandLine -match 'watch_network_autosave_guard\.ps1' `
+                    -and ($null -eq $leasePattern `
+                        -or [string]$guardNative.CommandLine -match $leasePattern)) {
+                Stop-Process -Id $guardWatcherPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+    if ($state.PSObject.Properties['autosaveGuardLeasePath'] -and $state.autosaveGuardLeasePath `
+            -and (Test-Path -LiteralPath ([string]$state.autosaveGuardLeasePath) -PathType Leaf)) {
+        try {
+            $lease = Read-Tpf2mpAutosaveGuardLease ([string]$state.autosaveGuardLeasePath)
+            if ($lease -and [string]$lease.session -eq $safeSession `
+                    -and [string]$lease.peer -eq $Peer) {
+                [void](Restore-Tpf2mpNetworkAutosaveGuard `
+                    -LeasePath ([string]$state.autosaveGuardLeasePath) -Reason $StopReason)
+            }
+        }
+        catch { Write-Warning "Autosave guard restore requires attention: $($_.Exception.Message)" }
     }
 }
 
@@ -229,5 +292,6 @@ if (Test-Path -LiteralPath $launcherConfig -PathType Leaf) {
 
 $state.status = 'stopped'
 $state | Add-Member -NotePropertyName stoppedAtUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
+$state | Add-Member -NotePropertyName stopReason -NotePropertyValue $StopReason -Force
 [void](Write-Tpf2mpSessionState $safeSession $Peer $state)
-Write-Host "Stopped TPF2MP companion for $safeSession/$Peer."
+Write-Host "Stopped TPF2MP session $safeSession/$Peer ($StopReason)."
