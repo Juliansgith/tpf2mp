@@ -2627,6 +2627,53 @@ test("pre-existing world manifest ignores local ids and fails closed on ambiguit
   end
 end)
 
+test("pre-existing world manifest never broad-projects loaded station entities", function()
+  local previousApi, previousGame = api, game
+  local broadProjectionCalls = 0
+  game = { interface = {
+    getEntity = function()
+      broadProjectionCalls = broadProjectionCalls + 1
+      error("loaded STATION broad projection is native-unsafe")
+    end,
+    getTowns = function() return {} end,
+    getLines = function() return {} end,
+    getVehicles = function() return {} end,
+    getDepots = function() return {} end,
+  } }
+  api = {
+    type = { ComponentType = {
+      NAME = "NAME", STATION_GROUP = "STATION_GROUP", STATION = "STATION",
+      SIM_BUILDING = "SIM_BUILDING", PLAYER_OWNED = "PLAYER_OWNED",
+    } },
+    engine = {
+      getComponent = function(id, kind)
+        if kind == "STATION" and (id == 41 or id == 42) then return {} end
+        if kind == "PLAYER_OWNED" and (id == 41 or id == 42) then
+          return { player = 7 }
+        end
+        return nil
+      end,
+      forEachEntityWithComponent = function(callback, kind)
+        if kind == "STATION" or kind == "PLAYER_OWNED" then
+          callback(41); callback(42)
+        end
+      end,
+      entityExists = function(id) return id == 41 or id == 42 end,
+      system = { lineSystem = { getLines = function() return {} end } },
+    },
+  }
+  local registry = canonical.newState()
+  local manifest = world.canonicalManifest(registry)
+  equal(broadProjectionCalls, 0)
+  equal(manifest.total, 2)
+  equal(manifest.ambiguousCount, 1)
+  equal(#canonical.snapshot(registry), 0)
+  local structural = world.structuralSnapshot(registry, { logicalOwners = {} }, {})
+  equal(broadProjectionCalls, 0)
+  equal(#structural.objects, 2)
+  api, game = previousApi, previousGame
+end)
+
 test("world manifest binds private starting topology across divergent local ids", function()
   local previousApi, previousGame = api, game
   local function sample(node0, node1, edgeId)

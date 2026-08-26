@@ -4,6 +4,7 @@ local canonical = require "tpf2_mp/canonical"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 local nativeOwnershipProjection = require "tpf2_mp/native_ownership_projection"
 local operationalTelemetryModule = require "tpf2_mp/world_operational_telemetry"
+local componentIdentityModule = require "tpf2_mp/world_component_identity"
 local townReadingModule = require "tpf2_mp/world_town_reading"
 local stationReadingModule = require "tpf2_mp/world_station_reading"
 local stationAccessModule = require "tpf2_mp/world_station_access"
@@ -83,6 +84,15 @@ local function component(id, componentType)
   local ok, value = pcall(api.engine.getComponent, id, componentType)
   return ok and value or nil
 end
+
+local componentIdentity = componentIdentityModule.new({
+  component = component,
+  getApi = function() return api end,
+})
+local safeComponentField = componentIdentity.safeField
+local componentNameOf = componentIdentity.nameOf
+local quantisedPosition = componentIdentity.quantisedPosition
+local componentPositionOfEntity = componentIdentity.positionOf
 
 local industryReading = industryReadingModule.new({
   getApi = function() return api end,
@@ -307,25 +317,10 @@ end
 -- Returns nil when no source resolves, so callers that must not fabricate
 -- geometry can tell "unknown" from a legitimate position at the origin.
 local function resolvedPositionOfEntity(entity)
+  local narrow = componentPositionOfEntity(entity)
+  if narrow then return narrow end
   local e = safeEntity(entity)
-  if e and e.position then
-    return { util.integer((e.position[1] or e.position.x or 0) * 10), util.integer((e.position[2] or e.position.y or 0) * 10) }
-  end
-  local construction = component(entity, api.type.ComponentType.CONSTRUCTION)
-  if construction and construction.transf and construction.transf.cols then
-    local ok, pos = pcall(function() return construction.transf:cols(3) end)
-    if ok and pos then return { util.integer((pos.x or 0) * 10), util.integer((pos.y or 0) * 10) } end
-  end
-  local node = component(entity, api.type.ComponentType.BASE_NODE)
-  local nodePosition = node and (node.position or node.pos)
-  if nodePosition then
-    return {
-      util.integer((nodePosition[1] or nodePosition.x or 0) * 10),
-      util.integer((nodePosition[2] or nodePosition.y or 0) * 10),
-      util.integer((nodePosition[3] or nodePosition.z or 0) * 10),
-    }
-  end
-  return nil
+  return e and quantisedPosition(e.position) or nil
 end
 
 local function positionOfEntity(entity)
@@ -523,7 +518,8 @@ local function listKind(kind)
   return source and source() or nil
 end
 
-function M.kindOf(id)
+function M.kindOf(id, options)
+  options = options or {}
   local types = api.type.ComponentType
   local candidates = {
     { "line", types.LINE },
@@ -543,6 +539,7 @@ function M.kindOf(id)
   for _, candidate in ipairs(candidates) do
     if candidate[2] and component(id, candidate[2]) then return candidate[1] end
   end
+  if options.componentOnly == true then return "entity" end
   local entity = safeEntity(id)
   return entity and string.lower(tostring(entity.type or "entity")) or "entity"
 end
@@ -572,8 +569,14 @@ local function lineStopGroups(lineId)
   return groups
 end
 
-function M.fingerprint(id, kind)
+function M.fingerprint(id, kind, options)
   kind = kind or M.kindOf(id)
+  options = options or {}
+  local componentOnly = options.componentOnly == true
+  local identityName = componentOnly and componentNameOf or stableNameOf
+  local identityPosition = componentOnly
+    and function(entity) return componentPositionOfEntity(entity) or { 0, 0 } end
+    or positionOfEntity
   -- BASE_NODE and BASE_EDGE do not have stable human names. game.interface's
   -- fallback representation commonly includes the engine-local entity id,
   -- which made an otherwise identical public road junction acquire a
@@ -583,31 +586,33 @@ function M.fingerprint(id, kind)
   -- topology ambiguity is rejected by the lazy resolver below.
   local value = { kind = kind }
   if kind == "node" then
-    value.position = positionOfEntity(id)
+    value.position = identityPosition(id)
   elseif kind == "edge" then
     local edge = component(id, api.type.ComponentType.BASE_EDGE)
     if edge then
       local endpoints = {
-        positionOfEntity(edge.node0),
-        positionOfEntity(edge.node1),
+        identityPosition(edge.node0),
+        identityPosition(edge.node1),
       }
       table.sort(endpoints, function(a, b)
         return hash.value(a) < hash.value(b)
       end)
       value.endpoints = endpoints
     else
-      value.position = positionOfEntity(id)
+      value.position = identityPosition(id)
     end
   else
     -- Never let an engine-local entity id enter a cross-peer fingerprint. Some
     -- internal station/depot/asset entities have no NAME component at all.
-    value.name = stableNameOf(id)
-    value.position = positionOfEntity(id)
+    value.name = identityName(id)
+    value.position = identityPosition(id)
   end
   if kind == "line" then
     value.stops = {}
     for _, group in ipairs(lineStopGroups(id)) do
-      value.stops[#value.stops + 1] = { name = stableNameOf(group), position = positionOfEntity(group) }
+      value.stops[#value.stops + 1] = {
+        name = identityName(group), position = identityPosition(group),
+      }
     end
   elseif kind == "construction" then
     local construction = component(id, api.type.ComponentType.CONSTRUCTION)
@@ -631,12 +636,24 @@ function M.fingerprint(id, kind)
     -- Vehicles move; their live position cannot be identity material.
     value.position = nil
     value.models = {}
-    local entity = safeEntity(id) or {}
-    for _, vehicle in ipairs(entity.vehicles or {}) do
-      value.models[#value.models + 1] = tostring(vehicle.fileName or vehicle.modelId or "unknown")
+    if componentOnly then
+      local transportVehicle = component(id, api.type.ComponentType.TRANSPORT_VEHICLE)
+      local config = safeComponentField(transportVehicle, "transportVehicleConfig")
+      local vehicles = safeComponentField(config, "vehicles")
+      for _, wrapper in ipairs(boundedComponentValues(vehicles, 128)) do
+        local part = safeComponentField(wrapper, "part") or wrapper
+        local modelId = tonumber(safeComponentField(part, "modelId"))
+        value.models[#value.models + 1] = modelId or -1
+      end
+    else
+      local entity = safeEntity(id) or {}
+      for _, vehicle in ipairs(entity.vehicles or {}) do
+        value.models[#value.models + 1] = tostring(vehicle.fileName or vehicle.modelId or "unknown")
+      end
     end
     local transportVehicle = component(id, api.type.ComponentType.TRANSPORT_VEHICLE)
-    value.carrier = transportVehicle and tostring(transportVehicle.carrier or "") or ""
+    local carrier = safeComponentField(transportVehicle, "carrier")
+    value.carrier = carrier ~= nil and tostring(carrier) or ""
   end
   return hash.value(value)
 end
@@ -654,11 +671,12 @@ M.findPreExistingLocal = identity.findPreExistingLocal
 M.identifyExisting = identity.identifyExisting
 M.resolvePreExisting = identity.resolvePreExisting
 
-function M.bindExisting(registry, id, kind, metadata)
+function M.bindExisting(registry, id, kind, metadata, fingerprintOverride)
   kind = kind or M.kindOf(id)
   local existing = canonical.resolveCanonical(registry, kind, id)
   if existing then return existing end
-  local fingerprint = M.fingerprint(id, kind)
+  local fingerprint = type(fingerprintOverride) == "string" and fingerprintOverride
+    or M.fingerprint(id, kind)
   local baseCid = canonical.preExistingId(kind, fingerprint)
   local cid, ordinal = baseCid, 1
   while registry.byCanonical[cid] and tostring(registry.byCanonical[cid].localId) ~= tostring(id) do
@@ -712,7 +730,7 @@ function M.canonicalManifest(registry, worldState)
   local groups = {}
   for _, source in ipairs(sources) do
     for _, localId in ipairs(source.ids) do
-      local fingerprint = M.fingerprint(localId, source.kind)
+      local fingerprint = M.fingerprint(localId, source.kind, { componentOnly = true })
       local key = source.kind .. ":" .. fingerprint
       local group = groups[key]
       if not group then
@@ -754,7 +772,7 @@ function M.canonicalManifest(registry, worldState)
       local cid = M.bindExisting(registry, group.localIds[1], group.kind, {
         fingerprint = group.fingerprint,
         manifestBound = true,
-      })
+      }, group.fingerprint)
       if cid then bound = bound + 1 end
     end
   end
@@ -1516,51 +1534,62 @@ end
 
 function M.structuralSnapshot(registry, worldState, companies)
   local towns, lines, vehicles, depots, objects = {}, {}, {}, {}, {}
+  local function bindComponentOnly(id, kind, metadata)
+    local fingerprint = M.fingerprint(id, kind, { componentOnly = true })
+    return M.bindExisting(registry, id, kind, metadata, fingerprint)
+  end
   for _, townId in ipairs(M.listTowns()) do
-    local cid = M.bindExisting(registry, townId, "town", { name = nameOf(townId) })
+    local name = componentNameOf(townId)
+    local cid = bindComponentOnly(townId, "town", { name = name })
     local total, capacities = townCapacity(townId)
     local townComponent = component(townId, api.type.ComponentType.TOWN)
     local developmentActive
     if townComponent then developmentActive = townComponent.developmentActive end
     towns[#towns + 1] = {
       cid = cid,
-      name = nameOf(townId),
+      name = name,
       capacities = { util.integer(capacities[1]), util.integer(capacities[2]), util.integer(capacities[3]) },
       totalCapacity = total,
       developmentActive = developmentActive,
     }
   end
   for _, lineId in ipairs(M.listLines()) do
-    local cid = M.bindExisting(registry, lineId, "line", { name = nameOf(lineId) })
+    local name = componentNameOf(lineId)
+    local cid = bindComponentOnly(lineId, "line", { name = name })
     local stops = {}
     for _, groupId in ipairs(lineStopGroups(lineId)) do
-      stops[#stops + 1] = M.bindExisting(registry, groupId, "station_group", { name = nameOf(groupId) })
+      stops[#stops + 1] = bindComponentOnly(
+        groupId, "station_group", { name = componentNameOf(groupId) })
     end
     lines[#lines + 1] = {
       cid = cid,
-      name = nameOf(lineId),
+      name = name,
       stops = stops,
       vehicles = lineVehicleCount(lineId),
       owner = M.logicalOwnerOf(worldState, companies or {}, lineId),
     }
   end
   for _, vehicleId in ipairs(M.listVehicles()) do
-    local cid = M.bindExisting(registry, vehicleId, "vehicle", { name = nameOf(vehicleId) })
+    local name = componentNameOf(vehicleId)
+    local cid = bindComponentOnly(vehicleId, "vehicle", { name = name })
     local transportVehicle = component(vehicleId, api.type.ComponentType.TRANSPORT_VEHICLE)
     local lineId = transportVehicle and tonumber(transportVehicle.line) or nil
     local lineCid
-    if lineId and lineId >= 0 and M.entityExists(lineId) then lineCid = M.bindExisting(registry, lineId, "line", { name = nameOf(lineId) }) end
+    if lineId and lineId >= 0 and M.entityExists(lineId) then
+      lineCid = bindComponentOnly(lineId, "line", { name = componentNameOf(lineId) })
+    end
     vehicles[#vehicles + 1] = {
       cid = cid,
-      name = nameOf(vehicleId),
+      name = name,
       lineCid = lineCid,
       owner = M.logicalOwnerOf(worldState, companies or {}, vehicleId),
     }
   end
   for _, depotId in ipairs(M.listDepots()) do
+    local name = componentNameOf(depotId)
     depots[#depots + 1] = {
-      cid = M.bindExisting(registry, depotId, "depot", { name = nameOf(depotId) }),
-      name = nameOf(depotId),
+      cid = bindComponentOnly(depotId, "depot", { name = name }),
+      name = name,
       owner = M.logicalOwnerOf(worldState, companies or {}, depotId),
     }
   end
@@ -1582,7 +1611,8 @@ function M.structuralSnapshot(registry, worldState, companies)
   -- the canonical snapshot merely because a GUI event omitted them.
   for _, entityId in ipairs(M.listAllPlayerOwned()) do
     if not nativeReadUnsafe[tostring(entityId)] then
-      M.bindExisting(registry, entityId, M.kindOf(entityId), { name = nameOf(entityId) })
+      local kind = M.kindOf(entityId, { componentOnly = true })
+      bindComponentOnly(entityId, kind, { name = componentNameOf(entityId) })
     end
   end
   table.sort(towns, function(a, b) return tostring(a.cid) < tostring(b.cid) end)
@@ -1598,7 +1628,8 @@ function M.structuralSnapshot(registry, worldState, companies)
       local ok, result = pcall(api.engine.entityExists, binding.localId)
       exists = ok and result == true
     else
-      exists = safeEntity(binding.localId) ~= nil or component(binding.localId, api.type.ComponentType[binding.kind and string.upper(binding.kind) or ""]) ~= nil
+      exists = component(binding.localId,
+        api.type.ComponentType[binding.kind and string.upper(binding.kind) or ""]) ~= nil
     end
     local owner = attestedNativeRead
       and ((worldState and worldState.logicalOwners
@@ -1613,7 +1644,7 @@ function M.structuralSnapshot(registry, worldState, companies)
     local fingerprint
     if exists then
       fingerprint = attestedNativeRead and metadata.fingerprint
-        or M.fingerprint(binding.localId, binding.kind)
+        or M.fingerprint(binding.localId, binding.kind, { componentOnly = true })
     end
     objects[#objects + 1] = {
       cid = cid,
@@ -1655,13 +1686,6 @@ local function systemListCount(system, functionName, entity, errors)
     return nil, true
   end
   return #sortedNumbers(values or {}), true
-end
-
-local function safeComponentField(value, key)
-  if type(value) ~= "table" and type(value) ~= "userdata" then return nil end
-  local ok, nested = pcall(function() return value[key] end)
-  if not ok then return nil end
-  return nested
 end
 
 local function vehicleConsistNames(transportVehicle)
