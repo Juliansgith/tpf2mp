@@ -1,7 +1,7 @@
 # In-place fault requalification
 
 Date: 2026-08-26  
-Implementation target: `0.40.5-alpha`, state schema `32`, checkpoint format `5`.
+Implementation target: `0.40.6-alpha`, state schema `32`, checkpoint format `5`.
 
 ## Outcome
 
