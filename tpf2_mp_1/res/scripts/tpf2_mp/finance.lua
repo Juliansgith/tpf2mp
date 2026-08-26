@@ -344,10 +344,12 @@ local function nativeBalance(playerId)
   return tonumber(entity.balance)
 end
 
--- Move every local native representative toward the replicated balance. A
--- successful journal command is sufficient here: Build 35924 may expose the
--- resulting balance on a later engine update, so the post-read is diagnostic
--- and deliberately is not treated as a synchronous postcondition.
+-- Move every local native representative toward the replicated balance.
+-- Build 35924 can leave the PLAYER component's native string storage transiently
+-- unavailable immediately after BookJournalEntry.  Re-reading that entity (or
+-- reading a second PLAYER) in the same Lua update can access-violate inside the
+-- game's getEntity binding.  Sample every wallet first, issue at most one
+-- journal command, and verify it on a later update.
 function M.reconcileNetworkAccounts(state, companies, context)
   local ledger = M.ensureNetworkAccounts(state)
   if ledger.initialized ~= true then return false, "canonical network accounts are not initialised" end
@@ -364,6 +366,7 @@ function M.reconcileNetworkAccounts(state, companies, context)
   local errors = {}
   local contextTick = type(context) == "table" and tonumber(context.tick) or nil
   local clock = contextTick or reconciliation.attempts
+  local commandCandidates = {}
   for _, companyCid in ipairs(util.sortedKeys(ledger.accounts)) do
     local account = ledger.accounts[companyCid]
     local company = type(companies) == "table" and companies[companyCid] or nil
@@ -372,7 +375,7 @@ function M.reconcileNetworkAccounts(state, companies, context)
     local target = util.integer(account.balance, 0)
     local adjustment = before and (target - util.integer(before, 0)) or nil
     local booked, bookingError = false, nil
-    local waiting, commandIssued = false, false
+    local waiting = false
     local pending = reconciliation.pending[companyCid]
     if not playerId then
       bookingError = "native player binding is unavailable"
@@ -389,27 +392,10 @@ function M.reconcileNetworkAccounts(state, companies, context)
       booked = true
       waiting = true
     else
-      booked, bookingError = M.book(playerId, adjustment)
-      if booked then
-        commandIssued = true
-        reconciliation.commands = reconciliation.commands + 1
-        reconciliation.totalAbsolute = reconciliation.totalAbsolute + math.abs(adjustment)
-        reconciliation.pending[companyCid] = {
-          target = target,
-          before = before,
-          adjustment = adjustment,
-          issuedTick = contextTick,
-          issuedAttempt = reconciliation.attempts,
-        }
-      end
-    end
-    -- The pre-read already observes completion of any command issued on an
-    -- earlier update. Avoid a second native PLAYER lookup on every idle audit;
-    -- retain the immediate diagnostic read only after issuing a new command.
-    local after = commandIssued and playerId and nativeBalance(playerId) or before
-    if after ~= nil and math.abs(after - target) < 0.5 then
-      reconciliation.pending[companyCid] = nil
-      waiting = false
+      -- Do not mutate while native PLAYER sampling is still in progress.
+      booked = true
+      waiting = true
+      commandCandidates[#commandCandidates + 1] = companyCid
     end
     local item = {
       companyCid = companyCid,
@@ -417,10 +403,11 @@ function M.reconcileNetworkAccounts(state, companies, context)
       target = target,
       before = before,
       adjustment = adjustment,
-      after = after,
-      settledImmediately = booked == true and after ~= nil and math.abs(after - target) < 0.5,
+      after = before,
+      settledImmediately = booked == true and before ~= nil and math.abs(before - target) < 0.5,
       waiting = waiting,
-      commandIssued = commandIssued,
+      commandIssued = false,
+      deferred = false,
       ok = booked == true,
       error = not booked and tostring(bookingError) or nil,
     }
@@ -428,6 +415,37 @@ function M.reconcileNetworkAccounts(state, companies, context)
     if not booked then
       run.ok = false
       errors[#errors + 1] = companyCid .. ": " .. item.error
+    end
+  end
+
+  if run.ok and #commandCandidates > 0 then
+    local preferred = type(context) == "table" and tostring(context.companyCid or "") or ""
+    local selected = commandCandidates[1]
+    for _, companyCid in ipairs(commandCandidates) do
+      if companyCid == preferred then selected = companyCid; break end
+    end
+    for _, companyCid in ipairs(commandCandidates) do
+      local item = run.accounts[companyCid]
+      if companyCid ~= selected then item.deferred = true end
+    end
+    local selectedItem = run.accounts[selected]
+    local booked, bookingError = M.book(selectedItem.playerId, selectedItem.adjustment)
+    selectedItem.ok = booked == true
+    selectedItem.error = not booked and tostring(bookingError) or nil
+    if booked then
+      selectedItem.commandIssued = true
+      reconciliation.commands = reconciliation.commands + 1
+      reconciliation.totalAbsolute = reconciliation.totalAbsolute + math.abs(selectedItem.adjustment)
+      reconciliation.pending[selected] = {
+        target = selectedItem.target,
+        before = selectedItem.before,
+        adjustment = selectedItem.adjustment,
+        issuedTick = contextTick,
+        issuedAttempt = reconciliation.attempts,
+      }
+    else
+      run.ok = false
+      errors[#errors + 1] = selected .. ": " .. selectedItem.error
     end
   end
   if not run.ok then

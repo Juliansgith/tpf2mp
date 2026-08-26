@@ -5796,13 +5796,70 @@ test("canonical network accounts own balances and reconcile native wallet caches
     ["company:1"] = { playerId = 1 },
     ["company:2"] = { playerId = 2 },
   }, { reason = "ordered-outcome" })
+  local verified, verifyRun = finance.reconcileNetworkAccounts(state, {
+    ["company:1"] = { playerId = 1 },
+    ["company:2"] = { playerId = 2 },
+  }, { reason = "later-update" })
   api, game = previousApi, previousGame
   truthy(reconciled, run)
+  truthy(verified, verifyRun)
   equal(balances[1], 875, "company 1 native wallet did not follow the canonical debit")
   equal(balances[2], 1000, "company 2 native wallet changed without a canonical entry")
   equal(state.networkAccounts.reconciliation.commands, 1)
   equal(run.accounts["company:1"].error, nil,
     "successful native wallet reconciliation retained a false error")
+  truthy(run.accounts["company:1"].commandIssued,
+    "wallet correction was not explicitly reported as asynchronous")
+  equal(run.accounts["company:1"].after, 800,
+    "wallet reconciliation performed a forbidden immediate post-book read")
+  truthy(verifyRun.accounts["company:1"].settledImmediately,
+    "a later reconciliation pass did not observe the completed journal entry")
+end)
+
+test("network wallet reconciliation never reads a PLAYER after issuing a journal command", function()
+  local previousApi, previousGame = api, game
+  local balances = { [1] = 100, [2] = 200 }
+  local mutationIssued = false
+  api = {
+    type = {
+      JournalEntryCategory = { new = function() return {} end },
+      JournalEntry = { new = function() return {} end },
+    },
+    cmd = {
+      make = {
+        bookJournalEntry = function(player, journal)
+          return { player = player, amount = journal.amount }
+        end,
+      },
+      sendCommand = function(command)
+        balances[command.player] = balances[command.player] + command.amount
+        mutationIssued = true
+      end,
+    },
+  }
+  game = {
+    interface = {
+      getEntity = function(playerId)
+        assert(not mutationIssued,
+          "Build 35924 PLAYER read occurred in the journal mutation window")
+        return { balance = balances[playerId], loan = 0 }
+      end,
+    },
+  }
+  local state = finance.newState()
+  finance.initialiseNetworkAccounts(state, { "company:1", "company:2" }, 500, { reason = "test" })
+  local ok, run = finance.reconcileNetworkAccounts(state, {
+    ["company:1"] = { playerId = 1 },
+    ["company:2"] = { playerId = 2 },
+  }, { reason = "mutation-window", companyCid = "company:2", tick = 10 })
+  api, game = previousApi, previousGame
+  truthy(ok, run)
+  equal(balances[1], 100, "more than one native wallet was mutated in one update")
+  equal(balances[2], 500, "preferred company wallet was not reconciled")
+  truthy(run.accounts["company:1"].deferred,
+    "the second native correction was not explicitly deferred")
+  truthy(run.accounts["company:2"].commandIssued,
+    "the preferred correction did not issue its journal command")
 end)
 
 test("file bridge signs, emits, verifies, and polls in sequence", function()

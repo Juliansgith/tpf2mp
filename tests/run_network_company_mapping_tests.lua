@@ -36,6 +36,7 @@ components.PLAYER_OWNED[96] = { player = 100 }
 components.PLAYER_OWNED[97] = { player = 100 }
 local nextPlayer = 100
 local buildGateEnables, commandGateEnables = 0, 0
+local journalCommands = 0
 local buildGateEnabled, commandGateEnabled = false, false
 tpf2mp_native_enable_build_gate = function()
   buildGateEnables, buildGateEnabled = buildGateEnables + 1, true
@@ -253,6 +254,7 @@ api = {
     sendCommand = function(command, callback)
       if command and command.player and command.journal and players[command.player] then
         players[command.player].balance = players[command.player].balance + command.journal.amount
+        journalCommands = journalCommands + 1
       end
       if callback then callback(command, true) end
     end,
@@ -457,8 +459,9 @@ assert(initialTrack and initialTrack.owner == "company:1",
 local initialTrackBinding = assert(initialized.canonical.byCanonical[initialTrack.cid])
 assert(initialTrackBinding.metadata and initialTrackBinding.metadata.manifestBound == true,
   "private starting track was not bound by the cross-peer world manifest")
-assert(players[100].balance == 5000000 and players[101].balance == 5000000,
-  "network starting cash did not normalize both native representatives exactly")
+assert(players[100].balance == 30000000 and players[101].balance == 5000000
+    and journalCommands == 0,
+  "network initialization mutated a native wallet inside the ordered commit")
 assert(players[100].loan == 30000000 and players[101].loan == 0,
   "network starting-cash normalization unexpectedly mutated engine-local loan principal")
 assert(initialized.world.checkpointConsensus.byBoundary["1"].status == "pending",
@@ -481,6 +484,10 @@ writeCheckpointConsensus(2, initialized, 1)
 script.update()
 assert(script.save().world.checkpointConsensus.byBoundary["1"].status == "complete",
   "network match-initialization checkpoint did not reach consensus")
+script.update()
+assert(players[100].balance == 5000000 and players[101].balance == 5000000
+    and journalCommands == 1,
+  "quiescent network housekeeping did not normalize the deferred native wallet")
 
 -- Incomplete construction captures must fail closed and leave a bounded bridge diagnostic
 -- immediately; a live click must never disappear without inspectable evidence.

@@ -115,6 +115,7 @@ function M.new(env)
         local reconciled, result = finance.reconcileNetworkAccounts(
           state.finance, state.companies, {
             reason = "operation-consensus", operationId = operationId,
+            companyCid = record.companyCid,
             commitSeq = tonumber(action.commitSeq), tick = state.tick,
           })
         nativeReconciliation = type(result) == "table" and result

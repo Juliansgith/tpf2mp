@@ -313,6 +313,56 @@ local function ensureCompanyStartingCash(target, reason)
   return #errors == 0, thisRun
 end
 
+-- Network accounts are authoritative and the native wallets are presentation
+-- caches.  In particular, never BookJournalEntry and then call getEntity while
+-- applying match.initialise: Build 35924 can expose a transient PLAYER
+-- component and crash its Lua binding during that same-update read.  Record the
+-- intended capitalization now; network finance housekeeping reconciles one
+-- native wallet per later, quiescent update.
+local function stageNetworkStartingCash(target, reason)
+  target = math.max(0, util.integer(target, config().startingCash))
+  local funding = state.finance.startingCash or finance.newState().startingCash
+  state.finance.startingCash = funding
+  funding.target = target
+  funding.totalGranted = target * #state.companyOrder
+  funding.grants = {}
+  funding.lastReason = tostring(reason or "match-setup")
+  funding.lastError = nil
+  local thisRun = {
+    target = target,
+    reason = funding.lastReason,
+    tick = state.tick,
+    companies = {},
+    totalGranted = funding.totalGranted,
+    deferredNativeReconciliation = true,
+  }
+  for _, companyCid in ipairs(state.companyOrder) do
+    local company = state.companies[companyCid]
+    local before = company and company.initialBalance or nil
+    local grant = {
+      companyCid = companyCid,
+      playerId = company and company.playerId or nil,
+      before = before,
+      amount = target,
+      after = before,
+      ok = true,
+      pending = before == nil or math.abs(before - target) >= 0.5,
+      canonical = true,
+      reason = funding.lastReason,
+      tick = state.tick,
+    }
+    funding.grants[companyCid] = grant
+    thisRun.companies[companyCid] = util.deepCopy(grant)
+    if company then company.initialBalance = target end
+  end
+  if #state.companyOrder == 0 then
+    funding.lastError = "no competitive companies are bound"
+    thisRun.error = funding.lastError
+    return false, thisRun
+  end
+  return true, thisRun
+end
+
 local function proxyTargetPlayer(companyCid)
   local company = companyCid and state.companies[companyCid] or nil
   if not company then return nil end
@@ -674,6 +724,8 @@ local function initialiseMatch(rules)
   local difficultyOk, difficultyError = economy.validateDifficultyRule(rules)
   if not difficultyOk then return false, difficultyError end
   local matchRules = normaliseMatchRules(rules)
+  diagnosticLog("match-initialise-stage", { stage = "begin", tick = state.tick,
+    networkMode = state.networkMode })
   local proxyMode = state.networkMode == "standalone" and config().localProxy
   if proxyMode and state.finance.neutralizer.enabled then
     state.finance.neutralizer.enabled = false
@@ -689,6 +741,8 @@ local function initialiseMatch(rules)
     canonicalNetworkOwnership = state.networkMode == "network",
   })
   if not ok then return false, playersOrError end
+  diagnosticLog("match-initialise-stage", { stage = "companies-bound", tick = state.tick,
+    companyCount = #(playersOrError.companyPlayerIds or playersOrError) })
   local playerIds = playersOrError.companyPlayerIds or playersOrError
   local nativeOwnershipProjection = playersOrError.nativeOwnershipProjection
   state.companies = {}
@@ -704,15 +758,20 @@ local function initialiseMatch(rules)
     }
   end
   state.activeCompanyIndex = util.clamp(state.activeCompanyIndex or 1, 1, #state.companyOrder)
-  local funded, funding = ensureCompanyStartingCash(matchRules.startingCash, "match-initialise")
-  if not funded then return false, { error = "could not provision company starting cash", funding = funding } end
+  local funded, funding
   if state.networkMode == "network" then
     finance.initialiseNetworkAccounts(state.finance, state.companyOrder, matchRules.startingCash, {
       reason = "match-initialise",
       tick = state.tick,
       sessionId = state.bridge.sessionId,
     })
+    funded, funding = stageNetworkStartingCash(matchRules.startingCash, "match-initialise")
+  else
+    funded, funding = ensureCompanyStartingCash(matchRules.startingCash, "match-initialise")
   end
+  if not funded then return false, { error = "could not provision company starting cash", funding = funding } end
+  diagnosticLog("match-initialise-stage", { stage = "finance-staged", tick = state.tick,
+    deferredNativeReconciliation = funding.deferredNativeReconciliation == true })
   for _, companyCid in ipairs(state.companyOrder) do
     economy.applyInfrastructureChange(state.economy, companyCid, 0, 0)
   end
@@ -739,7 +798,11 @@ local function initialiseMatch(rules)
   end
   local worldManifest = world.canonicalManifest(
     state.canonical, state.networkMode == "network" and state.world or nil)
+  diagnosticLog("match-initialise-stage", { stage = "world-manifest", tick = state.tick,
+    total = worldManifest.total or 0 })
   local vehicleCostBackfill = backfillVehicleCosts()
+  diagnosticLog("match-initialise-stage", { stage = "vehicle-costs", tick = state.tick,
+    observed = vehicleCostBackfill.observed or vehicleCostBackfill.total or 0 })
   -- The ordered checkpoint needs the portable digest and summary, not the
   -- complete row inventory.  Keeping hundreds of generated construction and
   -- asset rows in persistent game-script state causes Build 35924 to copy a
@@ -754,6 +817,8 @@ local function initialiseMatch(rules)
     digest = worldManifest.digest,
   }
   state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)
+  diagnosticLog("match-initialise-stage", { stage = "structural-snapshot", tick = state.tick,
+    total = state.probes.structural.total or #(state.probes.structural.objects or {}) })
   if config().autoFreeze and not state.world.autonomyFrozen then world.freezeAutonomy(state.world, true) end
   -- Build 35924's live probe proved setTownInfo is not a safe runtime capacity
   -- scaler. Record that result without issuing native mutations here; the
@@ -770,6 +835,7 @@ local function initialiseMatch(rules)
     rules = matchRules,
   }
   economy.configureMatch(state.economy, matchRules)
+  diagnosticLog("match-initialise-stage", { stage = "complete", tick = state.tick })
   local publicCompanies = {}
   for _, cid in ipairs(state.companyOrder) do
     publicCompanies[cid] = { cid = cid, name = state.companies[cid].name }
@@ -1226,6 +1292,7 @@ handlers["network.proposal_outcome"] = function(action)
       local reconciled, reconciliationOrError = finance.reconcileNetworkAccounts(
         state.finance, state.companies, {
           reason = "proposal-consensus",
+          companyCid = record.companyCid,
           proposalId = proposalId,
           commitSeq = tonumber(action.commitSeq),
           tick = state.tick,
