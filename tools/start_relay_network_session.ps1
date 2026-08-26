@@ -254,14 +254,8 @@ catch {
         -CredentialsPath $credentialsPath
     Stop-Tpf2mpRelayDiagnosticProcess -Handle $diagnostic -Companion $companion `
         -CredentialsPath $credentialsPath
-    $relayServicePid = 0
-    if (Test-Path -LiteralPath $relayStatus -PathType Leaf) {
-        try { $relayServicePid = [int](Get-Content -LiteralPath $relayStatus -Raw | ConvertFrom-Json).pid }
-        catch { }
-    }
-    $relayLauncherPid = if ($relayProcess) { [int]$relayProcess.Id } else { 0 }
-    Stop-Tpf2mpVerifiedRelayProcesses -ProcessIds @($relayLauncherPid, $relayServicePid) `
-        -Companion $companion -CredentialsPath $credentialsPath -CommandName relay-tunnel
+    Stop-Tpf2mpVerifiedRelayProcesses -Companion $companion `
+        -CredentialsPath $credentialsPath -CommandName relay-tunnel
     if ($baseStarted) {
         try {
             & (Join-Path $PSScriptRoot 'stop_network_session.ps1') `

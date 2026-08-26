@@ -9,6 +9,8 @@ $root = [IO.Path]::GetFullPath($ProjectRoot)
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ('tpf2mp-relay-diagnostic-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $temporary | Out-Null
 $handle = $null
+$duplicateHandle = $null
+$unrelatedHandle = $null
 try {
     $sessionRoot = Join-Path $temporary 'session'
     $bridge = Join-Path $temporary 'bridge'
@@ -61,6 +63,43 @@ while ($true) { Start-Sleep -Seconds 1 }
     }
     $handle = $null
 
+    $firstStatus = Join-Path $temporary 'duplicate-first-status.json'
+    $secondStatus = Join-Path $temporary 'duplicate-second-status.json'
+    $otherCredentials = Join-Path $temporary 'other-credentials.json'
+    [IO.File]::WriteAllText($otherCredentials, '{}', [Text.UTF8Encoding]::new($false))
+    $handle = Start-Tpf2mpRelayDiagnosticProcess -Companion $companion `
+        -CredentialsPath $credentials -Sources ([ordered]@{ test = $source }) `
+        -StatusPath $firstStatus -StdoutPath (Join-Path $temporary 'duplicate-first.stdout.log') `
+        -StderrPath (Join-Path $temporary 'duplicate-first.stderr.log') `
+        -ExpectedSessionId 'mp-0123456789abcdef' -ExpectedRole join
+    $duplicateHandle = Start-Tpf2mpRelayDiagnosticProcess -Companion $companion `
+        -CredentialsPath $credentials -Sources ([ordered]@{ test = $source }) `
+        -StatusPath $secondStatus -StdoutPath (Join-Path $temporary 'duplicate-second.stdout.log') `
+        -StderrPath (Join-Path $temporary 'duplicate-second.stderr.log') `
+        -ExpectedSessionId 'mp-0123456789abcdef' -ExpectedRole join
+    $unrelatedHandle = Start-Tpf2mpRelayDiagnosticProcess -Companion $companion `
+        -CredentialsPath $otherCredentials -Sources ([ordered]@{ test = $source }) `
+        -StatusPath (Join-Path $temporary 'unrelated-status.json') `
+        -StdoutPath (Join-Path $temporary 'unrelated.stdout.log') `
+        -StderrPath (Join-Path $temporary 'unrelated.stderr.log') `
+        -ExpectedSessionId 'mp-0123456789abcdef' -ExpectedRole join
+    Stop-Tpf2mpRelayDiagnosticProcess -Handle $handle -Companion $companion `
+        -CredentialsPath $credentials
+    Start-Sleep -Milliseconds 300
+    foreach ($servicePid in @($handle.ServicePid, $duplicateHandle.ServicePid)) {
+        if (Get-Process -Id $servicePid -ErrorAction SilentlyContinue) {
+            throw 'Credential-scoped shutdown left a duplicate relay diagnostic process running.'
+        }
+    }
+    if (-not (Get-Process -Id $unrelatedHandle.ServicePid -ErrorAction SilentlyContinue)) {
+        throw 'Credential-scoped shutdown touched a different relay credential.'
+    }
+    Stop-Tpf2mpRelayDiagnosticProcess -Handle $unrelatedHandle -Companion $companion `
+        -CredentialsPath $otherCredentials
+    $handle = $null
+    $duplicateHandle = $null
+    $unrelatedHandle = $null
+
     $invalidStatus = Join-Path $temporary 'invalid-reporter-status.json'
     $rejected = $false
     try {
@@ -86,6 +125,14 @@ finally {
     if ($handle) {
         Stop-Tpf2mpRelayDiagnosticProcess -Handle $handle -Companion $companion `
             -CredentialsPath $credentials
+    }
+    if ($duplicateHandle) {
+        Stop-Tpf2mpRelayDiagnosticProcess -Handle $duplicateHandle -Companion $companion `
+            -CredentialsPath $credentials
+    }
+    if ($unrelatedHandle) {
+        Stop-Tpf2mpRelayDiagnosticProcess -Handle $unrelatedHandle -Companion $companion `
+            -CredentialsPath $otherCredentials
     }
     if (Test-Path -LiteralPath $temporary) {
         Remove-Item -LiteralPath $temporary -Recurse -Force

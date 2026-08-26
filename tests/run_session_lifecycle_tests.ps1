@@ -106,6 +106,25 @@ try {
         throw 'Game exit did not request detached companion/relay teardown.'
     }
 
+    $faultedSession = 'lifecycle-faulted-game-close'
+    [void](Write-Tpf2mpSessionState $faultedSession player1 ([ordered]@{
+        schemaVersion = 3
+        status = 'failed'
+    }))
+    $game3 = Start-TestProcess 700
+    $owner3 = Start-TestProcess 30000
+    $status3 = Join-Path $caseRoot 'faulted-game-close-status.json'
+    $receipt3 = Join-Path $caseRoot 'faulted-game-close-receipt.json'
+    $watcher3 = Start-LifecycleWatcher -Game $game3 -Owner $owner3 `
+        -Session $faultedSession -StatusPath $status3 -ReceiptPath $receipt3
+    if (-not $watcher3.WaitForExit(10000) -or $watcher3.ExitCode -ne 0) {
+        throw 'Lifecycle watcher abandoned a faulted session before its game exited.'
+    }
+    $result3 = Get-Content -LiteralPath $receipt3 -Raw | ConvertFrom-Json
+    if ($result3.stopGame -ne $false -or $result3.stopReason -cne 'game-process-ended') {
+        throw 'Faulted-session game exit did not request detached helper teardown.'
+    }
+
     $settings = Join-Path $caseRoot 'settings.lua'
     $leasePath = Join-Path $caseRoot 'lease.json'
     [IO.File]::WriteAllText($settings, @'

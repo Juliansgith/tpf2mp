@@ -47,7 +47,9 @@ try {
     $reason = $null
     while (-not $reason) {
         $state = Read-Tpf2mpSessionState $safeSession $Peer
-        if ($state -and [string]$state.status -in @('stopped', 'failed')) {
+        # A faulted match remains recoverable while the game is open. Keep the
+        # watcher alive so closing that game still tears down every helper.
+        if ($state -and [string]$state.status -eq 'stopped') {
             Write-LifecycleStatus 'released' 'session-already-terminal' ''
             exit 0
         }

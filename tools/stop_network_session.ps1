@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
 . (Join-Path $PSScriptRoot 'session_lifecycle.ps1')
+. (Join-Path $PSScriptRoot 'relay_diagnostic_process.ps1')
 
 $safeSession = Assert-Tpf2mpSessionId $Session
 $state = Read-Tpf2mpSessionState $safeSession $Peer
@@ -113,8 +114,22 @@ function Stop-Tpf2mpRecordedRelayProcess {
 }
 
 if ($state.PSObject.Properties['transportMode'] -and $state.transportMode -eq 'secure-relay') {
-    Stop-Tpf2mpRecordedRelayProcess 'relayDiagnosticsPid' 'relay-diagnostics'
-    Stop-Tpf2mpRecordedRelayProcess 'relayDiagnosticsLauncherPid' 'relay-diagnostics'
+    $relayCompanion = if ($state.PSObject.Properties['companionExecutable'] `
+            -and $state.companionExecutable) {
+        [pscustomobject]@{ FilePath = [string]$state.companionExecutable; Prefix = @() }
+    } else { $null }
+    $relayCredentials = if ($state.PSObject.Properties['relayCredentials']) {
+        [string]$state.relayCredentials
+    } else { $null }
+    if ($relayCompanion -and $relayCredentials) {
+        Stop-Tpf2mpVerifiedRelayProcesses -Companion $relayCompanion `
+            -CredentialsPath $relayCredentials `
+            -CommandName relay-diagnostics
+    }
+    else {
+        Stop-Tpf2mpRecordedRelayProcess 'relayDiagnosticsPid' 'relay-diagnostics'
+        Stop-Tpf2mpRecordedRelayProcess 'relayDiagnosticsLauncherPid' 'relay-diagnostics'
+    }
     if ($state.role -eq 'host' -and $state.PSObject.Properties['relayCredentials'] `
             -and $state.relayCredentials `
             -and (Test-Path -LiteralPath ([string]$state.relayCredentials) -PathType Leaf)) {
@@ -137,8 +152,15 @@ if ($state.PSObject.Properties['transportMode'] -and $state.transportMode -eq 's
             Write-Warning "Relay session could not be closed immediately and will expire automatically: $($_.Exception.Message)"
         }
     }
-    Stop-Tpf2mpRecordedRelayProcess 'relayTunnelPid' 'relay-tunnel'
-    Stop-Tpf2mpRecordedRelayProcess 'relayTunnelLauncherPid' 'relay-tunnel'
+    if ($relayCompanion -and $relayCredentials) {
+        Stop-Tpf2mpVerifiedRelayProcesses -Companion $relayCompanion `
+            -CredentialsPath $relayCredentials `
+            -CommandName relay-tunnel
+    }
+    else {
+        Stop-Tpf2mpRecordedRelayProcess 'relayTunnelPid' 'relay-tunnel'
+        Stop-Tpf2mpRecordedRelayProcess 'relayTunnelLauncherPid' 'relay-tunnel'
+    }
 }
 
 $companionPids = @()

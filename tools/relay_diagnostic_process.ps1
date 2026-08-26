@@ -97,16 +97,8 @@ function Start-Tpf2mpRelayDiagnosticProcess {
         throw "Relay diagnostics did not publish a valid status within $StartupTimeoutSeconds seconds."
     }
     catch {
-        $candidateIds = @([int]$launcher.Id)
-        $children = Get-CimInstance Win32_Process `
-            -Filter "ParentProcessId = $($launcher.Id)" -ErrorAction SilentlyContinue
-        $candidateIds += @($children | ForEach-Object { [int]$_.ProcessId })
-        if (Test-Path -LiteralPath $StatusPath -PathType Leaf) {
-            try { $candidateIds += [int](Get-Content -LiteralPath $StatusPath -Raw | ConvertFrom-Json).pid }
-            catch { }
-        }
-        Stop-Tpf2mpVerifiedRelayProcesses -ProcessIds $candidateIds `
-            -Companion $Companion -CredentialsPath $CredentialsPath `
+        Stop-Tpf2mpVerifiedRelayProcesses -Companion $Companion `
+            -CredentialsPath $CredentialsPath `
             -CommandName relay-diagnostics
         throw
     }
@@ -114,29 +106,38 @@ function Start-Tpf2mpRelayDiagnosticProcess {
 
 function Stop-Tpf2mpVerifiedRelayProcesses {
     param(
-        [int[]]$ProcessIds,
         [Parameter(Mandatory = $true)]$Companion,
         [Parameter(Mandatory = $true)][string]$CredentialsPath,
         [Parameter(Mandatory = $true)][ValidateSet('relay-diagnostics', 'relay-tunnel')][string]$CommandName
     )
-    if (-not $ProcessIds) { return }
     $expectedExecutable = Resolve-Tpf2mpFullPath ([string]$Companion.FilePath)
     $credentialPattern = [Regex]::Escape((Resolve-Tpf2mpFullPath $CredentialsPath))
-    $seen = [Collections.Generic.HashSet[int]]::new()
-    # PyInstaller's supervisor is stopped before its extracted service child,
-    # otherwise it can briefly create a replacement child during handoff.
-    foreach ($processId in $ProcessIds) {
-        if ($processId -le 0) { continue }
-        if (-not $seen.Add($processId)) { continue }
-        $native = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
-        if (-not $native -or -not $native.ExecutablePath -or -not $native.CommandLine) { continue }
-        $actualExecutable = Resolve-Tpf2mpFullPath ([string]$native.ExecutablePath)
-        $matches = [string]::Equals($actualExecutable, $expectedExecutable,
-                [StringComparison]::OrdinalIgnoreCase) `
-            -and [string]$native.CommandLine -match ([Regex]::Escape($CommandName)) `
-            -and [string]$native.CommandLine -match $credentialPattern
-        if ($matches) { Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue }
+    $commandPattern = [Regex]::Escape($CommandName)
+    for ($attempt = 0; $attempt -lt 20; $attempt++) {
+        $matches = @(
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.ExecutablePath -and $_.CommandLine `
+                        -and [string]::Equals(
+                            (Resolve-Tpf2mpFullPath ([string]$_.ExecutablePath)),
+                            $expectedExecutable, [StringComparison]::OrdinalIgnoreCase) `
+                        -and [string]$_.CommandLine -match $commandPattern `
+                        -and [string]$_.CommandLine -match $credentialPattern
+                }
+        )
+        if ($matches.Count -eq 0) { return }
+        $matchingIds = @($matches | ForEach-Object { [int]$_.ProcessId })
+        # Stop PyInstaller supervisors before their extracted children, then
+        # rescan: a handoff can publish a replacement PID after the first kill.
+        $ordered = @($matches | Sort-Object @{ Expression = {
+            if ($matchingIds -contains [int]$_.ParentProcessId) { 1 } else { 0 }
+        } })
+        foreach ($native in $ordered) {
+            Stop-Process -Id ([int]$native.ProcessId) -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 100
     }
+    throw "Verified $CommandName shutdown left a process using the exact relay credential running."
 }
 
 function Stop-Tpf2mpRelayDiagnosticProcess {
@@ -146,8 +147,7 @@ function Stop-Tpf2mpRelayDiagnosticProcess {
         [Parameter(Mandatory = $true)][string]$CredentialsPath
     )
     if (-not $Handle) { return }
-    Stop-Tpf2mpVerifiedRelayProcesses `
-        -ProcessIds @([int]$Handle.LauncherPid, [int]$Handle.ServicePid) `
-        -Companion $Companion -CredentialsPath $CredentialsPath `
+    Stop-Tpf2mpVerifiedRelayProcesses -Companion $Companion `
+        -CredentialsPath $CredentialsPath `
         -CommandName relay-diagnostics
 }

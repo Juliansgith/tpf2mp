@@ -40,6 +40,34 @@ session/peer state.
 The launcher subtitle states the resulting UX contract: keep it open while
 playing; closing it cleanly ends that game and session.
 
+## Faulted-session and failed-launch follow-up
+
+A later update attempt found no Transport Fever 2 process but was still
+blocked by two `relay-diagnostics` processes from failed Join launches for
+`mp-581f1d52a380d7fb`. Both used the same exact installed companion and relay
+credential. Their launch worker and PyInstaller supervisor had exited, but the
+re-parented service children remained. The partial session had failed before
+the diagnostic PIDs and relay fields were durably added to session state, so
+the normal recorded-PID teardown could not find them.
+
+A second lifecycle hole existed for successfully launched faulted matches:
+the watcher treated launcher state `failed` as already terminal and exited.
+That state is intentionally recoverable while the game remains open. If the
+user later closed the game, no watcher remained to reclaim its helpers.
+
+The correction is credential-scoped and fail-closed:
+
+- relay diagnostic/tunnel shutdown now repeatedly discovers every process
+  matching the exact companion executable, exact command, and exact credential
+  path, stops supervisors before children, and rescans through the PyInstaller
+  handoff window;
+- the same sweep is used by failed-launch cleanup and explicit session stop,
+  so an unpublished or stale PID cannot strand a matching child;
+- lifecycle watchers remain active through recoverable `failed` state and run
+  normal teardown when the exact game or owning launcher later exits;
+- unrelated executables, relay commands, and credential paths are never
+  touched.
+
 ## Automated evidence
 
 `tests/run_session_lifecycle_tests.ps1` starts disposable PowerShell processes
@@ -50,13 +78,19 @@ as the game and launcher and independently proves:
 2. game death produces `game-process-ended` without asking to kill it again;
 3. an exact active old autosave lease is replaced under its recorded old
    session/peer and receives `replaced-by-<new-session>/<peer>`; and
-4. the production stop script terminates a verified companion and publishes a
+4. a faulted session remains watched until its exact game exits; and
+5. the production stop script terminates a verified companion and publishes a
    terminal state with the supplied reason.
+
+`tests/run_relay_diagnostic_process_tests.ps1` additionally starts two
+diagnostic processes with one exact credential and proves that stopping one
+handle discovers and removes both, including unrecorded children. Invalid
+startup status still fails closed without leaving its reporter alive.
 
 The complete repository suite then passed, including autosave crash recovery,
 relay port remapping/diagnostic handoff, launcher boundaries, release manifests,
-transactional update/install, restore handoff, 197 Python tests, and all Lua and
-PowerShell syntax checks.
+transactional update/install, restore handoff, and all Python, Lua, and
+PowerShell checks.
 
 ## Boundary
 
