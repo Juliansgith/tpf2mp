@@ -112,9 +112,18 @@ class AlphaReconnectTests(unittest.TestCase):
             self.assertEqual(host.reconnect.status()["reconnect"]["recoveries"], 1)
 
             second_client.stop.set()
-            host.stop.set()
             second_thread.join(timeout=2.0)
+            self.assertFalse(second_thread.is_alive())
+            self.assertTrue(wait_for(lambda: "player2" not in host.peers))
+            # The peer worker removes itself before it records the ordered
+            # disconnect pause. Cross the same lock after removal so the
+            # audit append has closed its Windows file handle before the
+            # TemporaryDirectory cleanup begins.
+            with host.order_lock:
+                pass
+            host.stop.set()
             host_thread.join(timeout=2.0)
+            self.assertFalse(host_thread.is_alive())
 
     def test_reconnect_grace_expires_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
