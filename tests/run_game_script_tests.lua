@@ -183,7 +183,7 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 31,
+assert(initialized.version == 32,
   "state schema was not migrated to the multi-hop freight history version")
 assert(initialized.checkpoint.exports == 1 and initialized.checkpoint.lastError == nil,
   "match initialisation did not export a clean baseline checkpoint")

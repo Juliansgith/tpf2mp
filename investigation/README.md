@@ -1,6 +1,16 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-26 (Europe/Amsterdam), prototype `0.40.5-alpha`, state schema `31`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-26 (Europe/Amsterdam), `0.40.5-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Rapid line edits and snapped-depot replay (2026-08-26)](RAPID_LINE_EDIT_AND_SNAPPED_DEPOT_2026-08-26.md)
+records the origin-applied CreateLine/UpdateLine dependency race, raw-capture
+FIFO correction, Build 35924's hidden depot-to-existing-track snap, the
+fail-closed portable depot boundary, cross-language proof, and fresh live gate.
+
+[In-place fault requalification (2026-08-26)](IN_PLACE_FAULT_REQUALIFICATION_2026-08-26.md)
+records progress-aware proposal deadlines, host-derived empty-failure proof,
+ordered requalification, mandatory structural checkpoint convergence, durable
+audit/restart behavior, the one-button panel flow, and restore-only boundaries.
 
 [Launcher-owned session lifecycle (2026-08-26)](LAUNCHER_OWNED_SESSION_LIFECYCLE_2026-08-26.md)
 records the orphaned companion/game/autosave-guard failure, exact process

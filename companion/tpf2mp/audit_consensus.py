@@ -17,7 +17,9 @@ def verify_physical_consensus(
     operation_completions: Mapping[int, Mapping[str, Mapping[str, Any]]],
     operation_outcomes: Mapping[int, Mapping[str, Any]],
     acknowledgements: Mapping[int, Mapping[str, str]],
+    proposal_recoveries: Mapping[int, Mapping[str, Any]] | None = None,
 ) -> dict[str, tuple[int, ...]]:
+    proposal_recoveries = proposal_recoveries or {}
     proposal_complete = proposal_rejected = proposal_faulted = proposal_pending = 0
     for commit_seq, proposal in proposal_commits.items():
         outcome = proposal_outcomes.get(commit_seq)
@@ -48,7 +50,8 @@ def verify_physical_consensus(
                     f"proposal outcome finance differs from its origin at commit {commit_seq}"
                 )
             proposal_complete += 1
-        elif outcome.get("recoverable") is True:
+        elif outcome.get("recoverable") is True or commit_seq in proposal_recoveries:
+            recovery = proposal_recoveries.get(commit_seq)
             selected = _required_completions(
                 completions, required, commit_seq, "recoverable proposal rejection"
             )
@@ -61,10 +64,21 @@ def verify_physical_consensus(
                 raise ProtocolError(
                     f"recoverable proposal rejection has different native errors at commit {commit_seq}"
                 )
-            if outcome.get("resultDigest") != selected[0]["resultDigest"] \
-                    or outcome.get("coreDigest") != selected[0]["coreDigest"]:
+            evidence = recovery or outcome
+            if evidence.get("resultDigest") != selected[0]["resultDigest"] \
+                    or evidence.get("expectedCoreDigest", evidence.get("coreDigest")) \
+                    != selected[0]["coreDigest"]:
                 raise ProtocolError(
                     f"recoverable proposal outcome digests differ from completions at commit {commit_seq}"
+                )
+            if recovery and (
+                recovery.get("proposalId") != proposal["proposalId"]
+                or recovery.get("proposalDigest") != proposal["proposalDigest"]
+                or recovery.get("nativeErrorCode") != selected[0].get("errorCode")
+                or outcome.get("errorCode") != recovery.get("faultCode")
+            ):
+                raise ProtocolError(
+                    f"fault recovery evidence differs from its proposal at commit {commit_seq}"
                 )
             prepared = acknowledgements.get(int(proposal.get("preparedFromSeq", 0)), {})
             if not required <= set(prepared) \

@@ -31,6 +31,7 @@ local townDevelopmentValidationModule = require "tpf2_mp/validation_town_develop
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local checkpointRetentionModule = require "tpf2_mp/checkpoint_retention"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
+local faultRecoveryRuntimeModule = require "tpf2_mp/fault_recovery_runtime"
 local recoveryPhaseProofModule = require "tpf2_mp/recovery_phase_proof"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
@@ -63,6 +64,86 @@ local canonicalModule = require "tpf2_mp/canonical"
 local worldModule = require "tpf2_mp/world"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
+
+do
+  local proposalId = "fault-test:player2:2"
+  local faultCode = "proposal-completion-timeout:player1,player2"
+  local completion = {
+    success = false, outputs = {}, proposalDigest = "11111111",
+    resultDigest = "33333333", coreDigest = "22222222",
+    errorCode = "native-proposal-failed",
+  }
+  local current = {
+    tick = 90, networkMode = "network", canonical = {}, companies = {}, probes = {},
+    recovery = {}, world = {
+      originResidueCustody = {},
+      proposals = { byId = { [proposalId] = {
+        commitSeq = 2, transaction = { digest = "11111111" }, completion = completion,
+      } } },
+      proposalConsensus = {
+        failed = 1, rejected = 0,
+        sessionFault = { errorCode = faultCode },
+        byId = { [proposalId] = { status = "faulted", commitSeq = 2 } },
+      },
+      operationConsensus = { byId = {} }, checkpointConsensus = { byBoundary = {} },
+    },
+  }
+  local previousStructural, previousManifest =
+    worldModule.structuralSnapshot, worldModule.canonicalManifest
+  worldModule.structuralSnapshot = function() return { digest = "44444444" } end
+  worldModule.canonicalManifest = function() return {
+    schemaVersion = 1, total = 0, uniqueBound = 0, deferredUnique = 0,
+    ambiguousCount = 0, digest = "55555555",
+  } end
+  local runtime = faultRecoveryRuntimeModule.new({
+    getState = function() return current end,
+    coreDigest = function() return "22222222" end,
+  })
+  assert(runtime.normalise({ type = "recovery.requalify" }).type == "recovery.requalify",
+    "fault recovery did not preserve its payload-free local request")
+  assert(runtime.normalise({ type = "recovery.requalify", faultCode = faultCode }) == nil,
+    "fault recovery accepted client-supplied evidence")
+  local action = {
+    type = "recovery.requalify", schemaVersion = 1,
+    recoveryId = "fault-recovery:3:2", faultType = "proposal-timeout",
+    faultCommitSeq = 2, faultOutcomeSeq = 3, faultCode = faultCode,
+    proposalId = proposalId, proposalDigest = "11111111",
+    resultDigest = "33333333", expectedCoreDigest = "22222222",
+    nativeErrorCode = "native-proposal-failed", requestedBy = "player2",
+  }
+  local ok = runtime.begin(action, "player2", 4)
+  assert(ok == true and current.recovery.faultRecovery.status == "probing"
+      and current.probes.structural.digest == "44444444"
+      and current.probes.worldManifest.digest == "55555555",
+    "fault recovery did not requalify identical empty local evidence")
+  local exportedBoundary, exportedReason
+  assert(runtime.afterCommit(action, true, 4, function(boundary, reason)
+    exportedBoundary, exportedReason = boundary, reason
+    return true
+  end, function() end) == true and exportedBoundary == 4
+      and exportedReason == "fault-recovery:fault-recovery:3:2",
+    "fault recovery did not request its exact fresh checkpoint")
+  local proof = {
+    schemaVersion = 1, recoveryId = action.recoveryId, faultType = action.faultType,
+    faultCommitSeq = 2, faultOutcomeSeq = 3, faultCode = faultCode,
+    proposalId = proposalId, expectedCoreDigest = "22222222",
+  }
+  local record = {
+    reason = exportedReason, convergenceKey = "66666666", coreDigest = "22222222",
+    structuralDigest = "44444444", worldManifestDigest = "55555555",
+  }
+  ok = runtime.checkpointOutcome({
+    boundarySeq = 4, success = true, faultRecovery = proof,
+  }, true, record, nil)
+  assert(ok == true and current.world.proposalConsensus.sessionFault == nil
+      and current.world.proposalConsensus.byId[proposalId].status == "rejected"
+      and current.world.proposalConsensus.failed == 0
+      and current.world.proposalConsensus.rejected == 1
+      and current.recovery.faultRecovery.status == "recovered",
+    "fresh checkpoint did not clear only the proven timeout fault")
+  worldModule.structuralSnapshot, worldModule.canonicalManifest =
+    previousStructural, previousManifest
+end
 
 do
   local previousApi, previousGame = rawget(_G, "api"), rawget(_G, "game")
@@ -2994,6 +3075,121 @@ do
     end
     assert(intentCount == 9 and registrationCount == 1,
       "eight assignments produced redundant registration consensus rounds")
+  end, debug.traceback)
+  bridgeModule.emit, bridgeModule.poll = originalEmit, originalPoll
+  if not ok then error(failure, 0) end
+end
+
+do
+  -- A vanilla New Line command is origin-applied, then the stock Line Manager
+  -- immediately emits one UpdateLine per stop.  The updates cannot be
+  -- canonicalized until the create commit binds the new local line.  Preserve
+  -- those raw captures in FIFO order and normalize only after each predecessor
+  -- has committed.
+  local current = {
+    networkMode = "network", initialized = false, tick = 41,
+    bridge = { peerId = "player1" },
+    probes = { networkAuthority = { ready = true } },
+    world = {
+      proposalConsensus = { byId = {} },
+      operationConsensus = { byId = {} },
+      checkpointConsensus = { byBoundary = {} },
+    },
+    finance = {},
+  }
+  local envelopes, pollQueue, normalizedKinds, lineBound, controller = {}, {}, {}, false, nil
+  local originalEmit, originalPoll = bridgeModule.emit, bridgeModule.poll
+  local ok, failure = xpcall(function()
+    local localSequence = 0
+    bridgeModule.emit = function(_, kind, payload)
+      localSequence = localSequence + 1
+      local envelope = {
+        kind = kind, payload = util.deepCopy(payload), local_seq = localSequence,
+      }
+      envelopes[#envelopes + 1] = envelope
+      return true, envelope
+    end
+    bridgeModule.poll = function()
+      local result = pollQueue
+      pollQueue = {}
+      return result
+    end
+    controller = networkIntentRuntimeModule.new({
+      getState = function() return current end,
+      normaliseForNetwork = function(action) return util.deepCopy(action) end,
+      normaliseOperationCapture = function(action)
+        local capture = action.capture
+        normalizedKinds[#normalizedKinds + 1] = capture.kind
+        if capture.kind == "line.update" and not lineBound then
+          return nil, "selected pre-existing object is ambiguous across peers"
+        end
+        return {
+          type = "operation.execute",
+          transaction = { companyCid = "company:1", kind = capture.kind },
+          originCaptureToken = "player1:operation-origin:" .. tostring(#normalizedKinds),
+        }
+      end,
+      applyCommitted = function(action)
+        if action.transaction and action.transaction.kind == "line.create" then
+          lineBound = true
+        end
+        return true, {}, { postDigest = "00000000" }
+      end,
+      activeCompany = function() return "company:1" end,
+      publishSnapshot = function() end,
+      diagnosticLog = function() end,
+      coreDigest = function() return "00000000" end,
+      proposalPreparation = { pending = {} },
+    })
+
+    local createCapture = {
+      type = "operation.capture",
+      capture = { kind = "line.create", originApplied = true, targetLocalId = 71 },
+    }
+    local updateCapture = {
+      type = "operation.capture",
+      capture = { kind = "line.update", originApplied = true, targetLocalId = 71 },
+    }
+    assert(controller.submit(createCapture) == true,
+      "origin-applied line create did not enter consensus")
+    local firstUpdate, firstResult = controller.submit(updateCapture)
+    local secondUpdate, secondResult = controller.submit(updateCapture)
+    assert(firstUpdate == true and secondUpdate == true
+        and firstResult.rawOperationCapture == true
+        and secondResult.rawOperationCapture == true
+        and #normalizedKinds == 1 and normalizedKinds[1] == "line.create",
+      "dependent line updates were normalized before the create binding existed")
+    assert(util.tableCount(current.world.originResidueCustody) == 2,
+      "raw origin-applied queue was not persisted as reload-detectable custody")
+
+    local function latestIntent()
+      for index = #envelopes, 1, -1 do
+        if envelopes[index].kind == "intent" then return envelopes[index] end
+      end
+    end
+    local function commitLatest(authoritySeq)
+      local intent = assert(latestIntent(), "expected an emitted operation intent")
+      pollQueue = { {
+        kind = "commit", seq = authoritySeq, origin_peer = "player1",
+        origin_local_seq = intent.local_seq,
+        payload = { action = util.deepCopy(intent.payload.action) },
+      } }
+      controller.consume()
+    end
+
+    commitLatest(1)
+    assert(lineBound == true and controller.processDeferred() == true
+        and normalizedKinds[2] == "line.update"
+        and util.tableCount(current.world.originResidueCustody) == 1,
+      "first deferred line update did not normalize after create binding")
+    commitLatest(2)
+    assert(controller.processDeferred() == true and normalizedKinds[3] == "line.update",
+      "second deferred line update did not preserve FIFO dependency order")
+    commitLatest(3)
+    assert(#controller.deferredIntents() == 0
+        and util.tableCount(current.world.originResidueCustody) == 0
+        and current.world.operationConsensus.sessionFault == nil,
+      "rapid line create/update sequence did not drain without a residue fault")
   end, debug.traceback)
   bridgeModule.emit, bridgeModule.poll = originalEmit, originalPoll
   if not ok then error(failure, 0) end

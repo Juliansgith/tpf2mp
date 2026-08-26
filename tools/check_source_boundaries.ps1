@@ -39,6 +39,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_collateral_runtime.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\network_finance_housekeeping.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_origin_capture_runtime.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\network_busy_rejection.lua' = 30
     'tpf2_mp_1\res\scripts\tpf2_mp\service_registration_runtime.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\network_followup_queue.lua' = 170
@@ -53,6 +54,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\match_runtime.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\authored_followup_runtime.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\recovery_prepare_runtime.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\fault_recovery_runtime.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\recovery_native_save_runtime.lua' = 170
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua' = 900
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_station_proposal.lua' = 160
@@ -73,10 +75,14 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_runtime.lua' = 650
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_work_index.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_view.lua' = 600
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_fault_recovery.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_text.lua' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_lists.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
     'companion\tpf2mp\network.py' = 1460
+    'companion\tpf2mp\fault_recovery.py' = 270
+    'companion\tpf2mp\fault_recovery_protocol.py' = 60
+    'companion\tpf2mp\fault_recovery_audit.py' = 80
     'companion\tpf2mp\cli.py' = 430
     'companion\tpf2mp\relay_cli.py' = 180
     'companion\tpf2mp\relay_api.py' = 280
@@ -370,6 +376,7 @@ $requiredModules = @(
     'tpf2_mp/network_clock_runtime',
     'tpf2_mp/authored_followup_runtime',
     'tpf2_mp/recovery_prepare_runtime',
+    'tpf2_mp/fault_recovery_runtime',
     'tpf2_mp/recovery_native_save_runtime',
     'tpf2_mp/economy_clock_runtime',
     'tpf2_mp/economy_action_runtime',
@@ -542,6 +549,14 @@ if (-not $validationSource.Contains('require "tpf2_mp/validation_town_developmen
 }
 
 $hostSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\network.py') -Raw
+if (-not $hostSource.Contains('FaultRecoveryCoordinator')) {
+    throw 'Commit host no longer composes fail-closed in-place fault recovery.'
+}
+$guiViewSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_view.lua') -Raw
+if (-not $guiViewSource.Contains('tpf2_mp/gui_fault_recovery')) {
+    throw 'Multiplayer panel no longer exposes fault-recovery readiness.'
+}
 if ($hostSource -match '(?m)^class CommitClient:') {
     throw 'CommitClient was copied back into the host authority module.'
 }
@@ -584,7 +599,9 @@ if (-not $watcherSource.Contains(". (Join-Path `$PSScriptRoot 'recovery_plan_com
 }
 $intentSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua') -Raw
-foreach ($requiredModule in @('network_followup_queue', 'network_bridge_consumer')) {
+foreach ($requiredModule in @(
+    'network_followup_queue', 'network_bridge_consumer', 'network_origin_capture_runtime'
+)) {
     if (-not $intentSource.Contains($requiredModule)) {
         throw "Network intent runtime no longer composes $requiredModule."
     }

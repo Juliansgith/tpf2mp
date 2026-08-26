@@ -96,6 +96,12 @@ receipt-bound restore rather than continuing one world alone.
 
 ## Saves and recovery
 
+For a physical build timeout, first read **Session recovery** in the in-game
+Multiplayer panel. If both games later prove the same empty native rejection it
+will say **READY**; press **Recover / Resync Session** once, wait for the fresh
+two-peer checkpoint and **RECOVERED**, then choose a speed. If the panel says
+**RESTORE REQUIRED**, do not keep editing that world.
+
 Use **Prepare & Save Restore Point** in the Multiplayer panel. It establishes a
 shared paused, quiescent checkpoint and then lets each exact game process save
 its own peer-specific world. The launcher exposes **LOAD LATEST RESTORE** after

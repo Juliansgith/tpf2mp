@@ -2012,6 +2012,21 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   equal(depotSpec.params.choices[1], "a")
   equal(depotSpec.params.choices[2], "b")
 
+  -- Live relay regression mp-094022e94f4ae9c3: the depot was placed before
+  -- the player drew its visible connection, but Build 35924 silently snapped
+  -- the generated access edge to a pre-existing canonical track node.  The
+  -- public helper cannot replay that endpoint deterministically.
+  local snappedDepot = util.deepCopy(depotTx)
+  snappedDepot.edges[1].node1 = { cid = "node:pre:depot-approach" }
+  table.remove(snappedDepot.nodes, 2)
+  snappedDepot.digest = proposalCodec.digest(snappedDepot)
+  snappedDepot.transactionId = "proposal:" .. snappedDepot.digest
+  truthy(proposalCodec.validate(snappedDepot),
+    "snapped-depot fixture is not a structurally valid canonical proposal")
+  local snappedOk, snappedError = proposalCodec.validatePortable(snappedDepot)
+  equal(snappedOk, false)
+  truthy(tostring(snappedError):find("place the depot clear of track", 1, true), snappedError)
+
   local asset = {
     __observedCost = 500,
     __constructionAdditions = {{

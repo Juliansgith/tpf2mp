@@ -7,6 +7,7 @@ from .audit_consensus import verify_physical_consensus
 from .bridge import AuditLog
 from .checkpoint import verify_checkpoint, verify_event_record
 from .completion_validation import operation_completion_payload
+from .fault_recovery_audit import verified_fault_recoveries
 from .live_evidence import CHECKPOINTED_COMMIT_TYPES
 from .network import CommitHost
 from .protocol import ProtocolError, validate_envelope
@@ -32,6 +33,7 @@ def replay(
     checkpoint_outcomes: dict[int, dict[str, Any]] = {}
     checkpoint_expected_boundaries: set[int] = set()
     checkpoint_chains: dict[str, dict[str, Any]] = {}
+    ordered: dict[int, dict[str, Any]] = {}
     checkpoints = event_records = replayed_events = 0
     selected_session = session
     for message in AuditLog(path).messages():
@@ -50,6 +52,7 @@ def replay(
                     f"ordered message sequence gap: expected {expected}, found {seq}"
                 )
             expected += 1
+            ordered[seq] = dict(message)
             action = message.get("payload", {}).get("action", {})
             if message.get("kind") == "commit":
                 commits += 1
@@ -187,10 +190,13 @@ def replay(
             converged += 1
         else:
             incomplete += 1
+    recoveries = verified_fault_recoveries(
+        ordered, checkpoint_outcomes, checkpoint_records
+    )
     physical = verify_physical_consensus(
         proposal_commits, proposal_completions, proposal_outcomes,
         operation_commits, operation_completions, operation_outcomes,
-        acknowledgements,
+        acknowledgements, recoveries,
     )
     physical_complete, physical_rejected, physical_faulted, physical_pending = (
         physical["proposals"]

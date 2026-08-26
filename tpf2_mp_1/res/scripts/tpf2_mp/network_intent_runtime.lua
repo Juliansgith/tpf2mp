@@ -4,6 +4,7 @@ local finance = require "tpf2_mp/finance"
 local bridgeConsumerModule = require "tpf2_mp/network_bridge_consumer"
 local followupQueueModule = require "tpf2_mp/network_followup_queue"
 local busyRejection = require "tpf2_mp/network_busy_rejection"
+local originCaptureRuntimeModule = require "tpf2_mp/network_origin_capture_runtime"
 local M = {
   MAX_DEFERRED_INTENTS = 32,
   MAX_DEFERRED_FOLLOWUPS = 512,
@@ -112,56 +113,18 @@ function M.new(deps)
     return ok, messageOrError, "emit"
   end
 
-  -- Rejection of an already-applied vanilla command proves divergence. Fault
-  -- closed and request the ordered pause still allowed to a faulted session.
-  local function raiseOriginResidueFault(errorCode, detail)
-    if state.networkMode ~= "network" then return false end
-    local consensus = state.world.operationConsensus
-    if consensus.sessionFault then return true end
-    local fault = {
-      success = false,
-      status = "faulted",
-      errorCode = tostring(errorCode),
-      detail = detail and util.deepCopy(detail) or nil,
-      originPeer = tostring(state.bridge.peerId or ""),
-      tick = state.tick,
-    }
-    consensus.failed = (consensus.failed or 0) + 1
-    consensus.lastOutcome = util.deepCopy(fault)
-    consensus.sessionFault = fault
-    diagnosticLog("origin-applied-residue-fault", {
-      errorCode = fault.errorCode,
-      detail = fault.detail and util.deepCopy(fault.detail) or nil,
-      tick = state.tick,
-    })
-    -- Fault creation must survive an unavailable best-effort pause bridge.
-    local called, emitOk, emitError = pcall(emitNetworkIntent, { type = "clock.request", requestedSpeed = 0 })
-    if not called or emitOk ~= true then
-      diagnosticLog("origin-residue-pause-failed", {
-        error = tostring(not called and emitOk or emitError),
-        tick = state.tick,
-      })
-    end
-    state.lastError = "network session is faulted: " .. tostring(errorCode)
-    publishSnapshot()
-    return true
-  end
-
-  local function rejectOriginApplied(action, errorCode, detail)
-    local token = type(action) == "table" and action.originCaptureToken or nil
-    if not token then return false end
-    detail = type(detail) == "table" and util.deepCopy(detail) or {}
-    detail.actionType = detail.actionType or tostring(action.type or "")
-    detail.originCaptureToken = tostring(token)
-    raiseOriginResidueFault(tostring(errorCode), detail)
-    return true
-  end
+  local originCapture = originCaptureRuntimeModule.new({
+    getState = getState, normaliseOperationCapture = normaliseOperationCapture,
+    emitNetworkIntent = emitNetworkIntent, activeCompany = activeCompany,
+    publishSnapshot = publishSnapshot, diagnosticLog = diagnosticLog,
+    maximum = MAX_DEFERRED_NETWORK_INTENTS,
+  })
 
   local function submitIntent(action)
     if type(action) ~= "table" then return false, "action must be a table" end
     local duplicate = deps.ignoreDuplicateInitialise and { deps.ignoreDuplicateInitialise(action) }; if duplicate and duplicate[1] then return true, duplicate[2] end
     if action.type == "network.origin_residue" then
-      local raised = raiseOriginResidueFault(
+      local raised = originCapture.raise(
         tostring(action.errorCode or "origin-applied-residue"),
         type(action.detail) == "table" and action.detail or nil)
       publishSnapshot()
@@ -169,22 +132,19 @@ function M.new(deps)
       return true, { faulted = true, errorCode = tostring(action.errorCode or "origin-applied-residue") }
     end
     if action.type == "operation.capture" then
-      local capture = type(action.capture) == "table" and action.capture or action
-      -- A throwing normalizer must not lose an already-applied mutation to
-      -- handleEvent's outer pcall: convert it into the same rejection path.
-      local called, normalized, normalizeError = pcall(normaliseOperationCapture, action)
-      if not called then
-        normalized, normalizeError = nil, "operation capture normalization failed: " .. tostring(normalized)
+      local consensus = state.world.proposalConsensus or {}
+      local operationConsensus = state.world.operationConsensus or {}
+      local authority = state.probes.networkAuthority or {}
+      local pendingReason = state.networkMode == "network"
+        and not consensus.sessionFault and not operationConsensus.sessionFault
+        and authority.ready == true and originCapture.pendingReason(
+          networkPendingBarrierReason(), networkIntentAwaitingOrder,
+          #deferredNetworkIntents) or nil
+      if pendingReason then
+        return originCapture.defer(deferredNetworkIntents, action, pendingReason)
       end
+      local normalized, normalizeError = originCapture.normalise(action)
       if not normalized then
-        if capture.originApplied == true then
-          raiseOriginResidueFault(
-            "origin-applied-capture-rejected:" .. tostring(normalizeError), {
-              kind = tostring(capture.kind or ""),
-              targetLocalId = tonumber(capture.targetLocalId or capture.originLocalId),
-            })
-        end
-        state.lastError = tostring(normalizeError)
         publishSnapshot()
         return false, normalizeError
       end
@@ -207,7 +167,7 @@ function M.new(deps)
     if authority.ready ~= true then
       local errorText = "network authority is not ready: "
         .. tostring(authority.error or "native gates unavailable")
-      if rejectOriginApplied(action, "origin-applied-authority-unavailable:" .. errorText) then
+      if originCapture.reject(action, "origin-applied-authority-unavailable:" .. errorText) then
         return false, state.lastError
       end
       state.lastError = errorText
@@ -218,12 +178,21 @@ function M.new(deps)
     if state.initialized and networkAccounts.initialized ~= true then
       local errorText = tostring(networkAccounts.migrationError
         or "canonical network accounts are not initialised; start a fresh match")
-      if rejectOriginApplied(action, "origin-applied-finance-unavailable:" .. errorText) then
+      if originCapture.reject(action, "origin-applied-finance-unavailable:" .. errorText) then
         return false, state.lastError
       end
       state.lastError = errorText
       publishSnapshot()
       return false, state.lastError
+    end
+    if action.type == "recovery.requalify" then
+      local work = localWorkState()
+      if work.pending then
+        state.lastError = "session recovery is waiting for local ordered work to drain"
+        publishSnapshot()
+        return false, state.lastError
+      end
+      return emitNetworkIntent(action)
     end
     if action.type == "clock.request" then
       local faulted = state.world.proposalConsensus.sessionFault
@@ -312,7 +281,7 @@ function M.new(deps)
       elseif deferablePhysical then
         local errorText = "multiplayer physical-action queue is full ("
           .. tostring(MAX_DEFERRED_NETWORK_INTENTS) .. "); wait for synchronization"
-        if rejectOriginApplied(action, "origin-applied-deferred-queue-full", {
+        if originCapture.reject(action, "origin-applied-deferred-queue-full", {
           queueDepth = #deferredNetworkIntents,
           queueCapacity = MAX_DEFERRED_NETWORK_INTENTS,
           reason = pendingReason,
@@ -331,7 +300,7 @@ function M.new(deps)
     local emitted, result = emitNetworkIntent(action)
     if not emitted then
       local failureText = tostring(type(result) == "table" and result.error or result)
-      if rejectOriginApplied(action, "origin-applied-intent-emit-failed:" .. failureText) then
+      if originCapture.reject(action, "origin-applied-intent-emit-failed:" .. failureText) then
         return false, state.lastError
       end
     end
@@ -407,6 +376,24 @@ function M.new(deps)
       publishSnapshot()
       return true
     end
+    if lane == "physical" and emissionAction.type == "operation.capture" then
+      local normalized, normalizeError = originCapture.normalise(emissionAction)
+      if not normalized then
+        table.remove(deferredNetworkIntents, 1)
+        diagnosticLog("network-intent-deferred-normalization-failed", {
+          type = "operation.capture",
+          captureKind = tostring(
+            type(emissionAction.capture) == "table" and emissionAction.capture.kind or ""),
+          error = tostring(normalizeError),
+          deferredFromTick = pending.queuedTick,
+          queueRemaining = #deferredNetworkIntents + followups.count(),
+          tick = state.tick,
+        })
+        publishSnapshot()
+        return true
+      end
+      emissionAction = normalized
+    end
     if lane == "physical" then table.remove(deferredNetworkIntents, 1) end
     local ok, result, failurePhase = emitNetworkIntent(emissionAction)
     if ok then
@@ -428,10 +415,10 @@ function M.new(deps)
       end
     else
       local failureText = tostring(type(result) == "table" and result.error or result)
-      if lane == "physical" and pending.action and pending.action.originCaptureToken then
-        raiseOriginResidueFault("origin-applied-intent-emit-failed:" .. failureText, {
-          actionType = tostring(pending.action.type or ""),
-          originCaptureToken = tostring(pending.action.originCaptureToken),
+      if lane == "physical" and emissionAction.originCaptureToken then
+        originCapture.raise("origin-applied-intent-emit-failed:" .. failureText, {
+          actionType = tostring(emissionAction.type or ""),
+          originCaptureToken = tostring(emissionAction.originCaptureToken),
         })
       end
       if lane == "followup" and not followups.handleFailure(pending, emissionAction, failurePhase, failureText) then
@@ -460,7 +447,7 @@ function M.new(deps)
     applyCommitted = applyCommitted,
     coreDigest = coreDigest,
     diagnosticLog = diagnosticLog,
-    raiseOriginResidueFault = raiseOriginResidueFault,
+    raiseOriginResidueFault = originCapture.raise,
     publishSnapshot = publishSnapshot,
   })
 
@@ -471,7 +458,7 @@ function M.new(deps)
     hasDeferred = function() return #deferredNetworkIntents > 0 or followups.count() > 0 end,
     consume = consumeBridge,
     pendingBarrierReason = networkPendingBarrierReason,
-    raiseOriginResidueFault = raiseOriginResidueFault,
+    raiseOriginResidueFault = originCapture.raise,
     awaitingOrder = function() return util.deepCopy(networkIntentAwaitingOrder) end,
     deferredIntents = function() return util.deepCopy(deferredNetworkIntents) end,
     deferredFollowups = followups.copy,

@@ -46,6 +46,7 @@ local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local checkpointRetention = require "tpf2_mp/checkpoint_retention"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
+local faultRecoveryRuntimeModule = require "tpf2_mp/fault_recovery_runtime"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
 local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
@@ -62,7 +63,7 @@ local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registrati
 local stateRetention = require "tpf2_mp/state_retention"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 31
+local STATE_VERSION = 32
 local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
 local configReader = runtimeConfig.newReader()
@@ -180,6 +181,7 @@ local recoveryPrepareRuntime = recoveryPrepareRuntimeModule.new({
   emitCheckpoint = emitCheckpoint,
   exportCheckpointBarrier = exportCheckpointBarrier,
 })
+local faultRecoveryRuntime = faultRecoveryRuntimeModule.new({ getState = function() return state end, coreDigest = coreDigest })
 local recoveryNativeSaveRuntime = recoveryNativeSaveRuntimeModule.new({
   getState = function() return state end,
   coreDigest = coreDigest,
@@ -1419,8 +1421,9 @@ handlers["network.checkpoint_outcome"] = function(action)
   record.errorCode = not success and errorCode or nil
   record.outcomeTick = state.tick
   consensus.byBoundary[key] = record
-  consensus.lastOutcome = util.deepCopy(record)
   recoveryPrepareRuntime.checkpointOutcome(action, success, record)
+  success, errorCode = faultRecoveryRuntime.checkpointOutcome(action, success, record, errorCode)
+  consensus.lastOutcome = util.deepCopy(record)
   if success then
     consensus.completed = (consensus.completed or 0) + 1
     consensus.lastAgreed = util.deepCopy(record)
@@ -2085,8 +2088,8 @@ end
 handlers["checkpoint.export"] = function(action)
   return recoveryPrepareRuntime.manualCheckpoint(action)
 end
-handlers["recovery.prepare"], handlers["network.checkpoint_request"], handlers["recovery.resume"] =
-  recoveryPrepareRuntime.prepare, recoveryPrepareRuntime.checkpointRequest, restoreResumeRuntime.apply
+handlers["recovery.prepare"], handlers["recovery.requalify"], handlers["network.checkpoint_request"], handlers["recovery.resume"] =
+  recoveryPrepareRuntime.prepare, faultRecoveryRuntime.begin, recoveryPrepareRuntime.checkpointRequest, restoreResumeRuntime.apply
 
 handlers["native.observed"] = function(action, eventId)
   local capture = state.probes.capture
@@ -2554,6 +2557,10 @@ local function normaliseForNetwork(action)
       constructionKind = world.constructionKindOf,
       requireResourceName = true,
     })
+    if transaction then
+      local portable, portableError = proposalCodec.validatePortable(transaction)
+      if not portable then transaction, proposalError = nil, portableError end
+    end
     if not transaction then
       local capture = state.probes.capture
       local failure = {
@@ -2603,6 +2610,9 @@ local function normaliseForNetwork(action)
       if key ~= "type" then return nil, "recovery.prepare has an unknown field: " .. tostring(key) end
     end
     copy = { type = "recovery.prepare" }
+  elseif copy.type == "recovery.requalify" then
+    local recoveryError; copy, recoveryError = faultRecoveryRuntime.normalise(copy)
+    if not copy then return nil, recoveryError end
   elseif copy.type == "recovery.resume" then
     local restoreError; copy, restoreError = restoreResumeRuntime.normalise(copy)
     if not copy then return nil, restoreError end
@@ -2833,7 +2843,8 @@ applyCommitted = function(action, actor, commitSeq)
       })
     end
   else
-    if not aboardMilestoneIntegration.afterCommit(state, action, success, authoritySeq,
+    if not faultRecoveryRuntime.afterCommit(action, success, authoritySeq, exportCheckpointBarrier, diagnosticLog)
+      and not aboardMilestoneIntegration.afterCommit(state, action, success, authoritySeq,
         exportCheckpointBarrier, diagnosticLog)
       and not industryContentRuntime.afterCommit(state, action, success, authoritySeq,
         exportCheckpointBarrier, diagnosticLog) then
@@ -3132,6 +3143,7 @@ local function ensureWindow()
     end },
     { "Export Research", function() return { type = "probe.export_research" } end },
     { "Export Snapshot", function() return { type = "snapshot.export" } end },
+    { "Recover / Resync Session", function() return { type = "recovery.requalify" } end },
     { "Prepare & Save Restore Point", function() return { type = "recovery.prepare" } end },
     { "Refresh", function() return { type = "snapshot.request", localOnly = true } end },
   })

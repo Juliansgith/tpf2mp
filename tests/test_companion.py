@@ -48,6 +48,7 @@ from tpf2mp.passenger_feeder_live_report import analyse_passenger_feeder_audit
 from tpf2mp.cli import main as companion_main, replay
 from tpf2mp.manifest import build_manifest, load_manifest, write_manifest
 from tpf2mp.local_restore import latest_local_restore, latest_local_restore_pair
+from tpf2mp.live_evidence import scan_live_audit
 from tpf2mp.industry_content import (
     IndustryContentCoordinator,
     build_registry as build_industry_registry,
@@ -945,6 +946,22 @@ class ProtocolTests(unittest.TestCase):
 
     def test_restore_point_preparation_actions_are_strict(self) -> None:
         self.assertEqual(validate_action({"type": "recovery.prepare"}), {"type": "recovery.prepare"})
+        self.assertEqual(
+            validate_action({"type": "recovery.requalify"}),
+            {"type": "recovery.requalify"},
+        )
+        recovery = {
+            "type": "recovery.requalify", "schemaVersion": 1,
+            "recoveryId": "fault-recovery:8:7", "faultType": "proposal-timeout",
+            "faultCommitSeq": 7, "faultOutcomeSeq": 8,
+            "faultCode": "proposal-completion-timeout:player1,player2",
+            "proposalId": "saved-session:player2:7", "proposalDigest": "1234abcd",
+            "resultDigest": "2345bcde", "expectedCoreDigest": "3456cdef",
+            "nativeErrorCode": "native-proposal-failed", "requestedBy": "player2",
+        }
+        self.assertEqual(validate_action(recovery), recovery)
+        with self.assertRaisesRegex(ProtocolError, "identity is invalid"):
+            validate_action({**recovery, "recoveryId": "fault-recovery:7:8"})
         request = validate_action({
             "type": "network.checkpoint_request",
             "preparationSeq": 7,
@@ -1086,6 +1103,16 @@ class ProtocolTests(unittest.TestCase):
             accepted_depot["transaction"]["constructions"][0]["params"]["variant"]["1"],
             "brick",
         )
+
+        snapped_depot = portable_construction_transaction(kind="depot")
+        topology = proposal_transaction("company:2")
+        snapped_depot["nodes"] = [topology["nodes"][0]]
+        snapped_edge = topology["edges"][0]
+        snapped_edge["node1"] = {"cid": "node:pre:depot-approach"}
+        snapped_depot["edges"] = [snapped_edge]
+        redigest_proposal(snapped_depot)
+        with self.assertRaisesRegex(ProtocolError, "place the depot clear of track"):
+            validate_action({"type": "proposal.build", "transaction": snapped_depot})
 
         asset = portable_construction_transaction(kind="asset")
         accepted_asset = validate_action({"type": "proposal.build", "transaction": asset})
@@ -5617,6 +5644,26 @@ class AnchorRequestStoreTests(unittest.TestCase):
         ))
         self.assertFalse(state["pausedHeartbeatRequired"])
 
+    def test_client_receives_strict_fault_recovery_readiness(self) -> None:
+        message = anchor_state_message(
+            "anchor-io", "player1", {
+                "ready": False, "boundarySeq": 4, "coreDigest": "core-4",
+                "convergenceKey": "key-4", "reasons": ["session faulted"],
+            }, fault_recovery={
+                "status": "ready", "eligible": True,
+                "detail": "fresh checkpoint can be attempted",
+                "recoveryId": "fault-recovery:3:2", "boundarySeq": 4,
+                "faultCode": "proposal-completion-timeout:player1,player2",
+            },
+        )
+        state = validate_anchor_state(message)
+        self.assertTrue(state["faultRecovery"]["eligible"])
+        malformed = json.loads(json.dumps(message))
+        malformed["payload"]["faultRecovery"]["eligible"] = 1
+        malformed = sign({key: value for key, value in malformed.items() if key != "hmac"})
+        with self.assertRaisesRegex(ProtocolError, "fault recovery state"):
+            validate_anchor_state(malformed)
+
     def test_missing_request_save_is_rejected_without_escaping_the_poll(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -8168,6 +8215,160 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertIn("proposal-completion-timeout", host.session_fault)
             outcome = decode_line((bridge.inbox / "000000000003.json").read_bytes())
             self.assertFalse(outcome["payload"]["action"]["success"])
+
+    def test_timed_out_empty_rejection_requalifies_in_place_after_fresh_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "physical-timeout-requalification"
+            bridge = GameBridge(root / "host", session, "player1")
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, audit,
+                completion_timeout=1, require_connected_peers=False,
+            )
+            def recovery_checkpoint(peer: str, local_seq: int, reason: str) -> dict:
+                message = consensus_checkpoint(session, peer, local_seq, 4, reason)
+                payload = message["payload"]
+                payload["structuralDigest"] = "44444444"
+                payload["worldManifestDigest"] = "55555555"
+                payload["convergenceKey"] = checksum({
+                    "checkpointVersion": payload["checkpointVersion"],
+                    "stateVersion": payload["stateVersion"],
+                    "protocol": payload["protocol"], "sessionId": session,
+                    "lastCommitSeq": 4, "modelDigest": payload["modelDigest"],
+                    "canonicalDigest": payload["canonicalDigest"],
+                    "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
+                    "coreDigest": payload["coreDigest"],
+                    "financialDigest": payload["financialDigest"],
+                    "structuralDigest": "44444444",
+                    "worldManifestDigest": "55555555",
+                })
+                payload.pop("checkpointDigest", None)
+                payload["checkpointDigest"] = checksum(payload)
+                return message
+            transaction = proposal_transaction("company:2")
+            intent = sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "proposal.prepare", "transaction": transaction}},
+            })
+            future_checkpoint = consensus_checkpoint(
+                session, "player1", 20, 4, "fault-recovery:placeholder"
+            )
+            prepared_core = future_checkpoint["payload"]["coreDigest"]
+            prepare = host._commit(intent)
+            prepare_seq = int(prepare["seq"])
+            host._record_non_intent(proposal_prepare_ack(
+                "player1", 10, prepare_seq, digest=prepared_core
+            ))
+            host._record_non_intent(proposal_prepare_ack(
+                "player2", 11, prepare_seq, digest=prepared_core
+            ))
+            build_seq = int(host.proposal_prepares[prepare_seq]["buildSeq"])
+            host.proposal_consensus[build_seq]["deadline"] = 0
+            host._expire_proposals()
+            fault_code = str(host.session_fault)
+            self.assertEqual(fault_code, "proposal-completion-timeout:player1,player2")
+
+            for peer, local_seq in (("player1", 12), ("player2", 13)):
+                completion = proposal_completion(
+                    session, peer, local_seq, transaction,
+                    commit_seq=build_seq, core_digest=prepared_core, success=False,
+                )
+                completion["payload"]["outputs"] = {}
+                completion["payload"]["resultDigest"] = proposal_completion_result_digest(
+                    completion["payload"]
+                )
+                host._record_non_intent(completion)
+
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 4, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": host.clock_pause_acknowledged_generation,
+                    "engineTick": 100, "lastCommitSeq": 3,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "faultCode": fault_code,
+                    "originResidueCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            host.clock_health["player2"]["originResidueCount"] = 1
+            self.assertEqual(host.fault_recovery.assessment()["status"], "rollback-required")
+            host.clock_health["player2"]["originResidueCount"] = 0
+            self.assertEqual(host.fault_recovery.assessment()["status"], "ready")
+            recovery = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 2, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.requalify"}},
+            }))
+            recovery_action = recovery["payload"]["action"]
+            self.assertEqual(recovery["seq"], 4)
+            self.assertEqual(recovery_action["requestedBy"], "player2")
+            self.assertEqual(recovery_action["expectedCoreDigest"], prepared_core)
+            reason = f"fault-recovery:{recovery_action['recoveryId']}"
+            host._record_non_intent(recovery_checkpoint("player1", 20, reason))
+            host._record_non_intent(recovery_checkpoint("player2", 21, reason))
+
+            self.assertIsNone(host.session_fault)
+            self.assertEqual(host.proposal_consensus[build_seq]["status"], "rejected")
+            self.assertTrue(host.proposal_consensus[build_seq]["recovered"])
+            self.assertEqual(host.fault_recovery.assessment()["status"], "recovered")
+            checkpoint_outcome = decode_line((bridge.inbox / "000000000005.json").read_bytes())
+            self.assertEqual(
+                checkpoint_outcome["payload"]["action"]["faultRecovery"]["recoveryId"],
+                recovery_action["recoveryId"],
+            )
+            evidence = scan_live_audit(audit, session)
+            self.assertEqual(evidence["faults"], [])
+            self.assertEqual(evidence["physicalOutcomes"]["proposalsRecovered"], 1)
+            self.assertEqual(replay(audit, session), 0)
+
+            restored = CommitHost(
+                bridge, "127.0.0.1", 0, audit, require_connected_peers=False
+            )
+            self.assertIsNone(restored.session_fault)
+            self.assertEqual(restored.proposal_consensus[build_seq]["status"], "rejected")
+            self.assertEqual(restored.fault_recovery.assessment()["status"], "recovered")
+
+    def test_timeout_requalification_refuses_different_late_native_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "physical-timeout-mismatch"
+            bridge = GameBridge(root / "host", session, "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, root / "audit.ndjson",
+                completion_timeout=1, require_connected_peers=False,
+            )
+            transaction = proposal_transaction("company:2")
+            intent = sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "proposal.prepare", "transaction": transaction}},
+            })
+            _, build = pass_proposal_prepare(host, intent)
+            build_seq = int(build["seq"])
+            host.proposal_consensus[build_seq]["deadline"] = 0
+            host._expire_proposals()
+            for index, peer in enumerate(("player1", "player2"), 10):
+                completion = proposal_completion(
+                    session, peer, index, transaction, commit_seq=build_seq, success=False
+                )
+                completion["payload"]["outputs"] = {}
+                completion["payload"]["errorCode"] = f"native-failure-{peer}"
+                completion["payload"]["resultDigest"] = proposal_completion_result_digest(
+                    completion["payload"]
+                )
+                host._record_non_intent(completion)
+            assessment = host.fault_recovery.assessment()
+            self.assertEqual(assessment["status"], "rollback-required")
+            with self.assertRaisesRegex(ProtocolError, "cannot be recovered in place"):
+                host._commit(sign({
+                    "protocol": 1, "session": session, "peer": "player2",
+                    "local_seq": 2, "tick": 0, "kind": "intent",
+                    "payload": {"action": {"type": "recovery.requalify"}},
+                }))
 
     def test_identical_empty_native_rejection_is_recoverable_and_checkpointed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

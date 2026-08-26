@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from .aboard_milestone_protocol import AboardMilestoneError, validate as validate_aboard_milestone
 from .freight_action_protocol import validate_delivery_rows, validate_registration
+from .fault_recovery_protocol import validation_error as fault_recovery_validation_error
 from .line_registration_protocol import validate_metadata as validate_line_metadata
 from .recovery_receipt_protocol import validation_error as receipt_validation_error
 from .vehicle_phase_proof import VehiclePhaseProofError, normalise as normalise_vehicle_phase_proof
@@ -35,6 +36,7 @@ NETWORK_ACTIONS = {
     "network.sync_fault",
     "network.checkpoint_request",
     "recovery.prepare",
+    "recovery.requalify",
     "recovery.resume",
     "recovery.save_receipt",
     "town.develop",
@@ -1002,6 +1004,15 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
             raise ProtocolError("construction adapter is invalid")
         if kind not in {"rail_station", "station", "depot", "construction", "asset"}:
             raise ProtocolError("construction kind is invalid")
+        if mode == "build" and kind == "depot" and any(
+            isinstance(endpoint, dict) and isinstance(endpoint.get("cid"), str)
+            for edge in edges
+            for endpoint in (edge.get("node0"), edge.get("node1"))
+        ):
+            raise ProtocolError(
+                "network depot snapped to existing track; place the depot clear of track, "
+                "wait for synchronization, then connect it with a separate track build"
+            )
         source = construction.get("sourceCid")
         if mode == "build":
             if source != "":
@@ -1607,6 +1618,10 @@ def validate_action(action: Any) -> dict[str, Any]:
     if action_type == "recovery.prepare":
         if set(action) != {"type"}:
             raise ProtocolError("recovery.prepare has client-supplied fields")
+    if action_type == "recovery.requalify":
+        recovery_error = fault_recovery_validation_error(action, MAX_EXACT_INTEGER)
+        if recovery_error:
+            raise ProtocolError(recovery_error)
     if action_type == "recovery.resume":
         expected = {
             "type", "fromSession", "boundarySeq", "coreDigest",

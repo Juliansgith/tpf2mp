@@ -11,7 +11,8 @@ from .consensus_registry_index import TrackerRegistryIndex
 # Actions that either need all-peer evidence or immediately open a checkpoint.
 CONSENSUS_BOUND_ACTIONS = {
     "match.initialise", "proposal.prepare", "operation.execute", "line.register",
-    "town.develop", "recovery.prepare", "recovery.resume", "recovery.save_receipt",
+    "town.develop", "recovery.prepare", "recovery.requalify", "recovery.resume",
+    "recovery.save_receipt",
     "content.industry_attest", "freight.industry_bootstrap", "freight.milestone",
     "passenger.milestone",
     "economy.settle", "probe.structural",
@@ -94,6 +95,7 @@ class ConsensusTrackers:
         transaction = action.get("transaction", {})
         tracker = self.proposals.get(seq)
         if tracker is None:
+            started_at = self.monotonic()
             tracker = {
                 "commitSeq": seq,
                 "proposalId": f"{self.session}:{commit.get('origin_peer')}:{seq}",
@@ -102,10 +104,26 @@ class ConsensusTrackers:
                 "requiredPeers": self.required_peers,
                 "completions": {},
                 "status": "pending",
-                "deadline": self.monotonic() + self.completion_timeout,
+                "startedAt": started_at,
+                "deadline": started_at + self.completion_timeout,
+                "hardDeadline": started_at + max(300.0, self.completion_timeout * 8.0),
+                "lastProgressAt": None, "lastProgressPeer": None,
+                "progressEvents": 0,
             }
             self.proposals[seq] = tracker
         return tracker
+
+    def note_proposal_progress(
+        self, tracker: dict[str, Any], peer: str, *, extend: bool = True
+    ) -> None:
+        now = self.monotonic()
+        tracker["lastProgressAt"], tracker["lastProgressPeer"] = now, str(peer)
+        tracker["progressEvents"] = int(tracker.get("progressEvents", 0)) + 1
+        if extend and tracker.get("status") == "pending":
+            tracker["deadline"] = min(
+                float(tracker.get("hardDeadline", now)),
+                now + self.completion_timeout,
+            )
 
     def track_operation(self, commit: Mapping[str, Any]) -> dict[str, Any]:
         seq = int(commit["seq"])
@@ -178,16 +196,20 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
         "rendezvousGeneration", "rendezvousState", "rendezvousTargetTime",
     }
     local_work = {"localWorkPending", "deferredIntentCount"}
+    fault_recovery = {"faultCode", "originResidueCount"}
     allowed = required | {"observedSpeed", "gameTime"}
-    if schema in {2, 3}:
+    if schema in {2, 3, 4}:
         required |= rendezvous
         allowed |= rendezvous
-    if schema == 3:
+    if schema in {3, 4}:
         required |= local_work
         allowed |= local_work
+    if schema == 4:
+        required |= fault_recovery
+        allowed |= fault_recovery
     if not required <= set(payload) or set(payload) - allowed:
         raise ProtocolError("clock health payload has unknown or missing fields")
-    if schema not in {1, 2, 3}:
+    if schema not in {1, 2, 3, 4}:
         raise ProtocolError("unsupported clock health schema")
     for field in (
         "requestedSpeed", "effectiveSpeed", "generation", "engineTick", "lastCommitSeq"
@@ -196,7 +218,7 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
             raise ProtocolError(f"clock health {field} must be an integer")
     if not isinstance(payload.get("proposalPending"), bool):
         raise ProtocolError("clock health proposalPending must be boolean")
-    if schema == 3:
+    if schema in {3, 4}:
         if not isinstance(payload.get("localWorkPending"), bool):
             raise ProtocolError("clock health localWorkPending must be boolean")
         deferred = payload.get("deferredIntentCount")
@@ -217,7 +239,14 @@ def clock_health_payload(payload: Any) -> dict[str, Any]:
     game_time = payload.get("gameTime")
     if game_time is not None and float(game_time) < 0:
         raise ProtocolError("clock health gameTime must be non-negative")
-    if schema in {2, 3}:
+    if schema == 4:
+        fault = payload.get("faultCode")
+        residue = payload.get("originResidueCount")
+        if not isinstance(fault, str) or len(fault) > 512:
+            raise ProtocolError("clock health faultCode is invalid")
+        if not isinstance(residue, int) or isinstance(residue, bool) or residue < 0:
+            raise ProtocolError("clock health originResidueCount must be non-negative")
+    if schema in {2, 3, 4}:
         generation = payload.get("rendezvousGeneration")
         if not isinstance(generation, int) or isinstance(generation, bool) or generation < 0:
             raise ProtocolError("clock health rendezvousGeneration must be non-negative")

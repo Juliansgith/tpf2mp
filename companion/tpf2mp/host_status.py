@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from .anchor_state import anchor_state_message
@@ -20,6 +21,8 @@ def write_host_status(host: Any, status: str | None = None) -> None:
     restore_plan_message = host.restore_plan_exchange.published_message()
     anchor_readiness = host.anchor.readiness()
     receipt_readiness = host.anchor.readiness(receipt=True)
+    fault_recovery = host.fault_recovery.assessment()
+    now = time.monotonic()
     host.bridge.write_status({
         "role": "host",
         "status": host.status,
@@ -37,6 +40,10 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         "outboxEphemeralRetention": host.bridge.outbox_ephemeral_retention,
         "pendingProposalPrepareSeq": pending_prepare and pending_prepare.get("prepareSeq"),
         "pendingProposalSeq": pending_proposal and pending_proposal.get("commitSeq"),
+        "pendingProposalProgressEvents": pending_proposal and pending_proposal.get("progressEvents", 0),
+        "pendingProposalDeadlineSeconds": pending_proposal and max(
+            0.0, float(pending_proposal.get("deadline", now)) - now
+        ),
         "pendingOperationSeq": pending_operation and pending_operation.get("commitSeq"),
         "pendingCheckpointSeq": pending_checkpoint and pending_checkpoint.get("boundarySeq"),
         "pendingCheckpointReason": pending_checkpoint and pending_checkpoint.get("reason"),
@@ -46,6 +53,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         and host.last_agreed_checkpoint.get("reason"),
         "checkpointCounts": checkpoint_counts,
         "sessionFault": host.session_fault,
+        "faultRecovery": fault_recovery,
         "lastError": host.last_error,
         "auditAppendRetries": host.audit.append_retries,
         "auditReadRetries": host.audit.read_retries,
@@ -77,6 +85,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         host.bridge.session, host.bridge.peer, anchor_readiness,
         host.anchor_preparation.status(), receipt_readiness,
         paused_heartbeat_required=host.clock_effective_speed == 0,
+        fault_recovery=fault_recovery,
     ))
     if restore_plan_message:
         host._broadcast(restore_plan_message)

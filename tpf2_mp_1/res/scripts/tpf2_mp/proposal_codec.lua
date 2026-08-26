@@ -1850,6 +1850,22 @@ function M.validatePortable(transaction)
   end
   if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
     local construction = transaction.constructions[1]
+    -- Build 35924 may silently snap a depot's generated access edge onto an
+    -- existing track node even when the depot was placed before the player
+    -- draws the visible connecting track.  The public buildConstruction helper
+    -- receives only filename/params/transform and cannot reproduce that hidden
+    -- canonical endpoint on another machine.  Reject this shape before native
+    -- mutation instead of accepting two visually plausible but topologically
+    -- different depots.  An isolated depot followed by a separate track build
+    -- remains portable and supported.
+    if construction.mode == "build" and construction.kind == "depot" then
+      for _, edge in ipairs(transaction.edges) do
+        local node0, node1 = edge.node0 or {}, edge.node1 or {}
+        if type(node0.cid) == "string" or type(node1.cid) == "string" then
+          return false, "network depot snapped to existing track; place the depot clear of track, wait for synchronization, then connect it with a separate track build"
+        end
+      end
+    end
     if construction.mode ~= "remove" then
       local fileName, fileError = portableResourceName(construction.fileName, ".con", "construction")
       if not fileName then return false, fileError end

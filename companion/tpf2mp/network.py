@@ -23,6 +23,7 @@ from .host_status import write_host_status
 from .host_runtime import run_host
 from .host_intents import HostIntentMixin
 from .industry_content import IndustryContentConsensus, IndustryContentCoordinator
+from .fault_recovery import FaultRecoveryCoordinator
 from .mobility_telemetry import unsafe_vehicle_details, vehicle_phase_details
 from .synchronization import SynchronizationCoordinator
 from .restore_session import RestoreSessionCoordinator
@@ -127,6 +128,7 @@ class CommitHost(HostIntentMixin):
         self.restore_plan_exchange = RestorePlanExchange(self.bridge)
         self.industry_content = IndustryContentCoordinator(self.bridge)
         self.industry_content_consensus = IndustryContentConsensus(self)
+        self.fault_recovery = FaultRecoveryCoordinator(self)
         # Negative host sequences stay disjoint from unbounded positive game sequences.
         self._next_local_seq = -1
         self.last_agreed_checkpoint: dict[str, Any] | None = None
@@ -216,6 +218,8 @@ class CommitHost(HostIntentMixin):
                         self._track_checkpoint_boundary(seq, "structural-probe")
                     elif action.get("type") == "recovery.resume":
                         self.restore_session.track_commit(message)
+                    elif action.get("type") == "recovery.requalify":
+                        self.fault_recovery.observe_ordered(message, restoring=True)
                 else:
                     action = message.get("payload", {}).get("action", {})
                     if action.get("type") == "network.proposal_prepare_outcome":
@@ -238,6 +242,7 @@ class CommitHost(HostIntentMixin):
                                 else "faulted"
                             )
                             tracker["outcome"] = dict(action)
+                            tracker["outcomeSeq"] = seq
                         if recoverable:
                             self._track_checkpoint_boundary(
                                 seq,
@@ -281,6 +286,7 @@ class CommitHost(HostIntentMixin):
                         else:
                             self.session_fault = str(action.get("errorCode") or "checkpoint-consensus-failed")
                         self.restore_session.observe_checkpoint_outcome(action)
+                        self.fault_recovery.observe_checkpoint_outcome(action, seq)
                 self.anchor_preparation.observe_ordered(message, restoring=True)
             elif message.get("kind") == "record" and message.get("record_type") == "completion":
                 payload = proposal_completion_payload(message.get("payload", {}))
@@ -292,6 +298,7 @@ class CommitHost(HostIntentMixin):
                     if previous is not None and previous != payload:
                         raise ProtocolError("audit contains conflicting proposal completions")
                     tracker["completions"][peer] = dict(payload)
+                    self.consensus.note_proposal_progress(tracker, peer, extend=False)
             elif message.get("kind") == "record" and message.get("record_type") == "operation_completion":
                 payload = operation_completion_payload(message.get("payload", {}))
                 commit_seq = int(payload.get("commitSeq", 0))
@@ -340,6 +347,8 @@ class CommitHost(HostIntentMixin):
                     prepare_seq, peer, payload.get("success") is True,
                     str(payload.get("error") or ""), restoring=True,
                 )
+            elif message.get("kind") == "record" and message.get("record_type") == "event":
+                self._record_proposal_progress_locked(message, restoring=True)
             elif message.get("kind") == "record" and message.get("record_type") == "clock_reached":
                 self.synchronization.record_clock_reached({
                     "peer": message.get("peer"), "payload": message.get("payload", {}),
@@ -396,12 +405,17 @@ class CommitHost(HostIntentMixin):
                     if (commit.get("origin_peer"), commit.get("origin_local_seq")) == key:
                         return commit
                 return None
-            action = validate_action(intent.get("payload", {}).get("action"))
+            raw_action = intent.get("payload", {}).get("action")
+            action = validate_action(raw_action)
+            if action["type"] == "recovery.requalify":
+                if not isinstance(raw_action, Mapping) or set(raw_action) != {"type"}:
+                    raise ProtocolError("recovery.requalify evidence is host-derived")
+                action = self.fault_recovery.prepare_action(origin)
             self.restore_session.before_commit(action, origin)
             clock_request = action["type"] == "clock.request"
             emergency_pause = clock_request and action["requestedSpeed"] == 0
             self.anchor_preparation.before_commit(action, origin, local_seq)
-            if self.session_fault and not emergency_pause:
+            if self.session_fault and not (emergency_pause or action["type"] == "recovery.requalify"):
                 raise ProtocolError(f"session is faulted: {self.session_fault}")
             if not clock_request:
                 pending_prepare = self._pending_prepare()
@@ -556,6 +570,8 @@ class CommitHost(HostIntentMixin):
                 self._track_checkpoint_boundary(seq, "structural-probe")
             elif action["type"] == "recovery.resume":
                 self.restore_session.track_commit(commit)
+            elif action["type"] == "recovery.requalify":
+                self.fault_recovery.observe_ordered(commit)
             elif action["type"] in {"clock.set", "clock.rendezvous"}:
                 self._track_clock(commit)
             self.anchor_preparation.observe_ordered(commit)
@@ -821,6 +837,7 @@ class CommitHost(HostIntentMixin):
         )
         tracker["status"] = "complete" if success else "rejected" if recoverable else "faulted"
         tracker["outcome"] = dict(action)
+        tracker["outcomeSeq"] = seq
         if recoverable:
             self.last_error = action["errorCode"]
             self._track_checkpoint_boundary(
@@ -1060,6 +1077,7 @@ class CommitHost(HostIntentMixin):
             action["worldManifestDigest"] = next(iter(world_manifest_digests))
         if not success:
             action["errorCode"] = str(error_code or "checkpoint-consensus-failed")
+        self.fault_recovery.decorate_checkpoint(tracker, action)
         seq = self.next_seq
         self.next_seq += 1
         control = sign(
@@ -1082,6 +1100,7 @@ class CommitHost(HostIntentMixin):
         self.restore_session.observe_checkpoint_outcome(action)
         self.audit.append(control)
         self.commits[seq] = control
+        self.fault_recovery.observe_checkpoint_outcome(action, seq)
         self.anchor_preparation.observe_ordered(control)
         self.bridge.write_inbound(control)
         self._broadcast(control)
@@ -1103,6 +1122,10 @@ class CommitHost(HostIntentMixin):
         if not required <= set(checkpoints):
             return
         selected = [checkpoints[peer] for peer in tracker["requiredPeers"]]
+        recovery_failure = self.fault_recovery.checkpoint_failure(tracker)
+        if recovery_failure:
+            self._emit_checkpoint_outcome_locked(tracker, False, recovery_failure)
+            return
         # A restore plan binds the source save's pre-migration core digest.
         # Each game revalidates that source anchor before applying a committed
         # recovery.resume.  The fresh checkpoint below is allowed to carry a
@@ -1168,8 +1191,23 @@ class CommitHost(HostIntentMixin):
                 raise ProtocolError(f"peer {peer} sent conflicting proposal completions")
             return
         self.audit.append(self._record_message(message))
+        self.consensus.note_proposal_progress(tracker, peer)
         tracker["completions"][peer] = payload
         self._resolve_proposal_locked(tracker)
+
+    def _record_proposal_progress_locked(
+        self, message: Mapping[str, Any], *, restoring: bool = False
+    ) -> None:
+        payload = message.get("payload") or {}
+        action = payload.get("action") or {}
+        if action.get("type") != "proposal.construction_step":
+            return
+        proposal_id = str(action.get("proposalId") or "")
+        peer = str(message.get("peer", "unknown"))
+        for tracker in self.proposal_consensus.values():
+            if tracker.get("proposalId") == proposal_id and peer in tracker.get("requiredPeers", ()):
+                self.consensus.note_proposal_progress(tracker, peer, extend=not restoring)
+                return
 
     def _record_operation_completion_locked(self, message: Mapping[str, Any]) -> None:
         payload = self._operation_completion_payload(message.get("payload"))
@@ -1248,6 +1286,8 @@ class CommitHost(HostIntentMixin):
                 else:
                     self.clock_health_not_audited += 1
                 return
+            if message.get("kind") == "event":
+                self._record_proposal_progress_locked(message)
             record = self._record_message(message)
             self.audit.append(record)
             if message.get("kind") == "ack":

@@ -73,6 +73,25 @@ class ConsensusTrackerTests(unittest.TestCase):
         self.assertEqual(tracker["deadline"], 110.0)
         self.assertEqual(self.trackers.pending_clock_seq(), 4)
 
+    def test_proposal_progress_extends_only_to_the_hard_deadline(self) -> None:
+        now = [100.0]
+        trackers = ConsensusTrackers(
+            "progress-test", ("player1", "player2"), 45.0,
+            monotonic=lambda: now[0],
+        )
+        tracker = trackers.track_proposal(
+            self.commit(5, {"type": "proposal.build", "transaction": {"digest": "11111111"}})
+        )
+        self.assertEqual(tracker["deadline"], 145.0)
+        self.assertEqual(tracker["hardDeadline"], 460.0)
+        now[0] = 140.0
+        trackers.note_proposal_progress(tracker, "player1")
+        self.assertEqual(tracker["deadline"], 185.0)
+        now[0] = 450.0
+        trackers.note_proposal_progress(tracker, "player2")
+        self.assertEqual(tracker["deadline"], 460.0)
+        self.assertEqual(tracker["progressEvents"], 2)
+
     def test_payload_validators_remain_strict(self) -> None:
         proposal = {
             "proposalId": "session:player1:2",
@@ -132,6 +151,13 @@ class ConsensusTrackerTests(unittest.TestCase):
             "deferredIntentCount": 0,
         }
         self.assertEqual(clock_health_payload(health_v3), health_v3)
+        health_v4 = {
+            **health_v3,
+            "schemaVersion": 4,
+            "faultCode": "proposal-completion-timeout:player1,player2",
+            "originResidueCount": 0,
+        }
+        self.assertEqual(clock_health_payload(health_v4), health_v4)
         reached = {
             "schemaVersion": 1,
             "generation": 2,
@@ -160,6 +186,8 @@ class ConsensusTrackerTests(unittest.TestCase):
             clock_health_payload({**health_v3, "deferredIntentCount": -1})
         with self.assertRaises(ProtocolError):
             clock_health_payload({**health_v3, "localWorkPending": 0})
+        with self.assertRaises(ProtocolError):
+            clock_health_payload({**health_v4, "originResidueCount": True})
         with self.assertRaises(ProtocolError):
             vehicle_sync_payload({**vehicle, "stopIndex": 256})
 

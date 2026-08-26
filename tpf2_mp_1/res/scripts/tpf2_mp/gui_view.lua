@@ -1,7 +1,6 @@
-local util = require "tpf2_mp/util"
-local transportManager = require "tpf2_mp/gui_transport_manager"
-local matchInitialisePolicy = require "tpf2_mp/match_initialise_policy"
-local constructionSubmission = require "tpf2_mp/gui_construction_submission"
+local util, transportManager = require "tpf2_mp/util", require "tpf2_mp/gui_transport_manager"
+local matchInitialisePolicy, constructionSubmission = require "tpf2_mp/match_initialise_policy", require "tpf2_mp/gui_construction_submission"
+local faultRecovery = require "tpf2_mp/gui_fault_recovery"
 
 local M = {}
 
@@ -446,6 +445,7 @@ function M.render(gui, snapshot, options)
     operations.queued or 0, operations.applied or 0,
     operations.failed or 0, operations.retained or 0)
   local consensus = snapshot.proposalConsensus or {}
+  faultRecovery.append(lines, snapshot)
   lines[#lines + 1] = string.format(
     "Physical consensus pending/complete/rejected/faulted: %d/%d/%d/%d | session %s",
     consensus.pending or 0,

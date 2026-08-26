@@ -73,6 +73,10 @@ class CommitClient:
                 "anchorPreparationSeq": anchor.get("preparationSeq"),
                 "anchorPreparationCheckpointSeq": anchor.get("preparationCheckpointSeq"),
                 "anchorPreparationDetail": anchor.get("preparationDetail"),
+                "faultRecovery": anchor.get("faultRecovery", {
+                    "status": "healthy", "eligible": False,
+                    "detail": "host recovery state has not arrived",
+                }),
                 **self.anchor_requests.status(),
                 **self.restore_plan_exchange.status(),
                 **self.industry_content.status(),

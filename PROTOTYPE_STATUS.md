@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-26 for prototype `0.40.5-alpha`, state schema `31`,
+Last updated: 2026-08-26 after prototype `0.40.5-alpha`, state schema `32`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -749,6 +749,15 @@ proposals and 7/0/0 checkpoint barriers with no game errors. See
 
 ### Recovery and UX
 
+- Development state 32 adds fail-closed in-place requalification for one narrow
+  fault class: a proposal completion timeout whose late all-peer results are
+  identical empty failures at the prepared core. The host derives and orders
+  the proof, both games re-evaluate it, and a fresh core/structure/world-manifest
+  checkpoint must converge before the exact timeout fault is cleared. The panel
+  exposes **Recover / Resync Session** and leaves the recovered game paused.
+  Progress events renew the ordinary proposal deadline up to an absolute hard
+  cap. Mixed results, residue, changed state, and every other fault remain
+  verified-restore-only.
 - Format-5 checkpoints add both exact presentation ledgers and freight
   transport/stock state to the canonical train-release projection, core, and
   convergence key. Formats 1/2/3/4 remain readable, and digest-chained events

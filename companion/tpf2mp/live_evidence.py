@@ -6,6 +6,7 @@ from typing import Any
 
 from .bridge import AuditLog
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
+from .fault_recovery_audit import verified_fault_recoveries
 from .protocol import ProtocolError, validate_action, validate_envelope
 
 
@@ -18,6 +19,7 @@ CHECKPOINTED_COMMIT_TYPES = frozenset({
     "probe.structural",
     "economy.settle",
     "recovery.resume",
+    "recovery.requalify",
 })
 
 
@@ -61,6 +63,7 @@ def scan_live_audit(
     proposal_prepare_outcomes: set[int] = set()
     proposals: set[int] = set()
     proposal_outcomes: dict[int, dict[str, Any]] = {}
+    proposal_faults: dict[int, str] = {}
     operations: set[int] = set()
     operation_outcomes: dict[int, dict[str, Any]] = {}
     expected_checkpoints: set[int] = set()
@@ -119,8 +122,8 @@ def scan_live_audit(
                 if action.get("success") is True or recoverable:
                     expected_checkpoints.add(seq)
                 else:
-                    faults.append(
-                        str(action.get("errorCode") or "proposal-consensus-failed")
+                    proposal_faults[commit_seq] = str(
+                        action.get("errorCode") or "proposal-consensus-failed"
                     )
             elif action_type == "network.operation_outcome":
                 commit_seq = int(action.get("commitSeq", 0))
@@ -176,6 +179,10 @@ def scan_live_audit(
                 )
             checkpoints[boundary][peer] = payload
 
+    recoveries = verified_fault_recoveries(ordered, checkpoint_outcomes, checkpoints)
+    for recovered_commit in recoveries:
+        proposal_faults.pop(recovered_commit, None)
+    faults.extend(proposal_faults.values())
     pending_prepares = sorted(proposal_prepares - proposal_prepare_outcomes)
     pending_proposals = sorted(proposals - set(proposal_outcomes))
     pending_operations = sorted(operations - set(operation_outcomes))
@@ -249,6 +256,7 @@ def scan_live_audit(
             "operationsSuccessful": sum(
                 value.get("success") is True for value in operation_outcomes.values()
             ),
+            "proposalsRecovered": len(recoveries),
         },
         "faults": sorted(set(faults)),
         "pending": {
