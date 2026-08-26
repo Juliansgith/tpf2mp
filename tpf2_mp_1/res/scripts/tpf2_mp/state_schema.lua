@@ -235,6 +235,7 @@ function M.new(cfg, versions)
       operationConsensus = {
         byId = {},
         completed = 0,
+        rejected = 0,
         failed = 0,
         lastOutcome = nil,
         sessionFault = nil,
@@ -600,6 +601,8 @@ function M.migrate(saved, context)
   saved.world.operationConsensus.byId = saved.world.operationConsensus.byId or {}
   saved.world.operationConsensus.completed = math.max(0,
     util.integer(saved.world.operationConsensus.completed, 0))
+  saved.world.operationConsensus.rejected = math.max(0,
+    util.integer(saved.world.operationConsensus.rejected, 0))
   saved.world.operationConsensus.failed = math.max(0,
     util.integer(saved.world.operationConsensus.failed, 0))
   saved.world.checkpointConsensus = saved.world.checkpointConsensus

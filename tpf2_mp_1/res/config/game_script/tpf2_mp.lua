@@ -14,6 +14,7 @@ local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
+local networkOperationOutcomeModule = require "tpf2_mp/network_operation_outcome"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 local runtimeConfig = require "tpf2_mp/runtime_config"
 local stateSchema = require "tpf2_mp/state_schema"
@@ -63,7 +64,7 @@ local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registrati
 local stateRetention = require "tpf2_mp/state_retention"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 32
+local STATE_VERSION = 33
 local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
 local configReader = runtimeConfig.newReader()
@@ -1116,112 +1117,12 @@ handlers["operation.finalise"] = function(action)
   return finaliseCanonicalOperation(payload)
 end
 
-handlers["network.operation_outcome"] = function(action)
-  if state.networkMode ~= "network" then return false, "operation consensus exists only in network mode" end
-  local operationId = type(action) == "table" and tostring(action.operationId or "") or ""
-  local consensus = state.world.operationConsensus
-  local record = state.world.operations.byId[operationId]
-  if not record then
-    if action.success == true then return false, "successful consensus references an unknown operation" end
-    local fault = {
-      operationId = operationId,
-      commitSeq = tonumber(action.commitSeq),
-      operationDigest = tostring(action.operationDigest or ""),
-      success = false,
-      status = "faulted",
-      errorCode = tostring(action.errorCode or "operation-consensus-failed"),
-      tick = state.tick,
-    }
-    consensus.byId[operationId] = fault
-    consensus.lastOutcome = util.deepCopy(fault)
-    consensus.failed = (consensus.failed or 0) + 1
-    consensus.sessionFault = util.deepCopy(fault)
-    return false, fault
-  end
-  if tonumber(action.commitSeq) ~= tonumber(record.commitSeq) then
-    return false, "operation consensus commit sequence mismatch"
-  end
-  local existing = consensus.byId[operationId]
-  if existing and existing.status ~= "pending" then
-    local same = existing.success == (action.success == true)
-      and tostring(existing.resultDigest or "") == tostring(action.resultDigest or "")
-      and tostring(existing.coreDigest or "") == tostring(action.coreDigest or "")
-    if not same then return false, "conflicting operation consensus outcome" end
-    return existing.success, util.deepCopy(existing)
-  end
-  local localCompletion = record.completion
-  local success = action.success == true
-  if success and (not localCompletion or localCompletion.success ~= true
-    or tostring(localCompletion.resultDigest or "") ~= tostring(action.resultDigest or "")
-    or tostring(localCompletion.coreDigest or "") ~= tostring(action.coreDigest or "")) then
-    success = false
-    action = util.deepCopy(action)
-    action.errorCode = "local-operation-completion-does-not-match-consensus"
-  end
-  local authoritativeFinanceDelta = tonumber(action.financeDelta)
-  local canonicalFinanceEntry, nativeReconciliation
-  if success and authoritativeFinanceDelta == nil then
-    success = false
-    action = util.deepCopy(action)
-    action.errorCode = "operation-finance-consensus-is-unavailable"
-  elseif success then
-    local applied, entryOrError = finance.applyNetworkDelta(
-      state.finance, record.companyCid, authoritativeFinanceDelta, {
-        kind = "operation",
-        operationId = operationId,
-        operationKind = record.transaction.kind,
-        commitSeq = tonumber(action.commitSeq),
-      })
-    if not applied then
-      success = false
-      action = util.deepCopy(action)
-      action.errorCode = "operation-canonical-finance-failed:" .. tostring(entryOrError)
-    else
-      canonicalFinanceEntry = entryOrError
-      local reconciled, reconciliationOrError = finance.reconcileNetworkAccounts(
-        state.finance, state.companies, {
-          reason = "operation-consensus",
-          operationId = operationId,
-          commitSeq = tonumber(action.commitSeq),
-          tick = state.tick,
-        })
-      nativeReconciliation = type(reconciliationOrError) == "table"
-        and reconciliationOrError or { error = tostring(reconciliationOrError) }
-      if not reconciled then
-        success = false
-        action = util.deepCopy(action)
-        action.errorCode = "operation-native-wallet-reconciliation-failed:"
-          .. tostring(nativeReconciliation.error or reconciliationOrError)
-      end
-    end
-  end
-  if success then recordVehiclePurchaseCost(record, authoritativeFinanceDelta) end
-  local outcome = {
-    operationId = operationId,
-    commitSeq = tonumber(action.commitSeq),
-    operationDigest = tostring(action.operationDigest or ""),
-    success = success,
-    status = success and "complete" or "faulted",
-    resultDigest = tostring(action.resultDigest or ""),
-    coreDigest = tostring(action.coreDigest or ""),
-    financeDelta = authoritativeFinanceDelta,
-    canonicalFinanceEntry = util.deepCopy(canonicalFinanceEntry),
-    nativeReconciliation = util.deepCopy(nativeReconciliation),
-    peers = util.deepCopy(type(action.peers) == "table" and action.peers or {}),
-    errorCode = not success
-      and tostring(action.errorCode or "operation-consensus-failed") or nil,
-    tick = state.tick,
-  }
-  consensus.byId[operationId] = outcome
-  consensus.lastOutcome = util.deepCopy(outcome)
-  if success then consensus.completed = (consensus.completed or 0) + 1
-  else
-    consensus.failed = (consensus.failed or 0) + 1
-    consensus.sessionFault = util.deepCopy(outcome)
-  end
-  if success and vehicleSync then vehicleSync.onOperationConsensus(record) end
-  return success, util.deepCopy(outcome)
-end
+handlers["network.operation_outcome"] = networkOperationOutcomeModule.new({
+  getState = function() return state end,
+  getApi = function() return api end,
+  getVehicleSync = function() return vehicleSync end,
+  recordVehiclePurchaseCost = recordVehiclePurchaseCost,
+})
 
 handlers["network.proposal_outcome"] = function(action)
   if state.networkMode ~= "network" then return false, "proposal consensus exists only in network mode" end
@@ -2792,12 +2693,12 @@ applyCommitted = function(action, actor, commitSeq)
     end
     serviceRegistrationIntegration.afterProposalOutcome(action)
   elseif success and action.type == "network.operation_outcome"
-    and action.success == true and authoritySeq then
+    and (action.success == true or action.recoverable == true) and authoritySeq then
     -- Both worlds have now agreed on this operation's physical result, so the
     -- owning peer can safely re-derive the line's competitive facts from a
     -- world its rival also sees.
     local record = state.world.operations.byId[tostring(action.operationId or "")]
-    if record then
+    if action.success == true and record then
       -- A line may be deleted before its commit-derived registration reaches
       -- the head of the authored follow-up FIFO.  Drop that now-impossible
       -- job so it cannot retry forever and starve registrations behind it.
@@ -2821,7 +2722,8 @@ applyCommitted = function(action, actor, commitSeq)
         end
       end
     end
-    local reason = "operation-consensus:" .. tostring(action.operationId or "unknown")
+    local reason = (action.success == true and "operation-consensus:"
+      or "operation-rejection:") .. tostring(action.operationId or "unknown")
     local checkpointed, checkpointError = exportCheckpointBarrier(
       authoritySeq, reason, action.operationId)
     if not checkpointed then

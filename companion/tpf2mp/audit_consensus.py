@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from .completion_validation import (
-    operation_completion_result_view,
-    proposal_completion_result_view,
-)
+from .audit_operation_consensus import verify_operation_consensus
+from .completion_validation import proposal_completion_result_view
 from .protocol import ProtocolError
 
 
@@ -93,57 +91,16 @@ def verify_physical_consensus(
         else:
             proposal_faulted += 1
 
-    operation_complete = operation_faulted = operation_pending = 0
-    for commit_seq, operation in operation_commits.items():
-        outcome = operation_outcomes.get(commit_seq)
-        if not outcome:
-            operation_pending += 1
-            continue
-        if outcome.get("operationId") != operation["operationId"]:
-            raise ProtocolError(f"operation outcome identity mismatch at commit {commit_seq}")
-        if outcome.get("operationDigest") != operation["operationDigest"]:
-            raise ProtocolError(f"operation outcome digest mismatch at commit {commit_seq}")
-        if outcome.get("success") is not True:
-            operation_faulted += 1
-            continue
-        completions = operation_completions.get(commit_seq, {})
-        required = set(outcome.get("peers", []))
-        selected = _required_completions(
-            completions, required, commit_seq, "successful operation outcome"
-        )
-        if any(
-            item.get("commitSeq") != commit_seq
-            or item.get("operationId") != operation["operationId"]
-            or item.get("operationDigest") != operation["operationDigest"]
-            for item in selected
-        ):
-            raise ProtocolError(f"operation completion identity mismatch at commit {commit_seq}")
-        if any(item.get("success") is not True for item in selected):
-            raise ProtocolError(
-                f"successful operation outcome contains a failed peer at commit {commit_seq}"
-            )
-        first_result = operation_completion_result_view(selected[0])
-        if any(
-            operation_completion_result_view(item) != first_result for item in selected[1:]
-        ):
-            raise ProtocolError(f"physical operation result divergence at commit {commit_seq}")
-        if outcome.get("resultDigest") != selected[0]["resultDigest"] \
-                or outcome.get("coreDigest") != selected[0]["coreDigest"]:
-            raise ProtocolError(
-                f"operation outcome digests differ from completions at commit {commit_seq}"
-            )
-        origin = completions.get(str(operation["originPeer"]))
-        if origin is None or outcome.get("financeDelta") != origin.get("financeDelta"):
-            raise ProtocolError(
-                f"operation outcome finance differs from its origin at commit {commit_seq}"
-            )
-        operation_complete += 1
+    operations = verify_operation_consensus(
+        operation_commits, operation_completions, operation_outcomes,
+        acknowledgements, proposal_recoveries,
+    )
 
     return {
         "proposals": (
             proposal_complete, proposal_rejected, proposal_faulted, proposal_pending,
         ),
-        "operations": (operation_complete, operation_faulted, operation_pending),
+        "operations": operations,
     }
 
 

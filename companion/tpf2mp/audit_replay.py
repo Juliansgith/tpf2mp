@@ -73,6 +73,8 @@ def replay(
                             f"{message.get('session')}:{message.get('origin_peer')}:{seq}"
                         ),
                         "operationDigest": action.get("transaction", {}).get("digest"),
+                        "operationKind": action.get("transaction", {}).get("kind"),
+                        "transaction": dict(action.get("transaction", {})),
                         "originPeer": str(message.get("origin_peer", "")),
                     }
                 elif action.get("type") in CHECKPOINTED_COMMIT_TYPES:
@@ -99,7 +101,7 @@ def replay(
                     if commit_seq in operation_outcomes:
                         raise ProtocolError("audit contains duplicate operation outcomes")
                     operation_outcomes[commit_seq] = dict(action)
-                    if action.get("success") is True:
+                    if action.get("success") is True or action.get("recoverable") is True:
                         checkpoint_expected_boundaries.add(seq)
                 elif action.get("type") == "network.checkpoint_outcome":
                     boundary_seq = int(action.get("boundarySeq", 0))
@@ -201,7 +203,7 @@ def replay(
     physical_complete, physical_rejected, physical_faulted, physical_pending = (
         physical["proposals"]
     )
-    operation_complete, operation_faulted, operation_pending = physical["operations"]
+    operation_complete, operation_rejected, operation_faulted, operation_pending = physical["operations"]
     checkpoint_complete = checkpoint_faulted = checkpoint_pending = 0
     for boundary_seq in sorted(checkpoint_expected_boundaries):
         outcome = checkpoint_outcomes.get(boundary_seq)
@@ -230,8 +232,8 @@ def replay(
         f"{converged} converged, {incomplete} awaiting peer digests, "
         "physical proposals complete/rejected/faulted/pending="
         f"{physical_complete}/{physical_rejected}/{physical_faulted}/{physical_pending}, "
-        "physical operations complete/faulted/pending="
-        f"{operation_complete}/{operation_faulted}/{operation_pending}, "
+        "physical operations complete/rejected/faulted/pending="
+        f"{operation_complete}/{operation_rejected}/{operation_faulted}/{operation_pending}, "
         "checkpoint barriers complete/faulted/pending="
         f"{checkpoint_complete}/{checkpoint_faulted}/{checkpoint_pending}, "
         f"{checkpoints} checkpoints, {event_records} event records "

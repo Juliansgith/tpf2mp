@@ -11,7 +11,6 @@ from .bridge import AuditLog, AuditUnavailable, GameBridge
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
 from .completion_validation import (
     operation_completion_payload,
-    operation_completion_result_view,
     proposal_completion_payload,
     proposal_completion_result_view,
 )
@@ -25,6 +24,7 @@ from .host_intents import HostIntentMixin
 from .industry_content import IndustryContentConsensus, IndustryContentCoordinator
 from .fault_recovery import FaultRecoveryCoordinator
 from .mobility_telemetry import unsafe_vehicle_details, vehicle_phase_details
+from .operation_consensus import OperationConsensusCoordinator
 from .synchronization import SynchronizationCoordinator
 from .restore_session import RestoreSessionCoordinator
 from .restore_plan_exchange import RestorePlanExchange
@@ -129,6 +129,7 @@ class CommitHost(HostIntentMixin):
         self.industry_content = IndustryContentCoordinator(self.bridge)
         self.industry_content_consensus = IndustryContentConsensus(self)
         self.fault_recovery = FaultRecoveryCoordinator(self)
+        self.operation_outcomes = OperationConsensusCoordinator(self)
         # Negative host sequences stay disjoint from unbounded positive game sequences.
         self._next_local_seq = -1
         self.last_agreed_checkpoint: dict[str, Any] | None = None
@@ -260,12 +261,25 @@ class CommitHost(HostIntentMixin):
                     elif action.get("type") == "network.operation_outcome":
                         commit_seq = int(action.get("commitSeq", 0))
                         tracker = self.operation_consensus.get(commit_seq)
+                        recoverable = action.get("recoverable") is True \
+                            and action.get("success") is not True
                         if tracker:
                             if tracker.get("outcome") and tracker["outcome"] != action:
                                 raise ProtocolError("audit contains conflicting operation outcomes")
-                            tracker["status"] = "complete" if action.get("success") else "faulted"
+                            tracker["status"] = (
+                                "complete" if action.get("success")
+                                else "rejected" if recoverable
+                                else "faulted"
+                            )
                             tracker["outcome"] = dict(action)
-                        if not action.get("success"):
+                            tracker["outcomeSeq"] = seq
+                        if recoverable:
+                            self._track_checkpoint_boundary(
+                                seq,
+                                f"operation-rejection:{action.get('operationId')}",
+                                str(action.get("operationId", "")),
+                            )
+                        elif not action.get("success"):
                             self.session_fault = str(
                                 action.get("errorCode") or "operation-consensus-failed"
                             )
@@ -324,6 +338,13 @@ class CommitHost(HostIntentMixin):
                 peer = str(message.get("peer", "unknown"))
                 if tracker and peer in tracker["requiredPeers"]:
                     tracker["acks"][peer] = {
+                        "success": payload.get("success") is True,
+                        "digest": payload.get("digest"),
+                        "error": payload.get("error"),
+                    }
+                operation_tracker = self.operation_consensus.get(prepare_seq)
+                if operation_tracker and peer in operation_tracker["requiredPeers"]:
+                    operation_tracker["acks"][peer] = {
                         "success": payload.get("success") is True,
                         "digest": payload.get("digest"),
                         "error": payload.get("error"),
@@ -938,96 +959,15 @@ class CommitHost(HostIntentMixin):
         tracker: dict[str, Any],
         success: bool,
         error_code: str | None = None,
+        *,
+        recoverable: bool = False,
     ) -> dict[str, Any]:
-        if tracker.get("status") != "pending":
-            return dict(tracker.get("outcome", {}))
-        completions = tracker["completions"]
-        result_digests = {
-            item["resultDigest"] for item in completions.values() if item.get("resultDigest")
-        }
-        core_digests = {
-            item["coreDigest"] for item in completions.values() if item.get("coreDigest")
-        }
-        action: dict[str, Any] = {
-            "type": "network.operation_outcome",
-            "operationId": tracker["operationId"],
-            "commitSeq": tracker["commitSeq"],
-            "operationDigest": tracker["operationDigest"],
-            "success": bool(success),
-            "resultDigest": next(iter(result_digests)) if len(result_digests) == 1 else "",
-            "coreDigest": next(iter(core_digests)) if len(core_digests) == 1 else "",
-            "peers": list(tracker["requiredPeers"]),
-        }
-        if success:
-            origin_completion = completions.get(tracker.get("originPeer"))
-            if origin_completion is None:
-                raise ProtocolError("operation origin has no physical completion")
-            action["financeDelta"] = origin_completion["financeDelta"]
-        else:
-            action["errorCode"] = str(error_code or "operation-consensus-failed")
-        seq = self.next_seq
-        self.next_seq += 1
-        control = sign(
-            {
-                "protocol": PROTOCOL_VERSION,
-                "session": self.bridge.session,
-                "seq": seq,
-                "kind": "control",
-                "origin_peer": self.bridge.peer,
-                "tick": 0,
-                "payload": {"action": action},
-            }
+        return self.operation_outcomes.emit(
+            tracker, success, error_code, recoverable=recoverable
         )
-        tracker["status"] = "complete" if success else "faulted"
-        tracker["outcome"] = dict(action)
-        if not success:
-            self.session_fault = action["errorCode"]
-        else:
-            self._track_checkpoint_boundary(
-                seq,
-                f"operation-consensus:{tracker['operationId']}",
-                tracker["operationId"],
-            )
-        self.audit.append(control)
-        self.commits[seq] = control
-        self.bridge.write_inbound(control)
-        self._broadcast(control)
-        if success:
-            print(
-                f"operation {tracker['operationId']} physically converged at "
-                f"{action['resultDigest']}"
-            )
-        else:
-            print(
-                f"OPERATION CONSENSUS FAULT {tracker['operationId']}: "
-                f"{action['errorCode']}"
-            )
-        return control
 
     def _resolve_operation_locked(self, tracker: dict[str, Any]) -> None:
-        required = set(tracker["requiredPeers"])
-        completions = tracker["completions"]
-        if not required <= set(completions):
-            return
-        selected = [completions[peer] for peer in tracker["requiredPeers"]]
-        if any(item.get("success") is not True for item in selected):
-            self._emit_operation_outcome_locked(tracker, False, "peer-native-operation-failed")
-            return
-        if any(item.get("operationDigest") != tracker["operationDigest"] for item in selected):
-            self._emit_operation_outcome_locked(tracker, False, "operation-digest-mismatch")
-            return
-        first_result = operation_completion_result_view(selected[0])
-        if any(operation_completion_result_view(item) != first_result for item in selected[1:]):
-            self._emit_operation_outcome_locked(
-                tracker, False, "operation-physical-result-digest-mismatch"
-            )
-            return
-        if len({item["coreDigest"] for item in selected}) != 1:
-            self._emit_operation_outcome_locked(
-                tracker, False, "operation-physical-core-digest-mismatch"
-            )
-            return
-        self._emit_operation_outcome_locked(tracker, True)
+        self.operation_outcomes.resolve(tracker)
 
     def _emit_checkpoint_outcome_locked(
         self,
@@ -1340,11 +1280,24 @@ class CommitHost(HostIntentMixin):
                 if tracker and tracker.get("status") == "pending" and payload.get("success") is not True:
                     self._emit_proposal_outcome_locked(tracker, False, f"proposal-queue-rejected:{peer}")
                 operation_tracker = self.operation_consensus.get(commit_seq)
-                if operation_tracker and operation_tracker.get("status") == "pending" \
-                        and payload.get("success") is not True:
-                    self._emit_operation_outcome_locked(
-                        operation_tracker, False, f"operation-queue-rejected:{peer}"
-                    )
+                if operation_tracker and operation_tracker.get("status") == "pending":
+                    acknowledgement = {
+                        "success": payload.get("success") is True,
+                        "digest": payload.get("digest"),
+                        "error": payload.get("error"),
+                    }
+                    previous = operation_tracker["acks"].get(peer)
+                    if previous and previous != acknowledgement:
+                        raise ProtocolError(
+                            f"peer {peer} sent conflicting operation acknowledgements"
+                        )
+                    operation_tracker["acks"][peer] = acknowledgement
+                    if payload.get("success") is not True:
+                        self._emit_operation_outcome_locked(
+                            operation_tracker, False, f"operation-queue-rejected:{peer}"
+                        )
+                    else:
+                        self._resolve_operation_locked(operation_tracker)
                 action_type = str(
                     self.commits.get(commit_seq, {}).get("payload", {})
                     .get("action", {}).get("type", "")

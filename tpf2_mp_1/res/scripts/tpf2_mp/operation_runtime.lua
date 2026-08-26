@@ -6,6 +6,7 @@ local world = require "tpf2_mp/world"
 local economy = require "tpf2_mp/economy"
 local operationCodec = require "tpf2_mp/operation_codec"
 local vehiclePostcondition = require "tpf2_mp/operation_vehicle_postcondition"
+local rejectionProof = require "tpf2_mp/operation_rejection_proof"
 
 local M = {}
 
@@ -328,6 +329,9 @@ function M.new(env)
       queuedTick = currentState().tick,
     }
     if record.balanceBefore == nil then return false, "operation company balance is unavailable" end
+    if transaction.kind == "vehicle.assign" then
+      record.rejectionBaseline = rejectionProof.project(currentState(), record, api)
+    end
     currentState().world.operations.byId[eventId] = record
     currentState().world.operations.queued = (currentState().world.operations.queued or 0) + 1
     if currentState().networkMode == "network" then
@@ -534,7 +538,8 @@ function M.new(env)
       operationDigest = record.transaction.digest,
       success = success == true,
       outputs = outputs,
-      postcondition = success and util.deepCopy(result.postcondition) or {},
+      postcondition = success and util.deepCopy(result.postcondition)
+        or rejectionProof.completion(currentState(), record, api),
       coreDigest = env.coreDigest(),
     }
     local payload = util.deepCopy(view)

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping
 
-from .completion_validation import proposal_completion_result_view
+from .fault_recovery_evidence import FaultRecoveryEvidence
 from .protocol import ProtocolError, validate_action
 
 
@@ -19,56 +19,9 @@ class FaultRecoveryCoordinator:
 
     def __init__(self, host: Any) -> None:
         self.host = host
+        self.evidence = FaultRecoveryEvidence(host)
         self.current: dict[str, Any] | None = None
         self.last: dict[str, Any] | None = None
-
-    def _outcome_sequence(self, tracker: Mapping[str, Any]) -> int:
-        recorded = int(tracker.get("outcomeSeq", 0))
-        if recorded > 0:
-            return recorded
-        commit_seq = int(tracker.get("commitSeq", 0))
-        for sequence, message in self.host.commits.items():
-            action = (message.get("payload") or {}).get("action") or {}
-            if action.get("type") == "network.proposal_outcome" \
-                    and int(action.get("commitSeq", 0)) == commit_seq:
-                return int(sequence)
-        return 0
-
-    def _candidate(self) -> dict[str, Any] | None:
-        fault = str(self.host.session_fault or "")
-        if not fault.startswith("proposal-completion-timeout:"):
-            return None
-        for _, tracker in sorted(self.host.proposal_consensus.items(), reverse=True):
-            outcome = tracker.get("outcome") or {}
-            if tracker.get("status") == "faulted" \
-                    and outcome.get("errorCode") == fault:
-                return tracker
-        return None
-
-    def _late_rejection(self, tracker: Mapping[str, Any]) -> tuple[dict[str, Any] | None, str]:
-        required = tuple(str(peer) for peer in tracker.get("requiredPeers", ()))
-        completions = tracker.get("completions") or {}
-        missing = [peer for peer in required if peer not in completions]
-        if missing:
-            return None, "waiting for late native completion from " + ", ".join(missing)
-        selected = [completions[peer] for peer in required]
-        if not selected or any(item.get("success") is not False for item in selected):
-            return None, "late peers did not all report the same failed native action"
-        if any(item.get("outputs") or "financeDelta" in item for item in selected):
-            return None, "late failure contains native outputs or a finance mutation"
-        if len({item.get("errorCode") for item in selected}) != 1:
-            return None, "late native failure codes differ between peers"
-        if not isinstance(selected[0].get("errorCode"), str) or not selected[0]["errorCode"]:
-            return None, "late native failure has no stable error identity"
-        first_view = proposal_completion_result_view(selected[0])
-        if any(proposal_completion_result_view(item) != first_view for item in selected[1:]):
-            return None, "late physical result digests differ between peers"
-        if len({item.get("coreDigest") for item in selected}) != 1:
-            return None, "late authored core digests differ between peers"
-        expected_core = str(tracker.get("preparedCoreDigest") or "")
-        if not expected_core or selected[0].get("coreDigest") != expected_core:
-            return None, "late rejection did not preserve the prepared core digest"
-        return dict(selected[0]), "late rejection is identical and non-mutating"
 
     def _post_fault_work_reason(self, outcome_seq: int) -> str | None:
         for sequence in sorted(self.host.commits):
@@ -126,16 +79,16 @@ class FaultRecoveryCoordinator:
             }
         if self.host.audit_failure.is_set():
             return self._blocked("authority audit is unavailable; restore is required")
-        tracker = self._candidate()
+        kind, tracker = self.evidence.candidate()
         if not tracker:
             return self._blocked("this fault is ambiguous and requires a verified restore")
-        outcome_seq = self._outcome_sequence(tracker)
+        outcome_seq = self.evidence.outcome_sequence(tracker, kind)
         if outcome_seq < 1:
             return self._blocked("the timeout outcome has no durable ordered identity")
         unsafe = self._post_fault_work_reason(outcome_seq)
         if unsafe:
             return self._blocked(unsafe)
-        completion, detail = self._late_rejection(tracker)
+        completion, detail = self.evidence.late_rejection(tracker, kind)
         if not completion:
             status = "waiting-evidence" if detail.startswith("waiting") else "rollback-required"
             return self._blocked(detail, status=status)
@@ -143,8 +96,8 @@ class FaultRecoveryCoordinator:
         if waiting:
             status = "rollback-required" if "mutation residue" in waiting else "waiting-quiescence"
             return self._blocked(waiting, status=status)
-        recovery = self._bound_action(
-            tracker, outcome_seq, completion, str(self.host.bridge.peer)
+        recovery = self.evidence.bound_action(
+            tracker, outcome_seq, completion, str(self.host.bridge.peer), kind
         )
         return {
             "status": "ready", "eligible": True,
@@ -168,37 +121,17 @@ class FaultRecoveryCoordinator:
             "faultCode": self.host.session_fault,
         }
 
-    def _bound_action(
-        self,
-        tracker: Mapping[str, Any],
-        outcome_seq: int,
-        completion: Mapping[str, Any],
-        requested_by: str,
-    ) -> dict[str, Any]:
-        commit_seq = int(tracker["commitSeq"])
-        return validate_action({
-            "type": "recovery.requalify", "schemaVersion": 1,
-            "recoveryId": f"fault-recovery:{outcome_seq}:{commit_seq}",
-            "faultType": "proposal-timeout", "faultCommitSeq": commit_seq,
-            "faultOutcomeSeq": outcome_seq, "faultCode": str(self.host.session_fault),
-            "proposalId": str(tracker["proposalId"]),
-            "proposalDigest": str(tracker["proposalDigest"]),
-            "resultDigest": str(completion["resultDigest"]),
-            "expectedCoreDigest": str(completion["coreDigest"]),
-            "nativeErrorCode": str(completion["errorCode"]),
-            "requestedBy": str(requested_by),
-        })
-
     def prepare_action(self, origin: str) -> dict[str, Any]:
         assessment = self.assessment()
         if assessment.get("eligible") is not True:
             raise ProtocolError("session cannot be recovered in place: " + str(assessment["detail"]))
-        tracker = self._candidate()
+        kind, tracker = self.evidence.candidate()
         assert tracker is not None
-        completion, _ = self._late_rejection(tracker)
+        completion, _ = self.evidence.late_rejection(tracker, kind)
         assert completion is not None
-        return self._bound_action(
-            tracker, self._outcome_sequence(tracker), completion, str(origin)
+        return self.evidence.bound_action(
+            tracker, self.evidence.outcome_sequence(tracker, kind), completion,
+            str(origin), kind,
         )
 
     def observe_ordered(self, message: Mapping[str, Any], restoring: bool = False) -> None:
@@ -212,7 +145,8 @@ class FaultRecoveryCoordinator:
             "reason": f"fault-recovery:{validated['recoveryId']}",
         }
         self.host._track_checkpoint_boundary(boundary, self.current["reason"])
-        tracker = self.host.proposal_consensus.get(int(validated["faultCommitSeq"]))
+        registry = self.evidence.registry(str(validated["faultType"]))
+        tracker = registry.get(int(validated["faultCommitSeq"]))
         if tracker:
             tracker["recovery"] = dict(self.current)
 
@@ -222,10 +156,7 @@ class FaultRecoveryCoordinator:
                 or int(current.get("boundarySeq", 0)) != int(tracker.get("boundarySeq", -1)):
             return
         action["faultRecovery"] = {
-            key: current[key] for key in (
-                "schemaVersion", "recoveryId", "faultType", "faultCommitSeq",
-                "faultOutcomeSeq", "faultCode", "proposalId", "expectedCoreDigest",
-            )
+            key: current[key] for key in self.evidence.proof_fields(current)
         }
 
     def checkpoint_failure(self, tracker: Mapping[str, Any]) -> str | None:
@@ -255,10 +186,7 @@ class FaultRecoveryCoordinator:
         if not isinstance(proof, Mapping):
             return
         current = self.current
-        fields = (
-            "schemaVersion", "recoveryId", "faultType", "faultCommitSeq",
-            "faultOutcomeSeq", "faultCode", "proposalId", "expectedCoreDigest",
-        )
+        fields = self.evidence.proof_fields(current or {})
         if not current or set(proof) != set(fields) \
                 or any(proof.get(key) != current.get(key) for key in fields) \
                 or int(action.get("boundarySeq", 0)) != int(current.get("boundarySeq", -1)) \
@@ -273,9 +201,10 @@ class FaultRecoveryCoordinator:
             raise ProtocolError("fault recovery checkpoint changed the expected authored core")
         if str(self.host.session_fault or "") != str(current["faultCode"]):
             raise ProtocolError("fault recovery tried to clear a different session fault")
-        tracker = self.host.proposal_consensus.get(int(current["faultCommitSeq"]))
+        registry = self.evidence.registry(str(current["faultType"]))
+        tracker = registry.get(int(current["faultCommitSeq"]))
         if not tracker:
-            raise ProtocolError("fault recovery proposal tracker is unavailable")
+            raise ProtocolError("fault recovery tracker is unavailable")
         tracker["status"] = "rejected"
         tracker["recovered"] = True
         tracker["recovery"] = {**dict(current), "checkpointOutcomeSeq": outcome_seq}

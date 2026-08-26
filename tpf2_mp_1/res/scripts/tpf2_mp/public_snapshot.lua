@@ -208,6 +208,7 @@ function M.new(env)
       },
       operationConsensus = {
         completed = currentState().world.operationConsensus.completed or 0,
+        rejected = currentState().world.operationConsensus.rejected or 0,
         failed = currentState().world.operationConsensus.failed or 0,
         pending = (function()
           local count = 0
@@ -277,8 +278,6 @@ function M.new(env)
     snapshot.alphaReadiness = alphaReadiness.evaluate(snapshot)
     return snapshot
   end
-  
-
   return publicSnapshot
 end
 

@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-26 (Europe/Amsterdam), `0.41.1-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-26 (Europe/Amsterdam), `0.41.2-alpha`, state schema `33`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Vehicle assignment rejection and in-place resync (2026-08-26)](VEHICLE_ASSIGN_REJECTION_AND_RESYNC_2026-08-26.md)
+records the four-train assignment fault, proof that both native worlds remained
+unchanged, automatic no-op rejection handling, and the fail-closed operation
+extension to `Recover / Resync Session`.
 
 [Road replay with intended building collateral (2026-08-26)](ROAD_BUILDING_COLLATERAL_SOFT_ERROR_2026-08-26.md)
 records the live single-player parity gap, exact atomic construction-removal

@@ -456,9 +456,9 @@ function M.render(gui, snapshot, options)
   )
   local operationConsensus = snapshot.operationConsensus or {}
   lines[#lines + 1] = string.format(
-    "Operation consensus pending/complete/faulted: %d/%d/%d | session %s",
+    "Operation consensus pending/complete/rejected/faulted: %d/%d/%d/%d | session %s",
     operationConsensus.pending or 0,
-    operationConsensus.completed or 0,
+    operationConsensus.completed or 0, operationConsensus.rejected or 0,
     operationConsensus.failed or 0,
     operationConsensus.sessionFault and "FAULTED" or "healthy")
   local checkpoints = snapshot.checkpointConsensus or {}

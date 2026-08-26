@@ -66,6 +66,7 @@ def scan_live_audit(
     proposal_faults: dict[int, str] = {}
     operations: set[int] = set()
     operation_outcomes: dict[int, dict[str, Any]] = {}
+    operation_faults: dict[int, str] = {}
     expected_checkpoints: set[int] = set()
     faults: list[str] = []
     action_counts: dict[str, int] = {}
@@ -132,11 +133,15 @@ def scan_live_audit(
                 if commit_seq in operation_outcomes:
                     raise _error(label, "contains duplicate operation outcomes")
                 operation_outcomes[commit_seq] = dict(action)
-                if action.get("success") is True:
+                recoverable = (
+                    action.get("recoverable") is True
+                    and action.get("success") is not True
+                )
+                if action.get("success") is True or recoverable:
                     expected_checkpoints.add(seq)
                 else:
-                    faults.append(
-                        str(action.get("errorCode") or "operation-consensus-failed")
+                    operation_faults[commit_seq] = str(
+                        action.get("errorCode") or "operation-consensus-failed"
                     )
             elif action_type == "network.checkpoint_outcome":
                 boundary = int(action.get("boundarySeq", 0))
@@ -182,7 +187,9 @@ def scan_live_audit(
     recoveries = verified_fault_recoveries(ordered, checkpoint_outcomes, checkpoints)
     for recovered_commit in recoveries:
         proposal_faults.pop(recovered_commit, None)
+        operation_faults.pop(recovered_commit, None)
     faults.extend(proposal_faults.values())
+    faults.extend(operation_faults.values())
     pending_prepares = sorted(proposal_prepares - proposal_prepare_outcomes)
     pending_proposals = sorted(proposals - set(proposal_outcomes))
     pending_operations = sorted(operations - set(operation_outcomes))
@@ -256,7 +263,18 @@ def scan_live_audit(
             "operationsSuccessful": sum(
                 value.get("success") is True for value in operation_outcomes.values()
             ),
-            "proposalsRecovered": len(recoveries),
+            "operationsRejected": sum(
+                value.get("recoverable") is True and value.get("success") is not True
+                for value in operation_outcomes.values()
+            ),
+            "proposalsRecovered": sum(
+                value.get("faultType") == "proposal-timeout"
+                for value in recoveries.values()
+            ),
+            "operationsRecovered": sum(
+                value.get("faultType") == "operation-rejection"
+                for value in recoveries.values()
+            ),
         },
         "faults": sorted(set(faults)),
         "pending": {

@@ -446,6 +446,39 @@ def operation_transaction(company: str = "company:2") -> dict:
     return {**content, "digest": digest, "transactionId": f"operation:{digest}"}
 
 
+def vehicle_assign_transaction(company: str = "company:2") -> dict:
+    content = {
+        "schemaVersion": OPERATION_SCHEMA_VERSION,
+        "kind": "vehicle.assign",
+        "companyCid": company,
+        "data": {
+            "targetCid": "vehicle:pre:assignment-test",
+            "lineCid": "line:pre:assignment-test",
+            "stopIndex": -1,
+        },
+    }
+    digest = checksum(content)
+    return {**content, "digest": digest, "transactionId": f"operation:{digest}"}
+
+
+def assignment_rejection_proof(transaction: dict) -> dict:
+    state = {
+        "schemaVersion": 1,
+        "targetCid": transaction["data"]["targetCid"],
+        "lineCid": "",
+        "stopIndex": 0,
+        "userStopped": False,
+        "sellOnArrival": False,
+    }
+    return {
+        "schemaVersion": 1,
+        "kind": "vehicle.assign.rejection",
+        "targetCid": transaction["data"]["targetCid"],
+        "before": dict(state),
+        "after": dict(state),
+    }
+
+
 def operation_completion(
     session: str,
     peer: str,
@@ -8277,6 +8310,238 @@ class NetworkIntegrationTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ProtocolError, "must belong to its origin peer"):
                 host._commit(forged_origin)
+
+    def test_identical_unchanged_assignment_rejection_is_checkpointed_not_faulted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "assignment-rejection"
+            audit = root / "audit.ndjson"
+            bridge = GameBridge(root / "host", session, "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, audit, require_connected_peers=False
+            )
+            transaction = vehicle_assign_transaction()
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "operation.execute", "transaction": transaction,
+                }},
+            }))
+            self.assertEqual(commit["seq"], 1)
+            for peer, local_seq in (("player1", 2), ("player2", 3)):
+                host._record_non_intent(proposal_prepare_ack(
+                    peer, local_seq, 1, digest="55555555"
+                ))
+            for peer, local_seq in (("player1", 4), ("player2", 5)):
+                completion = operation_completion(
+                    session, peer, local_seq, transaction, success=False
+                )
+                completion["payload"]["postcondition"] = assignment_rejection_proof(
+                    transaction
+                )
+                completion["payload"]["resultDigest"] = operation_completion_result_digest(
+                    completion["payload"]
+                )
+                host._record_non_intent(completion)
+
+            tracker = host.operation_consensus[1]
+            self.assertEqual(tracker["status"], "rejected")
+            self.assertIsNone(host.session_fault)
+            outcome = decode_line((bridge.inbox / "000000000002.json").read_bytes())
+            action = outcome["payload"]["action"]
+            self.assertFalse(action["success"])
+            self.assertTrue(action["recoverable"])
+            self.assertEqual(action["errorCode"], "native-operation-rejected")
+            reason = f"operation-rejection:{session}:player2:1"
+            self.assertEqual(host._pending_checkpoint()["reason"], reason)
+            host._record_non_intent(consensus_checkpoint(session, "player1", 6, 2, reason))
+            host._record_non_intent(consensus_checkpoint(session, "player2", 7, 2, reason))
+            self.assertEqual(host.checkpoint_consensus[2]["status"], "complete")
+            self.assertEqual(replay(audit, session), 0)
+
+    def test_assignment_rejection_without_unchanged_witness_faults_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "assignment-rejection-no-proof"
+            bridge = GameBridge(root / "host", session, "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            transaction = vehicle_assign_transaction()
+            host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "operation.execute", "transaction": transaction,
+                }},
+            }))
+            for peer, local_seq in (("player1", 2), ("player2", 3)):
+                host._record_non_intent(proposal_prepare_ack(
+                    peer, local_seq, 1, digest="55555555"
+                ))
+            for peer, local_seq in (("player1", 4), ("player2", 5)):
+                host._record_non_intent(operation_completion(
+                    session, peer, local_seq, transaction, success=False
+                ))
+            self.assertEqual(host.operation_consensus[1]["status"], "faulted")
+            self.assertEqual(host.session_fault, "operation-rejection-proof-unavailable")
+
+    def test_four_unchanged_assignment_rejections_serialize_without_fault(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "assignment-rejection-burst"
+            audit = root / "audit.ndjson"
+            bridge = GameBridge(root / "host", session, "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, audit, require_connected_peers=False
+            )
+            local_seq = 1
+            for index in range(4):
+                transaction = vehicle_assign_transaction()
+                transaction["data"]["targetCid"] = f"vehicle:pre:assignment-test-{index}"
+                content = {
+                    key: transaction[key]
+                    for key in ("schemaVersion", "kind", "companyCid", "data")
+                }
+                transaction["digest"] = checksum(content)
+                transaction["transactionId"] = f"operation:{transaction['digest']}"
+                commit = host._commit(sign({
+                    "protocol": 1, "session": session, "peer": "player2",
+                    "local_seq": local_seq, "tick": 0, "kind": "intent",
+                    "payload": {"action": {
+                        "type": "operation.execute", "transaction": transaction,
+                    }},
+                }))
+                local_seq += 1
+                commit_seq = int(commit["seq"])
+                for peer in ("player1", "player2"):
+                    host._record_non_intent(proposal_prepare_ack(
+                        peer, local_seq, commit_seq, digest="55555555"
+                    ))
+                    local_seq += 1
+                for peer in ("player1", "player2"):
+                    completion = operation_completion(
+                        session, peer, local_seq, transaction,
+                        commit_seq=commit_seq, success=False,
+                    )
+                    completion["payload"]["postcondition"] = assignment_rejection_proof(
+                        transaction
+                    )
+                    completion["payload"]["resultDigest"] = operation_completion_result_digest(
+                        completion["payload"]
+                    )
+                    host._record_non_intent(completion)
+                    local_seq += 1
+                tracker = host.operation_consensus[commit_seq]
+                self.assertEqual(tracker["status"], "rejected")
+                boundary = int(tracker["outcomeSeq"])
+                reason = f"operation-rejection:{tracker['operationId']}"
+                for peer in ("player1", "player2"):
+                    host._record_non_intent(consensus_checkpoint(
+                        session, peer, local_seq, boundary, reason
+                    ))
+                    local_seq += 1
+                self.assertEqual(host.checkpoint_consensus[boundary]["status"], "complete")
+                self.assertIsNone(host.session_fault)
+            self.assertEqual(
+                sum(item.get("status") == "rejected"
+                    for item in host.operation_consensus.values()),
+                4,
+            )
+            self.assertEqual(replay(audit, session), 0)
+
+    def test_faulted_unchanged_assignment_can_be_resynchronized_in_place(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "assignment-rejection-resync"
+            audit = root / "audit.ndjson"
+            bridge = GameBridge(root / "host", session, "player1")
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, audit, require_connected_peers=False
+            )
+            def recovery_checkpoint(peer: str, local_seq: int, reason: str) -> dict:
+                message = consensus_checkpoint(session, peer, local_seq, 3, reason)
+                payload = message["payload"]
+                payload["structuralDigest"] = "44444444"
+                payload["worldManifestDigest"] = "55555555"
+                payload["convergenceKey"] = checksum({
+                    "checkpointVersion": payload["checkpointVersion"],
+                    "stateVersion": payload["stateVersion"],
+                    "protocol": payload["protocol"], "sessionId": session,
+                    "lastCommitSeq": 3, "modelDigest": payload["modelDigest"],
+                    "canonicalDigest": payload["canonicalDigest"],
+                    "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
+                    "coreDigest": payload["coreDigest"],
+                    "financialDigest": payload["financialDigest"],
+                    "structuralDigest": "44444444",
+                    "worldManifestDigest": "55555555",
+                })
+                payload.pop("checkpointDigest", None)
+                payload["checkpointDigest"] = checksum(payload)
+                return message
+            transaction = vehicle_assign_transaction()
+            provisional = consensus_checkpoint(
+                session, "player1", 20, 3, "fault-recovery:placeholder"
+            )
+            expected_core = provisional["payload"]["coreDigest"]
+            host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "operation.execute", "transaction": transaction,
+                }},
+            }))
+            for peer, local_seq in (("player1", 2), ("player2", 3)):
+                host._record_non_intent(proposal_prepare_ack(
+                    peer, local_seq, 1, digest=expected_core
+                ))
+            for peer, local_seq in (("player1", 4), ("player2", 5)):
+                host._record_non_intent(operation_completion(
+                    session, peer, local_seq, transaction, success=False,
+                    core_digest=expected_core,
+                ))
+            fault_code = str(host.session_fault)
+            self.assertEqual(fault_code, "operation-rejection-proof-unavailable")
+            host.clock_pause_acknowledged = True
+            now = time.monotonic()
+            for peer in host.required_peers:
+                host.clock_health[peer] = {
+                    "schemaVersion": 4, "requestedSpeed": 0, "effectiveSpeed": 0,
+                    "generation": host.clock_pause_acknowledged_generation,
+                    "engineTick": 100, "lastCommitSeq": 2,
+                    "proposalPending": False, "localWorkPending": False,
+                    "deferredIntentCount": 0, "faultCode": fault_code,
+                    "originResidueCount": 0, "rendezvousGeneration": 0,
+                    "rendezvousState": "idle", "rendezvousTargetTime": 0,
+                    "observedSpeed": 0, "gameTime": 100.0, "receivedAt": now,
+                }
+            host.operation_consensus[1]["acks"]["player2"]["success"] = False
+            self.assertEqual(
+                host.fault_recovery.assessment()["status"], "rollback-required"
+            )
+            host.operation_consensus[1]["acks"]["player2"]["success"] = True
+            self.assertEqual(host.fault_recovery.assessment()["status"], "ready")
+            recovery = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 6, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "recovery.requalify"}},
+            }))
+            action = recovery["payload"]["action"]
+            self.assertEqual(action["schemaVersion"], 2)
+            self.assertEqual(action["faultType"], "operation-rejection")
+            self.assertEqual(action["operationId"], f"{session}:player2:1")
+            reason = f"fault-recovery:{action['recoveryId']}"
+            host._record_non_intent(recovery_checkpoint("player1", 7, reason))
+            host._record_non_intent(recovery_checkpoint("player2", 8, reason))
+            self.assertIsNone(host.session_fault)
+            self.assertEqual(host.operation_consensus[1]["status"], "rejected")
+            self.assertEqual(host.fault_recovery.assessment()["status"], "recovered")
+            evidence = scan_live_audit(audit, session)
+            self.assertEqual(evidence["faults"], [])
+            self.assertEqual(evidence["physicalOutcomes"]["operationsRecovered"], 1)
+            self.assertEqual(replay(audit, session), 0)
 
     def test_physical_proposal_requires_roster_and_times_out_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

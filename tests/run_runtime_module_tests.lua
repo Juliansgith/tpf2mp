@@ -37,6 +37,8 @@ local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_ru
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
 local restoreSessionIdentityModule = require "tpf2_mp/restore_session_identity"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
+local operationRejectionProofModule = require "tpf2_mp/operation_rejection_proof"
+local networkOperationOutcomeModule = require "tpf2_mp/network_operation_outcome"
 local guiReplayRuntimeModule = require "tpf2_mp/gui_replay_runtime"
 local operationCodecModule = require "tpf2_mp/operation_codec"
 local operationVehiclePostcondition = require "tpf2_mp/operation_vehicle_postcondition"
@@ -144,6 +146,137 @@ do
     "fresh checkpoint did not clear only the proven timeout fault")
   worldModule.structuralSnapshot, worldModule.canonicalManifest =
     previousStructural, previousManifest
+end
+
+do
+  local previousApi = rawget(_G, "api")
+  local components = { [97] = {
+    line = -1, stopIndex = -1, userStopped = false, sellOnArrival = false,
+  } }
+  api = {
+    type = { ComponentType = { TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE" } },
+    engine = {
+      entityExists = function(id) return components[tonumber(id)] ~= nil end,
+      getComponent = function(id, kind)
+        assert(kind == "TRANSPORT_VEHICLE")
+        return components[tonumber(id)]
+      end,
+    },
+  }
+  local registry = canonicalModule.newState()
+  assert(canonicalModule.bind(registry, "vehicle:test:1", "vehicle", 97, { lineCid = "" }))
+  assert(canonicalModule.bind(registry, "line:test:1", "line", 96, {}))
+  local transaction = {
+    kind = "vehicle.assign", digest = "11111111", companyCid = "company:1",
+    data = { targetCid = "vehicle:test:1", lineCid = "line:test:1" },
+  }
+  local record = {
+    operationId = "operation:test:1", commitSeq = 2, companyCid = "company:1",
+    transaction = transaction, localRefs = { ["vehicle:test:1"] = 97 },
+  }
+  local current = {
+    tick = 20, networkMode = "network", canonical = registry,
+    world = {
+      operations = { byId = { [record.operationId] = record } },
+      operationConsensus = {
+        byId = {}, completed = 0, rejected = 0, failed = 0,
+        sessionFault = nil,
+      },
+    },
+  }
+  record.rejectionBaseline = assert(operationRejectionProofModule.project(current, record, api))
+  local proof = operationRejectionProofModule.completion(current, record, api)
+  assert(proof.kind == "vehicle.assign.rejection"
+      and proof.before.lineCid == "" and proof.after.lineCid == ""
+      and operationRejectionProofModule.validate(current, record, proof, api),
+    "unchanged native assignment did not produce a valid rejection witness")
+  components[97].line = 96
+  assert(not operationRejectionProofModule.validate(current, record, proof, api),
+    "assignment rejection witness ignored a changed native line")
+  components[97].line = -1
+  record.completion = {
+    operationId = record.operationId, commitSeq = 2, operationDigest = "11111111",
+    success = false, outputs = {}, postcondition = proof,
+    resultDigest = "22222222", coreDigest = "33333333",
+    errorCode = "native-operation-failed",
+  }
+  local handler = networkOperationOutcomeModule.new({
+    getState = function() return current end,
+    getApi = function() return api end,
+    getVehicleSync = function() return nil end,
+    recordVehiclePurchaseCost = function() error("rejection charged a purchase cost") end,
+  })
+  local ok, outcome = handler({
+    type = "network.operation_outcome", operationId = record.operationId,
+    commitSeq = 2, operationDigest = "11111111", success = false,
+    recoverable = true, resultDigest = "22222222", coreDigest = "33333333",
+    errorCode = "native-operation-rejected", peers = { "player1", "player2" },
+  })
+  assert(ok == true and outcome.status == "rejected" and outcome.recoverable == true
+      and current.world.operationConsensus.rejected == 1
+      and current.world.operationConsensus.failed == 0
+      and current.world.operationConsensus.sessionFault == nil,
+    "identical unchanged assignment rejection faulted the Lua operation consensus")
+
+  local faultCode = "operation-rejection-proof-unavailable"
+  current.world.operationConsensus = {
+    byId = { [record.operationId] = {
+      status = "faulted", commitSeq = 2, errorCode = faultCode,
+    } },
+    completed = 0, rejected = 0, failed = 1,
+    sessionFault = { errorCode = faultCode },
+  }
+  current.world.proposalConsensus = { byId = {}, sessionFault = nil }
+  current.world.checkpointConsensus = { byBoundary = {} }
+  current.world.originResidueCustody = {}
+  current.recovery, current.probes = {}, {}
+  local previousStructural, previousManifest =
+    worldModule.structuralSnapshot, worldModule.canonicalManifest
+  worldModule.structuralSnapshot = function() return { digest = "44444444" } end
+  worldModule.canonicalManifest = function() return {
+    schemaVersion = 1, total = 2, uniqueBound = 2, deferredUnique = 0,
+    ambiguousCount = 0, digest = "55555555",
+  } end
+  local recovery = faultRecoveryRuntimeModule.new({
+    getState = function() return current end,
+    coreDigest = function() return "33333333" end,
+  })
+  local action = {
+    type = "recovery.requalify", schemaVersion = 2,
+    recoveryId = "fault-recovery:3:2", faultType = "operation-rejection",
+    faultCommitSeq = 2, faultOutcomeSeq = 3, faultCode = faultCode,
+    operationId = record.operationId, operationDigest = "11111111",
+    resultDigest = "22222222", expectedCoreDigest = "33333333",
+    nativeErrorCode = "native-operation-failed", requestedBy = "player2",
+  }
+  ok = recovery.begin(action, "player2", 4)
+  assert(ok == true and current.recovery.faultRecovery.status == "probing",
+    "unchanged failed assignment was not admitted to in-place recovery")
+  local reason
+  assert(recovery.afterCommit(action, true, 4, function(_, value)
+    reason = value; return true
+  end, function() end) == true,
+    "operation recovery did not request a fresh checkpoint")
+  local checkpointProof = {
+    schemaVersion = 2, recoveryId = action.recoveryId, faultType = action.faultType,
+    faultCommitSeq = 2, faultOutcomeSeq = 3, faultCode = faultCode,
+    operationId = record.operationId, expectedCoreDigest = "33333333",
+  }
+  ok = recovery.checkpointOutcome({
+    boundarySeq = 4, success = true, reason = reason, faultRecovery = checkpointProof,
+  }, true, {
+    reason = reason, convergenceKey = "66666666", coreDigest = "33333333",
+    structuralDigest = "44444444", worldManifestDigest = "55555555",
+  }, nil)
+  assert(ok == true and current.world.operationConsensus.sessionFault == nil
+      and current.world.operationConsensus.byId[record.operationId].status == "rejected"
+      and current.world.operationConsensus.failed == 0
+      and current.world.operationConsensus.rejected == 1
+      and current.recovery.faultRecovery.status == "recovered",
+    "fresh checkpoint did not requalify the unchanged assignment fault")
+  worldModule.structuralSnapshot, worldModule.canonicalManifest =
+    previousStructural, previousManifest
+  api = previousApi
 end
 
 do

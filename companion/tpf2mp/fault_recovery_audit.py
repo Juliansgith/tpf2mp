@@ -5,9 +5,13 @@ from typing import Any, Mapping
 from .protocol import ProtocolError, validate_action
 
 
-PROOF_FIELDS = (
+PROPOSAL_PROOF_FIELDS = (
     "schemaVersion", "recoveryId", "faultType", "faultCommitSeq",
     "faultOutcomeSeq", "faultCode", "proposalId", "expectedCoreDigest",
+)
+OPERATION_PROOF_FIELDS = (
+    "schemaVersion", "recoveryId", "faultType", "faultCommitSeq",
+    "faultOutcomeSeq", "faultCode", "operationId", "expectedCoreDigest",
 )
 
 
@@ -23,7 +27,10 @@ def verified_fault_recoveries(
         proof = outcome.get("faultRecovery")
         if proof is None:
             continue
-        if not isinstance(proof, dict) or set(proof) != set(PROOF_FIELDS):
+        proof_fields = OPERATION_PROOF_FIELDS \
+            if isinstance(proof, dict) and proof.get("schemaVersion") == 2 \
+            else PROPOSAL_PROOF_FIELDS
+        if not isinstance(proof, dict) or set(proof) != set(proof_fields):
             raise ProtocolError("fault recovery checkpoint proof is malformed")
         message = ordered.get(int(boundary))
         action = (message.get("payload") or {}).get("action") if message else None
@@ -31,19 +38,24 @@ def verified_fault_recoveries(
                 or not isinstance(action, dict) or action.get("type") != "recovery.requalify":
             raise ProtocolError("fault recovery checkpoint does not name its ordered probe")
         validated = validate_action(action)
-        if any(proof.get(field) != validated.get(field) for field in PROOF_FIELDS):
+        if any(proof.get(field) != validated.get(field) for field in proof_fields):
             raise ProtocolError("fault recovery checkpoint proof differs from its ordered probe")
         if outcome.get("reason") != f"fault-recovery:{validated['recoveryId']}":
             raise ProtocolError("fault recovery checkpoint reason is not bound to its probe")
         fault_message = ordered.get(int(validated["faultOutcomeSeq"]))
         fault = (fault_message.get("payload") or {}).get("action") if fault_message else None
+        operation = validated["faultType"] == "operation-rejection"
+        expected_type = "network.operation_outcome" if operation \
+            else "network.proposal_outcome"
+        identity_field = "operationId" if operation else "proposalId"
+        digest_field = "operationDigest" if operation else "proposalDigest"
         if not fault_message or fault_message.get("kind") != "control" \
-                or not isinstance(fault, dict) or fault.get("type") != "network.proposal_outcome":
-            raise ProtocolError("fault recovery references an unknown proposal timeout")
+                or not isinstance(fault, dict) or fault.get("type") != expected_type:
+            raise ProtocolError("fault recovery references an unknown consensus fault")
         if fault.get("success") is True or fault.get("recoverable") is True \
                 or int(fault.get("commitSeq", 0)) != validated["faultCommitSeq"] \
-                or fault.get("proposalId") != validated["proposalId"] \
-                or fault.get("proposalDigest") != validated["proposalDigest"] \
+                or fault.get(identity_field) != validated[identity_field] \
+                or fault.get(digest_field) != validated[digest_field] \
                 or fault.get("errorCode") != validated["faultCode"]:
             raise ProtocolError("fault recovery does not match its original timeout outcome")
         if outcome.get("success") is not True:
@@ -60,6 +72,6 @@ def verified_fault_recoveries(
                 raise ProtocolError(f"fault recovery checkpoint {field} does not converge")
         commit_seq = int(validated["faultCommitSeq"])
         if commit_seq in recovered:
-            raise ProtocolError("proposal timeout has more than one successful recovery")
+            raise ProtocolError("consensus fault has more than one successful recovery")
         recovered[commit_seq] = dict(validated)
     return recovered

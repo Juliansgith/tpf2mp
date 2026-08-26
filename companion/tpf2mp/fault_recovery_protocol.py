@@ -3,10 +3,14 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
+from .fault_recovery_operation_protocol import validation_error as operation_validation_error
+
 
 def validation_error(action: Mapping[str, Any], maximum: int) -> str | None:
     if set(action) == {"type"}:
         return None
+    if action.get("schemaVersion") == 2:
+        return operation_validation_error(action, maximum)
     expected = {
         "type", "schemaVersion", "recoveryId", "faultType", "faultCommitSeq",
         "faultOutcomeSeq", "faultCode", "proposalId", "proposalDigest",
@@ -42,4 +46,3 @@ def validation_error(action: Mapping[str, Any], maximum: int) -> str | None:
             or not re.fullmatch(r"player[1-9][0-9]*", requested_by):
         return "recovery.requalify requester is invalid"
     return None
-
