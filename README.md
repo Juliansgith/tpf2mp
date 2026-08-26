@@ -127,7 +127,7 @@ Run PowerShell from this directory:
 .\tools\package_release.ps1
 ```
 
-This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, binds the manifest to the exact Git commit, creates `dist\TPF2MP-0.41.2-alpha.zip`, and performs a temporary install/verify/uninstall round trip. Packaging refuses a dirty source tree by default; `-AllowDirtySource` exists only for explicitly marked development builds.
+This runs the full suite, rebuilds the native DLL/injector, creates a one-file `tpf2mp.exe`, writes strict schema/version/size/SHA-256 metadata for every packaged file, binds the manifest to the exact Git commit, creates `dist\TPF2MP-0.41.3-alpha.zip`, and performs a temporary install/verify/uninstall round trip. Packaging refuses a dirty source tree by default; `-AllowDirtySource` exists only for explicitly marked development builds.
 
 An extracted package installs with:
 
