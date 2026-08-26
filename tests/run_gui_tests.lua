@@ -579,6 +579,14 @@ local newTrack = script.guiHandleEvent("trackBuilder", "builder.proposalCreate",
 })
 assert(newTrack == nil, "brand-new track preview was vetoed")
 
+local newSignal = script.guiHandleEvent("streetTerminalBuilder", "builder.proposalCreate", {
+  proposal = { streetProposal = { edgeObjectsToAdd = {
+    { edgeEntity = 700, category = 0, model = "railroad/signal_path_a.mdl" },
+  } } },
+})
+assert(newSignal == nil,
+  "Build 35924's streetTerminalBuilder was misclassified as a stale station preview")
+
 local rivalConstruction = script.guiHandleEvent("constructionBuilder", "builder.proposalCreate.preview", {
   proposal = { toRemove = { { entity = 702 } } },
 })
@@ -1397,7 +1405,11 @@ local originalMaterialise = proposalCodec.materialise
 local originalBuildFactory = api.cmd.make.buildProposal
 local originalAuthorizeBuild = rawget(_G, "tpf2mp_native_authorize_build")
 proposalCodec.materialise = function() return { replay = true } end
-api.cmd.make.buildProposal = function(proposal)
+local replayBuildCalls = {}
+api.cmd.make.buildProposal = function(proposal, context, ignoreErrors)
+  replayBuildCalls[#replayBuildCalls + 1] = {
+    context = context, ignoreErrors = ignoreErrors,
+  }
   return { kind = "build-proposal", proposal = proposal }
 end
 tpf2mp_native_authorize_build = function() return true end
@@ -1414,6 +1426,7 @@ local replayRuntime = replayRuntimeModule.new({
 assert(replayRuntime.processProposalQueue() == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-replay-quarantine"
+    and replayBuildCalls[#replayBuildCalls].ignoreErrors == false
     and replayGui.pendingProposalCaptures[1].captureStartedFrame == 500
     and replayGui.pendingProposalCaptures[1].canonicalFinanceFallbackFrame == 590
     and replayGui.pendingProposalCaptures[1].maximumFrame == 860,
@@ -1529,6 +1542,8 @@ assert(replayRuntime.processProposalQueue() == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-topology-collateral",
   "schema-7 topology demolition did not use atomic GUI BuildProposal replay")
+assert(replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
+  "GUI-approved topology demolition did not preserve vanilla soft-error acceptance")
 replayGui.proposalReplayQuarantine = nil
 
 replayState.world.proposals.byId["gui-town-road-collateral"] = {
@@ -1550,6 +1565,8 @@ assert(replayRuntime.processProposalQueue() == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-town-road-collateral",
   "removal-only town road and attached buildings did not use atomic GUI replay")
+assert(replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
+  "town-road collateral demolition did not preserve vanilla soft-error acceptance")
 replayGui.proposalReplayQuarantine = nil
 
 local successfulSendCommand = api.cmd.sendCommand

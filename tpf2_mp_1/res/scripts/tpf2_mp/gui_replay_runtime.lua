@@ -8,6 +8,7 @@ local replayWorkIndex = require "tpf2_mp/gui_replay_work_index"
 local proposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 local originOperationRecovery = require "tpf2_mp/gui_origin_operation_recovery"
 local lineSelection = require "tpf2_mp/gui_line_selection"
+local buildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 
 local M = {}
 
@@ -240,7 +241,7 @@ function M.new(deps)
         end
         local issuerBalanceBefore = balanceOf(issuerPlayerId)
         local nativeOwnerBalanceBefore = balanceOf(nativePlayerId)
-        local proposal, materialiseError = proposalCodec.materialise(record.transaction, {
+        local proposal, materialisation = proposalCodec.materialise(record.transaction, {
           resolveLocal = function(cid) return localRefs[cid] end,
           nativePlayerId = nativePlayerId,
         })
@@ -248,9 +249,9 @@ function M.new(deps)
           if record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
             and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
             queueGuiProposalResult({ proposalId = proposalId, success = false,
-              fallbackHelper = true, worldUnchanged = true, error = tostring(materialiseError) })
+              fallbackHelper = true, worldUnchanged = true, error = tostring(materialisation) })
           else
-            rejectGuiProposal(proposalId, materialiseError, true)
+            rejectGuiProposal(proposalId, materialisation, true)
           end
           return true
         end
@@ -269,11 +270,9 @@ function M.new(deps)
         end
         local beforeEdges = beforeWorld.sets.edges
         local beforeNodes = beforeWorld.sets.nodes
-        local commandOk, commandOrError = pcall(factory, proposal, nil, false)
-        if not commandOk then
-          rejectGuiProposal(proposalId, commandOrError, true)
-          return true
-        end
+        local commandOrError, commandError = buildCommandFactory.make(
+          factory, proposal, record.transaction, materialisation, safeField)
+        if not commandOrError then rejectGuiProposal(proposalId, commandError, true); return true end
         if state.networkMode == "network" then
           local authorize = rawget(_G, "tpf2mp_native_authorize_build")
           if type(authorize) ~= "function" then

@@ -1,6 +1,16 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-26 (Europe/Amsterdam), `0.40.9-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-26 (Europe/Amsterdam), `0.41.0-alpha`, state schema `32`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Road replay with intended building collateral (2026-08-26)](ROAD_BUILDING_COLLATERAL_SOFT_ERROR_2026-08-26.md)
+records the live single-player parity gap, exact atomic construction-removal
+vector proof, narrowly scoped native soft-error acceptance, regression, and
+fresh two-computer gate.
+
+[Signal/waypoint builder correlation regression (2026-08-26)](SIGNAL_BUILDER_CORRELATION_REGRESSION_2026-08-26.md)
+records the live preview rejection storm, Build 35924's dual-use
+`streetTerminalBuilder` identity, narrow semantic-guard correction, regression,
+and fresh two-computer gate.
 
 [Connected-client native menu retry (2026-08-26)](CONNECTED_CLIENT_NATIVE_MENU_RETRY_2026-08-26.md)
 records the live Player 2 Load Game transition stall, launcher-owned process

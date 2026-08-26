@@ -51,6 +51,7 @@ local guiProposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 local constructionOutputOrder = require "tpf2_mp/construction_output_order"
 local constructionProposalMaterializer = require "tpf2_mp/construction_proposal_materializer"
 local constructionReplayState = require "tpf2_mp/construction_replay_state"
+local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local validationStationProposalModule = require "tpf2_mp/validation_station_proposal"
 local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
 local economyPublicViewModule = require "tpf2_mp/economy_public_view"
@@ -419,6 +420,43 @@ do
 end
 
 do
+  local safeField = function(value, key) return type(value) == "table" and value[key] or nil end
+  local topologyRemoval = {
+    schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+    nodes = { {} }, edges = {},
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = {}, nodes = {} },
+    constructions = { { mode = "remove", kind = "construction" } },
+  }
+  local calledContext, calledIgnore
+  local command, commandError, metadata = guiBuildCommandFactory.make(
+    function(_, context, ignoreErrors)
+      calledContext, calledIgnore = context, ignoreErrors
+      return { proposal = { toRemove = { 82, 81 } } }
+    end,
+    {}, topologyRemoval, { construction = { removalIds = { 81, 82 } } }, safeField)
+  assert(command and commandError == nil and calledContext == nil and calledIgnore == true
+      and metadata.ignoreSoftErrors == true,
+    "atomic topology demolition did not preserve GUI soft-error acceptance")
+
+  local missing, missingError = guiBuildCommandFactory.make(
+    function() return { proposal = { toRemove = { 81 } } } end,
+    {}, topologyRemoval, { construction = { removalIds = { 81, 82 } } }, safeField)
+  assert(missing == nil and tostring(missingError):find("changed its construction%-removal count"),
+    "processed BuildProposal removal loss was not rejected before native submission")
+
+  local clean, cleanError, cleanMetadata = guiBuildCommandFactory.make(
+    function(_, context, ignoreErrors)
+      calledContext, calledIgnore = context, ignoreErrors
+      return { proposal = {} }
+    end,
+    {}, { schemaVersion = proposalCodec.SCHEMA_VERSION }, nil, safeField)
+  assert(clean and cleanError == nil and calledContext == nil and calledIgnore == false
+      and cleanMetadata.ignoreSoftErrors == false,
+    "clean topology replay unexpectedly enabled soft-error acceptance")
+end
+
+do
   local constructionFactory = { new = function() return {} end }
   local function fakeProposal()
     local streetProposal = { nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {},
@@ -501,6 +539,45 @@ do
       and upgradeProposal.old2new[41] == 0
       and upgradeProposal.constructionsToAdd[1].params.upgrade == true,
     "exact construction upgrade lost its replacement map or captured params")
+
+  local nativeRemovalBacking = {
+    constructionsToAdd = {}, constructionsToRemove = {}, old2new = {},
+  }
+  local wholeRemovalAssignments = 0
+  local nativeRemovalProposal = setmetatable({}, {
+    __index = nativeRemovalBacking,
+    __newindex = function(_, key, value)
+      if key == "constructionsToRemove" then wholeRemovalAssignments = wholeRemovalAssignments + 1 end
+      nativeRemovalBacking[key] = value
+    end,
+  })
+  local nativeRemoval = assert(constructionProposalMaterializer.apply(nativeRemovalProposal, {
+    mode = "remove", sourceCid = "construction:one",
+    collateral = { { cid = "construction:two" } },
+  }, { api = fakeApi, resolveLocal = function(cid)
+    return cid == "construction:one" and 51 or (cid == "construction:two" and 52 or nil)
+  end }))
+  assert(wholeRemovalAssignments == 1
+      and nativeRemoval.removalAssignment == "whole-vector"
+      and nativeRemoval.removalIds[1] == 51 and nativeRemoval.removalIds[2] == 52
+      and nativeRemovalBacking.constructionsToRemove[1] == 51
+      and nativeRemovalBacking.constructionsToRemove[2] == 52,
+    "construction removal did not use and verify the generated whole-vector setter")
+
+  local ignoredVector = setmetatable({}, { __newindex = function() end })
+  local ignoredBacking = {
+    constructionsToAdd = {}, constructionsToRemove = ignoredVector, old2new = {},
+  }
+  local ignoredProposal = setmetatable({}, {
+    __index = ignoredBacking,
+    __newindex = function() end,
+  })
+  local ignoredResult, ignoredError = constructionProposalMaterializer.apply(ignoredProposal, {
+    mode = "remove", sourceCid = "construction:one", collateral = {},
+  }, { api = fakeApi, resolveLocal = function() return 51 end })
+  assert(ignoredResult == nil
+      and tostring(ignoredError):find("did not round%-trip") ~= nil,
+    "a silently dropped construction-removal vector was allowed to reach native replay")
 
   local record = { proposalId = "proposal:test", transaction = transaction }
   local pending = { phase = "new", spec = { mode = "build" } }
@@ -1255,6 +1332,15 @@ do
     "collateral building demolition changed a track preview into a stale construction")
   assert(guiBuildCorrelationModule.family(stationWithTrack) == "construction",
     "a station addition was misclassified as its collateral track topology")
+  local signal = {
+    streetProposal = { edgeObjectsToAdd = { ["1"] = {
+      edgeEntity = 77, model = "railroad/signal_path_a.mdl",
+    } } },
+  }
+  assert(guiBuildCorrelationModule.family(signal) == "edge-object"
+      and guiBuildCorrelationModule.sourceAllows("streetTerminalBuilder", "edge-object") == true
+      and guiBuildCorrelationModule.sourceAllows("constructionBuilder", "edge-object") == false,
+    "the live signal/waypoint builder id was rejected as a stale construction preview")
   local applyOk, applyError = correlation.validateApply({
     correlationId = trackMetadata.correlationId,
     sourceId = "trackBuilder", companyCid = "company:1", family = "track", frame = 11,

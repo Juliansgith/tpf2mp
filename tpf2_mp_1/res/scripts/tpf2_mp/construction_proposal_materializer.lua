@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local removalVector = require "tpf2_mp/construction_removal_vector"
 
 local M = {}
 
@@ -49,12 +50,6 @@ local function localId(cid, options)
   return math.floor(value)
 end
 
-local function assignRemoval(removals, index, entity)
-  local ok, assignError = pcall(function() removals[index] = entity end)
-  if not ok then return nil, "construction removal assignment failed: " .. tostring(assignError) end
-  return true
-end
-
 function M.apply(proposal, spec, options)
   options = options or {}
   local gameApi = options.api or api
@@ -63,19 +58,18 @@ function M.apply(proposal, spec, options)
     return nil, "construction proposal materialisation API is unavailable"
   end
   local additions = proposal.constructionsToAdd or proposal.toAdd
-  local removals = proposal.constructionsToRemove or proposal.toRemove
+  local removalField, removals = removalVector.read(proposal)
   if removals == nil or (spec.mode ~= "remove" and additions == nil) then
     return nil, "construction proposal vectors are unavailable"
   end
 
-  local removed, sourceLocalId = {}, nil
+  local removed, removalIds, sourceLocalId = {}, {}, nil
   local function remove(cid)
     local entity, resolveError = localId(cid, options)
     if not entity then return nil, resolveError end
     if not removed[entity] then
-      local assigned, assignError = assignRemoval(removals, util.tableCount(removed) + 1, entity)
-      if not assigned then return nil, assignError end
       removed[entity] = true
+      removalIds[#removalIds + 1] = entity
     end
     return entity
   end
@@ -88,6 +82,10 @@ function M.apply(proposal, spec, options)
     local _, resolveError = remove(collateral.cid)
     if resolveError then return nil, resolveError end
   end
+  local assignedRemovals, removalAssignment = removalVector.assign(
+    proposal, removalField, removals, removalIds)
+  if not assignedRemovals then return nil, removalAssignment end
+  removals = assignedRemovals
 
   local factoryLabel
   if spec.mode ~= "remove" then
@@ -128,6 +126,8 @@ function M.apply(proposal, spec, options)
   return {
     factory = factoryLabel,
     removalCount = util.tableCount(removed),
+    removalIds = util.deepCopy(removalIds),
+    removalAssignment = removalAssignment,
     sourceLocalId = sourceLocalId,
   }
 end
