@@ -742,6 +742,10 @@ do
     BaseEdgeTrack = { new = function() return {} end },
   }, res = {
     constructionRep = { find = function() return 1 end },
+    moduleRep = {
+      find = function() return 1 end,
+      get = function() return { metadata = {} } end,
+    },
     streetTypeRep = { find = function() return 1 end },
     trackTypeRep = { find = function() return 1 end },
   } }
@@ -762,6 +766,29 @@ do
       and proposal.constructionsToAdd[1].transf[4][4] == 1
       and metadata.construction.factory == "SimpleProposal.ConstructionEntity",
     "exact construction materialisation lost its typed payload or transform")
+
+  local moduleProposal = fakeApi.type.SimpleProposal.new()
+  fakeApi.res.moduleRep.get = function()
+    return {
+      metadata = { price = 37, customModFact = "preserved" },
+      updateScript = { fileName = "construction/test.dynamic", params = { value = 4 } },
+    }
+  end
+  assert(constructionProposalMaterializer.apply(moduleProposal, {
+    mode = "build", sourceCid = "", collateral = {},
+    fileName = "station/street/modular_terminal.con",
+    transform = transaction.constructions[1].transform,
+    params = { year = 1990, modules = {
+      [200001] = { name = "station/street/passenger_platform.module",
+        variant = 0, metadata = {} },
+    } },
+  }, { api = fakeApi, nativePlayerId = 7 }))
+  local hydrated = moduleProposal.constructionsToAdd[1].params.modules[200001]
+  assert(hydrated.metadata.price == 37 and hydrated.metadata.customModFact == "preserved"
+      and hydrated.updateScript.fileName == "construction/test.dynamic"
+      and hydrated.updateScript.params.value == 4,
+    "construction replay did not hydrate module resource metadata/updateScript")
+  fakeApi.res.moduleRep.get = function() return { metadata = {} } end
 
   local stationTransaction = assert(validationStationProposalModule.transaction(
     -1400, -1200, "company:1", {

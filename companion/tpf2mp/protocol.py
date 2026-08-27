@@ -1006,7 +1006,9 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
         if kind not in {"rail_station", "station", "depot", "construction", "asset"}:
             raise ProtocolError("construction kind is invalid")
         if mode == "build" and kind == "depot" and any(
-            isinstance(endpoint, dict) and isinstance(endpoint.get("cid"), str)
+            edge.get("carrier") == "track"
+            and isinstance(endpoint, dict)
+            and isinstance(endpoint.get("cid"), str)
             for edge in edges
             for endpoint in (edge.get("node0"), edge.get("node1"))
         ):

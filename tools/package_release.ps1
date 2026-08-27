@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.41.4-alpha',
+    [string]$Version = '0.41.5-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -214,7 +214,8 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination
 Copy-Item -LiteralPath (Join-Path $projectRoot 'relay-config.json') -Destination (Join-Path $releaseRoot 'relay-config.json')
 $documentNames = @(
     'README.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
-    'SECURE_RELAY.md', 'RELEASE_NOTES_0.41.4-alpha.md', 'RELEASE_NOTES_0.41.3-alpha.md',
+    'SECURE_RELAY.md', 'RELEASE_NOTES_0.41.5-alpha.md', 'RELEASE_NOTES_0.41.4-alpha.md',
+    'RELEASE_NOTES_0.41.3-alpha.md',
     'RELEASE_NOTES_0.41.2-alpha.md',
     'RELEASE_NOTES_0.41.1-alpha.md',
     'RELEASE_NOTES_0.41.0-alpha.md',

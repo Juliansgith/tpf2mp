@@ -1,5 +1,6 @@
 local util = require "tpf2_mp/util"
 local removalVector = require "tpf2_mp/construction_removal_vector"
+local moduleHydration = require "tpf2_mp/construction_module_hydration"
 
 local M = {}
 
@@ -97,9 +98,12 @@ function M.apply(proposal, spec, options)
     if not nativePlayerId or nativePlayerId < 0 then
       return nil, "construction requires a local native player"
     end
+    local params = util.deepCopy(spec.params)
+    local hydrated, hydrationError = moduleHydration.apply(params, gameApi)
+    if not hydrated then return nil, hydrationError end
     local assigned, assignError = pcall(function()
       construction.fileName = spec.fileName
-      construction.params = util.deepCopy(spec.params)
+      construction.params = params
       construction.transf = transform
       construction.name = ""
       construction.playerEntity = math.floor(nativePlayerId)

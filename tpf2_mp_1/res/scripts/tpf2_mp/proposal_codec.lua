@@ -883,6 +883,15 @@ local function materialisePlainValue(value, depth)
   return result
 end
 
+local function isResourceDerivedModuleMetadata(value)
+  -- Build 35924 projects an empty/native MetadataMap as this exact sentinel.
+  -- Module metadata is static resource data, not player-authored proposal
+  -- state: construction_proposal_materializer resolves it again from the
+  -- content-attested module name before assigning the native proposal. Keep
+  -- every other opaque/truncated shape fail-closed.
+  return value == "<userdata>"
+end
+
 local function normaliseConstructionModules(sourceParams)
   local moduleEntries = entries(safeField(sourceParams, "modules"))
   if #moduleEntries > STATION_MAX_MODULES then return nil, "construction module limit exceeded" end
@@ -899,7 +908,7 @@ local function normaliseConstructionModules(sourceParams)
     if variant == nil or variant < 0 or variant > 65535 then return nil, "construction module variant is invalid" end
     local metadataSource = safeField(module, "metadata")
     local metadata = {}
-    if metadataSource ~= nil then
+    if metadataSource ~= nil and not isResourceDerivedModuleMetadata(metadataSource) then
       local metadataError
       metadata, metadataError = normalisePlainValue(
         metadataSource, "construction module metadata", 0, nil,
@@ -1850,18 +1859,22 @@ function M.validatePortable(transaction)
   end
   if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
     local construction = transaction.constructions[1]
-    -- Build 35924 may silently snap a depot's generated access edge onto an
-    -- existing track node even when the depot was placed before the player
+    -- Build 35924 may silently snap a rail depot's generated access edge onto
+    -- an existing track node even when the depot was placed before the player
     -- draws the visible connecting track.  The public buildConstruction helper
     -- receives only filename/params/transform and cannot reproduce that hidden
     -- canonical endpoint on another machine.  Reject this shape before native
     -- mutation instead of accepting two visually plausible but topologically
-    -- different depots.  An isolated depot followed by a separate track build
-    -- remains portable and supported.
+    -- different depots. Street depots are different: their declared STREET
+    -- snap node is reconstructed by buildConstruction against the synchronized
+    -- road geometry, so road and tram depots may connect directly to a road.
+    -- An isolated rail depot followed by a separate track build remains
+    -- portable and supported.
     if construction.mode == "build" and construction.kind == "depot" then
       for _, edge in ipairs(transaction.edges) do
         local node0, node1 = edge.node0 or {}, edge.node1 or {}
-        if type(node0.cid) == "string" or type(node1.cid) == "string" then
+        if edge.carrier == "track"
+          and (type(node0.cid) == "string" or type(node1.cid) == "string") then
           return false, "network depot snapped to existing track; place the depot clear of track, wait for synchronization, then connect it with a separate track build"
         end
       end

@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.4-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.5-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Street-terminal module metadata hydration (2026-08-27)](STREET_TERMINAL_MODULE_METADATA_HYDRATION_2026-08-27.md)
+records the relay-observed native `MetadataMap` projection failure, resource-
+derived module hydration, fail-closed opaque-value boundary, and direct road/
+tram-depot street snapping while rail-depot track snapping remains excluded.
 
 [Street-terminal placement and transit-line identity (2026-08-27)](STREET_TERMINAL_AND_TRANSIT_LINE_2026-08-27.md)
 records the live large-terminal click loss and bus-line ambiguity, generic

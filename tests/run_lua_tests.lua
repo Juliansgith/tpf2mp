@@ -2013,6 +2013,50 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   equal(depotSpec.params.choices[1], "a")
   equal(depotSpec.params.choices[2], "b")
 
+  -- Stock road and tram depots are non-modular STREET_DEPOT constructions,
+  -- unlike the modular street terminal below. Pin their exact resource names
+  -- and the two tram-catenary variants so a terminal codec change cannot
+  -- accidentally narrow ordinary depot support.
+  local stockRoadDepotTx
+  for _, depotCase in ipairs({
+    { fileName = "depot/road_depot_era_a.con", params = { year = 1990 } },
+    { fileName = "depot/tram_depot_era_a.con", params = { year = 1990, tramCatenary = 0 } },
+    { fileName = "depot/tram_depot_era_a.con", params = { year = 1990, tramCatenary = 1 } },
+  }) do
+    local streetDepot = linearProposal(-11, -12, -13, "street", 2, false)
+    streetDepot.constructionsToAdd = {{
+      entity = -14, fileName = depotCase.fileName,
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 500, 600, 8, 1 },
+      params = depotCase.params,
+    }}
+    local streetDepotTx, streetDepotError = proposalCodec.normalise(
+      streetDepot, "company:1", {
+        resourceName = function(kind, index) return kind .. "/" .. index .. ".lua" end,
+        requireResourceName = true,
+      })
+    truthy(streetDepotTx, streetDepotError)
+    equal(streetDepotTx.constructions[1].kind, "depot")
+    local streetDepotSpec = assert(proposalCodec.materialiseConstruction(streetDepotTx))
+    equal(streetDepotSpec.fileName, depotCase.fileName)
+    equal(streetDepotSpec.params.tramCatenary, depotCase.params.tramCatenary)
+    if depotCase.fileName == "depot/road_depot_era_a.con" then
+      stockRoadDepotTx = util.deepCopy(streetDepotTx)
+    end
+  end
+
+  -- A STREET_DEPOT declares a stock street snap node. The helper deterministically
+  -- reconstructs that connection from synchronized road geometry; only hidden
+  -- rail-depot track snapping remains fail-closed below.
+  local snappedRoadDepot = assert(stockRoadDepotTx)
+  snappedRoadDepot.edges[1].node1 = { cid = "node:pre:road-depot-approach" }
+  table.remove(snappedRoadDepot.nodes, 2)
+  snappedRoadDepot.digest = proposalCodec.digest(snappedRoadDepot)
+  snappedRoadDepot.transactionId = "proposal:" .. snappedRoadDepot.digest
+  truthy(proposalCodec.validate(snappedRoadDepot),
+    "snapped-road-depot fixture is not structurally valid")
+  local snappedRoadOk, snappedRoadError = proposalCodec.validatePortable(snappedRoadDepot)
+  truthy(snappedRoadOk, snappedRoadError)
+
   -- Build 35924 exposes every vanilla bus/tram and truck terminal size through
   -- one generic construction resource.  Exercise all six era/type templates,
   -- every platform-count and length value, and all three tram modes without a
@@ -2026,15 +2070,21 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
     local function mangle(i, j, kind) return 200000 * (j + 100) + 100 * (i + 100) + kind end
     for i = -1, -platL, -1 do
       for j = 0, length do
-        modules[mangle(i, j - math.floor(length / 2), variant)] = { name = name, variant = 0 }
+        modules[mangle(i, j - math.floor(length / 2), variant)] = {
+          name = name, variant = 0, metadata = "<userdata>",
+        }
       end
     end
     for i = 0, platR - 1 do
       for j = 0, length do
-        modules[mangle(i, j - math.floor(length / 2), variant)] = { name = name, variant = 0 }
+        modules[mangle(i, j - math.floor(length / 2), variant)] = {
+          name = name, variant = 0, metadata = "<userdata>",
+        }
       end
     end
-    modules[mangle(55, 0, 3)] = { name = "station/street/entrance_exit.module", variant = 0 }
+    modules[mangle(55, 0, 3)] = {
+      name = "station/street/entrance_exit.module", variant = 0, metadata = "<userdata>",
+    }
     return modules
   end
   for templateIndex = 0, 5 do
@@ -2071,6 +2121,7 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
           equal(construction.adapter, "portable-construction")
           equal(construction.kind, "station")
           equal(construction.fileName, "station/street/modular_terminal.con")
+          equal(next(construction.modules[1].metadata), nil)
           local spec = assert(proposalCodec.materialiseConstruction(transaction))
           equal(spec.params.templateIndex, templateIndex)
           equal(spec.params.platL, platforms)
@@ -2171,6 +2222,14 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   local rejected, rejectError = proposalCodec.normalise(opaque, "company:1")
   equal(rejected, nil)
   truthy(tostring(rejectError):find("opaque projected value", 1, true), rejectError)
+
+  -- Only Build 35924's exact MetadataMap sentinel is resource-derived. Do not
+  -- turn the exception into a general opaque-value bypass for module payloads.
+  local opaqueModule = util.deepCopy(asset)
+  opaqueModule.__constructionAdditions[1].params.modules[910000].metadata = "<function>"
+  local moduleRejected, moduleRejectError = proposalCodec.normalise(opaqueModule, "company:1")
+  equal(moduleRejected, nil)
+  truthy(tostring(moduleRejectError):find("opaque projected value", 1, true), moduleRejectError)
 end)
 
 test("proposal codec fails closed on unsupported or tampered payloads", function()

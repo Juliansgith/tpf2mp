@@ -1164,6 +1164,32 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "place the depot clear of track"):
             validate_action({"type": "proposal.build", "transaction": snapped_depot})
 
+        snapped_street_depot = portable_construction_transaction(kind="depot")
+        snapped_street_depot["constructions"][0].update({
+            "fileName": "depot/road_depot_era_a.con",
+            "modules": [],
+            "params": {"year": 1990},
+        })
+        street_topology = proposal_transaction("company:2")
+        snapped_street_depot["nodes"] = [street_topology["nodes"][0]]
+        snapped_street_edge = street_topology["edges"][0]
+        snapped_street_edge.update({
+            "carrier": "street",
+            "resource": {"index": 1, "name": "standard/town_small.lua"},
+            "private": False,
+        })
+        snapped_street_edge.pop("catenary")
+        snapped_street_edge["node1"] = {"cid": "node:pre:road-depot-approach"}
+        snapped_street_depot["edges"] = [snapped_street_edge]
+        redigest_proposal(snapped_street_depot)
+        accepted_street_depot = validate_action({
+            "type": "proposal.build", "transaction": snapped_street_depot,
+        })
+        self.assertEqual(
+            accepted_street_depot["transaction"]["constructions"][0]["fileName"],
+            "depot/road_depot_era_a.con",
+        )
+
         asset = portable_construction_transaction(kind="asset")
         accepted_asset = validate_action({"type": "proposal.build", "transaction": asset})
         self.assertEqual(accepted_asset["transaction"]["nodes"], {})
