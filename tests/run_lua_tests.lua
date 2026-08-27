@@ -2013,6 +2013,78 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   equal(depotSpec.params.choices[1], "a")
   equal(depotSpec.params.choices[2], "b")
 
+  -- Build 35924 exposes every vanilla bus/tram and truck terminal size through
+  -- one generic construction resource.  Exercise all six era/type templates,
+  -- every platform-count and length value, and all three tram modes without a
+  -- per-variant codec.  The first case also proves atomic house collateral.
+  local terminalCases = 0
+  local function terminalModules(templateIndex, platL, platR, length)
+    local modules, cargo = {}, templateIndex >= 3
+    local variant = cargo and 1 or 0
+    local name = cargo and "station/street/cargo_platform.module"
+      or "station/street/passenger_platform.module"
+    local function mangle(i, j, kind) return 200000 * (j + 100) + 100 * (i + 100) + kind end
+    for i = -1, -platL, -1 do
+      for j = 0, length do
+        modules[mangle(i, j - math.floor(length / 2), variant)] = { name = name, variant = 0 }
+      end
+    end
+    for i = 0, platR - 1 do
+      for j = 0, length do
+        modules[mangle(i, j - math.floor(length / 2), variant)] = { name = name, variant = 0 }
+      end
+    end
+    modules[mangle(55, 0, 3)] = { name = "station/street/entrance_exit.module", variant = 0 }
+    return modules
+  end
+  for templateIndex = 0, 5 do
+    for platforms = 0, 3 do
+      for length = 0, 2 do
+        for tramTrack = 0, 2 do
+          terminalCases = terminalCases + 1
+          local removals = terminalCases == 1 and { 601, 602, 603, 604, 605, 606, 607 } or {}
+          local raw = {
+            __observedCost = 125000,
+            __constructionAdditions = {{
+              fileName = "station/street/modular_terminal.con",
+              transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 800, 900, 4, 1 },
+              params = {
+                templateIndex = templateIndex, year = 1990, seed = 17,
+                platL = platforms, platR = 3 - platforms,
+                length = length, length2 = length,
+                tramTrack = tramTrack, tramTrackType = 0,
+                modules = terminalModules(templateIndex, platforms, 3 - platforms, length),
+              },
+            }},
+            __constructionRemovals = removals,
+          }
+          local transaction, terminalError = proposalCodec.normalise(raw, "company:1", {
+            resolveCanonical = function(kind, localId)
+              if kind == "construction" and localId >= 601 and localId <= 607 then
+                return "construction:pre:house-" .. tostring(localId)
+              end
+            end,
+            entityKind = function() return "construction" end,
+          })
+          truthy(transaction, terminalError)
+          local construction = transaction.constructions[1]
+          equal(construction.adapter, "portable-construction")
+          equal(construction.kind, "station")
+          equal(construction.fileName, "station/street/modular_terminal.con")
+          local spec = assert(proposalCodec.materialiseConstruction(transaction))
+          equal(spec.params.templateIndex, templateIndex)
+          equal(spec.params.platL, platforms)
+          equal(spec.params.platR, 3 - platforms)
+          equal(spec.params.length, length)
+          equal(spec.params.length2, length)
+          equal(spec.params.tramTrack, tramTrack)
+          if terminalCases == 1 then equal(#spec.collateral, 7) end
+        end
+      end
+    end
+  end
+  equal(terminalCases, 216)
+
   -- Live relay regression mp-094022e94f4ae9c3: the depot was placed before
   -- the player drew its visible connection, but Build 35924 silently snapped
   -- the generated access edge to a pre-existing canonical track node.  The

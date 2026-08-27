@@ -32,7 +32,7 @@ function M.sample(pending, frame, deps)
     and not hardDeadlineReached then return nil end
 
   local constructionDelta
-  if pending.exactConstruction then
+  if pending.captureEntityDelta or pending.exactConstruction then
     local afterWorld, captureError = deps.captureWorld(
       deps.componentTypes(), pending.issuerPlayerId, pending.nativeOwnerPlayerId, true)
     if not afterWorld then return nil, tostring(captureError) end

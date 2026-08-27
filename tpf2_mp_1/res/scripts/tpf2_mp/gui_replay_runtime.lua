@@ -9,6 +9,7 @@ local proposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 local originOperationRecovery = require "tpf2_mp/gui_origin_operation_recovery"
 local lineSelection = require "tpf2_mp/gui_line_selection"
 local buildCommandFactory = require "tpf2_mp/gui_build_command_factory"
+local derivedStation = require "tpf2_mp/proposal_derived_station_runtime"
 
 local M = {}
 
@@ -262,8 +263,9 @@ function M.new(deps)
         end
         local types = api.type and api.type.ComponentType or {}
         local exactConstruction = record.replayPath == "gui-build-proposal"
+        local captureEntityDelta = exactConstruction or derivedStation.requiresCapture(record.transaction, state.canonical)
         local beforeWorld, worldCaptureError = proposalWorld.capture(
-          types, issuerPlayerId, nativePlayerId, exactConstruction)
+          types, issuerPlayerId, nativePlayerId, captureEntityDelta)
         if not beforeWorld then
           rejectGuiProposal(proposalId, worldCaptureError, true)
           return true
@@ -317,6 +319,7 @@ function M.new(deps)
               stableFrames = 0,
               beforeWorld = beforeWorld,
               exactConstruction = exactConstruction,
+              captureEntityDelta = captureEntityDelta,
               requireBalanceMutation = exactConstruction
                 and util.integer(record.transaction.cost, 0) ~= 0,
               -- Build 35924 exposes the new topology in the callback before its

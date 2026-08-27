@@ -5,6 +5,7 @@ local bridgeConsumerModule = require "tpf2_mp/network_bridge_consumer"
 local followupQueueModule = require "tpf2_mp/network_followup_queue"
 local busyRejection = require "tpf2_mp/network_busy_rejection"
 local originCaptureRuntimeModule = require "tpf2_mp/network_origin_capture_runtime"
+local startupFence = require "tpf2_mp/network_startup_fence"
 local M = {
   MAX_DEFERRED_INTENTS = 32,
   MAX_DEFERRED_FOLLOWUPS = 512,
@@ -20,7 +21,8 @@ function M.new(deps)
   local diagnosticLog = assert(deps.diagnosticLog, "diagnosticLog dependency is required")
   local coreDigest = assert(deps.coreDigest, "coreDigest dependency is required")
   local proposalPreparation = assert(deps.proposalPreparation, "proposalPreparation dependency is required")
-  local physicalPrerequisite = deps.physicalPrerequisite
+  local physicalPrerequisite, physicalPrerequisiteResult, noteClockRequest =
+    deps.physicalPrerequisite, deps.physicalPrerequisiteResult, deps.noteClockRequest
   local MAX_DEFERRED_NETWORK_INTENTS =
     tonumber(deps.maxDeferredIntents) or M.MAX_DEFERRED_INTENTS
   local MAX_DEFERRED_FOLLOWUPS =
@@ -122,6 +124,7 @@ function M.new(deps)
 
   local function submitIntent(action)
     if type(action) ~= "table" then return false, "action must be a table" end
+    if action.type == "clock.request" and type(noteClockRequest) == "function" then pcall(noteClockRequest, action) end
     local duplicate = deps.ignoreDuplicateInitialise and { deps.ignoreDuplicateInitialise(action) }; if duplicate and duplicate[1] then return true, duplicate[2] end
     if action.type == "network.origin_residue" then
       local raised = originCapture.raise(
@@ -171,6 +174,12 @@ function M.new(deps)
         return false, state.lastError
       end
       state.lastError = errorText
+      publishSnapshot()
+      return false, state.lastError
+    end
+    local startupRejection = startupFence.rejection(state, action)
+    if startupRejection then
+      state.lastError = startupRejection
       publishSnapshot()
       return false, state.lastError
     end
@@ -228,6 +237,8 @@ function M.new(deps)
         return false, state.lastError
       elseif prerequisite then
         local prerequisiteOk, prerequisiteResult = emitNetworkIntent(prerequisite)
+        if type(physicalPrerequisiteResult) == "function" then pcall(physicalPrerequisiteResult,
+          prerequisite, prerequisiteOk, prerequisiteResult, action) end
         if not prerequisiteOk then return false, prerequisiteResult end
         pendingReason = tostring(prerequisiteReason or "shared-clock prerequisite is pending")
       end
@@ -242,9 +253,10 @@ function M.new(deps)
     if pendingReason then
       local deferablePhysical = action.type == "proposal.capture" or action.type == "proposal.prepare"
         or action.type == "proposal.build" or action.type == "operation.execute"
-      local busyRejected, busyError = busyRejection.reject(
-        action, pendingReason, state, #deferredNetworkIntents, diagnosticLog, publishSnapshot)
-      if busyRejected then return false, busyError
+      local busyHandled, busyAccepted, busyResult = busyRejection.handle(
+        action, pendingReason, state, deferredNetworkIntents,
+        MAX_DEFERRED_NETWORK_INTENTS, diagnosticLog, publishSnapshot)
+      if busyHandled then return busyAccepted, busyResult
       elseif deferablePhysical and #deferredNetworkIntents < MAX_DEFERRED_NETWORK_INTENTS then
         deferredNetworkIntents[#deferredNetworkIntents + 1] = {
           action = util.deepCopy(action),

@@ -784,8 +784,9 @@ local exactPreview = {
     },
   },
 }
--- Construction input must be rejected visibly while a prior ordered action is
--- in flight. It must not arm a preview/apply pair that can materialise later.
+-- Construction input remains capturable while a prior ordered action is in
+-- flight. The engine queue keeps one latest construction lane, so the click is
+-- neither silently discarded nor retained as an unbounded ghost backlog.
 script.handleEvent("test", "tpf2mp", "snapshot", {
   networkMode = "network", activeCompanyCid = "company:1",
   proposals = { queued = 1, applied = 0, failed = 0 },
@@ -794,15 +795,18 @@ script.handleEvent("test", "tpf2mp", "snapshot", {
   checkpointConsensus = { pending = 0 }, deferredNetworkQueue = { count = 0 },
 })
 local busyPreview = script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", exactPreview)
-assert(type(busyPreview) == "table" and busyPreview.errorMessages[1]:find("not queued", 1, true),
-  "busy construction preview did not expose a native builder error")
+assert(busyPreview == nil, "busy construction preview was vetoed before exact capture")
 local busyApply = script.guiHandleEvent("constructionBuilder", "builder.apply", {
   proposal = { streetProposal = { edgesToAdd = {}, nodesToAdd = {} } }, result = {},
 })
-assert(type(busyApply) == "table" and busyApply.errorMessages[1]:find("not queued", 1, true),
-  "busy construction apply escaped its preview rejection")
-assert(#proposalCaptureEvents() == captureCount + 1,
-  "busy construction input was silently retained for later capture")
+assert(busyApply == nil, "busy construction apply was vetoed before native correlation")
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+for _ = 1, 35 do script.guiUpdate() end
+local busyCaptures = proposalCaptureEvents()
+assert(#busyCaptures == captureCount + 2
+    and busyCaptures[#busyCaptures].param.queuePolicy == "coalesce-latest-construction",
+  "busy construction click was discarded or missed its latest-only queue policy")
+captureCount = captureCount + 1
 script.handleEvent("test", "tpf2mp", "snapshot", {
   networkMode = "network", activeCompanyCid = "company:1",
   proposals = { queued = 1, applied = 1, failed = 0 },

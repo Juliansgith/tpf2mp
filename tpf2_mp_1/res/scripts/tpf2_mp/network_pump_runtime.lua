@@ -8,6 +8,7 @@ function M.new(deps)
   local getState = deps.getState
   local performance = assert(deps.performance, "network pump performance runtime is required")
   local errors = pumpErrors.new(deps.getState)
+  local continuationFenced = deps.continuationFenced or function() return false end
 
   local function protected(name, callable, onError, ...)
     local invoked, result = performance.run(name, callable, ...)
@@ -62,6 +63,7 @@ function M.new(deps)
     local restoreFenced = type(cfg.restoreResume) == "table"
       and cfg.restoreResume.requested == true
       and (type(restore) ~= "table" or restore.status ~= "committed")
+    local startupFenced = restoreFenced or continuationFenced() == true
     local native = deps.bridge.isNative(state.bridge)
     local consumeStride = native and 1
       or math.max(1, util.integer(cfg.networkBridgeFallbackStride, 1))
@@ -73,19 +75,28 @@ function M.new(deps)
       clockOk = protected("clock.update", deps.networkClock.update, errors.clock)
     end
     local economyClockOk = true
-    if type(deps.economyClock.needsUpdate) ~= "function" or deps.economyClock.needsUpdate() then
+    if not startupFenced and (type(deps.economyClock.needsUpdate) ~= "function"
+      or deps.economyClock.needsUpdate()) then
       economyClockOk = protected("economy-clock.update", deps.economyClock.update, errors.probe)
     end
     local vehicleOk = true
-    if performance.due("vehicle-sync.update", vehicleStride(state)) then
+    if not startupFenced and performance.due("vehicle-sync.update", vehicleStride(state)) then
       vehicleOk = protected("vehicle-sync.update", deps.vehicleSync.update, errors.vehicle)
     end
     local deferredOk = true
-    if type(deps.hasDeferred) ~= "function" or deps.hasDeferred() then
+    if not startupFenced and (type(deps.hasDeferred) ~= "function" or deps.hasDeferred()) then
       deferredOk = protected("network-intent.deferred", deps.processDeferred, errors.deferred)
     end
-    local contentOk = true
-    if not restoreFenced and performance.due("industry-content.maintain", contentStride(state)) then
+    local operationHoldOk = true; if not startupFenced
+      and type(deps.networkClock.hasOperationHold) == "function"
+      and deps.networkClock.hasOperationHold() then
+      operationHoldOk = protected("clock.operation-hold",
+        deps.networkClock.maintainOperationHold, errors.clock)
+    end
+    -- Continuation re-attests content while gameplay stays fenced; a receipt-
+    -- bound restore retains its pre-proven content profile.
+    local contentOk = true; if not restoreFenced and performance.due(
+      "industry-content.maintain", contentStride(state)) then
       contentOk = protected("industry-content.maintain", deps.industryContent.maintain,
         errors.industry,
         deps.getState(), {
@@ -95,7 +106,7 @@ function M.new(deps)
         })
     end
     local freightOk = true
-    if not restoreFenced and performance.due("freight-industry.maintain", freightStride(state)) then
+    if not startupFenced and performance.due("freight-industry.maintain", freightStride(state)) then
       local invoked, result = protected(
         "freight-industry.maintain", deps.freightIndustry.pump,
         errors.freight,
@@ -106,9 +117,7 @@ function M.new(deps)
         })
       freightOk = invoked and result == true
     end
-    local prepareOk = restoreFenced or prepareRestoreIfRequested(cfg)
-    local healthOk = true
-    local healthDue = includeHealth == false
+    local prepareOk = startupFenced or prepareRestoreIfRequested(cfg); local healthOk, healthDue = true, includeHealth == false
       or performance.due("clock.health", 15)
     if healthDue then
       local health = includeHealth == false
@@ -120,8 +129,8 @@ function M.new(deps)
         "bridge.status", deps.bridge.nativeStatus, state.bridge)
       if invoked then performance.setNativeBridge(status) end
     end
-    return consumeOk and clockOk and economyClockOk and vehicleOk
-      and deferredOk and contentOk and freightOk and prepareOk and healthOk
+    return consumeOk and clockOk and economyClockOk and vehicleOk and deferredOk
+      and operationHoldOk and contentOk and freightOk and prepareOk and healthOk
   end
 
   return { pump = pump }

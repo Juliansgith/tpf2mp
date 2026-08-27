@@ -12,14 +12,17 @@ local guiCaptureModule = require "tpf2_mp/gui_capture"
 local guiNetworkBootstrapModule = require "tpf2_mp/gui_network_bootstrap"
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_scheduler"
+local guiClockCapturePolicyModule = require "tpf2_mp/gui_clock_capture_policy"
 local guiBuildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
 local guiBuildCorrelationModule = require "tpf2_mp/gui_build_correlation"
 local guiProposalPredicatesModule = require "tpf2_mp/gui_proposal_predicates"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
+local networkBusyRejectionModule = require "tpf2_mp/network_busy_rejection"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
 local networkBootstrapPolicyModule = require "tpf2_mp/network_bootstrap_policy"
+local networkStartupFenceModule = require "tpf2_mp/network_startup_fence"
 local matchInitialisePolicyModule = require "tpf2_mp/match_initialise_policy"
 local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local authoredFollowupRuntimeModule = require "tpf2_mp/authored_followup_runtime"
@@ -35,6 +38,7 @@ local faultRecoveryRuntimeModule = require "tpf2_mp/fault_recovery_runtime"
 local recoveryPhaseProofModule = require "tpf2_mp/recovery_phase_proof"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
+local savedMatchContinuationRuntimeModule = require "tpf2_mp/saved_match_continuation_runtime"
 local restoreSessionIdentityModule = require "tpf2_mp/restore_session_identity"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local operationRejectionProofModule = require "tpf2_mp/operation_rejection_proof"
@@ -53,6 +57,7 @@ local guiProposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 local constructionOutputOrder = require "tpf2_mp/construction_output_order"
 local constructionProposalMaterializer = require "tpf2_mp/construction_proposal_materializer"
 local constructionReplayState = require "tpf2_mp/construction_replay_state"
+local proposalDerivedStationRuntime = require "tpf2_mp/proposal_derived_station_runtime"
 local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local validationStationProposalModule = require "tpf2_mp/validation_station_proposal"
 local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
@@ -67,6 +72,42 @@ local canonicalModule = require "tpf2_mp/canonical"
 local worldModule = require "tpf2_mp/world"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
+
+do
+  -- Stock line/vehicle/depot windows issue SetGameSpeed(0) as modal UI
+  -- housekeeping. That must not become a two-peer player pause, while Esc and
+  -- the actual speed controls remain authoritative.
+  local gui = { frames = 100, nativeClockCapture = {} }
+  local pauseMenuVisible = false
+  local policy = guiClockCapturePolicyModule.new(gui, {
+    pauseMenuVisible = function() return pauseMenuVisible end,
+    transitionWindowFrames = 12,
+  })
+  assert(policy.observeEvent("menu.vehicleManager", "toggleButton.toggle")
+      == "operational-modal",
+    "vehicle manager transition was not classified as modal housekeeping")
+  local ignored = policy.ignoreCapturedPause(0)
+  assert(ignored == true and gui.nativeClockCapture.modalPausesIgnored == 1,
+    "stock manager modal pause escaped into the shared clock")
+  gui.frames = 101
+  assert(policy.observeEvent("menu.speedButton0", "button.click")
+      == "explicit-speed" and policy.ignoreCapturedPause(0) == false,
+    "explicit pause control was mistaken for manager housekeeping")
+  gui.frames = 120
+  policy.observeEvent("lineManager.newLine", "button.click")
+  pauseMenuVisible = true
+  assert(policy.ignoreCapturedPause(0) == false,
+    "visible Esc menu pause was swallowed by a recent manager event")
+  pauseMenuVisible = false
+  gui.frames = 121
+  assert(policy.observeEntitySelection("depot") == true
+      and policy.ignoreCapturedPause(0) == true,
+    "opening a depot did not suppress its stock modal pause")
+  gui.frames = 140
+  assert(policy.ignoreCapturedPause(0) == false
+      and policy.ignoreCapturedPause(2) == false,
+    "modal pause suppression escaped its bounded correlation window")
+end
 
 do
   local proposalId = "fault-test:player2:2"
@@ -413,6 +454,85 @@ do
       and capturedDelta.added.construction[1] == 20
       and capturedDelta.added.node[1] == 21,
     "stable GUI construction result did not carry its exact component delta")
+end
+
+do
+  -- A curbside bus/tram stop is encoded as an edge object, but Build 35924
+  -- also creates native STATION and STATION_GROUP entities.  Those derived
+  -- objects must be captured and event-bound or the first vanilla line edit
+  -- sees an ambiguous pre-existing station group and faults the match.
+  local balance = 1000
+  local before = { sets = {
+    constructions = {}, stations = {}, stationGroups = {}, depots = {}, assets = {},
+    edgeObjects = {}, nodes = {}, edges = {},
+  } }
+  local pending = {
+    minimumFrame = 1, maximumFrame = 20, proposalId = "curb-stop:capture",
+    captureStartedFrame = 0, issuerPlayerId = 1, nativeOwnerPlayerId = 1,
+    issuerBalanceBefore = balance, nativeOwnerBalanceBefore = balance,
+    lastIssuerBalance = balance, lastNativeOwnerBalance = balance,
+    stableFrames = 3, requireBalanceMutation = false,
+    exactConstruction = false, captureEntityDelta = true,
+    beforeWorld = before, createdEdgeIds = {}, createdNodeIds = {},
+  }
+  local payload = assert(guiProposalResultCapture.sample(pending, 1, {
+    balanceOf = function() return balance end,
+    componentTypes = function() return {} end,
+    captureWorld = function()
+      local sets = util.deepCopy(before.sets)
+      sets.stations[501], sets.stationGroups[601], sets.edgeObjects[701] = true, true, true
+      return { sets = sets }
+    end,
+  }))
+  local delta = assert(proposalDerivedStationRuntime.delta(payload, 16))
+  assert(delta.added.station[1] == 501 and delta.added.station_group[1] == 601,
+    "curbside stop result did not attest its derived station and station group")
+
+  local registry = canonicalModule.newState()
+  local state = {
+    canonical = registry,
+    companies = { ["company:1"] = { playerId = 1 } },
+    world = { logicalOwners = {}, pinnedCustody = {} },
+  }
+  local record = {
+    eventId = "curb-stop:17", companyCid = "company:1", nativeOwnerPlayerId = 1,
+    transaction = {
+      digest = "1234abcd",
+      edgeObjects = { add = { { category = 0 } }, remove = {} },
+    },
+  }
+  assert(proposalDerivedStationRuntime.requiresCapture(record.transaction, registry),
+    "passenger edge stop did not request derived entity capture")
+  record.transaction.edgeObjects.add[1].category = 1
+  assert(proposalDerivedStationRuntime.requiresCapture(record.transaction, registry),
+    "cargo edge stop did not request derived entity capture")
+  record.transaction.edgeObjects.add[1].category = 2
+  assert(not proposalDerivedStationRuntime.requiresCapture(record.transaction, registry),
+    "signal edge object incorrectly requested station capture")
+  record.transaction.edgeObjects.add[1].category = 0
+  local bound = assert(proposalDerivedStationRuntime.bind(state, record, {}, delta))
+  assert(#bound == 2
+      and canonicalModule.resolveLocal(registry, "station:event:curb-stop:17:1") == 501
+      and canonicalModule.resolveLocal(registry, "station_group:event:curb-stop:17:1") == 601
+      and state.world.logicalOwners["501"] == "company:1"
+      and state.world.logicalOwners["601"] == "company:1",
+    "derived transit-stop outputs were not event-bound to their company")
+  assert(canonicalModule.bind(registry, "edge_object:event:curb-stop:17:1", "edge_object", 701, {
+    category = 0, owner = "company:1",
+  }))
+  record.transaction.edgeObjects = {
+    add = {}, remove = { "edge_object:event:curb-stop:17:1" },
+  }
+  local removed = util.deepCopy(delta)
+  for kind in pairs(removed.added) do removed.added[kind] = {} end
+  for kind in pairs(removed.removed) do removed.removed[kind] = {} end
+  removed.removed.station, removed.removed.station_group = { 501 }, { 601 }
+  assert(proposalDerivedStationRuntime.requiresCapture(record.transaction, registry),
+    "curbside-stop removal did not request derived entity capture")
+  assert(proposalDerivedStationRuntime.bind(state, record, {}, removed))
+  assert(canonicalModule.resolveLocal(registry, "station:event:curb-stop:17:1") == nil
+      and canonicalModule.resolveLocal(registry, "station_group:event:curb-stop:17:1") == nil,
+    "curbside-stop removal retained stale station identities")
 end
 
 do
@@ -886,6 +1006,58 @@ do
   pump.pump(true)
   assert(prepareCalls == 1,
     "launcher restore preparation marker submitted more than once")
+end
+
+do
+  -- Exact-save startup keeps every gameplay producer fenced but must run the
+  -- fresh content attestation that makes its first core checkpoint meaningful.
+  local contentCalls, economyCalls, vehicleCalls, deferredCalls, freightCalls =
+    0, 0, 0, 0, 0
+  local state = {
+    networkMode = "network", initialized = true, tick = 12,
+    bridge = { peerId = "player1" }, probes = {},
+    match = { status = "running" },
+    recovery = { savedMatchContinuation = { status = "validated" } },
+    world = {
+      networkClock = {}, vehicleSync = { vehicles = {} },
+      industryContent = {}, freightIndustry = {},
+    },
+  }
+  local pump = networkPumpRuntimeModule.new({
+    getState = function() return state end,
+    performance = {
+      due = function() return true end,
+      run = function(_, callable, ...)
+        local ok, result = pcall(callable, ...); return ok, result
+      end,
+      setNativeBridge = function() end,
+    },
+    config = function() return { networkBridgeFallbackStride = 1 } end,
+    bridge = {
+      isNative = function() return false end,
+      nativeStatus = function() return {} end,
+    },
+    consumeBridge = function() return true end,
+    networkClock = {
+      update = function() return true end,
+      emitHealth = function() return true end,
+      emitPausedHealth = function() return true end,
+    },
+    economyClock = { update = function() economyCalls = economyCalls + 1; return true end },
+    vehicleSync = { update = function() vehicleCalls = vehicleCalls + 1; return true end },
+    processDeferred = function() deferredCalls = deferredCalls + 1; return true end,
+    industryContent = { maintain = function() contentCalls = contentCalls + 1; return true end },
+    freightIndustry = { pump = function() freightCalls = freightCalls + 1; return true end },
+    world = {}, localWorkState = function() return {} end,
+    submitIntent = function() return true, {} end,
+    continuationFenced = function()
+      return state.recovery.savedMatchContinuation.status ~= "complete"
+    end,
+  })
+  assert(pump.pump(true) == true and contentCalls == 1
+      and economyCalls == 0 and vehicleCalls == 0 and deferredCalls == 0
+      and freightCalls == 0,
+    "exact-save fence blocked content attestation or leaked gameplay maintenance")
 end
 
 do
@@ -1619,6 +1791,48 @@ do
   assert(indicator.project() == false
       and buttons["menu.speedButton0"].selected == true,
     "network clock projection mutated a standalone speed bar")
+end
+
+do
+  local continuationCalls = 0
+  local current = {
+    networkMode = "network", initialized = true, tick = 240,
+    bridge = { peerId = "player1" },
+    recovery = { savedMatchContinuation = { status = "validated" } },
+    world = { industryContent = { ready = false, digest = "" } },
+    probes = { networkAuthority = { ready = true } },
+  }
+  local clock = networkClockRuntimeModule.new({
+    getState = function() return current end,
+    config = function()
+      return { manualNetwork = true, manualBootstrapReady = true,
+        continueSavedMatch = true }
+    end,
+    diagnosticLog = function() end,
+    submitIntent = function() return true, { local_seq = 7 } end,
+    awaitingOrder = function() return nil end,
+    pendingBarrierReason = function() return nil end,
+    maintainSavedMatchContinuation = function()
+      continuationCalls = continuationCalls + 1; return true
+    end,
+  })
+  clock.maintainManualBootstrap()
+  assert(continuationCalls == 0
+      and clock.manualBootstrap.waitingFor == "industry-content-consensus",
+    "saved-match continuation ran before new-room content agreement")
+  current.world.industryContent = { ready = true, digest = "edc7a517" }
+  clock.maintainManualBootstrap()
+  assert(continuationCalls == 1,
+    "content-ready saved match did not enter exact continuation")
+
+  local fencedState = {
+    recovery = { savedMatchContinuation = { status = "validated" } },
+  }
+  assert(networkStartupFenceModule.rejection(fencedState,
+      { type = "content.industry_attest" }) == nil
+      and networkStartupFenceModule.rejection(fencedState,
+        { type = "vehicle.sync_release" }) ~= nil,
+    "saved-match startup fence blocked content authority or admitted gameplay")
 end
 
 do
@@ -3255,6 +3469,35 @@ do
 end
 
 do
+  -- Construction input has a latest-only physical lane while consensus is
+  -- busy.  Replacing a preview must not replay old station ghosts, change its
+  -- position relative to other work, or overflow the bounded FIFO.
+  local state = { tick = 41 }
+  local queue = {
+    { action = { type = "operation.execute" }, queuedTick = 39 },
+    { action = {
+      type = "proposal.capture", queuePolicy = "coalesce-latest-construction",
+      cost = 100,
+    }, companyCid = "company:1", queuedTick = 40 },
+  }
+  local handled, accepted, result = networkBusyRejectionModule.handle({
+    type = "proposal.capture", queuePolicy = "coalesce-latest-construction",
+    companyCid = "company:1", cost = 200,
+  }, "ordered work pending", state, queue, 2, function() end, function() end)
+  assert(handled and accepted and result.replaced and #queue == 2
+      and queue[1].action.type == "operation.execute"
+      and queue[2].action.cost == 200 and queue[2].queuedTick == 41,
+    "latest construction input was not coalesced at the physical FIFO tail")
+  queue[2] = { action = { type = "operation.execute" }, queuedTick = 40 }
+  handled, accepted, result = networkBusyRejectionModule.handle({
+    type = "proposal.capture", queuePolicy = "coalesce-latest-construction",
+    companyCid = "company:1", cost = 300,
+  }, "ordered work pending", state, queue, 2, function() end, function() end)
+  assert(handled and not accepted and type(result) == "string" and #queue == 2,
+    "construction coalescing exceeded the bounded physical FIFO")
+end
+
+do
   -- Model the actual eight-assignment burst: one operation is in flight,
   -- seven fit in the physical FIFO, and all eight commit-derived registration
   -- requests coalesce behind that FIFO into one final ordered action.
@@ -3807,6 +4050,61 @@ do
 end
 
 do
+  local fingerprint = string.rep("b", 64)
+  local continuation = {
+    status = "validated", fromSession = "saved-session",
+    sourceStateVersion = 33, saveFingerprint = fingerprint,
+  }
+  local current = {
+    networkMode = "network", tick = 12,
+    bridge = { peerId = "player1" },
+    recovery = { savedMatchContinuation = continuation },
+    probes = { networkAuthority = { ready = true } },
+  }
+  local runtime = savedMatchContinuationRuntimeModule.new({
+    getState = function() return current end,
+    config = function()
+      return { continueSavedMatch = true, matchFingerprint = fingerprint }
+    end,
+    coreDigest = function() return "89abcdef" end,
+  })
+  local action = assert(runtime.normalise({ type = "recovery.continue" }))
+  assert(action.fromSession == "saved-session" and action.sourceStateVersion == 33
+      and action.sourceCoreDigest == "89abcdef"
+      and action.saveFingerprint == fingerprint,
+    "saved-match continuation did not bind source identity, core and save fingerprint")
+  local applied, result = runtime.apply(action, "player1", 7)
+  assert(applied == true and result.status == "awaiting-checkpoint"
+      and runtime.fenced() == true and result.commitSeq == 7,
+    "saved-match continuation released gameplay before its first checkpoint")
+  assert(runtime.afterCheckpoint({
+    type = "network.checkpoint_outcome", boundarySeq = 7,
+    reason = "saved-match-continuation:" .. fingerprint:sub(1, 12),
+    success = true, convergenceKey = "1234abcd", coreDigest = "89abcdef",
+  }) == true and continuation.status == "complete" and runtime.fenced() == false,
+    "saved-match continuation did not release after its matching checkpoint")
+
+  continuation.status, continuation.commitSeq = "validated", nil
+  local submitted
+  assert(runtime.maintain({}, {
+    submitIntent = function(value) submitted = value; return true, { local_seq = 4 } end,
+    awaitingOrder = function() return nil end,
+    pendingBarrierReason = function() return nil end,
+    diagnosticLog = function() end,
+    wallTime = function() return 100 end,
+  }) == true and submitted and submitted.type == "recovery.continue",
+    "validated saved match did not automatically submit its fenced continuation")
+
+  continuation.status, continuation.error = "validated", nil
+  local tampered = util.deepCopy(action)
+  tampered.sourceCoreDigest = "ffffffff"
+  local refused, errorText = runtime.apply(tampered, "player1", 8)
+  assert(refused == false and continuation.status == "failed"
+      and errorText:find("attestation mismatch", 1, true),
+    "saved-match continuation accepted a different migrated source core")
+end
+
+do
   local gameTime, gameSpeed = 10, 1
   local wall = 100
   local commands, emitted = {}, {}
@@ -3956,6 +4254,125 @@ do
 end
 
 do
+  -- One running line/vehicle batch gets one shared safety pause and one
+  -- automatic resume after its entire local FIFO/checkpoint tail drains.
+  -- Explicit clock input, including input from the other peer, cancels that
+  -- automatic resume so Esc remains a durable user pause.
+  local gameTime, gameSpeed = 20, 2
+  local workPending = true
+  local submitted, commands = {}, {}
+  local current = {
+    networkMode = "network", initialized = true, tick = 80,
+    bridge = { peerId = "player1", nextInSeq = 1 },
+    probes = {
+      networkAuthority = { ready = true },
+      networkCalendar = { requested = true, frozen = true },
+    },
+    world = {
+      networkClock = {
+        requestedSpeed = 2, effectiveSpeed = 2, generation = 10,
+        rendezvousReached = 0, rendezvousFaults = 0,
+        startupPause = { requested = true, confirmed = true },
+      },
+      proposalConsensus = { byId = {} },
+    },
+  }
+  local clock = networkClockRuntimeModule.new({
+    getState = function() return current end,
+    config = function() return {} end,
+    diagnosticLog = function() end,
+    submitIntent = function(action)
+      submitted[#submitted + 1] = util.deepCopy(action)
+      return true, { local_seq = #submitted }
+    end,
+    awaitingOrder = function() return nil end,
+    pendingBarrierReason = function() return nil end,
+    localWorkState = function() return { pending = workPending } end,
+    clockSnapshot = function() return { time = gameTime, gameSpeed = gameSpeed } end,
+    commandFactory = function(kind)
+      return function(speed) return { kind = kind, speed = speed } end
+    end,
+    authorizeCommand = function() return true end,
+    sendCommand = function(command, callback)
+      commands[#commands + 1] = util.deepCopy(command)
+      if command.kind == "setGameSpeed" then gameSpeed = command.speed end
+      if callback then callback(command, true) end
+      return true
+    end,
+    emit = function() return true, { local_seq = 1 } end,
+  })
+  local prerequisite = clock.operationPrerequisite({
+    type = "operation.execute",
+    transaction = { kind = "vehicle.assign" },
+  })
+  assert(prerequisite and prerequisite.requestedSpeed == 0
+      and clock.hasOperationHold() == true,
+    "running vehicle batch did not arm its scoped clock hold")
+  clock.operationPrerequisiteResult(prerequisite, true, {})
+  assert(clock.arm({
+    type = "clock.rendezvous", requestedSpeed = 0, approachSpeed = 2,
+    releaseSpeed = 0, generation = 11, targetGameTime = 22,
+    reason = "player-request:player1",
+  }) == true, "operation pause rendezvous did not arm")
+  assert(clock.apply({
+    type = "clock.set", requestedSpeed = 0, effectiveSpeed = 0,
+    generation = 12, reason = "player-request:player1:all-peers-ready",
+  }) == true and gameSpeed == 0,
+    "operation pause did not reach its all-peer boundary")
+  assert(clock.maintainOperationHold() == false and #submitted == 0,
+    "operation hold resumed while physical/checkpoint work was pending")
+  workPending = false
+  assert(clock.maintainOperationHold() == true and #submitted == 1
+      and submitted[1].type == "clock.request"
+      and submitted[1].requestedSpeed == 2,
+    "drained operation batch did not restore its prior shared speed")
+  assert(clock.arm({
+    type = "clock.rendezvous", requestedSpeed = 2, approachSpeed = 1,
+    releaseSpeed = 2, generation = 13, targetGameTime = 23,
+    reason = "player-request:player1",
+  }) == true, "operation auto-resume rendezvous did not arm")
+  assert(clock.apply({
+    type = "clock.set", requestedSpeed = 2, effectiveSpeed = 2,
+    generation = 14, reason = "player-request:player1:all-peers-ready",
+  }) == true and clock.hasOperationHold() == false and gameSpeed == 2,
+    "operation auto-resume did not retire after its ordered completion")
+
+  prerequisite = clock.operationPrerequisite({
+    type = "operation.execute", transaction = { kind = "line.update" },
+  })
+  assert(prerequisite and clock.noteClockRequest({
+    type = "clock.request", requestedSpeed = 0,
+  }) == true and clock.hasOperationHold() == false,
+    "explicit local pause did not cancel operation auto-resume")
+
+  prerequisite = clock.operationPrerequisite({
+    type = "operation.execute", transaction = { kind = "vehicle.assign" },
+  })
+  clock.operationPrerequisiteResult(prerequisite, true, {})
+  assert(clock.apply({
+    type = "clock.set", requestedSpeed = 0, effectiveSpeed = 0,
+    generation = 15, reason = "player-request:player1:telemetry-failsafe",
+  }) == true and clock.hasOperationHold() == true,
+    "direct operation pause did not retain its scoped resume")
+  assert(clock.arm({
+    type = "clock.rendezvous", requestedSpeed = 0, approachSpeed = 0,
+    releaseSpeed = 0, generation = 16, targetGameTime = gameTime,
+    reason = "player-request:player2",
+  }) == true and clock.hasOperationHold() == false,
+    "other peer's explicit pause did not cancel operation auto-resume")
+
+  gameSpeed = 2
+  current.world.networkClock.effectiveSpeed = 2
+  current.world.networkClock.requestedSpeed = 2
+  prerequisite = clock.operationPrerequisite({
+    type = "operation.execute", transaction = { kind = "vehicle.replace" },
+  })
+  clock.operationPrerequisiteResult(prerequisite, false, "forced emit failure")
+  assert(clock.hasOperationHold() == false,
+    "failed prerequisite emission left a latent auto-resume armed")
+end
+
+do
   local current = { validation = { enabled = false } }
   local function noop() return true, {} end
   local validation = validationRuntimeModule.new({
@@ -4030,6 +4447,19 @@ do
       and cfg.restoreResume.vehiclePhaseDigest == "4567def0"
       and cfg.restoreResume.error == nil,
     "launcher restore attestation was not parsed")
+  local continuationEnvironment = {
+    TPF2MP_MANUAL_NETWORK = "1",
+    TPF2MP_CONTINUE_SAVED_MATCH = "1",
+    TPF2MP_MATCH_FINGERPRINT = string.rep("c", 64),
+  }
+  local continuationCfg = runtimeConfig.read({
+    source = {},
+    environment = function(name) return continuationEnvironment[name] end,
+  })
+  assert(continuationCfg.continueSavedMatch == true
+      and continuationCfg.matchFingerprint == string.rep("c", 64)
+      and continuationCfg.restoreResume == nil,
+    "launcher exact-save continuation identity was not parsed")
   local armed = runtimeConfig.read({
     source = {},
     environment = function(name) return environment[name] end,
@@ -4470,6 +4900,111 @@ do
       and cleanRetry.world.proposalConsensus.sessionFault == nil
       and cleanRetry.recovery.freshNetworkBootstrap ~= nil,
     "a faulted uninitialised state leaked across a new network session")
+
+  -- A launcher room created from an initialized network save must preserve
+  -- the whole canonical match (especially its ledger), then establish a new
+  -- checkpoint under the new session identity. It must never silently turn a
+  -- dirty save into a fresh starting-cash match.
+  local savedCfg = baseConfig({ sessionId = "saved-live-match" })
+  local continuationSource = stateSchema.new(savedCfg, versions)
+  continuationSource.initialized = true
+  continuationSource.match.status = "running"
+  continuationSource.companyOrder = { "company:1", "company:2" }
+  continuationSource.companies = {
+    ["company:1"] = { cid = "company:1", name = "Company 1", playerId = 71 },
+    ["company:2"] = { cid = "company:2", name = "Company 2", playerId = 72 },
+  }
+  financeModule.initialiseNetworkAccounts(
+    continuationSource.finance, continuationSource.companyOrder, 50000000,
+    { sessionId = "saved-live-match" })
+  continuationSource.finance.networkAccounts.accounts["company:1"].balance = 34274378
+  continuationSource.finance.networkAccounts.accounts["company:1"].totalDebits = 15725622
+  continuationSource.finance.networkAccounts.accounts["company:1"].entryCount = 41
+  continuationSource.economy.services["line:pre:continued"] = {
+    lineCid = "line:pre:continued", marketCid = "market:continued",
+    companyCid = "company:1", fareCents = 1000, capacity = 40,
+  }
+  assert(canonicalModule.bind(continuationSource.canonical,
+    "line:pre:continued", "line", 8101,
+    { owner = "company:1", manifestBound = true }))
+  assert(canonicalModule.bind(continuationSource.canonical,
+    "station_group:pre:continued", "station_group", 8102,
+    { owner = "company:1", manifestBound = true }))
+  assert(canonicalModule.bind(continuationSource.canonical,
+    "vehicle:pre:continued", "vehicle", 8103,
+    { owner = "company:1", manifestBound = true }))
+  continuationSource.world.checkpointConsensus.byBoundary["19"] = {
+    boundarySeq = 19, status = "complete", success = true,
+    coreDigest = "1234abcd", convergenceKey = "2345bcde",
+  }
+  continuationSource.world.checkpointConsensus.lastAgreed = util.deepCopy(
+    continuationSource.world.checkpointConsensus.byBoundary["19"])
+  local continuationFingerprint = string.rep("a", 64)
+  local continuationCfg = baseConfig({
+    sessionId = "continued-room", peerId = "player1",
+    continueSavedMatch = true, matchFingerprint = continuationFingerprint,
+  })
+  local continued = stateSchema.migrate(util.deepCopy(continuationSource), {
+    newState = function() return stateSchema.new(continuationCfg, versions) end,
+    config = function() return continuationCfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  local continuation = continued.recovery.savedMatchContinuation
+  assert(continued.initialized == true and continued.match.status == "running"
+      and continued.finance.networkAccounts.accounts["company:1"].balance == 34274378
+      and continued.finance.networkAccounts.accounts["company:1"].entryCount == 41
+      and continued.economy.services["line:pre:continued"] ~= nil
+      and canonicalModule.resolveCanonical(continued.canonical, "line", 8101)
+        == "line:pre:continued"
+      and canonicalModule.resolveCanonical(
+        continued.canonical, "station_group", 8102) == "station_group:pre:continued"
+      and canonicalModule.resolveCanonical(continued.canonical, "vehicle", 8103)
+        == "vehicle:pre:continued"
+      and continued.canonical.byCanonical["line:pre:continued"].metadata.manifestBound
+        == true
+      and continuation.status == "validated"
+      and continuation.fromSession == "saved-live-match"
+      and continuation.saveFingerprint == continuationFingerprint
+      and continued.bridge.sessionId == "continued-room"
+      and next(continued.world.checkpointConsensus.byBoundary) == nil
+      and continued.world.networkClock.generation == 0
+      and continued.recovery.freshNetworkBootstrap == nil,
+    "exact-save continuation reset or discarded canonical saved-match state")
+
+  local joinedCfg = baseConfig({
+    sessionId = "continued-room", peerId = "player2",
+    continueSavedMatch = true, matchFingerprint = continuationFingerprint,
+  })
+  local joined = stateSchema.migrate(util.deepCopy(continuationSource), {
+    newState = function() return stateSchema.new(joinedCfg, versions) end,
+    config = function() return joinedCfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(joined.bridge.peerId == "player2"
+      and joined.finance.networkAccounts.accounts["company:1"].balance == 34274378
+      and canonicalModule.resolveCanonical(joined.canonical, "line", 8101)
+        == "line:pre:continued"
+      and canonicalModule.resolveCanonical(
+        joined.canonical, "station_group", 8102) == "station_group:pre:continued"
+      and canonicalModule.resolveCanonical(joined.canonical, "vehicle", 8103)
+        == "vehicle:pre:continued"
+      and joined.recovery.savedMatchContinuation.status == "validated",
+    "host-cloned save did not preserve its ledger and canonical bindings while rebinding the joining peer")
+
+  local faultedContinuation = util.deepCopy(continuationSource)
+  faultedContinuation.world.operationConsensus.sessionFault = {
+    errorCode = "peer-native-operation-failed",
+  }
+  local refused = stateSchema.migrate(faultedContinuation, {
+    newState = function() return stateSchema.new(continuationCfg, versions) end,
+    config = function() return continuationCfg end,
+    stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(refused.recovery.savedMatchContinuation.status == "failed"
+      and refused.recovery.savedMatchContinuation.error:find("session fault", 1, true)
+      and refused.finance.networkAccounts.accounts["company:1"].balance == 34274378
+      and refused.initialized == true,
+    "faulted saved match silently fell back to fresh starting cash")
 
   local function restoreSource()
     local sourceCfg = baseConfig({ sessionId = "saved-network" })

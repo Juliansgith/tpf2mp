@@ -6,6 +6,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The transaction fixture installs only beneath TemporaryRoot. Hide live game
+# processes from its dynamically invoked installer while leaving the packaged
+# production process guard unchanged and covered by its own launcher tests.
+function Get-Process {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][string[]] $Name)
+
+    if ($Name -and @($Name | Where-Object { $_ -notin @('TransportFever2', 'tpf2mp') }).Count -eq 0) {
+        return
+    }
+    Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
+}
+
 $caseRoot = Join-Path $TemporaryRoot 'release-install-transaction'
 $bundle = Join-Path $caseRoot 'bundle'
 $installRoot = Join-Path $caseRoot 'support'

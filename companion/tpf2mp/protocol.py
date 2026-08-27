@@ -38,6 +38,7 @@ NETWORK_ACTIONS = {
     "recovery.prepare",
     "recovery.requalify",
     "recovery.resume",
+    "recovery.continue",
     "recovery.save_receipt",
     "town.develop",
     "content.industry_attest",
@@ -1643,6 +1644,31 @@ def validate_action(action: Any) -> dict[str, Any]:
             value = action.get(field)
             if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{8}", value):
                 raise ProtocolError(f"recovery.resume {field} is invalid")
+    if action_type == "recovery.continue":
+        expected = {
+            "type", "fromSession", "sourceStateVersion",
+            "sourceCoreDigest", "saveFingerprint",
+        }
+        if set(action) != expected:
+            raise ProtocolError("recovery.continue has unknown or missing fields")
+        source = action.get("fromSession")
+        if not isinstance(source, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", source
+        ):
+            raise ProtocolError("recovery.continue source session is invalid")
+        source_version = _protocol_int(
+            action.get("sourceStateVersion"), "saved-match sourceStateVersion"
+        )
+        if source_version < 1 or source_version > MAX_EXACT_INTEGER:
+            raise ProtocolError("recovery.continue sourceStateVersion is invalid")
+        digest = action.get("sourceCoreDigest")
+        fingerprint = action.get("saveFingerprint")
+        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{8}", digest):
+            raise ProtocolError("recovery.continue sourceCoreDigest is invalid")
+        if not isinstance(fingerprint, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", fingerprint
+        ):
+            raise ProtocolError("recovery.continue saveFingerprint is invalid")
     if action_type == "network.checkpoint_request":
         if set(action) != {
             "type", "preparationSeq", "reason", "vehiclePhaseProof",

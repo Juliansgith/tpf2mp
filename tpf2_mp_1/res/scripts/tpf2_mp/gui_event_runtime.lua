@@ -17,6 +17,7 @@ local proposalPredicates = require "tpf2_mp/gui_proposal_predicates"
 local buildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
 local buildCorrelationModule = require "tpf2_mp/gui_build_correlation"
 local guiBuildCaptureRuntimeModule = require "tpf2_mp/gui_build_capture_runtime"
+local guiClockCapturePolicyModule = require "tpf2_mp/gui_clock_capture_policy"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "GUI event runtime dependencies are required")
@@ -44,6 +45,7 @@ function M.new(deps)
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
   })
+  local clockCapturePolicy = guiClockCapturePolicyModule.new(gui)
   guiVehicleCaptureRuntimeModule.install(gui, {
     queueAction = queueAction,
     maxStops = operationCodec.MAX_STOPS,
@@ -373,8 +375,9 @@ function M.new(deps)
       gui.nativeBuildCapture.captureDiagnostics =
         (gui.nativeBuildCapture.captureDiagnostics or 0) + 1
     end
-    -- Canonical capture precedes lower-value diagnostics; constructions fail
-    -- fast at a busy barrier instead of becoming delayed ghost work.
+    -- Canonical capture precedes lower-value diagnostics. Construction
+    -- captures carry a latest-only policy so a busy barrier retains one exact
+    -- click without accumulating delayed ghost work.
     table.insert(gui.queue, 1, {
       type = "proposal.capture",
       companyCid = pending.companyCid,
@@ -507,6 +510,13 @@ function M.new(deps)
     local effective = tonumber(clock.effectiveSpeed)
     if requested == latest and effective == latest then
       gui.nativeClockCapture.duplicates = (gui.nativeClockCapture.duplicates or 0) + 1
+      return false
+    end
+    local ignorePause, source = clockCapturePolicy.ignoreCapturedPause(latest)
+    if ignorePause then
+      diagnosticLog("native-manager-modal-pause-ignored", {
+        sourceId = source, frame = gui.frames, requestedSpeed = latest,
+      })
       return false
     end
     -- Prioritize collapsed control-plane speed requests; clock.request still
@@ -1060,6 +1070,7 @@ function M.new(deps)
       if config().networkAutoValidate then return nil end
       local ok, result = pcall(function()
         local eventName = tostring(name or "")
+        clockCapturePolicy.observeEvent(id, name)
         local isProposalCreate = eventName:find("builder.proposalCreate", 1, true) ~= nil
         local isProposalApply = eventName:find("builder.apply", 1, true) ~= nil
         local shouldInvalidate, invalidationReason = buildCorrelation.invalidationEvent(id, name)
@@ -1142,6 +1153,7 @@ function M.new(deps)
           if selectedKind == "vehicle" then gui.selectedVehicleId = selectedEntity
           elseif selectedKind == "depot" then gui.selectedDepotId = selectedEntity
           elseif selectedKind == "line" then gui.selectedLineId = selectedEntity end
+          clockCapturePolicy.observeEntitySelection(selectedKind)
           -- The prototype inspector remains available from its explicit HUD and
           -- pause-menu entries, but ordinary stock selections must not cover the
           -- vanilla Line Manager during a human multiplayer session.

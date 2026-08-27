@@ -1040,6 +1040,23 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ProtocolError, "coreDigest"):
             validate_action({**resume, "coreDigest": "not-a-digest"})
 
+        continuation = {
+            "type": "recovery.continue",
+            "fromSession": "saved-session",
+            "sourceStateVersion": 33,
+            "sourceCoreDigest": "89abcdef",
+            "saveFingerprint": "a" * 64,
+        }
+        self.assertEqual(validate_action(continuation), continuation)
+        with self.assertRaisesRegex(ProtocolError, "unknown or missing"):
+            validate_action({
+                key: value
+                for key, value in continuation.items()
+                if key != "saveFingerprint"
+            })
+        with self.assertRaisesRegex(ProtocolError, "saveFingerprint"):
+            validate_action({**continuation, "saveFingerprint": "a" * 63})
+
     def test_canonical_proposal_transaction_is_strict_and_tamper_evident(self) -> None:
         transaction = proposal_transaction()
         action = validate_action({"type": "proposal.build", "transaction": transaction})
@@ -1217,6 +1234,63 @@ class ProtocolTests(unittest.TestCase):
         redigest_proposal(duplicate_source)
         with self.assertRaisesRegex(ProtocolError, "source cannot also be collateral"):
             validate_action({"type": "proposal.build", "transaction": duplicate_source})
+
+    def test_street_terminal_variants_and_collateral_are_carrier_neutral(self) -> None:
+        checked = 0
+        for template_index in range(6):
+            for platforms in range(4):
+                for length in range(3):
+                    for tram_track in range(3):
+                        transaction = portable_construction_transaction(kind="construction")
+                        construction = transaction["constructions"][0]
+                        construction.update({
+                            "kind": "station",
+                            "fileName": "station/street/modular_terminal.con",
+                            "params": {
+                                "templateIndex": template_index,
+                                "year": 1990,
+                                "seed": 17,
+                                "platL": platforms,
+                                "platR": 3 - platforms,
+                                "length": length,
+                                "length2": length,
+                                "tramTrack": tram_track,
+                                "tramTrackType": 0,
+                            },
+                            "modules": [
+                                {
+                                    "slot": 20_000_003,
+                                    "name": "station/street/entrance_exit.module",
+                                    "variant": 0,
+                                    "metadata": {},
+                                },
+                                {
+                                    "slot": 20_010_000,
+                                    "name": (
+                                        "station/street/cargo_platform.module"
+                                        if template_index >= 3
+                                        else "station/street/passenger_platform.module"
+                                    ),
+                                    "variant": 0,
+                                    "metadata": {},
+                                },
+                            ],
+                        })
+                        if checked == 0:
+                            construction["collateral"] = [
+                                {"kind": "construction", "cid": f"construction:pre:house-{index}"}
+                                for index in range(1, 8)
+                            ]
+                        redigest_proposal(transaction)
+                        accepted = validate_action({"type": "proposal.build", "transaction": transaction})
+                        actual = accepted["transaction"]["constructions"][0]
+                        self.assertEqual(actual["params"]["templateIndex"], template_index)
+                        self.assertEqual(actual["params"]["platL"], platforms)
+                        self.assertEqual(actual["params"]["platR"], 3 - platforms)
+                        self.assertEqual(actual["params"]["length2"], length)
+                        self.assertEqual(actual["params"]["tramTrack"], tram_track)
+                        checked += 1
+        self.assertEqual(checked, 216)
 
     def test_stock_station_transaction_and_compound_outputs_are_strict(self) -> None:
         transaction = station_proposal_transaction()
@@ -6917,6 +6991,69 @@ class NetworkIntegrationTests(unittest.TestCase):
                 releases[-1]["round"], 2,
             )
 
+    def test_exact_saved_match_is_fenced_until_its_new_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "continued-save-room"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+                saved_match_auto=True,
+            )
+            freeze = sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "world.freeze", "freeze": True}},
+            })
+            with self.assertRaisesRegex(ProtocolError, "first saved-world boundary"):
+                host._commit(freeze)
+
+            fingerprint = "a" * 64
+            continuation = {
+                "type": "recovery.continue",
+                "fromSession": "previous-room",
+                "sourceStateVersion": 33,
+                "sourceCoreDigest": "89abcdef",
+                "saveFingerprint": fingerprint,
+            }
+            committed = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 2, "tick": 0, "kind": "intent",
+                "payload": {"action": continuation},
+            }))
+            self.assertEqual(committed["seq"], 1)
+            self.assertEqual(host.restore_session.state, "awaiting-checkpoint")
+            with self.assertRaisesRegex(ProtocolError, "first saved-world boundary"):
+                host._commit(sign({
+                    **freeze,
+                    "local_seq": 3,
+                }))
+            reason = "saved-match-continuation:" + fingerprint[:12]
+            host._record_non_intent(consensus_checkpoint(
+                session, "player1", 4, 1, reason
+            ))
+            host._record_non_intent(consensus_checkpoint(
+                session, "player2", 5, 1, reason
+            ))
+            self.assertEqual(host.restore_session.state, "complete")
+            self.assertTrue(host._commit(sign({
+                **freeze,
+                "local_seq": 6,
+            })))
+
+            unfenced = CommitHost(
+                GameBridge(root / "other", "unfenced-room", "player1"),
+                "127.0.0.1", 0, root / "other.ndjson",
+                require_connected_peers=False,
+            )
+            with self.assertRaisesRegex(ProtocolError, "launcher saved-match fencing"):
+                unfenced._commit(sign({
+                    "protocol": 1, "session": "unfenced-room", "peer": "player1",
+                    "local_seq": 1, "tick": 0, "kind": "intent",
+                    "payload": {"action": continuation},
+                }))
+
     def test_generic_ordered_action_rejection_faults_instead_of_hanging_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -7170,6 +7307,58 @@ class NetworkIntegrationTests(unittest.TestCase):
             ]
             self.assertEqual(len(records), 2)
             self.assertEqual(host.clock_health["player1"]["engineTick"], 102)
+
+    def test_peer_local_origin_fault_is_promoted_after_ordered_tail(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "peer-local-origin-fault"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            fault_code = (
+                "origin-applied-capture-rejected:"
+                "selected pre-existing object is ambiguous across peers"
+            )
+
+            def health(local_seq: int, last_commit: int) -> dict[str, object]:
+                return sign({
+                    "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": local_seq, "tick": 100 + local_seq,
+                    "kind": "clock_health",
+                    "payload": {
+                        "schemaVersion": 4,
+                        "requestedSpeed": 0, "effectiveSpeed": 0,
+                        "generation": 0, "engineTick": 100 + local_seq,
+                        "lastCommitSeq": last_commit, "proposalPending": False,
+                        "localWorkPending": False, "deferredIntentCount": 0,
+                        "faultCode": fault_code, "originResidueCount": 2,
+                        "rendezvousGeneration": 0, "rendezvousState": "idle",
+                        "rendezvousTargetTime": 0.0,
+                        "observedSpeed": 0.0, "gameTime": 100.0,
+                    },
+                })
+
+            host._record_non_intent(health(1, 0))
+            self.assertEqual(host.session_fault, fault_code)
+            faults = [
+                commit["payload"]["action"]
+                for commit in host.commits.values()
+                if commit["payload"]["action"]["type"] == "network.sync_fault"
+            ]
+            self.assertEqual(len(faults), 1)
+            self.assertEqual(faults[0]["scope"], "authored")
+            self.assertEqual(faults[0]["errorCode"], fault_code)
+
+            host._record_non_intent(health(2, 1))
+            faults = [
+                commit["payload"]["action"]
+                for commit in host.commits.values()
+                if commit["payload"]["action"]["type"] == "network.sync_fault"
+            ]
+            self.assertEqual(len(faults), 1,
+                "repeated fault health emitted duplicate durable faults")
 
     def test_shared_clock_ignores_render_tick_rate_asymmetry(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

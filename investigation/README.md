@@ -1,6 +1,16 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-26 (Europe/Amsterdam), `0.41.3-alpha`, state schema `33`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.4-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Street-terminal placement and transit-line identity (2026-08-27)](STREET_TERMINAL_AND_TRANSIT_LINE_2026-08-27.md)
+records the live large-terminal click loss and bus-line ambiguity, generic
+216-case bus/tram/truck construction coverage, latest-only physical
+construction lane, and derived curb-stop station/group binding.
+
+[Saved-match continuation and manager pause capture (2026-08-27)](SAVED_MATCH_CONTINUATION_AND_MANAGER_PAUSE_2026-08-27.md)
+records the live four-train assignment timeline, stock-manager pause capture,
+saved-ledger reset and inherited-identity cause, strict schema-34 continuation,
+one-hold batch behavior, peer-local fault promotion, and fresh live gate.
 
 [Vehicle assignment rejection and in-place resync (2026-08-26)](VEHICLE_ASSIGN_REJECTION_AND_RESYNC_2026-08-26.md)
 records the four-train assignment fault, proof that both native worlds remained

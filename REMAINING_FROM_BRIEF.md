@@ -1,6 +1,6 @@
 # What remains from the TPF2MP brief
 
-Last updated: 2026-08-26 after prototype `0.41.3-alpha`, state schema `33`,
+Last updated: 2026-08-27 after prototype `0.41.4-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, populated two-process convergence,
@@ -19,6 +19,13 @@ combined physical two-computer run and clean-machine packaging check, both
 defined mechanically in `ALPHA_RELEASE_CHECKLIST.md`. Broader commands,
 executable callbacks, security, host migration, and more players are a
 post-alpha product backlog rather than blockers hidden inside that claim.
+
+State schema 34 closes ordinary-save rehosting: clean initialized matches keep
+their canonical accounts and object bindings, attest the exact shared save,
+and establish a fresh two-peer checkpoint before play. Faulted or in-flight
+saves remain the coordinated recovery workflow and are never silently
+reinitialized. Line/vehicle UI housekeeping no longer becomes repeated shared
+pause input; physical mutations retain one bounded safety hold.
 
 ## Bottom line
 

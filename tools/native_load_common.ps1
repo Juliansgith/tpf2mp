@@ -554,10 +554,12 @@ function Start-Tpf2mpDirectGame {
         [Parameter(Mandatory = $true)][string]$SessionRoot,
         [string]$StagedSaveBaseName,
         [string]$StartingCompanyPlayerIds,
+        [string]$MatchFingerprint,
         [object]$RestorePlan,
         [switch]$RequireMenuEntry,
         [switch]$StartNetwork,
-        [switch]$ManualNetwork
+        [switch]$ManualNetwork,
+        [switch]$ContinueSavedMatch
     )
     $game = Resolve-Tpf2mpFullPath $GameExecutable
     $gameRoot = Split-Path -Parent $game
@@ -584,6 +586,8 @@ function Start-Tpf2mpDirectGame {
         TPF2MP_STAGED_SAVE_NAME = [string]$StagedSaveBaseName
         TPF2MP_STARTING_COMPANY_PLAYER_IDS = [string]$StartingCompanyPlayerIds
         TPF2MP_REQUIRE_MENU_ENTRY = if ($RequireMenuEntry) { '1' } else { '0' }
+        TPF2MP_CONTINUE_SAVED_MATCH = if ($ContinueSavedMatch -and -not $RestorePlan) { '1' } else { '0' }
+        TPF2MP_MATCH_FINGERPRINT = [string]$MatchFingerprint
         TPF2MP_RESTORE_RESUME = if ($RestorePlan) { '1' } else { '0' }
         TPF2MP_RESTORE_FROM_SESSION = if ($RestorePlan) { [string]$RestorePlan.session } else { '' }
         TPF2MP_RESTORE_BOUNDARY = if ($RestorePlan) { [string]$RestorePlan.boundarySeq } else { '' }

@@ -162,7 +162,8 @@ function M.new(env)
       or actionType == "economy.seed_demo" or actionType == "economy.settle"
       or actionType == "match.finish" or actionType == "probe.mobility"
       or actionType == "probe.structural"
-      or actionType == "recovery.resume" or actionType == "town.develop"
+      or actionType == "recovery.resume" or actionType == "recovery.continue"
+      or actionType == "town.develop"
       or actionType == "vehicle.sync_release"
       or actionType == "content.industry_attest"
       or actionType == "freight.industry_bootstrap"
@@ -379,7 +380,10 @@ function M.new(env)
 
   local function initialActionCheckpoint(action, authoritySeq)
     local restored = action.type == "recovery.resume"
+    local continued = action.type == "recovery.continue"
     local reason = restored and "restore-resume:" .. tostring(action.planChecksum)
+      or continued and "saved-match-continuation:"
+        .. tostring(action.saveFingerprint or ""):sub(1, 12)
       or "match-initialised"
     if currentState().networkMode == "network" and authoritySeq then
       return exportCheckpointBarrier(authoritySeq, reason)

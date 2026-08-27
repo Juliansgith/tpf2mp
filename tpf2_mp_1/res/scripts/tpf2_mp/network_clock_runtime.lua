@@ -2,8 +2,8 @@ local util = require "tpf2_mp/util"
 local bridge = require "tpf2_mp/bridge"
 local heartbeatModule = require "tpf2_mp/network_clock_heartbeat"
 local world = require "tpf2_mp/world"
-local restoreBootstrapRuntime = require "tpf2_mp/restore_bootstrap_runtime"
-local networkBootstrapPolicy = require "tpf2_mp/network_bootstrap_policy"
+local operationClockHoldModule = require "tpf2_mp/network_operation_clock_hold"
+local manualBootstrapModule = require "tpf2_mp/network_manual_bootstrap_runtime"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "network clock runtime dependencies are required")
@@ -42,20 +42,25 @@ function M.new(deps)
     __index = function(_, key) return getState()[key] end,
     __newindex = function(_, key, value) getState()[key] = value end,
   })
-  local networkClock = {
-    manualBootstrap = { nextAttemptTick = 240, attempts = 0, submitted = false },
-  }
+  local networkClock = {}
+  local operationClockHold = operationClockHoldModule.new({
+    getState = getState, localWorkState = localWorkState,
+    submitIntent = submitIntent, diagnosticLog = diagnosticLog,
+    clockSnapshot = clockSnapshot,
+  })
   local heartbeat = heartbeatModule.new({
     getState = getState, clockSnapshot = clockSnapshot,
     localWorkState = localWorkState, emit = emit, wallTime = wallTime,
   })
   -- Native clocks are not saved; their process-local rearm need is never serialized.
   local nativeRearmPending = false
-  local restoreBootstrap = restoreBootstrapRuntime.new({
+  local manualBootstrap = manualBootstrapModule.new({
     getState = getState, config = config, diagnosticLog = diagnosticLog,
     submitIntent = submitIntent, awaitingOrder = awaitingOrder,
     pendingBarrierReason = networkPendingBarrierReason, wallTime = wallTime,
+    maintainSavedMatchContinuation = deps.maintainSavedMatchContinuation,
   })
+  networkClock.manualBootstrap = manualBootstrap.bootstrap
 
   local function issueSpeed(speed, callback, origin)
     local factory = commandFactory("setGameSpeed")
@@ -262,6 +267,7 @@ function M.new(deps)
       if success ~= true then current.lastError = "native SetGameSpeed command was rejected" end
     end)
     if not sent then state.world.networkClock = previous; return false, sendError end
+    operationClockHold.observeOrderedClock(action)
     return true, {
       requestedSpeed = requested, effectiveSpeed = effective,
       generation = generation, reason = current.reason,
@@ -302,6 +308,7 @@ function M.new(deps)
       end, "mod.network.rendezvous-approach")
       if not sent then state.world.networkClock = previous; return false, sendError end
     end
+    operationClockHold.observeOrderedClock(action)
     networkClock.update()
     return true, util.deepCopy(current.rendezvous)
   end
@@ -317,56 +324,21 @@ function M.new(deps)
     return heartbeat.emitPaused()
   end
 
-  function networkClock.operationPrerequisite(action)
-    local transaction = type(action) == "table" and action.transaction or nil
-    local kind = type(transaction) == "table" and tostring(transaction.kind or "") or ""
-    if state.networkMode ~= "network" or action.type ~= "operation.execute"
-      or (not kind:match("^vehicle%.") and not kind:match("^line%.")) then return nil end
-    local clock = state.world.networkClock
-    if type(clock.rendezvous) == "table" then return nil end
-    local observed = clockSnapshot()
-    if util.integer(clock.effectiveSpeed, 0) > 0
-      or (tonumber(observed.gameSpeed) or 0) > 0 then
-      return { type = "clock.request", requestedSpeed = 0 },
-        "line/vehicle operation is waiting for a shared-clock rendezvous"
-    end
-    return nil
-  end
+  networkClock.operationPrerequisite = operationClockHold.prerequisite
+  networkClock.operationPrerequisiteResult = operationClockHold.prerequisiteResult
+  networkClock.noteClockRequest = operationClockHold.noteClockRequest
+  networkClock.maintainOperationHold = operationClockHold.maintain
+  networkClock.hasOperationHold = operationClockHold.has
 
-  function networkClock.maintainManualBootstrap(launcherReady)
-    local cfg, bootstrap = config(), networkClock.manualBootstrap
-    if launcherReady == true then bootstrap.launcherReady = true end
-    local bootstrapReady = cfg.manualBootstrapReady == true or bootstrap.launcherReady == true
-    if not cfg.manualNetwork or not bootstrapReady or state.networkMode ~= "network"
-      or state.bridge.peerId ~= "player1" then return end
-    if restoreBootstrap.maintain(bootstrap) then return end
-    if networkBootstrapPolicy.deferForContent(state, bootstrap, diagnosticLog) then return end
-    if state.tick < math.max(240, tonumber(bootstrap.nextAttemptTick) or 240) then return end
-    if state.initialized then return end
-    if awaitingOrder() or networkPendingBarrierReason() then return end
-    local authority = state.probes.networkAuthority or {}
-    if authority.ready ~= true then bootstrap.nextAttemptTick = state.tick + 30; return end
-    bootstrap.attempts = bootstrap.attempts + 1
-    local ok, result = submitIntent({ type = "match.initialise" })
-    bootstrap.submitted = ok == true
-    bootstrap.nextAttemptTick = state.tick + (ok and 600 or 60)
-    diagnosticLog("manual-network-bootstrap", {
-      success = ok == true, attempt = bootstrap.attempts,
-      localSeq = type(result) == "table" and (result.local_seq or result.localSeq) or nil,
-      error = not ok and tostring(type(result) == "table" and result.error or result) or nil,
-      tick = state.tick,
-    })
-  end
+  networkClock.maintainManualBootstrap = manualBootstrap.maintain
 
 
   networkClock.freezeCalendar = freezeNetworkCalendar
   networkClock.freezeGame = freezeNetworkGame
   networkClock.reset = function()
-    networkClock.manualBootstrap = {
-      nextAttemptTick = 240, attempts = 0, submitted = false,
-      launcherReady = false, restoreNextAttemptAt = nil, waitingFor = nil,
-    }
+    manualBootstrap.reset()
     heartbeat.reset()
+    operationClockHold.reset()
     nativeRearmPending = true
   end
   return networkClock

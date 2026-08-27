@@ -11,7 +11,7 @@ from .consensus_registry_index import TrackerRegistryIndex
 # Actions that either need all-peer evidence or immediately open a checkpoint.
 CONSENSUS_BOUND_ACTIONS = {
     "match.initialise", "proposal.prepare", "operation.execute", "line.register",
-    "town.develop", "recovery.prepare", "recovery.requalify", "recovery.resume",
+    "town.develop", "recovery.prepare", "recovery.requalify", "recovery.resume", "recovery.continue",
     "recovery.save_receipt",
     "content.industry_attest", "freight.industry_bootstrap", "freight.milestone",
     "passenger.milestone",

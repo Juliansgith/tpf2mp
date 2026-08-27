@@ -135,6 +135,11 @@ function M.read(options)
   local networkRuntimeRequested = networkValidationRequested or manualNetwork
   local restoreResume = restoreResumeConfig(readEnvironment,
     environmentEnabled("TPF2MP_RESTORE_RESUME"))
+  local matchFingerprint = string.lower(tostring(
+    readEnvironment("TPF2MP_MATCH_FINGERPRINT") or ""))
+  if not matchFingerprint:match("^[0-9a-f]+$") or #matchFingerprint ~= 64 then
+    matchFingerprint = ""
+  end
   -- The two-process validator and the human lab use the same exact processes.
   -- Once PowerShell has independently accepted both validation records it
   -- writes this per-peer marker. Both Lua states then leave validator-only GUI
@@ -185,6 +190,15 @@ function M.read(options)
     automaticRecoveryPrepare = manualNetwork
       and markerValue(root, "prepare-restore") == "ready",
     restoreResume = restoreResume,
+    -- Launcher-managed shared saves use one of two explicit paths: a
+    -- receipt-bound restore plan, or an exact-clone continuation that must
+    -- establish a fresh all-peer checkpoint before gameplay. This flag is an
+    -- authorization request only; state migration still rejects dirty,
+    -- faulted, uninitialised, or fingerprint-unbound source saves.
+    continueSavedMatch = manualNetwork
+      and environmentEnabled("TPF2MP_CONTINUE_SAVED_MATCH")
+      and restoreResume == nil,
+    matchFingerprint = matchFingerprint,
     operationalCapture = operationalCapture,
     -- Agent presentation policy is match content; the label and its
     -- fingerprint travel into state so peers can compare them.

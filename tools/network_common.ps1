@@ -442,7 +442,9 @@ function Find-Tpf2mpPausedWakeEvidence {
             }
             $actionProperty = $message.payload.PSObject.Properties['action']
             $actionType = if ($actionProperty) { [string]$actionProperty.Value.type } else { '' }
-            if ($actionType -in @('recovery.resume', 'match.initialise')) { return $file.FullName }
+            if ($actionType -in @('recovery.resume', 'recovery.continue', 'match.initialise')) {
+                return $file.FullName
+            }
         }
         catch { }
     }

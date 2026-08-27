@@ -238,6 +238,12 @@ if ($Role -eq 'Host' -and $saveSyncPort) {
         '--save-sync-status', $saveSyncStatus
     )
 }
+if ($Role -eq 'Host' -and $StartingSave -and -not $restorePlanPath) {
+    # The sequencer accepts either a fresh match.initialise or an exact-save
+    # recovery.continue as the first authority boundary. The game state—not a
+    # filename heuristic—chooses between them and both require a checkpoint.
+    $companionArgs += '--saved-match-auto'
+}
 $companionCommandLine = ConvertTo-Tpf2mpCommandLine (@($companion.Prefix) + $companionArgs)
 $companionProcess = Start-Process -FilePath $companion.FilePath -ArgumentList $companionCommandLine `
     -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -256,6 +262,7 @@ $state = [ordered]@{
     townDevelopment = $townDevelopmentEnabled
     restorePlan = $restorePlanPath
     restoreBoundarySeq = if ($restorePlanData) { $restorePlanData.boundarySeq } else { $null }
+    savedMatchAuto = [bool]($StartingSave -and -not $restorePlanData)
     startingCompanyPlayerIds = $startingCompanyPlayerIds
     startingSave = $startingSaveOriginal
     pinnedStartingSave = if ($pinnedSave) { $pinnedSave.savePath } else { $null }
@@ -383,8 +390,10 @@ try {
             -BridgePath $bridge -SessionRoot $sessionRoot `
             -StagedSaveBaseName $(if ($stagedSave) { $stagedSave.baseName } else { $null }) `
             -StartingCompanyPlayerIds $startingCompanyPlayerIds `
+            -MatchFingerprint $fingerprint `
             -RestorePlan $restorePlanData -RequireMenuEntry -StartNetwork `
-            -ManualNetwork:([bool]$stagedSave)
+            -ManualNetwork:([bool]$stagedSave) `
+            -ContinueSavedMatch:([bool]($stagedSave -and -not $restorePlanData))
         $gameProcess = $launch.process
         $state.gamePid = $gameProcess.Id
         $state.gameStartedAtUtc = $gameProcess.StartTime.ToUniversalTime().ToString('o')

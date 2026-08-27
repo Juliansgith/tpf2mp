@@ -161,7 +161,7 @@ function M.render(gui, snapshot, options)
     local capture = gui.nativeBuildCapture or {}
     local constructionBusy = constructionSubmission.reason(snapshot)
     lines[#lines + 1] = string.format(
-      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | busy inputs rejected %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",
+      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | busy construction clicks pending %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",
       constructionBusy and ("construction locked: " .. constructionBusy)
         or (gui.proposalReplayQuarantine and "replay settling"
         or (gui.pendingNetworkBuildSuppression and "settling click"
@@ -172,7 +172,7 @@ function M.render(gui, snapshot, options)
       tonumber(capture.previewFallbacks) or 0,
       tonumber(capture.duplicates) or 0,
       tonumber(capture.orphaned) or 0,
-      tonumber(capture.busyRejected) or 0,
+      tonumber(capture.busyDeferred) or 0,
       tonumber(capture.constructionPreviewsProjected) or 0,
       tonumber(capture.constructionPreviewsSkipped) or 0,
       tonumber(capture.replayPreviewsQuarantined) or 0,

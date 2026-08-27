@@ -50,6 +50,7 @@ local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local faultRecoveryRuntimeModule = require "tpf2_mp/fault_recovery_runtime"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
 local restoreResumeRuntimeModule = require "tpf2_mp/restore_resume_runtime"
+local savedMatchContinuationRuntimeModule = require "tpf2_mp/saved_match_continuation_runtime"
 local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
 local publicSnapshotModule = require "tpf2_mp/public_snapshot"
 local researchReportModule = require "tpf2_mp/research_report"
@@ -64,7 +65,7 @@ local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registrati
 local stateRetention = require "tpf2_mp/state_retention"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 33
+local STATE_VERSION = 34
 local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
 local configReader = runtimeConfig.newReader()
@@ -188,6 +189,11 @@ local recoveryNativeSaveRuntime = recoveryNativeSaveRuntimeModule.new({
   coreDigest = coreDigest,
 })
 local restoreResumeRuntime = restoreResumeRuntimeModule.new({ getState = function() return state end, coreDigest = coreDigest })
+local savedMatchContinuationRuntime = savedMatchContinuationRuntimeModule.new({
+  getState = function() return state end,
+  config = config,
+  coreDigest = coreDigest,
+})
 local balanceOf
 local accountOf
 
@@ -2054,8 +2060,8 @@ end
 handlers["checkpoint.export"] = function(action)
   return recoveryPrepareRuntime.manualCheckpoint(action)
 end
-handlers["recovery.prepare"], handlers["recovery.requalify"], handlers["network.checkpoint_request"], handlers["recovery.resume"] =
-  recoveryPrepareRuntime.prepare, faultRecoveryRuntime.begin, recoveryPrepareRuntime.checkpointRequest, restoreResumeRuntime.apply
+handlers["recovery.prepare"], handlers["recovery.requalify"], handlers["network.checkpoint_request"], handlers["recovery.resume"], handlers["recovery.continue"] =
+  recoveryPrepareRuntime.prepare, faultRecoveryRuntime.begin, recoveryPrepareRuntime.checkpointRequest, restoreResumeRuntime.apply, savedMatchContinuationRuntime.apply
 
 handlers["native.observed"] = function(action, eventId)
   local capture = state.probes.capture
@@ -2582,6 +2588,10 @@ local function normaliseForNetwork(action)
   elseif copy.type == "recovery.resume" then
     local restoreError; copy, restoreError = restoreResumeRuntime.normalise(copy)
     if not copy then return nil, restoreError end
+  elseif copy.type == "recovery.continue" then
+    local continuationError; copy, continuationError =
+      savedMatchContinuationRuntime.normalise(copy)
+    if not copy then return nil, continuationError end
   elseif copy.type == "content.industry_attest" then
     local contentError; copy, contentError = industryContentRuntime.normaliseAction(
       copy, state.bridge.peerId)
@@ -2734,7 +2744,8 @@ applyCommitted = function(action, actor, commitSeq)
   trimEvents()
   local duplicateInitialise = action.type == "match.initialise" and type(result) == "table" and result.alreadyInitialized == true
   if success and not duplicateInitialise
-    and (action.type == "match.initialise" or action.type == "recovery.resume") then
+    and (action.type == "match.initialise" or action.type == "recovery.resume"
+      or action.type == "recovery.continue") then
     local checkpointed, checkpointError =
       checkpointRuntime.initialActionCheckpoint(action, authoritySeq)
     if not checkpointed then
@@ -2746,6 +2757,15 @@ applyCommitted = function(action, actor, commitSeq)
     -- structural boundary.  Queueing here also avoids submitting a nested
     -- intent from inside match.initialise itself.
     autoRegisterExistingServices(action.reason)
+  elseif success and action.type == "network.checkpoint_outcome"
+    and savedMatchContinuationRuntime.afterCheckpoint(action) then
+    diagnosticLog("saved-match-continuation-checkpoint", {
+      success = action.success == true,
+      boundarySeq = action.boundarySeq,
+      convergenceKey = action.convergenceKey,
+      error = action.success ~= true and action.errorCode or nil,
+      tick = state.tick,
+    })
   elseif success and action.type == "network.proposal_outcome"
     and (action.success == true or action.recoverable == true) and authoritySeq then
     local reason = (action.success == true and "physical-consensus:" or "physical-rejection:")
@@ -2857,6 +2877,12 @@ networkIntentController = networkIntentRuntimeModule.new({
   physicalPrerequisite = function(action)
     return networkClock and networkClock.operationPrerequisite(action) or nil
   end,
+  physicalPrerequisiteResult = function(...)
+    if networkClock then return networkClock.operationPrerequisiteResult(...) end
+  end,
+  noteClockRequest = function(action)
+    if networkClock then return networkClock.noteClockRequest(action) end
+  end,
   ignoreDuplicateInitialise = function(action) return matchInitialisePolicy.ignoreDuplicateSubmission(state, action, diagnosticLog, publishSnapshot) end,
 })
 submitIntent = networkIntentController.submit
@@ -2872,6 +2898,9 @@ networkClock = networkClockRuntimeModule.new({
   awaitingOrder = networkIntentController.awaitingOrder,
   pendingBarrierReason = networkPendingBarrierReason,
   localWorkState = networkIntentController.localWorkState,
+  maintainSavedMatchContinuation = function(bootstrap, deps)
+    return savedMatchContinuationRuntime.maintain(bootstrap, deps)
+  end,
 })
 freezeNetworkGame = networkClock.freezeGame
 freezeNetworkCalendar = networkClock.freezeCalendar
@@ -2911,6 +2940,7 @@ local networkPump = networkPumpRuntimeModule.new({
   industryContent = industryContentRuntime, freightIndustry = freightIndustryRuntime,
   world = world, localWorkState = networkIntentController.localWorkState,
   submitIntent = submitIntent, performance = performanceRuntime,
+  continuationFenced = savedMatchContinuationRuntime.fenced,
 })
 local pumpNetworkBridge = networkPump.pump
 

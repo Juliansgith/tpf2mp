@@ -150,6 +150,68 @@ local function restoreResumeValidation(saved, cfg)
   return true, util.deepCopy(anchor)
 end
 
+local function savedMatchContinuationValidation(saved, cfg)
+  local savedWorld = type(saved.world) == "table" and saved.world or nil
+  if saved.networkMode ~= "network" or saved.initialized ~= true
+    or type(saved.match) ~= "table" or saved.match.status ~= "running" then
+    return false, "source save is not a running initialized network match"
+  end
+  if type(savedWorld) ~= "table" or type(savedWorld.proposalConsensus) ~= "table"
+    or type(savedWorld.operationConsensus) ~= "table"
+    or type(savedWorld.checkpointConsensus) ~= "table" then
+    return false, "source save is missing canonical consensus state"
+  end
+  local sourceSession = tostring(saved.bridge and saved.bridge.sessionId or "")
+  if #sourceSession < 1 or #sourceSession > 64
+    or not sourceSession:match("^[%w][%w%._%-]*$") then
+    return false, "source save has no portable network session identity"
+  end
+  if type(cfg.matchFingerprint) ~= "string"
+    or not cfg.matchFingerprint:match("^[0-9a-f]+$")
+    or #cfg.matchFingerprint ~= 64 then
+    return false, "launcher did not bind the exact starting-save manifest"
+  end
+  local ledger = type(saved.finance) == "table"
+    and finance.ensureNetworkAccounts(saved.finance) or nil
+  if type(ledger) ~= "table" or ledger.initialized ~= true then
+    return false, "source save has no initialized canonical account ledger"
+  end
+  for _, lane in ipairs({
+    { name = "proposal", value = savedWorld.proposalConsensus },
+    { name = "operation", value = savedWorld.operationConsensus },
+    { name = "checkpoint", value = savedWorld.checkpointConsensus },
+  }) do
+    local records = type(lane.value) == "table"
+      and (lane.value.byId or lane.value.byBoundary) or {}
+    for _, item in pairs(records or {}) do
+      if type(item) == "table" and item.status == "pending" then
+        return false, "source save contains an unfinished " .. lane.name .. " consensus barrier"
+      end
+    end
+    if type(lane.value) == "table" and lane.value.sessionFault then
+      return false, "source save contains a " .. lane.name .. " session fault"
+    end
+  end
+  for _, lane in ipairs({
+    { name = "proposal", value = savedWorld.proposals },
+    { name = "operation", value = savedWorld.operations },
+  }) do
+    for _, item in pairs(type(lane.value) == "table" and lane.value.byId or {}) do
+      if type(item) == "table" and (item.status == "pending" or item.status == "queued") then
+        return false, "source save contains unfinished native " .. lane.name .. " work"
+      end
+    end
+  end
+  if util.tableCount(savedWorld.originResidueCustody or {}) > 0 then
+    return false, "source save contains an origin-applied native mutation without custody"
+  end
+  return true, {
+    lastAgreed = util.deepCopy(savedWorld.checkpointConsensus
+      and savedWorld.checkpointConsensus.lastAgreed or nil),
+    accountCount = util.tableCount(ledger.accounts or {}),
+  }
+end
+
 function M.new(cfg, versions)
   local STATE_VERSION = assert(versions and versions.stateVersion, "stateVersion is required")
   local CHECKPOINT_VERSION = assert(versions and versions.checkpointVersion, "checkpointVersion is required")
@@ -467,6 +529,35 @@ function M.migrate(saved, context)
     -- retaining its clock generation would reject the new host's generation 1.
     saved.world.checkpointConsensus = nil
     saved.world.networkClock = nil
+  elseif cfg.startNetwork and networkSessionChanged and cfg.continueSavedMatch == true
+    and saved.networkMode == "network" and saved.initialized == true then
+    local valid, evidenceOrError = savedMatchContinuationValidation(saved, cfg)
+    saved.world = saved.world or {}
+    saved.recovery = saved.recovery or { schemaVersion = 1 }
+    saved.recovery.restoreResume = nil
+    saved.recovery.freshNetworkBootstrap = nil
+    saved.recovery.savedMatchContinuation = {
+      status = valid and "validated" or "failed",
+      fromSession = tostring(priorSessionId or ""),
+      sourcePeer = tostring(saved.bridge and saved.bridge.peerId or ""),
+      sourceStateVersion = util.integer(saved.version, 0),
+      sessionId = tostring(cfg.sessionId or ""),
+      peerId = tostring(cfg.peerId or ""),
+      saveFingerprint = tostring(cfg.matchFingerprint or ""),
+      sourceEvidence = valid and evidenceOrError or nil,
+      error = not valid and tostring(evidenceOrError) or nil,
+    }
+    saved.recovery.anchorPreparation = nil
+    -- Checkpoint and clock generations are sequencer-session identities. The
+    -- durable economy/canonical/finance model above is retained verbatim, but
+    -- the new room must prove it again from boundary one.
+    saved.world.checkpointConsensus = nil
+    saved.world.networkClock = nil
+    if valid then
+      saved.lastError = nil
+    else
+      saved.lastError = "saved match continuation refused: " .. tostring(evidenceOrError)
+    end
   elseif cfg.startNetwork
     and (saved.networkMode ~= "network" or networkSessionChanged) then
     local ownershipHints = startingOwnershipHints(saved)
@@ -769,8 +860,9 @@ function M.migrate(saved, context)
     saved.validation = util.deepCopy(defaults.validation)
   end
   saved.validation.kind = saved.validation.kind or defaults.validation.kind
-  if saved.recovery and saved.recovery.restoreResume
-    and saved.recovery.restoreResume.status == "validated" then
+  if saved.recovery and ((saved.recovery.restoreResume
+      and saved.recovery.restoreResume.status == "validated")
+    or type(saved.recovery.savedMatchContinuation) == "table") then
     saved.validation.sessionId = cfg.sessionId
     saved.validation.peerId = cfg.peerId
   else

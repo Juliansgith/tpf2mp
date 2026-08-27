@@ -246,9 +246,26 @@ if (-not $sourceCheckText.Contains('Development source tree detected') `
 
 $installedRoot = Join-Path $caseRoot 'installed-root'
 $installedMods = Join-Path $caseRoot 'installed mods'
-$installOutput = @(& (Join-Path $ProjectRoot 'tools\update_release.ps1') `
-    -BundleRoot $currentFixture -InstallRoot $installedRoot -LocalModsPath $installedMods `
-    -ArchivePath $nextZip -ExpectedSha256 $nextHash 6>&1)
+# Keep this integration test hermetic when a developer is running a live game.
+# The production updater and packaged installer still use the real process guard;
+# only this dynamic test scope hides the two protected executable names.
+function Get-Process {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][string[]] $Name)
+
+    if ($Name -and @($Name | Where-Object { $_ -notin @('TransportFever2', 'tpf2mp') }).Count -eq 0) {
+        return
+    }
+    Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
+}
+try {
+    $installOutput = @(& (Join-Path $ProjectRoot 'tools\update_release.ps1') `
+        -BundleRoot $currentFixture -InstallRoot $installedRoot -LocalModsPath $installedMods `
+        -ArchivePath $nextZip -ExpectedSha256 $nextHash 6>&1)
+}
+finally {
+    Remove-Item -LiteralPath Function:\Get-Process -Force
+}
 if (-not ($installOutput -join "`n").Contains('0.38.0-alpha -> 0.39.0-alpha')) {
     throw 'End-to-end local update did not complete its installer handoff.'
 }

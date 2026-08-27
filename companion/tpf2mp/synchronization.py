@@ -434,6 +434,18 @@ class SynchronizationCoordinator:
                         float(payload["gameTime"]) - float(prior["gameTime"])
                     ) / elapsed
         self.host.clock_health[peer] = sample
+        # A native pass-through can fail before its canonical intent ever
+        # reaches the sequencer. In that case only the faulting game's schema-4
+        # health can initially name the unsafe, already-applied residue. Once
+        # that peer has consumed the complete ordered tail, promote the local
+        # fault into one durable all-peer network.sync_fault instead of leaving
+        # the other game running and allowing an unsafe save.
+        local_fault = str(payload.get("faultCode") or "")
+        latest_ordered = max(0, self.host.next_seq - 1)
+        if local_fault and not self.host.session_fault \
+                and int(payload.get("lastCommitSeq", -1)) >= latest_ordered:
+            self.fault_session("authored", local_fault)
+            return
         self.maybe_adjust_clock(now)
 
     def record_clock_reached(self, message: Mapping[str, Any], restoring: bool = False) -> None:

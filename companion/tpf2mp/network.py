@@ -53,6 +53,7 @@ HOST_AUTHORITY_ACTIONS = {
     "freight.milestone",
     "passenger.milestone",
     "recovery.resume",
+    "recovery.continue",
 }
 
 # Company-bound actions may originate on either peer; owners carry their service facts.
@@ -70,6 +71,7 @@ class CommitHost(HostIntentMixin):
         completion_timeout: float = 45.0,
         require_connected_peers: bool = True,
         restore_plan: Mapping[str, Any] | None = None,
+        saved_match_auto: bool = False,
     ) -> None:
         self.bridge = bridge
         self.bind = bind
@@ -121,7 +123,9 @@ class CommitHost(HostIntentMixin):
         self.clock_controls = self.consensus.clock_controls
         self.synchronization = SynchronizationCoordinator(self)
         self.reconnect = ReconnectCoordinator(self)
-        self.restore_session = RestoreSessionCoordinator(self, restore_plan)
+        self.restore_session = RestoreSessionCoordinator(
+            self, restore_plan, saved_match_auto=saved_match_auto
+        )
         self.anchor = AnchorCoordinator(self)
         self.anchor_preparation = AnchorPreparationCoordinator(self)
         self.anchor_requests = AnchorRequestStore(self.bridge)
@@ -201,7 +205,11 @@ class CommitHost(HostIntentMixin):
                     elif action.get("type") == "operation.execute":
                         self._track_operation(message)
                     elif action.get("type") == "match.initialise":
-                        self._track_checkpoint_boundary(seq, "match-initialised")
+                        tracked = self.restore_session.track_commit(message)
+                        if tracked is None:
+                            self._track_checkpoint_boundary(seq, "match-initialised")
+                    elif action.get("type") == "recovery.continue":
+                        self.restore_session.track_commit(message)
                     elif action.get("type") == "town.develop":
                         self._track_checkpoint_boundary(seq, "town-development")
                     elif action.get("type") == "freight.industry_bootstrap":
@@ -575,7 +583,11 @@ class CommitHost(HostIntentMixin):
             elif action["type"] == "operation.execute":
                 self._track_operation(commit)
             elif action["type"] == "match.initialise":
-                self._track_checkpoint_boundary(seq, "match-initialised")
+                tracked = self.restore_session.track_commit(commit)
+                if tracked is None:
+                    self._track_checkpoint_boundary(seq, "match-initialised")
+            elif action["type"] == "recovery.continue":
+                self.restore_session.track_commit(commit)
             elif action["type"] == "town.develop":
                 self._track_checkpoint_boundary(seq, "town-development")
             elif action["type"] == "freight.industry_bootstrap":

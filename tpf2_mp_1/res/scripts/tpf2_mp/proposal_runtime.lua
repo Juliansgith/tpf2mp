@@ -15,6 +15,7 @@ local proposalWorkScheduler = require "tpf2_mp/proposal_work_scheduler"
 local constructionVerificationModule = require "tpf2_mp/construction_verification_runtime"
 local constructionReplayState, constructionDeltaAttestation = require "tpf2_mp/construction_replay_state", require "tpf2_mp/construction_delta_attestation"
 local constructionOutputOrder = require "tpf2_mp/construction_output_order"
+local derivedStation = require "tpf2_mp/proposal_derived_station_runtime"
 
 local M = {}
 
@@ -805,6 +806,8 @@ function M.new(deps)
     local bindingBackup = proposalBindingBackup()
     retireProposalInputs(transaction, record.localInputs)
     local bound, bindError = bindProposalOutputs(transaction, record.eventId, matched, record.nativeOwnerPlayerId)
+    if bound then bound, bindError = derivedStation.applyIfNeeded(state, record, bound, payload,
+      proposalCodec.MAX_CONSTRUCTION_NODES) end
     if not bound then
       restoreProposalBindings(bindingBackup)
       return proposalFailure(record, tostring(bindError))

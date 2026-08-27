@@ -19,6 +19,7 @@ CHECKPOINTED_COMMIT_TYPES = frozenset({
     "probe.structural",
     "economy.settle",
     "recovery.resume",
+    "recovery.continue",
     "recovery.requalify",
 })
 

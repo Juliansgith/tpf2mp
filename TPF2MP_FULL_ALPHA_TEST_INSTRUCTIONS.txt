@@ -4,7 +4,7 @@ TPF2MP FULL PLAYABLE-ALPHA TEST INSTRUCTIONS
 Target
 ------
 Transport Fever 2 Build 35924 (Windows x64)
-TPF2MP 0.41.3-alpha or the current development build
+TPF2MP 0.41.4-alpha or the current development build
 Two players over the secure relay, trusted LAN/private VPN, or two instances
 on one PC
 
@@ -189,6 +189,11 @@ P1 builds:
 [ ] A rail depot connected to the track.
 [ ] A signal and a waypoint.
 [ ] One plain construction such as a bench, lamp, or fence.
+[ ] One large bus/tram terminal connected to a road while demolishing a house.
+    Repeat with 10 m, 20 m, and 30 m lengths, at least one asymmetric left/right
+    platform count, and no-tram / tram / electrified-tram track modes.
+[ ] One truck terminal connected to a road while demolishing a house.
+[ ] One ordinary curbside bus stop and one curbside tram stop.
 
 For every item, verify:
 
@@ -216,6 +221,9 @@ Deletion/editing regression checks:
 [ ] Perform one modular station edit and then remove that module.
 [ ] Confirm each successful result is identical on both peers.
 [ ] Confirm a rejected edit does not poison later building or bulldozing.
+[ ] Create a two-stop bus line through the ordinary Line Manager, add/remove a
+    stop, then delete it. Repeat for tram. Neither line may fault on an
+    ambiguous station group.
 
 Generation-bound transition matrix (use a disposable area and do each in this
 exact order, waiting for READY only where stated):

@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-26 after prototype `0.41.3-alpha`, state schema `33`,
+Last updated: 2026-08-27 after prototype `0.41.4-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -49,6 +49,15 @@ TPF2MP contains two usable but differently mature modes:
 
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
+
+State schema 34 adds exact-save continuation for ordinary rehosting. A clean,
+initialized network save retains its authoritative company accounts, economy,
+ownership, and canonical line/station/vehicle bindings in a new room; both
+roles attest the synchronized save and migrated core, then converge a fresh
+checkpoint before gameplay. Dirty or faulted saves fail closed. Stock manager
+modal pauses are also filtered from player clock intent, while each running
+line/vehicle mutation uses one scoped shared hold that drains its complete
+operation/checkpoint tail before restoring the prior agreed speed.
 
 Prototype 0.40 adds the preferred Internet transport without moving authority
 out of Player 1. Host and Join make outbound authenticated WSS connections to

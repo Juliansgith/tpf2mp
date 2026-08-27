@@ -1,5 +1,5 @@
 local M = {
-  REJECT_IF_BUSY = "reject-if-busy",
+  COALESCE_LATEST = "coalesce-latest-construction",
 }
 
 local function pending(section)
@@ -36,7 +36,7 @@ end
 
 function M.message(reason)
   return "TPF2MP: " .. tostring(reason or "multiplayer is synchronising")
-    .. "; wait before placing, editing, or bulldozing a construction. This input was not queued."
+    .. "; the newest construction click is pending. Another click replaces it instead of creating delayed duplicates."
 end
 
 function M.refresh(gui, snapshot)
@@ -46,7 +46,7 @@ function M.refresh(gui, snapshot)
 end
 
 function M.queuePolicy(gui, snapshot)
-  return gui.proposalSnapshotHasConstructionChange(snapshot) and M.REJECT_IF_BUSY or nil
+  return gui.proposalSnapshotHasConstructionChange(snapshot) and M.COALESCE_LATEST or nil
 end
 
 local function capturedConstruction(gui, pending)
@@ -72,32 +72,26 @@ function M.handleBuilderEvent(gui, id, isCreate, isApply, param, diagnosticLog)
         and gui.pendingNetworkBuildSuppression.pending)
   end
   if not construction then return false end
-  if isCreate then
-    gui.blockedConstructionApplyUntilFrame = (gui.frames or 0) + 180
-    if type(gui.invalidateBuildCorrelation) == "function" then
-      gui.invalidateBuildCorrelation("construction-rejected-while-busy", {
-        clearConstruction = true,
-      })
-    else
-      gui.builderContext = nil
-    end
-  end
+  if not isApply then return false end
   local capture = gui.nativeBuildCapture or {}
   local firstNotice = gui.constructionBusyNoticeActive ~= true
-  if firstNotice then capture.busyRejected = (capture.busyRejected or 0) + 1 end
+  if firstNotice then capture.busyDeferred = (capture.busyDeferred or 0) + 1 end
   gui.constructionBusyNoticeActive = true
   gui.nativeBuildCapture = capture
   local message = M.message(reason)
   gui.lastError = message
   if firstNotice then
     gui.lastConstructionBusyDiagnosticFrame = gui.frames or 0
-    diagnosticLog("construction-input-not-queued", {
+    diagnosticLog("construction-input-coalesced", {
       sourceId = tostring(id or ""), reason = reason,
       builderEvent = isApply and "builder.apply" or "builder.proposalCreate",
-      rejected = capture.busyRejected,
+      deferred = capture.busyDeferred,
     })
   end
-  return true, { errorMessages = { message }, warnings = {} }
+  -- Do not veto the builder callback. The native visitor still suppresses the
+  -- local mutation, and the engine-side policy retains only the latest exact
+  -- click until the ordered lane is free.
+  return false
 end
 
 return M

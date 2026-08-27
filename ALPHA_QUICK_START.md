@@ -1,6 +1,6 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.41.3-alpha` is a restricted two-player competitive build for the
+TPF2MP `0.41.4-alpha` is a restricted two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
 trust each other. Its preferred transport is the TPF2MP secure relay: both
 players make outbound WSS connections, so neither player opens a port. Direct
@@ -68,10 +68,14 @@ lines, and vehicles remain protected. Construction and ordinary line/vehicle
 commands are ordered by Player 1 and replayed on both worlds before money or a
 checkpoint commits.
 
-Starting-save sync is for a fresh normal match. It is not used for
-receipt-bound restore: each role must load its own attested restore save. The
-ordinary match fingerprint independently rejects a changed or incomplete
-synchronized copy before gameplay begins.
+Starting-save sync can create a fresh match or continue a clean initialized
+multiplayer save. Continuation preserves both canonical wallets and all
+line/station/vehicle bindings, then requires a new two-peer checkpoint before
+play. A faulted save or one captured with unfinished physical work is refused
+instead of being reset to starting cash. This normal continuation path is not
+receipt-bound fault restore: each role must load its own attested restore save
+for that workflow. The ordinary match fingerprint independently rejects a
+changed or incomplete synchronized copy before gameplay begins.
 
 The relay retains bounded protocol metadata and redacted structured logs from
 both clients under the support ID. It does not retain save bytes, command

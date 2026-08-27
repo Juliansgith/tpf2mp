@@ -47,6 +47,14 @@ def parser() -> argparse.ArgumentParser:
     host.add_argument("--audit", type=Path)
     host.add_argument("--manifest", type=Path)
     host.add_argument("--restore-plan", type=Path)
+    host.add_argument(
+        "--saved-match-auto",
+        action="store_true",
+        help=(
+            "fence the first boundary until the loaded game chooses either "
+            "fresh match initialisation or exact-save continuation"
+        ),
+    )
     host.add_argument("--required-peer", action="append", default=None,
                       help="pin a required physical-consensus peer (repeatable; defaults to player1/player2)")
     host.add_argument(
@@ -244,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
                     required_peers=tuple(args.required_peer) if args.required_peer else None,
                     completion_timeout=args.completion_timeout,
                     restore_plan=restore_plan,
+                    saved_match_auto=args.saved_match_auto,
                 ).run()
             finally:
                 if save_sync is not None:
