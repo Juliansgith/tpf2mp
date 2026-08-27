@@ -1,5 +1,11 @@
 # Atomic street-terminal collateral replay - 2026-08-27
 
+> Superseded the same day by
+> [Street-terminal typed table-converter crash](STREET_TERMINAL_TYPED_TABLE_CONVERTER_CRASH_2026-08-27.md).
+> The live 0.41.6 typed path crashed before `BuildProposalVisitor`. The targeted
+> collateral-only helper barrier documented here remains; single-proposal typed
+> replay for collateral constructions does not.
+
 ## Live failure
 
 In relay session `mp-748086c41a5e1f9f`, Player 1 placed a stock modular bus

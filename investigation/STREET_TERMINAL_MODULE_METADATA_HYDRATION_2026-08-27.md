@@ -1,5 +1,11 @@
 # Street-terminal module metadata hydration - 2026-08-27
 
+> Safety addendum: relay session `mp-5e5d4c732aae691e` later proved that direct
+> repository-table references can crash Build 35924's Lua-to-command converter.
+> Hydration now creates a bounded pointer-free copy and fails before the native
+> factory on opaque values. See
+> [Street-terminal typed table-converter crash](STREET_TERMINAL_TYPED_TABLE_CONVERTER_CRASH_2026-08-27.md).
+
 ## Live failure
 
 In relay session `mp-23bcbc168adb0862`, Player 1 attempted several large

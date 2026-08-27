@@ -1741,10 +1741,12 @@ test("proposal codec replays topology and collateral construction demolition ato
   truthy(tostring(duplicateError):find("source cannot also be collateral", 1, true), duplicateError)
 end)
 
-test("construction builds keep collateral and replacement topology in one GUI proposal", function()
-  -- Live relay regression mp-748086c41a5e1f9f: a modular bus terminal
-  -- demolished its two houses through the helper, then waited forever for the
-  -- town-road edge that only the not-yet-issued station proposal could replace.
+test("construction collateral uses the targeted staged helper boundary", function()
+  -- Relay regressions mp-748086c41a5e1f9f and mp-5e5d4c732aae691e define both
+  -- sides of this boundary.  The helper must wait only for the two houses (not
+  -- the road replaced by the eventual terminal); the typed ConstructionEntity
+  -- path must not receive collateral module data because Build 35924 crashes
+  -- in its native Lua-table converter before BuildProposalVisitor.
   local raw = linearProposal(-1, -2, -3, "street", 4, false)
   raw.streetProposal.edgesToRemove = { 77 }
   raw.__constructionAdditions = { {
@@ -1800,10 +1802,10 @@ test("construction builds keep collateral and replacement topology in one GUI pr
       { kind = "edge", cid = "edge:pre:town-road", localId = 77 },
     },
   }
-  truthy(constructionReplayState.isExact(record, proposalCodec),
-    "collateral construction was routed back to split helper replay")
-  truthy(constructionReplayState.requiresAtomic(record, proposalCodec),
-    "collateral/topology construction permitted a non-atomic helper fallback")
+  equal(constructionReplayState.isExact(record, proposalCodec), false,
+    "collateral construction escaped the crash-safe helper replay boundary")
+  equal(constructionReplayState.requiresAtomic(record, proposalCodec), false,
+    "helper-owned collateral was incorrectly classified as typed atomic replay")
   local collateralInputs = assert(constructionReplayState.collateralInputs(record))
   equal(#collateralInputs, 2)
   equal(collateralInputs[1].localId, 901)

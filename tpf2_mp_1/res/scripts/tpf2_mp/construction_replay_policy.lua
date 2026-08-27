@@ -6,13 +6,19 @@ function M.isExact(record, codec)
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
   local edgeObjects = type(transaction) == "table"
     and type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
-  -- Fresh builds, including collateral removals and replacement topology, must
-  -- remain in one GUI BuildProposal. Typed depots still crash stock selection;
-  -- depots, upgrades, and removals retain the proven helper path.
+  -- Typed ConstructionEntity replay is safe only while it owns no existing
+  -- construction roots.  Build 35924 crashes inside its Lua-table converter
+  -- before BuildProposalVisitor when a module-bearing construction and its
+  -- collateral are materialised together.  Collateral therefore retains the
+  -- staged helper path: bulldoze only the declared roots, wait for those roots
+  -- (not replacement road/track topology), then build at the absolute capture
+  -- transform.  Typed depots still crash stock selection; depots, upgrades,
+  -- removals, and collateral builds stay on the proven helper boundary.
   return type(transaction) == "table"
     and transaction.schemaVersion == codec.CONSTRUCTION_SCHEMA_VERSION
     and type(construction) == "table" and construction.mode == "build"
     and construction.kind ~= "depot"
+    and #(construction.collateral or {}) == 0
     and #(edgeObjects.add or {}) == 0 and #(edgeObjects.retain or {}) == 0
     and not codec.isTopologyConstructionRemoval(transaction)
 end

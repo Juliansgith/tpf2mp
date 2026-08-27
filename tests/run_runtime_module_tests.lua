@@ -806,10 +806,12 @@ do
     "exact construction materialisation lost its typed payload or transform")
 
   local moduleProposal = fakeApi.type.SimpleProposal.new()
+  local resourceMetadata = { price = 37, customModFact = "preserved" }
+  local resourceUpdateParams = { value = 4 }
   fakeApi.res.moduleRep.get = function()
     return {
-      metadata = { price = 37, customModFact = "preserved" },
-      updateScript = { fileName = "construction/test.dynamic", params = { value = 4 } },
+      metadata = resourceMetadata,
+      updateScript = { fileName = "construction/test.dynamic", params = resourceUpdateParams },
     }
   end
   assert(constructionProposalMaterializer.apply(moduleProposal, {
@@ -826,6 +828,27 @@ do
       and hydrated.updateScript.fileName == "construction/test.dynamic"
       and hydrated.updateScript.params.value == 4,
     "construction replay did not hydrate module resource metadata/updateScript")
+  assert(hydrated.metadata ~= resourceMetadata
+      and hydrated.updateScript.params ~= resourceUpdateParams,
+    "construction replay forwarded engine-owned resource tables into native conversion")
+  resourceMetadata.price, resourceUpdateParams.value = 99, 99
+  assert(hydrated.metadata.price == 37 and hydrated.updateScript.params.value == 4,
+    "construction replay's hydrated native payload retained a resource-table alias")
+  fakeApi.res.moduleRep.get = function()
+    return { metadata = { invalid = function() end } }
+  end
+  local unsafeProposal = fakeApi.type.SimpleProposal.new()
+  local unsafe, unsafeError = constructionProposalMaterializer.apply(unsafeProposal, {
+    mode = "build", sourceCid = "", collateral = {},
+    fileName = "station/street/modular_terminal.con",
+    transform = transaction.constructions[1].transform,
+    params = { year = 1990, modules = {
+      [200001] = { name = "station/street/passenger_platform.module",
+        variant = 0, metadata = {} },
+    } },
+  }, { api = fakeApi, nativePlayerId = 7 })
+  assert(unsafe == nil and tostring(unsafeError):find("non%-portable function") ~= nil,
+    "opaque resource metadata was allowed to reach the native command converter")
   fakeApi.res.moduleRep.get = function() return { metadata = {} } end
 
   local stationTransaction = assert(validationStationProposalModule.transaction(
@@ -935,12 +958,12 @@ do
   depotRecord.transaction.constructions[1].fileName = "depot/train_depot_era_a.con"
   assert(not constructionReplayState.isExact(upgradeRecord, proposalCodec)
       and not constructionReplayState.isExact(removeRecord, proposalCodec)
-      and constructionReplayState.isExact(collateralRecord, proposalCodec)
-      and constructionReplayState.requiresAtomic(collateralRecord, proposalCodec)
+      and not constructionReplayState.isExact(collateralRecord, proposalCodec)
+      and not constructionReplayState.requiresAtomic(collateralRecord, proposalCodec)
       and not constructionReplayState.requiresAtomic(record, proposalCodec)
       and #collateralInputs == 1 and collateralInputs[1].localId == 71
       and not constructionReplayState.isExact(depotRecord, proposalCodec),
-    "construction replay routing lost atomic collateral or helper-only operation boundaries")
+    "construction replay routing lost its typed/helper safety boundaries")
 end
 
 do
