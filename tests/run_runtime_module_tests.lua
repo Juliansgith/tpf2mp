@@ -666,6 +666,20 @@ do
   })
   assert(pending == 1 and kinds.construction == 1 and lookups == 2,
     "construction settling did not use targeted component lookups for known entities")
+  local fallbackRuntime = constructionVerificationModule.new({
+    getState = function() return current end,
+    componentEntitySet = function(kind)
+      local result = {}
+      for entity in pairs(sets[kind] or {}) do result[entity] = true end
+      return result
+    end,
+    componentEntityExists = function() return nil, "targeted lookup unavailable" end,
+  })
+  local fallbackPending, fallbackKinds = fallbackRuntime.inputsPendingOrSnapshot({
+    { kind = "construction", localId = 10 }, { kind = "edge", localId = 99 },
+  })
+  assert(fallbackPending == 1 and fallbackKinds.construction == 1,
+    "construction settling did not preserve selected inputs through snapshot fallback")
   local first = runtime.signature({ node = { 1 }, edge = {} }, {})
   local second = runtime.signature({ node = { 2 }, edge = {} }, {})
   assert(first ~= second, "construction stability signature ignored same-count entity replacement")
@@ -691,6 +705,30 @@ do
   assert(command and commandError == nil and calledContext == nil and calledIgnore == true
       and metadata.ignoreSoftErrors == true,
     "atomic topology demolition did not preserve GUI soft-error acceptance")
+
+  local collateralBuild = {
+    schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+    nodes = {}, edges = {},
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = { "edge:pre:town-road" }, nodes = {} },
+    constructions = { {
+      mode = "build", kind = "station",
+      collateral = {
+        { kind = "construction", cid = "construction:pre:house-a" },
+        { kind = "construction", cid = "construction:pre:house-b" },
+      },
+    } },
+  }
+  local collateralCommand, collateralError, collateralMetadata =
+    guiBuildCommandFactory.make(
+      function(_, context, ignoreErrors)
+        calledContext, calledIgnore = context, ignoreErrors
+        return { proposal = { toRemove = { 82, 81 } } }
+      end,
+      {}, collateralBuild, { construction = { removalIds = { 81, 82 } } }, safeField)
+  assert(collateralCommand and collateralError == nil and calledContext == nil
+      and calledIgnore == true and collateralMetadata.ignoreSoftErrors == true,
+    "atomic construction collateral did not preserve GUI soft-error acceptance")
 
   local missing, missingError = guiBuildCommandFactory.make(
     function() return { proposal = { toRemove = { 81 } } } end,
@@ -886,14 +924,23 @@ do
   collateralRecord.transaction.constructions[1].collateral = {
     { kind = "construction", cid = "construction:pre:town-building" },
   }
+  collateralRecord.transaction.remove.edges = { "edge:pre:town-road" }
+  collateralRecord.localInputs = {
+    { kind = "construction", cid = "construction:pre:town-building", localId = 71 },
+    { kind = "edge", cid = "edge:pre:town-road", localId = 72 },
+  }
+  local collateralInputs = assert(constructionReplayState.collateralInputs(collateralRecord))
   local depotRecord = { transaction = util.deepCopy(transaction) }
   depotRecord.transaction.constructions[1].kind = "depot"
   depotRecord.transaction.constructions[1].fileName = "depot/train_depot_era_a.con"
   assert(not constructionReplayState.isExact(upgradeRecord, proposalCodec)
       and not constructionReplayState.isExact(removeRecord, proposalCodec)
-      and not constructionReplayState.isExact(collateralRecord, proposalCodec)
+      and constructionReplayState.isExact(collateralRecord, proposalCodec)
+      and constructionReplayState.requiresAtomic(collateralRecord, proposalCodec)
+      and not constructionReplayState.requiresAtomic(record, proposalCodec)
+      and #collateralInputs == 1 and collateralInputs[1].localId == 71
       and not constructionReplayState.isExact(depotRecord, proposalCodec),
-    "unproven construction upgrade/removal/collateral/depot escaped the helper fallback")
+    "construction replay routing lost atomic collateral or helper-only operation boundaries")
 end
 
 do

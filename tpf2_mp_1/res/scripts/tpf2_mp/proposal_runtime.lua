@@ -682,6 +682,14 @@ function M.new(deps)
     if record.status == "failed" then return false, util.deepCopy(record.result) end
     local exactConstruction = constructionReplayState.isExact(record, proposalCodec)
     if exactConstruction and payload.fallbackHelper == true and payload.worldUnchanged == true then
+      if constructionReplayState.requiresAtomic(record, proposalCodec) then
+        return proposalFailure(record, {
+          error = "atomic construction GUI replay is unavailable: "
+            .. tostring(payload.error or "typed proposal materialisation failed"),
+        }, {
+          rollbackLazyBindings = true,
+        })
+      end
       return true, constructionReplayState.fallback(record) end
     if payload.success ~= true then
       return proposalFailure(record, {
@@ -1089,19 +1097,6 @@ function M.new(deps)
     return nil
   end
 
-  function proposalPreparation.construction.pendingRemovalInputs(record, after)
-    local counts, total = {}, 0
-    for _, input in ipairs(record.localInputs or {}) do
-      local kind = tostring(input.kind or "")
-      local localId = tonumber(input.localId)
-      if localId and after[kind] and after[kind][localId] then
-        counts[kind] = (counts[kind] or 0) + 1
-        total = total + 1
-      end
-    end
-    return total, counts
-  end
-  
   function proposalPreparation.construction.reconcileChangedOutputs(record, bound, added, removed, pending)
     if pending.spec.mode ~= "upgrade" then
       for _, kind in ipairs({ "station", "station_group", "depot", "asset" }) do
@@ -1180,16 +1175,17 @@ function M.new(deps)
   finaliseCanonicalConstruction = function(record)
     local pending = record.constructionPending
     if pending.phase == "clearing-collateral" then
-      local pendingRemovalInputs, pendingRemovalKinds, targetedError =
-        constructionVerification.inputsPending(record.localInputs)
-      local after, captureError
+      local collateralInputs, collateralInputError =
+        constructionReplayState.collateralInputs(record)
+      if not collateralInputs then
+        return proposalFailure(record, tostring(collateralInputError))
+      end
+      -- Ignore topology inputs: only explicitly bulldozed collateral belongs
+      -- to this pre-build barrier; replacement edges retire in the build.
+      local pendingRemovalInputs, pendingRemovalKinds, verificationError =
+        constructionVerification.inputsPendingOrSnapshot(collateralInputs)
       if pendingRemovalInputs == nil then
-        after, captureError = constructionVerification.snapshot()
-        if not after then
-          return proposalFailure(record, tostring(captureError or targetedError))
-        end
-        pendingRemovalInputs, pendingRemovalKinds =
-          proposalPreparation.construction.pendingRemovalInputs(record, after)
+        return proposalFailure(record, tostring(verificationError))
       end
       if pendingRemovalInputs > 0 then
         if state.tick < pending.deadlineTick then
@@ -1255,7 +1251,7 @@ function M.new(deps)
     local ready = #candidateNodes == expectedNodes and #candidateEdges == expectedEdges
     local upgradeChanged = true
     local pendingRemovalInputs, pendingRemovalKinds =
-      proposalPreparation.construction.pendingRemovalInputs(record, after)
+      constructionVerification.inputsPendingInSnapshot(record.localInputs, after)
     if mode == "build" then
       ready = ready and rootSet[pending.rootEntity] == true
         and beforeRootSet[pending.rootEntity] ~= true and pendingRemovalInputs == 0

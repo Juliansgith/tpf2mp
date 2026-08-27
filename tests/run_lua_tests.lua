@@ -7,6 +7,7 @@ local hash = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 local canonical = require "tpf2_mp/canonical"
 local proposalCodec = require "tpf2_mp/proposal_codec"
+local constructionReplayState = require "tpf2_mp/construction_replay_state"
 local operationCodec = require "tpf2_mp/operation_codec"
 local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
 local economy = require "tpf2_mp/economy"
@@ -1738,6 +1739,122 @@ test("proposal codec replays topology and collateral construction demolition ato
   local duplicateOk, duplicateError = proposalCodec.validate(duplicate)
   equal(duplicateOk, false)
   truthy(tostring(duplicateError):find("source cannot also be collateral", 1, true), duplicateError)
+end)
+
+test("construction builds keep collateral and replacement topology in one GUI proposal", function()
+  -- Live relay regression mp-748086c41a5e1f9f: a modular bus terminal
+  -- demolished its two houses through the helper, then waited forever for the
+  -- town-road edge that only the not-yet-issued station proposal could replace.
+  local raw = linearProposal(-1, -2, -3, "street", 4, false)
+  raw.streetProposal.edgesToRemove = { 77 }
+  raw.__constructionAdditions = { {
+    fileName = "station/street/modular_terminal.con",
+    transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 100, 200, 5, 1 },
+    params = {
+      year = 1940, seed = 0, platL = 1, platR = 1,
+      length = 0, tramTrack = 0, paramX = 0, paramY = 0,
+      modules = {
+        [20009900] = {
+          name = "station/street/passenger_platform.module",
+          variant = 0, metadata = "<userdata>",
+        },
+        [20010000] = {
+          name = "station/street/passenger_platform.module",
+          variant = 0, metadata = "<userdata>",
+        },
+        [20015503] = {
+          name = "station/street/entrance_exit.module",
+          variant = 0, metadata = "<userdata>",
+        },
+      },
+    },
+  } }
+  raw.__constructionRemovals = { { entity = 902 }, { entity = 901 } }
+  local canonicalMap = {
+    [77] = "edge:pre:town-road",
+    [901] = "construction:pre:house-a",
+    [902] = "construction:pre:house-b",
+  }
+  local transaction, transactionError = proposalCodec.normalise(raw, "company:1", {
+    resolveCanonical = function(_, localId) return canonicalMap[localId] end,
+    entityKind = function(localId)
+      return localId == 77 and "edge" or "construction"
+    end,
+    constructionKind = function() return "station" end,
+    resourceName = function(kind, index)
+      return kind .. "/" .. tostring(index) .. ".lua"
+    end,
+    requireResourceName = true,
+  })
+  truthy(transaction, transactionError)
+  truthy(proposalCodec.validatePortable(transaction))
+  equal(transaction.constructions[1].mode, "build")
+  equal(#transaction.constructions[1].collateral, 2)
+  equal(transaction.remove.edges[1], "edge:pre:town-road")
+
+  local record = {
+    transaction = transaction,
+    localInputs = {
+      { kind = "construction", cid = "construction:pre:house-a", localId = 901 },
+      { kind = "construction", cid = "construction:pre:house-b", localId = 902 },
+      { kind = "edge", cid = "edge:pre:town-road", localId = 77 },
+    },
+  }
+  truthy(constructionReplayState.isExact(record, proposalCodec),
+    "collateral construction was routed back to split helper replay")
+  truthy(constructionReplayState.requiresAtomic(record, proposalCodec),
+    "collateral/topology construction permitted a non-atomic helper fallback")
+  local collateralInputs = assert(constructionReplayState.collateralInputs(record))
+  equal(#collateralInputs, 2)
+  equal(collateralInputs[1].localId, 901)
+  equal(collateralInputs[2].localId, 902)
+
+  local fakeApi = {
+    type = {
+      SimpleProposal = {
+        ConstructionEntity = { new = function() return {} end },
+        new = function() return {
+          constructionsToAdd = {}, constructionsToRemove = {}, old2new = {},
+          streetProposal = {
+            nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
+            edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+          },
+        } end,
+      },
+      SegmentAndEntity = { new = function() return { comp = {} } end },
+      NodeAndEntity = { new = function() return { comp = {} } end },
+      Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
+      Vec4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+      Mat4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+      BaseEdgeStreet = { new = function() return {} end },
+      BaseEdgeTrack = { new = function() return {} end },
+    },
+    res = {
+      streetTypeRep = { find = function() return 4 end },
+      trackTypeRep = { find = function() return 1 end },
+      moduleRep = {
+        find = function() return 1 end,
+        get = function() return { metadata = { hydrated = true } } end,
+      },
+    },
+  }
+  local proposal, materialisation = proposalCodec.materialise(transaction, {
+    api = fakeApi,
+    nativePlayerId = 100,
+    resolveLocal = function(cid)
+      if cid == "edge:pre:town-road" then return 77 end
+      if cid == "construction:pre:house-a" then return 901 end
+      if cid == "construction:pre:house-b" then return 902 end
+    end,
+  })
+  truthy(proposal, materialisation)
+  equal(proposal.streetProposal.edgesToRemove[1], 77)
+  equal(proposal.constructionsToRemove[1], 901)
+  equal(proposal.constructionsToRemove[2], 902)
+  equal(proposal.constructionsToAdd[1].fileName,
+    "station/street/modular_terminal.con")
+  truthy(proposal.constructionsToAdd[1].params.modules[20009900].metadata.hydrated,
+    "atomic terminal replay lost resource-hydrated module metadata")
 end)
 
 test("proposal codec keeps removal-only town roads and attached buildings atomic", function()

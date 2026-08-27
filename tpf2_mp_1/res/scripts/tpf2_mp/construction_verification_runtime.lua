@@ -133,6 +133,25 @@ function M.new(deps)
     return total, counts
   end
 
+  function runtime.inputsPendingInSnapshot(localInputs, after)
+    local counts, total = {}, 0
+    for _, input in ipairs(localInputs or {}) do
+      local kind, localId = tostring(input.kind or ""), tonumber(input.localId)
+      if localId and after[kind] and after[kind][localId] then
+        counts[kind], total = (counts[kind] or 0) + 1, total + 1
+      end
+    end
+    return total, counts
+  end
+
+  function runtime.inputsPendingOrSnapshot(localInputs)
+    local total, counts, targetedError = runtime.inputsPending(localInputs)
+    if total ~= nil then return total, counts end
+    local after, snapshotError = runtime.snapshot()
+    if not after then return nil, nil, snapshotError or targetedError end
+    return runtime.inputsPendingInSnapshot(localInputs, after)
+  end
+
   function runtime.delta(after, before)
     local result = {}
     for _, kind in ipairs(COMPONENT_KINDS) do

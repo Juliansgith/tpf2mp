@@ -1,7 +1,12 @@
 local util = require "tpf2_mp/util"
 local constructionDeltaAttestation = require "tpf2_mp/construction_delta_attestation"
+local constructionReplayPolicy = require "tpf2_mp/construction_replay_policy"
 
-local M = {}
+local M = {
+  isExact = constructionReplayPolicy.isExact,
+  requiresAtomic = constructionReplayPolicy.requiresAtomic,
+  collateralInputs = constructionReplayPolicy.collateralInputs,
+}
 
 function M.prepare(record, deps)
   local spec, specError = deps.codec.materialiseConstruction(record.transaction)
@@ -28,24 +33,6 @@ function M.prepare(record, deps)
     nextVerificationTick = deps.tick + deps.firstVerifyDelayTicks,
     verificationScans = 0,
   }
-end
-
-function M.isExact(record, codec)
-  local transaction = record and record.transaction
-  local construction = type(transaction) == "table"
-    and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
-  local edgeObjects = type(transaction) == "table"
-    and type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
-  -- Typed ConstructionEntity expands its graph; exact replay owns only isolated
-  -- fresh builds. Collateral needs staged demolition, while typed depots crash
-  -- stock selection. Keep depots/upgrades/removals on the proven helper path.
-  return type(transaction) == "table"
-    and transaction.schemaVersion == codec.CONSTRUCTION_SCHEMA_VERSION
-    and type(construction) == "table" and construction.mode == "build"
-    and construction.kind ~= "depot"
-    and #(construction.collateral or {}) == 0
-    and #(edgeObjects.add or {}) == 0 and #(edgeObjects.retain or {}) == 0
-    and not codec.isTopologyConstructionRemoval(transaction)
 end
 
 function M.prime(record, pending)

@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.5-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.6-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Atomic street-terminal collateral replay (2026-08-27)](ATOMIC_STREET_TERMINAL_COLLATERAL_REPLAY_2026-08-27.md)
+records the live houses-removed/terminal-missing fault, impossible pre-build
+road-removal barrier, one-proposal station/topology/collateral replay, strict
+fallback boundary, exact regression, and fresh-session live gate.
 
 [Street-terminal module metadata hydration (2026-08-27)](STREET_TERMINAL_MODULE_METADATA_HYDRATION_2026-08-27.md)
 records the relay-observed native `MetadataMap` projection failure, resource-

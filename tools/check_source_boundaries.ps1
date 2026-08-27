@@ -245,6 +245,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_output_order.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_proposal_materializer.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_replay_state.lua' = 80
+    'tpf2_mp_1\res\scripts\tpf2_mp\construction_replay_policy.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_native_capture_scheduler.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\checkpoint_retention.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\network_bootstrap_policy.lua' = 30
