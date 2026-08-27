@@ -1,11 +1,17 @@
 local util = require "tpf2_mp/util"
 local constructionDeltaAttestation = require "tpf2_mp/construction_delta_attestation"
 local constructionReplayPolicy = require "tpf2_mp/construction_replay_policy"
+local constructionCollateralReplay = require "tpf2_mp/construction_collateral_replay"
 
 local M = {
   isExact = constructionReplayPolicy.isExact,
+  isStagedExact = constructionReplayPolicy.isStagedExact,
+  isGuiExact = constructionReplayPolicy.isGuiExact,
+  guiOwns = constructionReplayPolicy.guiOwns,
   requiresAtomic = constructionReplayPolicy.requiresAtomic,
   collateralInputs = constructionReplayPolicy.collateralInputs,
+  stageAfterCollateral = constructionCollateralReplay.stage,
+  advanceCollateral = constructionCollateralReplay.advance,
 }
 
 function M.prepare(record, deps)

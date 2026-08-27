@@ -1,6 +1,12 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.7-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.8-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Connected street-terminal staged replay (2026-08-27)](CONNECTED_STREET_TERMINAL_STAGED_REPLAY_2026-08-27.md)
+records the live terminal-present/road-disconnected result, the helper's
+inability to reproduce an external road split, crash-safe two-stage exact
+replay, strict partial-world failure semantics, regression proof, and fresh
+two-peer gate.
 
 [Street-terminal typed table-converter crash (2026-08-27)](STREET_TERMINAL_TYPED_TABLE_CONVERTER_CRASH_2026-08-27.md)
 records the `mp-5e5d4c732aae691e` access violation before

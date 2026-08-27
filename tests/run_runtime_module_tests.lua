@@ -57,6 +57,7 @@ local guiProposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 local constructionOutputOrder = require "tpf2_mp/construction_output_order"
 local constructionProposalMaterializer = require "tpf2_mp/construction_proposal_materializer"
 local constructionReplayState = require "tpf2_mp/construction_replay_state"
+local guiConstructionReplay = require "tpf2_mp/gui_construction_replay"
 local proposalDerivedStationRuntime = require "tpf2_mp/proposal_derived_station_runtime"
 local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local validationStationProposalModule = require "tpf2_mp/validation_station_proposal"
@@ -959,11 +960,50 @@ do
   assert(not constructionReplayState.isExact(upgradeRecord, proposalCodec)
       and not constructionReplayState.isExact(removeRecord, proposalCodec)
       and not constructionReplayState.isExact(collateralRecord, proposalCodec)
-      and not constructionReplayState.requiresAtomic(collateralRecord, proposalCodec)
+      and constructionReplayState.isStagedExact(collateralRecord, proposalCodec)
+      and constructionReplayState.requiresAtomic(collateralRecord, proposalCodec)
       and not constructionReplayState.requiresAtomic(record, proposalCodec)
       and #collateralInputs == 1 and collateralInputs[1].localId == 71
       and not constructionReplayState.isExact(depotRecord, proposalCodec),
     "construction replay routing lost its typed/helper safety boundaries")
+
+  local stagedPending = {
+    phase = "clearing-collateral", spec = { mode = "build" },
+    beforeFingerprints = { construction = { [71] = "old" } },
+    rootEntity = 71, guiDelta = { stale = true }, verificationScans = 9,
+  }
+  collateralRecord.proposalId = "proposal:staged-terminal"
+  collateralRecord.status = "building-construction"
+  collateralRecord.replayPath = nil
+  local stagedBefore = { construction = {}, station = {}, station_group = {},
+    depot = {}, asset = {}, edge_object = {}, node = {}, edge = {} }
+  local stagedProposals = { queued = 4 }
+  local staged = assert(constructionReplayState.stageAfterCollateral(
+    collateralRecord, stagedPending, {
+      verification = { snapshot = function() return stagedBefore end },
+      proposals = stagedProposals, tick = 30, timeoutTicks = 600,
+      firstVerifyDelayTicks = 2,
+    }))
+  assert(staged.stagedGuiBuild == true
+      and collateralRecord.status == "queued"
+      and collateralRecord.replayPath == "staged-gui-build-proposal"
+      and constructionReplayState.isGuiExact(collateralRecord)
+      and stagedPending.before == stagedBefore
+      and stagedPending.guiDelta == nil and stagedPending.rootEntity == nil
+      and stagedPending.deadlineTick == 630 and stagedPending.nextVerificationTick == 32
+      and stagedPending.verificationScans == 0 and stagedProposals.queued == 5,
+    "post-collateral construction did not rebase and enter exact GUI replay")
+
+  local fallbackResult, rejection
+  guiConstructionReplay.rejectOrFallback(collateralRecord, collateralRecord.proposalId,
+    "typed conversion rejected", function(value) fallbackResult = value end,
+    function(_, errorValue, worldUnchanged)
+      rejection = { error = errorValue, worldUnchanged = worldUnchanged }
+    end)
+  assert(fallbackResult == nil and rejection
+      and rejection.error == "typed conversion rejected"
+      and rejection.worldUnchanged == false,
+    "a failed post-collateral replay falsely advertised PREPARE-world rollback safety")
 end
 
 do

@@ -2164,6 +2164,7 @@ function M.materialise(transaction, options)
       api = gameApi,
       nativePlayerId = options.nativePlayerId,
       resolveLocal = options.resolveLocal,
+      omitCollateralRemovals = options.omitConstructionCollateral == true,
     })
     if not applied then return nil, applyError end
     constructionMaterialisation = applied

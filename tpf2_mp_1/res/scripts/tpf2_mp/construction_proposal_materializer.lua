@@ -79,9 +79,11 @@ function M.apply(proposal, spec, options)
     sourceLocalId, resolveError = remove(spec.sourceCid)
     if not sourceLocalId then return nil, resolveError end
   end
-  for _, collateral in ipairs(spec.collateral or {}) do
-    local _, resolveError = remove(collateral.cid)
-    if resolveError then return nil, resolveError end
+  if options.omitCollateralRemovals ~= true then
+    for _, collateral in ipairs(spec.collateral or {}) do
+      local _, resolveError = remove(collateral.cid)
+      if resolveError then return nil, resolveError end
+    end
   end
   local assignedRemovals, removalAssignment = removalVector.assign(
     proposal, removalField, removals, removalIds)

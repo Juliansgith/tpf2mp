@@ -1741,12 +1741,13 @@ test("proposal codec replays topology and collateral construction demolition ato
   truthy(tostring(duplicateError):find("source cannot also be collateral", 1, true), duplicateError)
 end)
 
-test("construction collateral uses the targeted staged helper boundary", function()
+test("construction collateral stages demolition before exact connected replay", function()
   -- Relay regressions mp-748086c41a5e1f9f and mp-5e5d4c732aae691e define both
   -- sides of this boundary.  The helper must wait only for the two houses (not
   -- the road replaced by the eventual terminal); the typed ConstructionEntity
-  -- path must not receive collateral module data because Build 35924 crashes
-  -- in its native Lua-table converter before BuildProposalVisitor.
+  -- path must not receive live collateral roots because Build 35924 crashes
+  -- in its native Lua-table converter before BuildProposalVisitor. Once those
+  -- roots have retired, the typed proposal must retain the town-road split.
   local raw = linearProposal(-1, -2, -3, "street", 4, false)
   raw.streetProposal.edgesToRemove = { 77 }
   raw.__constructionAdditions = { {
@@ -1804,8 +1805,10 @@ test("construction collateral uses the targeted staged helper boundary", functio
   }
   equal(constructionReplayState.isExact(record, proposalCodec), false,
     "collateral construction escaped the crash-safe helper replay boundary")
-  equal(constructionReplayState.requiresAtomic(record, proposalCodec), false,
-    "helper-owned collateral was incorrectly classified as typed atomic replay")
+  equal(constructionReplayState.isStagedExact(record, proposalCodec), true,
+    "collateral construction was not eligible for post-demolition exact replay")
+  equal(constructionReplayState.requiresAtomic(record, proposalCodec), true,
+    "connected collateral construction lost its atomic topology requirement")
   local collateralInputs = assert(constructionReplayState.collateralInputs(record))
   equal(#collateralInputs, 2)
   equal(collateralInputs[1].localId, 901)
@@ -1857,6 +1860,24 @@ test("construction collateral uses the targeted staged helper boundary", functio
     "station/street/modular_terminal.con")
   truthy(proposal.constructionsToAdd[1].params.modules[20009900].metadata.hydrated,
     "atomic terminal replay lost resource-hydrated module metadata")
+
+  local stagedProposal, stagedMaterialisation = proposalCodec.materialise(transaction, {
+    api = fakeApi,
+    nativePlayerId = 100,
+    omitConstructionCollateral = true,
+    resolveLocal = function(cid)
+      if cid == "edge:pre:town-road" then return 77 end
+      if cid == "construction:pre:house-a" then return 901 end
+      if cid == "construction:pre:house-b" then return 902 end
+    end,
+  })
+  truthy(stagedProposal, stagedMaterialisation)
+  equal(#stagedProposal.constructionsToRemove, 0,
+    "post-demolition replay reintroduced crash-prone collateral roots")
+  equal(stagedProposal.streetProposal.edgesToRemove[1], 77,
+    "post-demolition replay omitted the captured town-road split")
+  equal(stagedProposal.constructionsToAdd[1].fileName,
+    "station/street/modular_terminal.con")
 end)
 
 test("proposal codec keeps removal-only town roads and attached buildings atomic", function()

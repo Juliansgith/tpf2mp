@@ -1,5 +1,11 @@
 # Street-terminal typed table-converter crash - 2026-08-27
 
+> Followed the same day by
+> [Connected street-terminal staged replay](CONNECTED_STREET_TERMINAL_STAGED_REPLAY_2026-08-27.md).
+> The collateral-only helper proved crash-safe but could not recreate the
+> external town-road split. The current design retires live collateral first,
+> then issues a pointer-free typed proposal without those retired roots.
+
 ## Live failure
 
 Relay session `mp-5e5d4c732aae691e` reproduced a real engine crash on Player 2

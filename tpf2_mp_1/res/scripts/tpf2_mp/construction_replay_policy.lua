@@ -1,30 +1,51 @@
 local M = {}
 
-function M.isExact(record, codec)
+local function exactBuildShape(record, codec)
   local transaction = record and record.transaction
   local construction = type(transaction) == "table"
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
   local edgeObjects = type(transaction) == "table"
     and type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
-  -- Typed ConstructionEntity replay is safe only while it owns no existing
-  -- construction roots.  Build 35924 crashes inside its Lua-table converter
-  -- before BuildProposalVisitor when a module-bearing construction and its
-  -- collateral are materialised together.  Collateral therefore retains the
-  -- staged helper path: bulldoze only the declared roots, wait for those roots
-  -- (not replacement road/track topology), then build at the absolute capture
-  -- transform.  Typed depots still crash stock selection; depots, upgrades,
-  -- removals, and collateral builds stay on the proven helper boundary.
   return type(transaction) == "table"
     and transaction.schemaVersion == codec.CONSTRUCTION_SCHEMA_VERSION
     and type(construction) == "table" and construction.mode == "build"
     and construction.kind ~= "depot"
-    and #(construction.collateral or {}) == 0
     and #(edgeObjects.add or {}) == 0 and #(edgeObjects.retain or {}) == 0
     and not codec.isTopologyConstructionRemoval(transaction)
 end
 
+function M.isExact(record, codec)
+  local construction = exactBuildShape(record, codec)
+    and record.transaction.constructions[1] or nil
+  -- A typed ConstructionEntity is safe to convert directly only when it owns
+  -- no existing construction roots. Build 35924 crashes before
+  -- BuildProposalVisitor when module-bearing construction data and live
+  -- collateral roots cross its Lua-table converter together.
+  return type(construction) == "table" and #(construction.collateral or {}) == 0
+end
+
+function M.isStagedExact(record, codec)
+  local construction = exactBuildShape(record, codec)
+    and record.transaction.constructions[1] or nil
+  -- Collateral builds use two native stages: the game-script helper retires
+  -- only the declared roots, then GUI state issues the exact typed proposal
+  -- without those already-absent roots. This preserves road/track attachment
+  -- topology without re-entering the crashing converter shape.
+  return type(construction) == "table" and #(construction.collateral or {}) > 0
+end
+
+function M.isGuiExact(record)
+  local replayPath = type(record) == "table" and record.replayPath or nil
+  return replayPath == "gui-build-proposal"
+    or replayPath == "staged-gui-build-proposal"
+end
+
+function M.guiOwns(record)
+  return M.isGuiExact(record)
+end
+
 function M.requiresAtomic(record, codec)
-  if not M.isExact(record, codec) then return false end
+  if not M.isExact(record, codec) and not M.isStagedExact(record, codec) then return false end
   local transaction = record.transaction
   local construction = transaction.constructions[1]
   local remove = type(transaction.remove) == "table" and transaction.remove or {}

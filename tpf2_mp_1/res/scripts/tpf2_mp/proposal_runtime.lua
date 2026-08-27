@@ -72,7 +72,7 @@ function M.new(deps)
     return type(record) == "table" and type(record.transaction) == "table"
       and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
       and not proposalCodec.isTopologyConstructionRemoval(record.transaction)
-      and ((record.status == "queued" and record.replayPath ~= "gui-build-proposal")
+      and ((record.status == "queued" and not constructionReplayState.guiOwns(record))
         or (record.status == "building-construction" and record.constructionPending))
   end)
 
@@ -680,14 +680,15 @@ function M.new(deps)
     if not record then return false, "unknown pending canonical proposal" end
     if record.status == "applied" then return true, util.deepCopy(record.result) end
     if record.status == "failed" then return false, util.deepCopy(record.result) end
-    local exactConstruction = constructionReplayState.isExact(record, proposalCodec)
+    local exactConstruction = constructionReplayState.isGuiExact(record)
+    local stagedExactConstruction = record.replayPath == "staged-gui-build-proposal"
     if exactConstruction and payload.fallbackHelper == true and payload.worldUnchanged == true then
       if constructionReplayState.requiresAtomic(record, proposalCodec) then
         return proposalFailure(record, {
           error = "atomic construction GUI replay is unavailable: "
             .. tostring(payload.error or "typed proposal materialisation failed"),
         }, {
-          rollbackLazyBindings = true,
+          rollbackLazyBindings = not stagedExactConstruction,
         })
       end
       return true, constructionReplayState.fallback(record) end
@@ -699,8 +700,11 @@ function M.new(deps)
         -- relevant native component set and both wallets around the rejected
         -- command. Restoring commit-time lazy bindings then returns the core
         -- digest to the all-peer PREPARE boundary, allowing a strict
-        -- recoverable rejection instead of poisoning the whole session.
-        rollbackLazyBindings = payload.worldUnchanged == true,
+        -- recoverable rejection instead of poisoning the whole session. A
+        -- staged construction has already demolished collateral and cannot
+        -- make that claim even if its second-stage command was unchanged.
+        rollbackLazyBindings = payload.worldUnchanged == true
+          and not stagedExactConstruction,
       })
     end
     if exactConstruction then
@@ -1175,33 +1179,17 @@ function M.new(deps)
   finaliseCanonicalConstruction = function(record)
     local pending = record.constructionPending
     if pending.phase == "clearing-collateral" then
-      local collateralInputs, collateralInputError =
-        constructionReplayState.collateralInputs(record)
-      if not collateralInputs then
-        return proposalFailure(record, tostring(collateralInputError))
-      end
-      -- Ignore topology inputs: only explicitly bulldozed collateral belongs
-      -- to this pre-build barrier; replacement edges retire in the build.
-      local pendingRemovalInputs, pendingRemovalKinds, verificationError =
-        constructionVerification.inputsPendingOrSnapshot(collateralInputs)
-      if pendingRemovalInputs == nil then
-        return proposalFailure(record, tostring(verificationError))
-      end
-      if pendingRemovalInputs > 0 then
-        if state.tick < pending.deadlineTick then
-          pending.nextVerificationTick = state.tick + CONSTRUCTION_PENDING_RESCAN_TICKS
-          return true, {
-            waiting = true,
-            phase = pending.phase,
-            pendingRemovalInputs = pendingRemovalInputs,
-            pendingRemovalKinds = pendingRemovalKinds,
-          }
-        end
-        return proposalFailure(record, {
-          error = "construction collateral did not retire before the build deadline",
-          pendingRemovalInputs = pendingRemovalInputs,
-          pendingRemovalKinds = pendingRemovalKinds,
-        })
+      local progress, progressError = constructionReplayState.advanceCollateral(record, pending, {
+        verification = constructionVerification, proposals = state.world.proposals,
+        codec = proposalCodec, tick = state.tick,
+        timeoutTicks = CONSTRUCTION_SETTLE_TIMEOUT_TICKS,
+        firstVerifyDelayTicks = CONSTRUCTION_FIRST_VERIFY_DELAY_TICKS,
+        pendingRescanTicks = CONSTRUCTION_PENDING_RESCAN_TICKS,
+      })
+      if not progress then return proposalFailure(record, progressError) end
+      if progress.waiting or progress.stagedGuiBuild then
+        constructionWork.invalidate()
+        return true, progress
       end
       local rootEntity, buildError = buildCanonicalConstructionRoot(record, pending)
       if not rootEntity then return proposalFailure(record, buildError) end
@@ -1422,7 +1410,7 @@ function M.new(deps)
       if type(record) == "table" and record.transaction
         and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
         and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
-        if (record.status == "queued" and record.replayPath ~= "gui-build-proposal")
+        if (record.status == "queued" and not constructionReplayState.guiOwns(record))
           or (record.status == "building-construction" and record.constructionPending) then
           -- The helper mutates the native world over several ticks.  Record every
           -- bounded step as a machine-local event; the final step then captures

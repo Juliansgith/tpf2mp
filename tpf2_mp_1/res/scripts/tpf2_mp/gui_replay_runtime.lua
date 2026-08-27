@@ -10,6 +10,7 @@ local originOperationRecovery = require "tpf2_mp/gui_origin_operation_recovery"
 local lineSelection = require "tpf2_mp/gui_line_selection"
 local buildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local derivedStation = require "tpf2_mp/proposal_derived_station_runtime"
+local constructionReplay = require "tpf2_mp/gui_construction_replay"
 
 local M = {}
 
@@ -207,7 +208,7 @@ function M.new(deps)
     local transaction = type(record) == "table" and record.transaction or nil
     if type(transaction) ~= "table"
       or transaction.schemaVersion ~= proposalCodec.CONSTRUCTION_SCHEMA_VERSION then return true end
-    return record.replayPath == "gui-build-proposal"
+    return constructionReplay.owns(record)
       or proposalCodec.isTopologyConstructionRemoval(transaction)
   end
 
@@ -242,18 +243,11 @@ function M.new(deps)
         end
         local issuerBalanceBefore = balanceOf(issuerPlayerId)
         local nativeOwnerBalanceBefore = balanceOf(nativePlayerId)
-        local proposal, materialisation = proposalCodec.materialise(record.transaction, {
-          resolveLocal = function(cid) return localRefs[cid] end,
-          nativePlayerId = nativePlayerId,
-        })
+        local proposal, materialisation = proposalCodec.materialise(record.transaction,
+          constructionReplay.materialiseOptions(record, localRefs, nativePlayerId))
         if not proposal then
-          if record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
-            and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
-            queueGuiProposalResult({ proposalId = proposalId, success = false,
-              fallbackHelper = true, worldUnchanged = true, error = tostring(materialisation) })
-          else
-            rejectGuiProposal(proposalId, materialisation, true)
-          end
+          constructionReplay.rejectOrFallback(record, proposalId, materialisation,
+            queueGuiProposalResult, rejectGuiProposal)
           return true
         end
         local factory = util.commandFactory("buildProposal")
@@ -262,7 +256,7 @@ function M.new(deps)
           return true
         end
         local types = api.type and api.type.ComponentType or {}
-        local exactConstruction = record.replayPath == "gui-build-proposal"
+        local exactConstruction = constructionReplay.isExact(record)
         local captureEntityDelta = exactConstruction or derivedStation.requiresCapture(record.transaction, state.canonical)
         local beforeWorld, worldCaptureError = proposalWorld.capture(
           types, issuerPlayerId, nativePlayerId, captureEntityDelta)

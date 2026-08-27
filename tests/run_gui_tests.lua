@@ -1422,7 +1422,13 @@ local replayState = {
 local originalMaterialise = proposalCodec.materialise
 local originalBuildFactory = api.cmd.make.buildProposal
 local originalAuthorizeBuild = rawget(_G, "tpf2mp_native_authorize_build")
-proposalCodec.materialise = function() return { replay = true } end
+local replayMaterialiseCalls = {}
+proposalCodec.materialise = function(transaction, options)
+  replayMaterialiseCalls[#replayMaterialiseCalls + 1] = {
+    transaction = transaction, options = options,
+  }
+  return { replay = true }
+end
 local replayBuildCalls = {}
 api.cmd.make.buildProposal = function(proposal, context, ignoreErrors)
   replayBuildCalls[#replayBuildCalls + 1] = {
@@ -1585,6 +1591,31 @@ assert(replayRuntime.processProposalQueue() == true
   "removal-only town road and attached buildings did not use atomic GUI replay")
 assert(replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
   "town-road collateral demolition did not preserve vanilla soft-error acceptance")
+replayGui.proposalReplayQuarantine = nil
+
+replayState.world.proposals.byId["gui-staged-connected-terminal"] = {
+  proposalId = "gui-staged-connected-terminal",
+  status = "queued",
+  replayPath = "staged-gui-build-proposal",
+  transaction = {
+    schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+    nodes = {}, edges = {},
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = { "edge:pre:town-road" }, nodes = {} },
+    constructions = { {
+      mode = "build", kind = "station",
+      collateral = { { kind = "construction", cid = "construction:pre:house" } },
+    } },
+  },
+  localRefs = { ["edge:pre:town-road"] = 77 },
+  nativeOwnerPlayerId = 100, issuerPlayerId = 100,
+}
+assert(replayRuntime.processProposalQueue() == true
+    and replayGui.proposalReplayQuarantine
+    and replayGui.proposalReplayQuarantine.proposalId == "gui-staged-connected-terminal"
+    and replayMaterialiseCalls[#replayMaterialiseCalls].options.omitConstructionCollateral == true
+    and replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
+  "post-collateral terminal did not use pointer-free exact GUI replay")
 replayGui.proposalReplayQuarantine = nil
 
 local successfulSendCommand = api.cmd.sendCommand
