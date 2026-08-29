@@ -1,6 +1,12 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-27 (Europe/Amsterdam), `0.41.8-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-29 (Europe/Amsterdam), `0.41.9-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Opaque entrance metadata after staged collateral (2026-08-28)](OPAQUE_ENTRANCE_METADATA_AFTER_COLLATERAL_2026-08-28.md)
+records the all-peer partial terminal rejection in relay session
+`mp-38e37ebd38deb5e2`, why visually equal native residue is not by itself a
+safe continuation boundary, the real top-level `MetadataMap` shape missed by
+the table-only fixture, and pre-demolition resource preflight.
 
 [Connected street-terminal staged replay (2026-08-27)](CONNECTED_STREET_TERMINAL_STAGED_REPLAY_2026-08-27.md)
 records the live terminal-present/road-disconnected result, the helper's

@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 local constructionDeltaAttestation = require "tpf2_mp/construction_delta_attestation"
 local constructionReplayPolicy = require "tpf2_mp/construction_replay_policy"
 local constructionCollateralReplay = require "tpf2_mp/construction_collateral_replay"
+local constructionModuleHydration = require "tpf2_mp/construction_module_hydration"
 
 local M = {
   isExact = constructionReplayPolicy.isExact,
@@ -39,6 +40,12 @@ function M.prepare(record, deps)
     nextVerificationTick = deps.tick + deps.firstVerifyDelayTicks,
     verificationScans = 0,
   }
+end
+
+function M.preflightModules(record, pending, deps)
+  if not constructionReplayPolicy.isStagedExact(record, deps.codec) then return true end
+  local params = util.deepCopy(pending and pending.spec and pending.spec.params or {})
+  return constructionModuleHydration.apply(params, deps.api)
 end
 
 function M.prime(record, pending)

@@ -1006,6 +1006,22 @@ function M.new(deps)
     local pending, materialiseError = prepareConstructionReplay(record)
     if not pending then return proposalFailure(record, tostring(materialiseError)) end
     local spec = pending.spec
+    if constructionReplayState.isStagedExact(record, proposalCodec) then
+      -- Staged exact replay cannot roll back once its first phase demolishes
+      -- live collateral. Validate every resource-derived module map before
+      -- crossing that boundary. The GUI performs the same hydration again
+      -- when it creates the typed proposal, but content is immutable and
+      -- attested, so a successful preflight removes the only deterministic
+      -- resource-shape failure from the post-demolition phase.
+      local preflighted, preflightError = constructionReplayState.preflightModules(
+        record, pending, { api = api, codec = proposalCodec })
+      if not preflighted then
+        return proposalFailure(record,
+          "staged construction module preflight failed: " .. tostring(preflightError), {
+            rollbackLazyBindings = true,
+          })
+      end
+    end
     record.balanceBefore = balanceOf(record.issuerPlayerId)
     record.nativeOwnerBalanceBefore = balanceOf(record.nativeOwnerPlayerId)
     local interface = game and game.interface or {}

@@ -45,6 +45,20 @@ local function safeField(value, key)
   return ok and nested or nil
 end
 
+local function portableResourceMap(value, fallback, label)
+  if value == nil then return fallback end
+  if type(value) == "userdata" then
+    -- Build 35924 exposes an empty resource MetadataMap as opaque userdata.
+    -- The GUI projector already reduced that exact instance value to the
+    -- canonical empty map, so retain that map rather than forwarding the
+    -- engine-owned object or rejecting an otherwise complete construction.
+    -- Nested userdata remains forbidden by portableCopy: only the opaque
+    -- top-level map container receives this representation fallback.
+    return fallback
+  end
+  return portableCopy(value, label)
+end
+
 local function resource(gameApi, name)
   local repository = gameApi and gameApi.res and gameApi.res.moduleRep or nil
   if not (repository and repository.find ~= nil and repository.get ~= nil) then
@@ -65,9 +79,9 @@ end
 -- Module metadata and dynamic update scripts are immutable resource facts.
 -- Canonical proposals carry the content-attested module name and variant;
 -- resolve those facts locally, but cross the native boundary only with a fresh
--- pointer-free Lua graph.  If a resource exposes opaque data, fail here so the
--- caller can select the helper path instead of risking a native converter
--- crash.
+-- pointer-free Lua graph. Build 35924's opaque top-level empty-map container
+-- retains the already-canonical empty fallback; every other opaque value still
+-- fails here before it can reach the native converter.
 function M.apply(params, gameApi)
   if type(params) ~= "table" or type(params.modules) ~= "table"
     or next(params.modules) == nil then return true end
@@ -88,8 +102,9 @@ function M.apply(params, gameApi)
       local resourceMetadata = safeField(descriptor, "metadata")
       if resourceMetadata ~= nil then
         local metadataError
-        metadata, metadataError = portableCopy(
-          resourceMetadata, "construction module metadata at slot " .. tostring(slot))
+        metadata, metadataError = portableResourceMap(
+          resourceMetadata, metadata,
+          "construction module metadata at slot " .. tostring(slot))
         if not metadata then return nil, metadataError end
       end
     end
@@ -101,8 +116,8 @@ function M.apply(params, gameApi)
         if type(fileName) ~= "string" then
           return nil, "construction module update script name is invalid at slot " .. tostring(slot)
         end
-        local scriptParams, scriptError = portableCopy(
-          safeField(updateScript, "params") or {},
+        local scriptParams, scriptError = portableResourceMap(
+          safeField(updateScript, "params"), {},
           "construction module update script params at slot " .. tostring(slot))
         if not scriptParams then return nil, scriptError end
         module.updateScript = { fileName = fileName, params = scriptParams }

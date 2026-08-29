@@ -836,6 +836,30 @@ do
   assert(hydrated.metadata.price == 37 and hydrated.updateScript.params.value == 4,
     "construction replay's hydrated native payload retained a resource-table alias")
   fakeApi.res.moduleRep.get = function()
+    return {
+      metadata = io.stdout,
+      updateScript = { fileName = "construction/test.dynamic", params = io.stdout },
+    }
+  end
+  local opaqueMapProposal = fakeApi.type.SimpleProposal.new()
+  local opaqueMap, opaqueMapError = constructionProposalMaterializer.apply(opaqueMapProposal, {
+    mode = "build", sourceCid = "", collateral = {},
+    fileName = "station/street/modular_terminal.con",
+    transform = transaction.constructions[1].transform,
+    params = { year = 1990, modules = {
+      [20015503] = { name = "station/street/entrance_exit.module",
+        variant = 0, metadata = {} },
+    } },
+  }, { api = fakeApi, nativePlayerId = 7 })
+  assert(opaqueMap ~= nil and opaqueMapError == nil,
+    "opaque top-level resource MetadataMap rejected a portable empty module")
+  local opaqueMapModule = opaqueMapProposal.constructionsToAdd[1].params.modules[20015503]
+  assert(type(opaqueMapModule.metadata) == "table" and next(opaqueMapModule.metadata) == nil
+      and opaqueMapModule.updateScript.fileName == "construction/test.dynamic"
+      and type(opaqueMapModule.updateScript.params) == "table"
+      and next(opaqueMapModule.updateScript.params) == nil,
+    "opaque resource maps crossed the native boundary instead of retaining empty maps")
+  fakeApi.res.moduleRep.get = function()
     return { metadata = { invalid = function() end } }
   end
   local unsafeProposal = fakeApi.type.SimpleProposal.new()
@@ -993,6 +1017,28 @@ do
       and stagedPending.deadlineTick == 630 and stagedPending.nextVerificationTick == 32
       and stagedPending.verificationScans == 0 and stagedProposals.queued == 5,
     "post-collateral construction did not rebase and enter exact GUI replay")
+
+  fakeApi.res.moduleRep.get = function() return { metadata = io.stdout } end
+  collateralRecord.transaction.constructions[1].modules = {
+    { slot = 20015503, name = "station/street/entrance_exit.module",
+      variant = 0, metadata = {} },
+  }
+  stagedPending.spec.params = { modules = {
+    [20015503] = { name = "station/street/entrance_exit.module",
+      variant = 0, metadata = {} },
+  } }
+  assert(constructionReplayState.preflightModules(collateralRecord, stagedPending, {
+    api = fakeApi, codec = proposalCodec,
+  }), "staged replay did not preflight opaque MetadataMap before collateral demolition")
+  fakeApi.res.moduleRep.get = function()
+    return { metadata = { unsafe = function() end } }
+  end
+  local unsafePreflight, unsafePreflightError = constructionReplayState.preflightModules(
+    collateralRecord, stagedPending, { api = fakeApi, codec = proposalCodec })
+  assert(unsafePreflight == nil
+      and tostring(unsafePreflightError):find("non%-portable function") ~= nil,
+    "staged replay allowed unsafe module data past its pre-demolition boundary")
+  fakeApi.res.moduleRep.get = function() return { metadata = {} } end
 
   local fallbackResult, rejection
   guiConstructionReplay.rejectOrFallback(collateralRecord, collateralRecord.proposalId,
