@@ -186,6 +186,7 @@ $toolNames = @(
     'start_network_session_retry.ps1', 'network_session_retry_cleanup.ps1',
     'sync_starting_save.ps1', 'stop_network_session.ps1',
     'new_relay_session.ps1', 'accept_relay_invite.ps1', 'start_relay_network_session.ps1',
+    'relay_failed_launch_cleanup.ps1',
     'relay_diagnostic_process.ps1',
     'get_network_session_status.ps1', 'collect_live_evidence.ps1',
     'analyze_alpha_live_evidence.ps1', 'run_alpha_live_acceptance.ps1',
