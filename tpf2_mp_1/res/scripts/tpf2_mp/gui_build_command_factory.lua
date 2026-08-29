@@ -1,5 +1,6 @@
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalRemovalVerifier = require "tpf2_mp/gui_proposal_removal_verifier"
+local exactTopology = require "tpf2_mp/construction_exact_topology"
 
 local M = {}
 
@@ -23,6 +24,14 @@ function M.make(factory, proposal, transaction, materialisation, safeField)
     or hasConstructionCollateral(transaction)
   local commandOk, commandOrError = pcall(factory, proposal, nil, ignoreSoftErrors)
   if not commandOk then return nil, commandOrError end
+  local construction = type(materialisation) == "table" and materialisation.construction or nil
+  local topology = type(construction) == "table" and construction.exactTopology or nil
+  if type(topology) == "table" and type(topology.typed) == "table" then
+    local reconciled, reconcileError = exactTopology.applyProcessed(
+      commandOrError, topology.typed, safeField)
+    if not reconciled then return nil, reconcileError end
+    topology.processed = reconciled
+  end
   if ignoreSoftErrors then
     local removalsOk, removalsError = proposalRemovalVerifier.verify(
       commandOrError, materialisation, safeField)

@@ -177,6 +177,9 @@ function M.read(options)
     autoValidate = forced ~= nil or source.autoValidate == true
       or environmentEnabled("TPF2MP_AUTOVALIDATE"),
     networkAutoValidate = networkAutoValidate,
+    networkValidationSlice = tostring(
+      readEnvironment("TPF2MP_NETWORK_VALIDATION_SLICE")
+        or source.networkValidationSlice or "full"),
     networkManualHandoff = networkManualHandoff,
     manualNetwork = manualNetwork,
     developerEconomyControls = source.developerEconomyControls == true

@@ -2006,12 +2006,13 @@ function M.materialise(transaction, options)
   local construction = transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
   local nativeGeneratedTopology = type(construction) == "table" and construction.mode == "build"
-  if not nativeGeneratedTopology and #transaction.edgeObjects.add > 0 then
+  if #transaction.edgeObjects.add > 0 then
     local probe = edgeObjectConstructor(gameApi)
     if not probe then return nil, "EdgeObject materialisation API is unavailable" end
   end
 
   local proposal = gameApi.type.SimpleProposal.new()
+  local exactTopology = { nodes = {}, edges = {}, objects = {} }
   local slotIds, nextId = {}, -1
   for _, edge in ipairs(transaction.edges) do slotIds[edge.slot], nextId = nextId, nextId - 1 end
   for _, node in ipairs(transaction.nodes) do slotIds[node.slot], nextId = nextId, nextId - 1 end
@@ -2025,18 +2026,12 @@ function M.materialise(transaction, options)
     slotIds[object.slot], nextObjectId = nextObjectId, nextObjectId - 1
   end
 
-  -- Build 35924 expands a typed ConstructionEntity into its nodes, edges and
-  -- construction-owned edge objects at the moment it is assigned to the
-  -- SimpleProposal. Replaying the captured generated graph as well produces
-  -- two overlapping copies and the native BuildProposal rejects it. Keep the
-  -- captured graph in the canonical transaction for matching and audit, but
-  -- give the native construction factory sole ownership of additions here.
-  if not nativeGeneratedTopology then
   for index, node in ipairs(transaction.nodes) do
     local value = gameApi.type.NodeAndEntity.new()
     value.entity = slotIds[node.slot]
     value.comp.position = gameApi.type.Vec3f.new(node.position.x, node.position.y, node.position.z)
-    proposal.streetProposal.nodesToAdd[index] = value
+    exactTopology.nodes[index] = value
+    if not nativeGeneratedTopology then proposal.streetProposal.nodesToAdd[index] = value end
   end
   for index, edge in ipairs(transaction.edges) do
     local node0, node0Error = resolveLocalReference(edge.node0, slotIds, options)
@@ -2118,7 +2113,8 @@ function M.materialise(transaction, options)
       value.trackEdge.trackType = selectedResource
       value.trackEdge.catenary = edge.catenary
     end
-    proposal.streetProposal.edgesToAdd[index] = value
+    exactTopology.edges[index] = value
+    if not nativeGeneratedTopology then proposal.streetProposal.edgesToAdd[index] = value end
   end
   for index, object in ipairs(transaction.edgeObjects.add) do
     local edgeId, edgeError = resolveLocalReference(object.edge, slotIds, options)
@@ -2138,8 +2134,8 @@ function M.materialise(transaction, options)
     value.model = constructor.modelKind == "name" and object.model or modelIndex
     value.playerEntity = object.private and integer(options.nativePlayerId) or -1
     value.name = object.name
-    proposal.streetProposal.edgeObjectsToAdd[index] = value
-  end
+    exactTopology.objects[index] = value
+    if not nativeGeneratedTopology then proposal.streetProposal.edgeObjectsToAdd[index] = value end
   end
   for index, cid in ipairs(transaction.remove.edges) do
     local localId, err = resolveLocalReference({ cid = cid }, slotIds, options)
@@ -2168,6 +2164,15 @@ function M.materialise(transaction, options)
     })
     if not applied then return nil, applyError end
     constructionMaterialisation = applied
+    if nativeGeneratedTopology then
+      -- ConstructionEntity expands only inside api.cmd.make.buildProposal.
+      -- Carry these local typed values to the GUI command factory, where the
+      -- generated prefix is visible and can be reconciled before sendCommand.
+      constructionMaterialisation.exactTopology = {
+        nodes = #exactTopology.nodes, edges = #exactTopology.edges,
+        edgeObjects = #exactTopology.objects, typed = exactTopology,
+      }
+    end
   end
   return proposal, {
     slotIds = slotIds, digest = transaction.digest,

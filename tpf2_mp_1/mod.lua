@@ -172,6 +172,8 @@ function data()
       cfg.networkSoakTicks = math.max(60, tonumber(env("TPF2MP_NETWORK_SOAK_TICKS", "300")) or 300)
       cfg.networkClockRunTicks = math.max(30,
         tonumber(env("TPF2MP_NETWORK_CLOCK_RUN_TICKS", "30")) or 30)
+      cfg.networkValidationSlice = tostring(
+        env("TPF2MP_NETWORK_VALIDATION_SLICE", "full"))
       cfg.operationalCapture = envEnabled("TPF2MP_OPERATIONAL_CAPTURE")
       cfg.operationalSampleTicks = math.max(30,
         tonumber(env("TPF2MP_OPERATIONAL_SAMPLE_TICKS", "120")) or 120)

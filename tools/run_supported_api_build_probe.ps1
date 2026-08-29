@@ -208,6 +208,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\canonical.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\construction_proposal_materializer.lua') -Destination $libraryTarget
+    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\construction_exact_topology.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_vehicle_postcondition.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua') -Destination $libraryTarget

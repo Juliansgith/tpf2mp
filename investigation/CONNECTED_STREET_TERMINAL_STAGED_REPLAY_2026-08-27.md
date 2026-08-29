@@ -1,5 +1,11 @@
 # Connected street-terminal staged replay - 2026-08-27
 
+> The staged state machine remains in use, but this document's original
+> correction was incomplete: construction topology is expanded only inside
+> the native command factory. The final post-expansion fix and exact live proof
+> are recorded in
+> [Exact connected-terminal topology replay](EXACT_CONNECTED_TERMINAL_TOPOLOGY_REPLAY_2026-08-29.md).
+
 ## Live result
 
 Relay session `mp-e6cf454422150229` ran the `0.41.7-alpha` crash

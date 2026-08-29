@@ -554,6 +554,7 @@ function M.new(deps)
       if not networkValidationMobilityReady("initialMobilitySample") then return end
       validationCheck("initial-mobility-sampled", state.probes.mobility
         and type(state.probes.mobility.digest) == "string", state.probes.mobility)
+      if config().networkValidationSlice == "connected-terminal" then return stationValidation.beginConnected() end
       if state.bridge.peerId == "player1" then
         -- Candidate two is the first terrain-safe location in the deterministic
         -- app.startGame test world on Build 35924; candidate one is deliberately
@@ -672,7 +673,6 @@ function M.new(deps)
       error("unknown network validation stage: " .. tostring(stage))
     end
   end
-  
   local function runAutomatedValidation()
     local validation = state.validation
     if not (config().autoValidate and validation and validation.enabled) then return end

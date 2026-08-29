@@ -6,6 +6,7 @@ param(
     [ValidateRange(30, 3600)][int]$ClockRunTicks = 30,
     [ValidateRange(120, 3600)][int]$TimeoutSeconds = 900,
     [ValidateRange(30, 600)][int]$ConsensusTimeoutSeconds = 180,
+    [ValidateSet('full', 'connected-terminal')][string]$ValidationSlice = 'full',
     [string]$GameExecutable,
     [string]$LocalModsPath,
     [string]$StartingSave,
@@ -280,6 +281,7 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
     $env:TPF2MP_MANUAL_NETWORK = if ($ManualOnly) { '1' } else { '0' }
     $env:TPF2MP_NETWORK_SOAK_TICKS = [string]$SoakTicks
     $env:TPF2MP_NETWORK_CLOCK_RUN_TICKS = [string]$ClockRunTicks
+    $env:TPF2MP_NETWORK_VALIDATION_SLICE = $ValidationSlice
     $env:TPF2MP_OPERATIONAL_CAPTURE = if ($OperationalCaptureLab) { '1' } else { '0' }
     $env:TPF2MP_OPERATIONAL_SAMPLE_TICKS = [string]$OperationalSampleTicks
     $env:TPF2MP_STARTING_CASH = if ($OperationalCaptureLab -or $ManualOnly) {
@@ -1890,6 +1892,7 @@ finally {
         'TPF2MP_BRIDGE_DIR', 'TPF2MP_START_NETWORK', 'TPF2MP_NETWORK_AUTOTEST',
         'TPF2MP_MANUAL_NETWORK',
         'TPF2MP_NETWORK_SOAK_TICKS', 'TPF2MP_NETWORK_CLOCK_RUN_TICKS',
+        'TPF2MP_NETWORK_VALIDATION_SLICE',
         'TPF2MP_OPERATIONAL_CAPTURE',
         'TPF2MP_OPERATIONAL_SAMPLE_TICKS', 'TPF2MP_STARTING_CASH',
         'TPF2MP_TOWN_DEVELOPMENT', 'TPF2MP_AGENT_MODE',

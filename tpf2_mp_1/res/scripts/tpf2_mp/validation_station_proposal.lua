@@ -1,4 +1,5 @@
 local proposalCodec = require "tpf2_mp/proposal_codec"
+local connectedTerminalRuntime = require "tpf2_mp/validation_connected_terminal_runtime"
 
 local M = {}
 
@@ -96,6 +97,10 @@ function M.new(deps)
   local submit = assert(deps.submit, "station validation submit is required")
   local checkpoint = assert(deps.checkpoint, "station validation checkpoint is required")
   local finish = assert(deps.finish, "station validation finish is required")
+  local connectedValidation = connectedTerminalRuntime.new({
+    getState = getState, transition = transition, check = check,
+    submit = submit, checkpoint = checkpoint, finish = finish,
+  })
 
   local function begin()
     local state = getState()
@@ -137,13 +142,18 @@ function M.new(deps)
       end)
       if not agreed then return true end
       check("exact-station-post-proposal-checkpoint-consensus", agreed.success == true, agreed)
-      finish(agreed.boundarySeq)
+      connectedValidation.begin()
       return true
     end
+    if connectedValidation.maintain(stage) then return true end
     return false
   end
 
-  return { begin = begin, maintain = maintain }
+  return {
+    begin = begin,
+    beginConnected = connectedValidation.begin,
+    maintain = maintain,
+  }
 end
 
 return M

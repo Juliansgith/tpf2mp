@@ -1,6 +1,12 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-29 (Europe/Amsterdam), `0.41.9-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-29 (Europe/Amsterdam), `0.41.10-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Exact connected-terminal topology replay (2026-08-29)](EXACT_CONNECTED_TERMINAL_TOPOLOGY_REPLAY_2026-08-29.md)
+records relay session `mp-ab70273a64a19ffa`, the deferred native construction-
+expansion boundary missed by the earlier fixes, post-factory exact graph
+reconciliation, and the two-instance proof that the terminal, split road, and
+collateral all converge without a fault.
 
 [Opaque entrance metadata after staged collateral (2026-08-28)](OPAQUE_ENTRANCE_METADATA_AFTER_COLLATERAL_2026-08-28.md)
 records the all-peer partial terminal rejection in relay session

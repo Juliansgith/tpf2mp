@@ -365,8 +365,13 @@ do
       return { local_seq = 44 }
     end,
     checkpoint = function(predicate)
-      local record = { proposalId = "station:1", success = true, boundarySeq = 77 }
-      return predicate(record) and record or nil
+      for _, record in ipairs({
+          { proposalId = "station:1", success = true, boundarySeq = 77 },
+          { proposalId = "terminal:1", success = true, boundarySeq = 88 },
+        }) do
+        if predicate(record) then return record end
+      end
+      return nil
     end,
     resourceName = function(kind, index)
       return kind == "track" and index == 7 and "standard.lua" or nil
@@ -390,8 +395,32 @@ do
       and current.validation.values.stationProposalId == "station:1"
       and transitions[2] == "wait-for-station-proposal-checkpoint",
     "exact station validator did not accept its complete physical result")
-  assert(runtime.maintain("wait-for-station-proposal-checkpoint") == true and finished == 77,
-    "exact station validator did not cross its post-build checkpoint")
+  assert(runtime.maintain("wait-for-station-proposal-checkpoint") == true
+      and #submissions == 2 and submissions[2].type == "proposal.prepare"
+      and #submissions[2].transaction.edges == 3
+      and #submissions[2].transaction.constructions[1].collateral == 2
+      and transitions[3] == "wait-for-connected-terminal-consensus"
+      and finished == nil,
+    "connected-terminal live regression did not follow the station checkpoint")
+  local terminalOutputs = {
+    { kind = "construction", slot = "construction:1" },
+    { kind = "edge", slot = "edge:1" }, { kind = "edge", slot = "edge:2" },
+    { kind = "edge", slot = "edge:3" }, { kind = "node", slot = "node:1" },
+    { kind = "node", slot = "node:2" }, { kind = "station", slot = "station:1" },
+    { kind = "station_group", slot = "station_group:1" },
+  }
+  current.world.proposalConsensus = {
+    completed = 4, lastOutcome = { success = true, proposalId = "terminal:1" },
+  }
+  current.world.proposals.byId["terminal:1"] = {
+    result = { constructionReplayPath = "staged-gui-build-proposal", outputs = terminalOutputs },
+  }
+  assert(runtime.maintain("wait-for-connected-terminal-consensus") == true
+      and current.validation.values.connectedTerminalProposalId == "terminal:1"
+      and transitions[4] == "wait-for-connected-terminal-checkpoint",
+    "connected-terminal validator did not require a complete staged result")
+  assert(runtime.maintain("wait-for-connected-terminal-checkpoint") == true and finished == 88,
+    "connected-terminal validator did not cross its post-build checkpoint")
   api, game = previousApi, previousGame
 end
 
@@ -753,17 +782,8 @@ do
   local function fakeProposal()
     local streetProposal = { nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {},
       edgesToRemove = {}, edgeObjectsToAdd = {}, edgeObjectsToRemove = {} }
-    local additions = setmetatable({}, { __newindex = function(vector, index, value)
-      rawset(vector, index, value)
-      -- Reproduce Build 35924's generated-vector side effect. If the codec
-      -- also replays the captured station graph, these counts become 26/24.
-      if value.fileName == "station/rail/modular_station/modular_station.con" then
-        for node = 1, 13 do streetProposal.nodesToAdd[#streetProposal.nodesToAdd + 1] = {} end
-        for edge = 1, 12 do streetProposal.edgesToAdd[#streetProposal.edgesToAdd + 1] = {} end
-      end
-    end })
     return {
-      constructionsToAdd = additions, constructionsToRemove = {}, old2new = {},
+      constructionsToAdd = {}, constructionsToRemove = {}, old2new = {},
       streetProposal = streetProposal,
     }
   end
@@ -774,6 +794,7 @@ do
     },
     SegmentAndEntity = { new = function() return { comp = {} } end },
     NodeAndEntity = { new = function() return { comp = {} } end },
+    PlayerOwned = { new = function() return {} end },
     Vec3f = { new = function(x, y, z) return { x, y, z } end },
     Vec4f = { new = function(a, b, c, d) return { a, b, c, d } end },
     Mat4f = { new = function(a, b, c, d) return { a, b, c, d } end },
@@ -888,10 +909,42 @@ do
   local stationProposal, stationMetadata = assert(proposalCodec.materialise(stationTransaction, {
     api = fakeApi, nativePlayerId = 7, resolveLocal = function() return nil end,
   }))
+  local generatedNodes, generatedEdges = {}, {}
+  local offsets = { -18, -20, -2, 0, 2, 18, 20, 22, 38, 40, 42, 58, 60 }
+  local paths = {
+    { 1, 2, -2 }, { 3, 1, -16 }, { 4, 3, -2 }, { 4, 5, 2 },
+    { 5, 6, 16 }, { 6, 7, 2 }, { 8, 7, -2 }, { 9, 8, -16 },
+    { 10, 9, -2 }, { 10, 11, 2 }, { 11, 12, 16 }, { 12, 13, 2 },
+  }
+  for node, offset in ipairs(offsets) do
+    generatedNodes[node] = { entity = -(100 + node),
+      comp = { position = { -1395, -1200 + offset, 42 } } }
+  end
+  for edge, path in ipairs(paths) do
+    generatedEdges[edge] = {
+      entity = -(200 + edge), type = 1,
+      comp = {
+        node0 = generatedNodes[path[1]].entity, node1 = generatedNodes[path[2]].entity,
+        tangent0 = { 0, path[3], 0 }, tangent1 = { 0, path[3], 0 },
+        type = 0, typeIndex = -1,
+      },
+      trackEdge = { trackType = 1, catenary = false }, playerOwned = { player = 7 },
+    }
+  end
+  local stationCommand = assert(guiBuildCommandFactory.make(function()
+    return { proposal = { proposal = { addedNodes = generatedNodes,
+      addedSegments = generatedEdges, edgeObjectsToAdd = {} }, toRemove = {} } }
+  end, stationProposal, stationTransaction, stationMetadata,
+    function(value, name) return value[name] end))
   assert(stationMetadata.nativeGeneratedTopology == true
-      and #stationProposal.streetProposal.nodesToAdd == 13
-      and #stationProposal.streetProposal.edgesToAdd == 12,
-    "typed construction replay duplicated its native-generated station topology")
+      and #stationProposal.streetProposal.nodesToAdd == 0
+      and #stationCommand.proposal.proposal.addedNodes == 13
+      and #stationCommand.proposal.proposal.addedSegments == 12
+      and stationCommand.proposal.proposal.addedNodes[1].entity == -101
+      and stationCommand.proposal.proposal.addedSegments[1].entity == -201
+      and stationMetadata.construction.exactTopology.processed.generated.nodes == 13
+      and stationMetadata.construction.exactTopology.processed.appended.edges == 0,
+    "typed construction replay did not reconcile native-generated station topology exactly")
 
   local upgradeProposal = fakeApi.type.SimpleProposal.new()
   local applied = assert(constructionProposalMaterializer.apply(upgradeProposal, {
@@ -4587,6 +4640,7 @@ do
     TPF2MP_STARTING_CASH = "75000000",
     TPF2MP_ECONOMY_DIFFICULTY = "relaxed",
     TPF2MP_NETWORK_CLOCK_RUN_TICKS = "900",
+    TPF2MP_NETWORK_VALIDATION_SLICE = "connected-terminal",
     TPF2MP_STARTING_COMPANY_PLAYER_IDS = "9478,9479,9478",
     TPF2MP_RESTORE_RESUME = "1",
     TPF2MP_RESTORE_FROM_SESSION = "saved-session",
@@ -4617,6 +4671,8 @@ do
     "save-owned economy difficulty was not normalized as an exact preset")
   assert(cfg.networkClockRunTicks == 900,
     "injected network clock run window was lost")
+  assert(cfg.networkValidationSlice == "connected-terminal",
+    "targeted live validation slice was lost")
   assert(#cfg.startingCompanyPlayerIds == 2
       and cfg.startingCompanyPlayerIds[1] == 9478
       and cfg.startingCompanyPlayerIds[2] == 9479,

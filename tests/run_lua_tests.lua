@@ -8,6 +8,7 @@ local util = require "tpf2_mp/util"
 local canonical = require "tpf2_mp/canonical"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local constructionReplayState = require "tpf2_mp/construction_replay_state"
+local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local operationCodec = require "tpf2_mp/operation_codec"
 local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
 local economy = require "tpf2_mp/economy"
@@ -1749,6 +1750,24 @@ test("construction collateral stages demolition before exact connected replay", 
   -- in its native Lua-table converter before BuildProposalVisitor. Once those
   -- roots have retired, the typed proposal must retain the town-road split.
   local raw = linearProposal(-1, -2, -3, "street", 4, false)
+  raw.streetProposal.edgesToAdd[2] = {
+    entity = -4, type = 0,
+    comp = {
+      node0 = 701, node1 = -3,
+      tangent0 = { x = 40, y = 10, z = 0 }, tangent1 = { x = 38, y = 12, z = 0 },
+      type = 0, typeIndex = -1,
+    },
+    streetEdge = { streetType = 4 },
+  }
+  raw.streetProposal.edgesToAdd[3] = {
+    entity = -5, type = 0,
+    comp = {
+      node0 = -3, node1 = 702,
+      tangent0 = { x = 25, y = 8, z = 0 }, tangent1 = { x = 24, y = 9, z = 0 },
+      type = 0, typeIndex = -1,
+    },
+    streetEdge = { streetType = 4 },
+  }
   raw.streetProposal.edgesToRemove = { 77 }
   raw.__constructionAdditions = { {
     fileName = "station/street/modular_terminal.con",
@@ -1775,6 +1794,8 @@ test("construction collateral stages demolition before exact connected replay", 
   raw.__constructionRemovals = { { entity = 902 }, { entity = 901 } }
   local canonicalMap = {
     [77] = "edge:pre:town-road",
+    [701] = "node:pre:town-road-a",
+    [702] = "node:pre:town-road-b",
     [901] = "construction:pre:house-a",
     [902] = "construction:pre:house-b",
   }
@@ -1818,15 +1839,17 @@ test("construction collateral stages demolition before exact connected replay", 
     type = {
       SimpleProposal = {
         ConstructionEntity = { new = function() return {} end },
-        new = function() return {
-          constructionsToAdd = {}, constructionsToRemove = {}, old2new = {},
-          streetProposal = {
+        new = function()
+          local streetProposal = {
             nodesToAdd = {}, edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
             edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
-          },
-        } end,
+          }
+          return { constructionsToAdd = {}, constructionsToRemove = {},
+            old2new = {}, streetProposal = streetProposal }
+        end,
       },
       SegmentAndEntity = { new = function() return { comp = {} } end },
+      PlayerOwned = { new = function() return {} end },
       NodeAndEntity = { new = function() return { comp = {} } end },
       Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
       Vec4f = { new = function(a, b, c, d) return { a, b, c, d } end },
@@ -1848,12 +1871,54 @@ test("construction collateral stages demolition before exact connected replay", 
     nativePlayerId = 100,
     resolveLocal = function(cid)
       if cid == "edge:pre:town-road" then return 77 end
+      if cid == "node:pre:town-road-a" then return 701 end
+      if cid == "node:pre:town-road-b" then return 702 end
       if cid == "construction:pre:house-a" then return 901 end
       if cid == "construction:pre:house-b" then return 902 end
     end,
   })
   truthy(proposal, materialisation)
   equal(proposal.streetProposal.edgesToRemove[1], 77)
+  equal(#proposal.streetProposal.nodesToAdd, 0,
+    "construction topology expanded before the native command processor")
+  local function expandedCommand(removals)
+    return { proposal = {
+      proposal = {
+        addedNodes = {
+          { entity = -1, comp = { position = { x = 10, y = 20, z = 3 } } },
+          { entity = -2, comp = { position = { x = 89, y = 19, z = 4 } } },
+        },
+        addedSegments = {{
+          entity = -3, type = 0,
+          comp = {
+            node0 = -1, node1 = -2,
+            tangent0 = { x = 79, y = 0, z = 1 },
+            tangent1 = { x = 79, y = 0, z = 1 },
+            type = 0, typeIndex = 0,
+          },
+          streetEdge = { streetType = 4 },
+        }},
+        edgeObjectsToAdd = {},
+      },
+      toRemove = removals,
+    } }
+  end
+  local command, commandError = guiBuildCommandFactory.make(
+    function() return expandedCommand({ 901, 902 }) end,
+    proposal, transaction, materialisation, function(value, name) return value[name] end)
+  truthy(command, commandError)
+  local processed = command.proposal.proposal
+  equal(#processed.addedNodes, 2, "connected terminal duplicated generated nodes")
+  equal(#processed.addedSegments, 3,
+    "connected terminal omitted the captured road replacement halves")
+  equal(processed.addedNodes[2].comp.position.x, 90,
+    "generated terminal entrance did not adopt the captured snapped position")
+  equal(processed.addedSegments[2].entity, -4)
+  equal(processed.addedSegments[2].comp.node0, 701)
+  equal(processed.addedSegments[2].comp.node1, -2)
+  equal(processed.addedSegments[3].entity, -5)
+  equal(processed.addedSegments[3].comp.node0, -2)
+  equal(processed.addedSegments[3].comp.node1, 702)
   equal(proposal.constructionsToRemove[1], 901)
   equal(proposal.constructionsToRemove[2], 902)
   equal(proposal.constructionsToAdd[1].fileName,
@@ -1867,6 +1932,8 @@ test("construction collateral stages demolition before exact connected replay", 
     omitConstructionCollateral = true,
     resolveLocal = function(cid)
       if cid == "edge:pre:town-road" then return 77 end
+      if cid == "node:pre:town-road-a" then return 701 end
+      if cid == "node:pre:town-road-b" then return 702 end
       if cid == "construction:pre:house-a" then return 901 end
       if cid == "construction:pre:house-b" then return 902 end
     end,
@@ -1876,6 +1943,13 @@ test("construction collateral stages demolition before exact connected replay", 
     "post-demolition replay reintroduced crash-prone collateral roots")
   equal(stagedProposal.streetProposal.edgesToRemove[1], 77,
     "post-demolition replay omitted the captured town-road split")
+  local stagedCommand, stagedCommandError = guiBuildCommandFactory.make(
+    function() return expandedCommand({}) end,
+    stagedProposal, transaction, stagedMaterialisation,
+    function(value, name) return value[name] end)
+  truthy(stagedCommand, stagedCommandError)
+  equal(#stagedCommand.proposal.proposal.addedSegments, 3,
+    "post-demolition replay omitted captured road replacement topology")
   equal(stagedProposal.constructionsToAdd[1].fileName,
     "station/street/modular_terminal.con")
 end)
