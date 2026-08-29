@@ -25,6 +25,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'native_load_common.ps1')
 . (Join-Path $PSScriptRoot 'relay_port_common.ps1')
 . (Join-Path $PSScriptRoot 'relay_diagnostic_process.ps1')
+. (Join-Path $PSScriptRoot 'relay_failed_launch_cleanup.ps1')
 . (Join-Path $PSScriptRoot 'session_lifecycle.ps1')
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
@@ -244,6 +245,7 @@ try {
     Write-Host 'Structured diagnostics are enabled; native crash dumps are never uploaded automatically.'
 }
 catch {
+    $launchFailure = $_
     if ($startupDiagnostic -and -not $baseStarted `
             -and (Test-Path -LiteralPath (Join-Path $sessionRoot 'session-state.json'))) {
         # Give the two-second reporter one final opportunity to publish the
@@ -263,5 +265,7 @@ catch {
         }
         catch { }
     }
-    throw
+    [void](Close-Tpf2mpFailedHostRelayRoom -Role $Role -Companion $companion `
+        -CredentialsPath $credentialsPath -AllowInsecureLoopback:$AllowInsecureLoopback)
+    throw $launchFailure
 }

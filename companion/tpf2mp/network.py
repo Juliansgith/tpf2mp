@@ -17,6 +17,7 @@ from .completion_validation import (
 from .consensus import CONSENSUS_BOUND_ACTIONS, ConsensusTrackers
 from .anchor import AnchorCoordinator
 from .anchor_prepare import AnchorPreparationCoordinator
+from .automatic_recovery import AutomaticRecoveryScheduler
 from .anchor_io import AnchorRequestStore
 from .host_status import write_host_status
 from .host_runtime import run_host
@@ -54,6 +55,7 @@ HOST_AUTHORITY_ACTIONS = {
     "passenger.milestone",
     "recovery.resume",
     "recovery.continue",
+    "recovery.cancel",
 }
 
 # Company-bound actions may originate on either peer; owners carry their service facts.
@@ -72,6 +74,8 @@ class CommitHost(HostIntentMixin):
         require_connected_peers: bool = True,
         restore_plan: Mapping[str, Any] | None = None,
         saved_match_auto: bool = False,
+        automatic_recovery_interval: float = 15 * 60,
+        automatic_recovery_timeout: float = 3 * 60,
     ) -> None:
         self.bridge = bridge
         self.bind = bind
@@ -144,6 +148,11 @@ class CommitHost(HostIntentMixin):
         self.last_error: str | None = None
         self.next_seq = 1
         self._load_audit()
+        self.automatic_recovery = AutomaticRecoveryScheduler(
+            self,
+            interval_seconds=automatic_recovery_interval,
+            timeout_seconds=automatic_recovery_timeout,
+        )
         self.synchronization.finalize_restore()
         for tracker in list(self.proposal_prepares.values()):
             if tracker.get("status") == "pending":
@@ -440,13 +449,23 @@ class CommitHost(HostIntentMixin):
                 if not isinstance(raw_action, Mapping) or set(raw_action) != {"type"}:
                     raise ProtocolError("recovery.requalify evidence is host-derived")
                 action = self.fault_recovery.prepare_action(origin)
+            host_cancel = action["type"] == "recovery.cancel" \
+                and origin == self.bridge.peer and local_seq < 0
+            if action["type"] == "recovery.cancel" and not host_cancel:
+                raise ProtocolError("recovery.cancel is host-generated")
+            if action["type"] == "recovery.prepare" \
+                    and action.get("automatic") is True \
+                    and (origin != self.bridge.peer or local_seq >= 0):
+                raise ProtocolError("automatic recovery.prepare is host-generated")
             self.restore_session.before_commit(action, origin)
             clock_request = action["type"] == "clock.request"
             emergency_pause = clock_request and action["requestedSpeed"] == 0
             self.anchor_preparation.before_commit(action, origin, local_seq)
-            if self.session_fault and not (emergency_pause or action["type"] == "recovery.requalify"):
+            if self.session_fault and not (
+                emergency_pause or action["type"] in {"recovery.requalify", "recovery.cancel"}
+            ):
                 raise ProtocolError(f"session is faulted: {self.session_fault}")
-            if not clock_request:
+            if not clock_request and action["type"] != "recovery.cancel":
                 pending_prepare = self._pending_prepare()
                 if pending_prepare:
                     raise ProtocolError(
@@ -474,8 +493,10 @@ class CommitHost(HostIntentMixin):
             if action["type"] in {
                 "clock.set", "clock.rendezvous", "vehicle.sync_release", "network.sync_fault",
                 "network.checkpoint_request",
+                "recovery.cancel",
             }:
-                raise ProtocolError(f"{action['type']} is host-generated")
+                if not (action["type"] == "recovery.cancel" and host_cancel):
+                    raise ProtocolError(f"{action['type']} is host-generated")
             if clock_request and not emergency_pause and self.require_connected_peers:
                 with self.peers_lock:
                     connected = set(self.peers)
@@ -1069,6 +1090,8 @@ class CommitHost(HostIntentMixin):
         return control
 
     def _resolve_checkpoint_locked(self, tracker: dict[str, Any]) -> None:
+        if tracker.get("status") != "pending":
+            return
         required = set(tracker["requiredPeers"])
         checkpoints = tracker["checkpoints"]
         if not required <= set(checkpoints):

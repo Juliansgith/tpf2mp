@@ -34,6 +34,7 @@ local townDevelopmentValidationModule = require "tpf2_mp/validation_town_develop
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local checkpointRetentionModule = require "tpf2_mp/checkpoint_retention"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
+local resultErrorModule = require "tpf2_mp/result_error"
 local faultRecoveryRuntimeModule = require "tpf2_mp/fault_recovery_runtime"
 local recoveryPhaseProofModule = require "tpf2_mp/recovery_phase_proof"
 local recoveryNativeSaveRuntimeModule = require "tpf2_mp/recovery_native_save_runtime"
@@ -2797,9 +2798,10 @@ do
       return true, barriers[#barriers]
     end,
   })
-  local prepared, preparation = runtime.prepare({}, nil, 7)
+  local prepared, preparation = runtime.prepare({ automatic = true }, nil, 7)
   assert(prepared and preparation.preparationSeq == 7
-      and current.recovery.anchorPreparation.status == "requested",
+      and current.recovery.anchorPreparation.status == "requested"
+      and current.recovery.anchorPreparation.automatic == true,
     "ordered recovery preparation did not enter game-side state")
   local requested, checkpoint = runtime.checkpointRequest({
     preparationSeq = 7, reason = "recovery-prepare:7",
@@ -2818,7 +2820,7 @@ do
       and current.recovery.anchorPreparation.errorCode == nil,
     "checkpoint consensus did not complete persisted preparation state")
   assert(current.recovery.anchorPreparation.vehiclePhaseProof.vehiclePhaseDigest
-      == "4567def0",
+      == "4567def0" and current.recovery.anchorPreparation.automatic == true,
     "prepared boundary did not retain its native vehicle phase proof")
   assert(runtime.checkpointRequest({ preparationSeq = 7, reason = "wrong" }, nil, 8) == false,
     "malformed host checkpoint request was accepted")
@@ -5963,6 +5965,30 @@ do
       and current.economy.vehicleCosts["vehicle:batch:2"] == nil,
     "atomic vehicle sale batch retained authored upkeep for one or more targets")
   api = previousApi
+end
+
+do
+  assert(resultErrorModule.text({ errorCode = "stable-code", detail = "ignored" })
+      == "stable-code"
+      and resultErrorModule.text({ detail = "stable-detail" }) == "stable-detail"
+      and resultErrorModule.text({ nested = true }) == "action failed without error detail",
+    "failed action error normalization leaked an opaque table identity")
+
+  local recoveryState = {
+    networkMode = "network", tick = 12,
+    recovery = { anchorPreparation = { status = "ready", preparationSeq = 9 } },
+  }
+  local runtime = recoveryPrepareRuntimeModule.new({
+    getState = function() return recoveryState end,
+    emitCheckpoint = function() return true end,
+    exportCheckpointBarrier = function() return true end,
+  })
+  local ok = runtime.cancel({
+    type = "recovery.cancel", preparationSeq = 9, errorCode = "save timed out",
+  }, nil, 10)
+  assert(ok == true and recoveryState.recovery.anchorPreparation.status == "failed"
+      and recoveryState.recovery.anchorPreparation.errorCode == "save timed out",
+    "ordered automatic recovery cancellation did not release the local preparation")
 end
 
 print("PASS runtime config/state, proposal, intent, clock, validation, native authority, and GUI module boundaries")

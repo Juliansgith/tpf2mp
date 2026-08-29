@@ -1,6 +1,12 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-29 (Europe/Amsterdam), `0.41.10-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-29 (Europe/Amsterdam), `0.41.11-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Relay and recovery reliability hardening (2026-08-29)](RELAY_RECOVERY_RELIABILITY_2026-08-29.md)
+records periodic receipt-bound anchors, restart adoption, ordered timeout
+cancellation, semantic diagnostic sampling, nested action metadata, stable Lua
+errors, pre-authority retry classification, one-shot save tunnels, exact-room
+failed-launch cleanup, and the complete automated evidence boundary.
 
 [Exact connected-terminal topology replay (2026-08-29)](EXACT_CONNECTED_TERMINAL_TOPOLOGY_REPLAY_2026-08-29.md)
 records relay session `mp-ab70273a64a19ffa`, the deferred native construction-

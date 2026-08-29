@@ -170,6 +170,10 @@ try {
         -ProjectRoot $projectRoot
     if (-not $?) { throw 'Relay loopback port allocation tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_relay_failed_launch_cleanup_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Failed relay-room launch cleanup tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_relay_diagnostic_process_tests.ps1') `
         -ProjectRoot $projectRoot
     if (-not $?) { throw 'Relay diagnostic process tests failed' }

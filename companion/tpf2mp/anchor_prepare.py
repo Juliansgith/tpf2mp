@@ -1,18 +1,17 @@
 """One-action preparation of a coordinated native-save restore point.
-
-The companion makes both worlds safe to save: it fences new work, rendezvouses
-both simulations at pause, orders one checkpoint request at a shared sequence,
-and waits for checkpoint consensus.  At READY, each game issues Build 35924's
-native ``SaveGame`` command; the watcher hashes it and files its ordered receipt.
+Fence work, pause both simulations, converge a checkpoint, then let each game
+issue Build 35924's native ``SaveGame`` and file its signed ordered receipt.
 """
 
 from __future__ import annotations
 
 import time
 from typing import Any, Mapping
+from .anchor_prepare_cancel import is_internal_cancel, observe_cancel
 from .anchor_prepare_checkpoint import AnchorPreparationCheckpoint
 from .anchor_prepare_drain import AnchorPreparationDrain
 from .anchor_prepare_phase import AnchorPreparationPhase
+from .anchor_prepare_replay import retire_after_host_resume
 from .protocol import ProtocolError
 
 
@@ -50,6 +49,9 @@ class AnchorPreparationCoordinator:
         synthetic_phase_probe = self.phase.internal_probe(
             active, action_type, origin, local_seq
         )
+        synthetic_cancel = is_internal_cancel(
+            self.host, active, action, origin, local_seq
+        )
         # A save receipt attests the already-prepared boundary; it is not new
         # authored work and AnchorCoordinator deliberately excludes it from
         # readiness's commits-since-boundary check.  Superseding here would
@@ -57,12 +59,12 @@ class AnchorPreparationCoordinator:
         if action_type == "recovery.save_receipt":
             return
         if status in self.PENDING and not (
-            synthetic_pause or synthetic_drain_resume or synthetic_phase_probe
+            synthetic_pause or synthetic_drain_resume or synthetic_phase_probe or synthetic_cancel
         ):
             raise ProtocolError(
                 f"restore point preparation {active['preparationSeq']} is {status}"
             )
-        if status not in self.PENDING and not synthetic_pause:
+        if status not in self.PENDING and not (synthetic_pause or synthetic_cancel):
             active["status"] = "superseded"
             active["detail"] = "new ordered work superseded the prepared boundary"
             self.last = dict(active)
@@ -96,13 +98,24 @@ class AnchorPreparationCoordinator:
             self.current = {
                 "preparationSeq": sequence,
                 "originPeer": str(message.get("origin_peer") or self.host.bridge.peer),
-                "status": "draining",
+                "automatic": action.get("automatic") is True, "status": "draining",
                 "checkpointBoundarySeq": None,
                 "resumeSpeed": resume_speed,
                 "drainRetries": 0,
                 "detail": "draining ordered work before the shared pause",
                 "startedAt": time.monotonic(),
             }
+            return
+        retired = retire_after_host_resume(
+            self.host, self.current, message, action, restoring, self.PENDING,
+        )
+        if retired:
+            self.last = retired
+            self.current = None
+            return
+        if observe_cancel(self.host, self.current, action):
+            if self.current:
+                self.last = dict(self.current)
             return
         if action_type == "network.checkpoint_request":
             reason = str(action.get("reason", ""))
@@ -125,6 +138,8 @@ class AnchorPreparationCoordinator:
         if self.phase.observe_ordered(self.current, message, action):
             return
         if action_type == "network.checkpoint_outcome" and self.current:
+            if self.current.get("status") in {"failed", "superseded"}:
+                return
             boundary = int(action.get("boundarySeq", 0))
             if boundary != int(self.current.get("checkpointBoundarySeq") or 0):
                 return

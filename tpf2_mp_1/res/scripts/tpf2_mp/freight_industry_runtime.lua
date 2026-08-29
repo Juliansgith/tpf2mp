@@ -3,6 +3,7 @@ local util = require "tpf2_mp/util"
 local model = require "tpf2_mp/freight_industry_model"
 local revalidation = require "tpf2_mp/freight_industry_revalidation"
 local deliverySnapshot = require "tpf2_mp/delivery_snapshot"
+local resultError = require "tpf2_mp/result_error"
 
 local M = {}
 
@@ -140,7 +141,7 @@ function M.maintain(state, deps)
     return true, submitResult
   end
   probe.status = "bootstrap-rejected"
-  probe.lastError = tostring(type(submitResult) == "table" and submitResult.error or submitResult)
+  probe.lastError = resultError.text(submitResult)
   return false, probe.lastError
 end
 

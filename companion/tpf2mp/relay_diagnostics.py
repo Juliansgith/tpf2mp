@@ -5,12 +5,24 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 from .bridge import atomic_write
 from .diagnostic_redaction import redact, redact_text
+from .diagnostic_sampling import (
+    LOG_DEDUP_SECONDS,
+    critical_status_hash,
+    emit_log_line,
+    emit_status_now,
+    log_digest,
+)
+from .diagnostic_cursor import (
+    CursorAdvance,
+    SourceCursor,
+    apply_advances,
+    remember_uploaded_logs,
+)
 from .relay_api import RelayApiError, RelayCredentials, upload_diagnostics
 
 
@@ -25,15 +37,6 @@ def _bounded_utf8(value: str, maximum: int = MAX_EVENT_TEXT_BYTES) -> str:
     if len(encoded) <= maximum:
         return value
     return encoded[:maximum].decode("utf-8", "ignore")
-
-
-@dataclass
-class SourceCursor:
-    name: str
-    path: Path
-    offset: int = 0
-    identity: tuple[int, int] | None = None
-    last_snapshot_hash: str | None = None
 
 
 class RelayDiagnosticReporter:
@@ -74,16 +77,16 @@ class RelayDiagnosticReporter:
             while not self.stop.wait(self.interval_seconds):
                 events, advances = self._collect()
                 if not events:
+                    apply_advances(advances)
                     self._publish("running")
                     continue
                 try:
                     accepted = upload_diagnostics(self.credentials, events)
                     if accepted != len(events):
                         raise RelayApiError("relay accepted only part of a diagnostic batch")
-                    for cursor, offset, identity, snapshot_hash in advances:
-                        cursor.offset = offset
-                        cursor.identity = identity
-                        cursor.last_snapshot_hash = snapshot_hash
+                    accepted_at = time.time()
+                    apply_advances(advances, emitted_at=accepted_at)
+                    remember_uploaded_logs(self.sources, events, accepted_at)
                     self.uploaded_events += accepted
                     self.last_error = None
                     self._publish("running")
@@ -100,11 +103,12 @@ class RelayDiagnosticReporter:
         self,
     ) -> tuple[
         list[dict[str, Any]],
-        list[tuple[SourceCursor, int, tuple[int, int] | None, str | None]],
+        list[CursorAdvance],
     ]:
         events: list[dict[str, Any]] = []
-        advances: list[tuple[SourceCursor, int, tuple[int, int] | None, str | None]] = []
-        now = int(time.time())
+        advances: list[CursorAdvance] = []
+        observed_at = time.time()
+        now = int(observed_at)
         for cursor in self.sources:
             if len(events) >= MAX_BATCH_EVENTS:
                 break
@@ -136,6 +140,14 @@ class RelayDiagnosticReporter:
                 except (UnicodeError, json.JSONDecodeError):
                     payload = {"message": raw[:MAX_LINE_BYTES].decode("utf-8", "replace")}
                 sanitized = redact(payload)
+                critical_hash = critical_status_hash(sanitized)
+                if not emit_status_now(
+                    last_emitted_at=cursor.last_snapshot_emitted_at,
+                    last_critical_hash=cursor.last_critical_hash,
+                    critical_hash=critical_hash,
+                    now=observed_at,
+                ):
+                    continue
                 rendered = json.dumps(
                     sanitized, sort_keys=True, separators=(",", ":"), ensure_ascii=False
                 )
@@ -152,7 +164,7 @@ class RelayDiagnosticReporter:
                     "occurredAt": now,
                     "payload": {"source": cursor.name, "status": sanitized},
                 })
-                advances.append((cursor, stat.st_size, identity, digest))
+                advances.append((cursor, stat.st_size, identity, digest, critical_hash))
                 continue
             try:
                 with cursor.path.open("rb") as handle:
@@ -161,7 +173,7 @@ class RelayDiagnosticReporter:
             except OSError:
                 continue
             if not raw:
-                advances.append((cursor, start_offset, identity, cursor.last_snapshot_hash))
+                advances.append((cursor, start_offset, identity, cursor.last_snapshot_hash, cursor.last_critical_hash))
                 continue
             complete_end = raw.rfind(b"\n")
             if complete_end < 0 and len(raw) < MAX_READ_BYTES:
@@ -186,6 +198,12 @@ class RelayDiagnosticReporter:
                 message = _bounded_utf8(redact_text(
                     line[:MAX_LINE_BYTES].decode("utf-8", "replace")
                 ))
+                digest = log_digest(message)
+                recent = cursor.recent_log_hashes or {}
+                if not emit_log_line(cursor.name, message) \
+                        or observed_at - recent.get(digest, 0.0) < LOG_DEDUP_SECONDS:
+                    consumed += len(chunk)
+                    continue
                 events.append({
                     "type": "client.log",
                     "severity": "error" if "error" in message.lower() else "info",
@@ -202,6 +220,7 @@ class RelayDiagnosticReporter:
                 start_offset + consumed,
                 identity,
                 cursor.last_snapshot_hash,
+                cursor.last_critical_hash,
             ))
         return events, advances
 

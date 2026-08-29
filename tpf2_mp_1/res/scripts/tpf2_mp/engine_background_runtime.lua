@@ -1,3 +1,4 @@
+local resultError = require "tpf2_mp/result_error"
 local M = {}
 
 function M.new(deps)
@@ -24,8 +25,7 @@ function M.new(deps)
       if not invoked then
         state.lastError = "canonical construction processing failed: " .. tostring(result)
       elseif result ~= true then
-        state.lastError = tostring(type(detail) == "table"
-          and detail.error or detail or "canonical construction failed")
+        state.lastError = resultError.text(detail or "canonical construction failed")
       end
     end
     if deps.proposals.hasFinanceWork() then

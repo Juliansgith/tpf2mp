@@ -2,6 +2,25 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'network_common.ps1')
 
+function Test-Tpf2mpTransientPreAuthorityLaunchFailure {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    # These failures all occur before the loaded world may issue an authored
+    # action. They are therefore safe to retire, archive, and retry with the
+    # same role/session/save. Content, identity, and policy failures are
+    # intentionally absent and remain immediate hard failures.
+    $patterns = @(
+        'native Load Game page',
+        'ready-to-click-pinned-save',
+        'ready-to-click-load-game',
+        'stable native row',
+        'Pinned save .+ is not visible',
+        'Companion did not publish a ready status',
+        'Native hook injection failed for game PID',
+        'Persistent paused-network menu pump did not acknowledge'
+    )
+    return @($patterns | Where-Object { $Message -match $_ }).Count -gt 0
+}
+
 function Reset-Tpf2mpFailedNativeMenuAttempt {
     param(
         [Parameter(Mandatory = $true)][string]$Session,
@@ -90,7 +109,7 @@ function Reset-Tpf2mpFailedNativeMenuAttempt {
         session = $safeSession
         peer = $Peer
         attempt = $Attempt
-        reason = 'transient-native-menu-failure'
+        reason = 'transient-pre-authority-launch-failure'
         evidenceRoot = $attemptRoot
         archivedBridge = if (Test-Path -LiteralPath $archivedBridge) { $archivedBridge } else { $null }
         completedAtUtc = [DateTime]::UtcNow.ToString('o')

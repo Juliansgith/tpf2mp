@@ -18,19 +18,21 @@ function M.new(env)
     return emitCheckpoint(reason)
   end
 
-  local function prepare(_, _, commitSeq)
+  local function prepare(action, _, commitSeq)
     local state = getState()
     if state.networkMode ~= "network" or not commitSeq then
       return false, "restore point preparation requires an ordered network session"
     end
     state.recovery.anchorPreparation = {
       status = "requested", preparationSeq = commitSeq, tick = state.tick,
+      automatic = action and action.automatic == true or nil,
     }
     return true, util.deepCopy(state.recovery.anchorPreparation)
   end
 
   local function checkpointRequest(action, _, commitSeq)
     local state = getState()
+    local previous = state.recovery.anchorPreparation
     local preparationSeq = util.integer(action and action.preparationSeq, 0)
     local reason = tostring(action and action.reason or "")
     local phaseProof, phaseError = recoveryPhaseProof.normalise(
@@ -43,6 +45,7 @@ function M.new(env)
       status = "checkpointing", preparationSeq = preparationSeq,
       boundarySeq = commitSeq, tick = state.tick,
       vehiclePhaseProof = phaseProof,
+      automatic = type(previous) == "table" and previous.automatic == true or nil,
     }
     return exportCheckpointBarrier(commitSeq, reason)
   end
@@ -60,11 +63,30 @@ function M.new(env)
     end
   end
 
+  local function cancel(action, _, commitSeq)
+    local state = getState()
+    local preparationSeq = util.integer(action and action.preparationSeq, 0)
+    local errorCode = tostring(action and action.errorCode or "")
+    local preparation = state.recovery and state.recovery.anchorPreparation
+    if state.networkMode ~= "network" or not commitSeq or preparationSeq < 1
+      or errorCode == "" or #errorCode > 512 then
+      return false, "invalid host restore-point cancellation"
+    end
+    if type(preparation) == "table"
+      and util.integer(preparation.preparationSeq, -1) == preparationSeq then
+      preparation.status = "failed"
+      preparation.errorCode = errorCode
+      preparation.outcomeTick = state.tick
+    end
+    return true, { cancelled = true, preparationSeq = preparationSeq }
+  end
+
   return {
     manualCheckpoint = manualCheckpoint,
     prepare = prepare,
     checkpointRequest = checkpointRequest,
     checkpointOutcome = checkpointOutcome,
+    cancel = cancel,
   }
 end
 

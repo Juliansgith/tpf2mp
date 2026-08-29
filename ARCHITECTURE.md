@@ -316,6 +316,9 @@ captured table reference would therefore mutate stale state after loading.
   negative identities, and transient READY transport.
 - `anchor_prepare.py` owns the one-action drain/pause/checkpoint state machine
   and fences new ordered work while it manufactures a save boundary;
+  `anchor_prepare_cancel.py` owns ordered timeout cancellation and checkpoint
+  retirement; `anchor_prepare_replay.py` reconstructs the live supersession
+  caused by a host-authored post-save clock resume;
   `anchor_prepare_checkpoint.py` owns the host-generated checkpoint control;
   `anchor_prepare_drain.py` owns fresh-health drain proofs and the internal
   resume/re-pause transitions needed when station rounds cross that boundary;
@@ -326,6 +329,14 @@ captured table reference would therefore mutate stale state after loading.
   station boundary before resampling. The final proof also carries identical,
   sorted canonical line/station-round cursors for every active vehicle.
   Exact native coordinates remain deliberately non-authoritative.
+- `automatic_recovery.py` owns the host's periodic freshness schedule, bounded
+  preparation lifetime, receipt finalization, and prior-speed restoration;
+  `automatic_recovery_actions.py` converts only protocol-level maintenance
+  rejection into observable scheduler state while persistence faults escape;
+  `automatic_recovery_restart.py` adopts a journal-marked in-flight attempt;
+  `automatic_recovery_state.py` validates the complete public status shape.
+  The ordered `automatic=true` marker is host-generated and is the durable
+  distinction from a player's manual preparation.
 - `restore_session.py` owns receipt-bound resume admission and the mandatory
   fresh-checkpoint fence. The plan core authenticates the pre-migration source;
   identical fresh convergence keys authenticate the peers' current migrated
@@ -372,6 +383,12 @@ captured table reference would therefore mutate stale state after loading.
   ordering, physical consensus, checkpoint, and digest-chain verification; its
   strict settled mode additionally rejects incomplete terminal lanes and
   commits awaiting peer digests. `cli.py` is only the command dispatcher.
+- `relay_diagnostics.py` reads only launcher-pinned diagnostic sources;
+  `diagnostic_sampling.py` owns semantic status/important-log selection and
+  `diagnostic_cursor.py` advances offsets only after relay acceptance while
+  retaining bounded duplicate memory. A steady status is sampled every 20
+  seconds, critical transitions are immediate, identical log text is limited
+  to once per minute, and routine game stdout never becomes telemetry.
 - The long-running `watch_recovery_saves.ps1` process waits for the stable
   automatically named native save (or a correctly prefixed manual fallback).
   If the public save factory is absent, it serializes same-machine peers through

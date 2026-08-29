@@ -1,7 +1,7 @@
 local util = require "tpf2_mp/util"
 local world = require "tpf2_mp/world"
 local economyClockPolicy = require "tpf2_mp/economy_clock_policy"
-
+local resultError = require "tpf2_mp/result_error"
 local M = {}
 
 function M.new(deps)
@@ -63,7 +63,7 @@ function M.new(deps)
     if accepted ~= true then
       diagnosticLog("economy-clock-submit-failed", {
         boundaryGameTimeSeconds = boundary,
-        error = tostring(type(result) == "table" and result.error or result),
+        error = resultError.text(result),
         tick = state.tick,
       })
       return false, result

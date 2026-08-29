@@ -63,6 +63,8 @@ local freightIndustryRuntime = require "tpf2_mp/freight_industry_runtime"
 local aboardMilestoneIntegration = require "tpf2_mp/aboard_milestone_integration"
 local serviceRegistrationIntegrationModule = require "tpf2_mp/service_registration_integration"
 local stateRetention = require "tpf2_mp/state_retention"
+local resultError = require "tpf2_mp/result_error"
+local recoveryActionProtocol = require "tpf2_mp/recovery_action_protocol"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
 local STATE_VERSION = 34
@@ -2060,8 +2062,8 @@ end
 handlers["checkpoint.export"] = function(action)
   return recoveryPrepareRuntime.manualCheckpoint(action)
 end
-handlers["recovery.prepare"], handlers["recovery.requalify"], handlers["network.checkpoint_request"], handlers["recovery.resume"], handlers["recovery.continue"] =
-  recoveryPrepareRuntime.prepare, faultRecoveryRuntime.begin, recoveryPrepareRuntime.checkpointRequest, restoreResumeRuntime.apply, savedMatchContinuationRuntime.apply
+handlers["recovery.prepare"], handlers["recovery.cancel"], handlers["recovery.requalify"], handlers["network.checkpoint_request"], handlers["recovery.resume"], handlers["recovery.continue"] =
+  recoveryPrepareRuntime.prepare, recoveryPrepareRuntime.cancel, faultRecoveryRuntime.begin, recoveryPrepareRuntime.checkpointRequest, restoreResumeRuntime.apply, savedMatchContinuationRuntime.apply
 
 handlers["native.observed"] = function(action, eventId)
   local capture = state.probes.capture
@@ -2577,11 +2579,9 @@ local function normaliseForNetwork(action)
       return nil, "clock.request requires a speed from 0 through 4"
     end
     copy = { type = "clock.request", requestedSpeed = requestedSpeed }
-  elseif copy.type == "recovery.prepare" then
-    for key in pairs(copy) do
-      if key ~= "type" then return nil, "recovery.prepare has an unknown field: " .. tostring(key) end
-    end
-    copy = { type = "recovery.prepare" }
+  elseif copy.type == "recovery.prepare" or copy.type == "recovery.cancel" then
+    local recoveryError; copy, recoveryError = recoveryActionProtocol.normalise(copy)
+    if not copy then return nil, recoveryError end
   elseif copy.type == "recovery.requalify" then
     local recoveryError; copy, recoveryError = faultRecoveryRuntime.normalise(copy)
     if not copy then return nil, recoveryError end
@@ -2845,9 +2845,8 @@ applyCommitted = function(action, actor, commitSeq)
   end
   state.lastAction = util.deepCopy(action)
   state.lastResult = util.deepCopy(result)
-  local resultError = type(result) == "table" and result.error or result
   local actionError
-  if not success then actionError = tostring(resultError) end
+  if not success then actionError = resultError.text(result) end
   state.lastError = actionError
   if action.type ~= "native.observed" or not success then
     diagnosticLog("action", {
@@ -3357,8 +3356,7 @@ local script = {
         state.lastError = tostring(accepted)
         publishSnapshot()
       elseif accepted ~= true then
-        local detail = type(result) == "table" and result.error or result
-        state.lastError = tostring(detail or "intent rejected")
+        state.lastError = resultError.text(result or "intent rejected")
         diagnosticLog("intent-rejected", {
           type = type(param) == "table" and tostring(param.type or "") or "",
           error = state.lastError,
@@ -3378,7 +3376,7 @@ local script = {
       end, debug.traceback)
       if not invoked then state.lastError = tostring(success)
       elseif not success then
-        state.lastError = tostring(type(result) == "table" and result.error or result)
+        state.lastError = resultError.text(result)
       else state.lastError = nil end
       diagnosticLog("proposal-native-result", {
         proposalId = proposalId,
@@ -3406,7 +3404,7 @@ local script = {
         }, "native-" .. tostring(state.bridge.peerId), nil)
       end, debug.traceback)
       if not invoked then state.lastError = tostring(success)
-      elseif not success then state.lastError = tostring(type(result) == "table" and result.error or result)
+      elseif not success then state.lastError = resultError.text(result)
       else state.lastError = nil end
       diagnosticLog("operation-native-result", {
         operationId = operationId,

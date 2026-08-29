@@ -64,6 +64,18 @@ def parser() -> argparse.ArgumentParser:
         help="seconds allowed for physical completion or checkpoint consensus",
     )
     host.add_argument(
+        "--automatic-recovery-interval",
+        type=float,
+        default=15 * 60,
+        help="seconds between automatic paired restore points; 0 disables them",
+    )
+    host.add_argument(
+        "--automatic-recovery-timeout",
+        type=float,
+        default=3 * 60,
+        help="maximum seconds an automatic restore preparation may hold the session",
+    )
+    host.add_argument(
         "--share-save", type=Path,
         help="serve this already-pinned starting save on a separate pre-session port",
     )
@@ -253,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                     completion_timeout=args.completion_timeout,
                     restore_plan=restore_plan,
                     saved_match_auto=args.saved_match_auto,
+                    automatic_recovery_interval=args.automatic_recovery_interval,
+                    automatic_recovery_timeout=args.automatic_recovery_timeout,
                 ).run()
             finally:
                 if save_sync is not None:

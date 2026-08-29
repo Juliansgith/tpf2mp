@@ -58,6 +58,8 @@ def run_host(host: Any, poll_seconds: float = 0.1) -> None:
             host._expire_proposals()
             if host.anchor_preparation.maintain():
                 had_work = True
+            if host.automatic_recovery.maintain():
+                had_work = True
             if now >= next_content_poll:
                 if host.industry_content.refresh():
                     had_work = True

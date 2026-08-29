@@ -1,6 +1,7 @@
 local util, transportManager = require "tpf2_mp/util", require "tpf2_mp/gui_transport_manager"
 local matchInitialisePolicy, constructionSubmission = require "tpf2_mp/match_initialise_policy", require "tpf2_mp/gui_construction_submission"
 local faultRecovery, stationAccessText = require "tpf2_mp/gui_fault_recovery", require "tpf2_mp/gui_station_access_text"
+local recoveryStatusText = require "tpf2_mp/gui_recovery_status_text"
 
 local M = {}
 
@@ -220,6 +221,7 @@ function M.render(gui, snapshot, options)
           or type(reasons) ~= "table" or #reasons == 0 then return "" end
         return " | " .. tostring(reasons[1])
       end)())
+    lines[#lines + 1] = recoveryStatusText.automatic(companion.automaticRecovery)
     lines[#lines + 1] = string.format(
       "Clock convergence: skew %s | rendezvous %s | target %s",
       hostClock.gameTimeSkew and string.format("%.3f", hostClock.gameTimeSkew) or "-",

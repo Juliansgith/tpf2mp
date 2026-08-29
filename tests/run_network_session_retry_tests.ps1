@@ -18,6 +18,25 @@ $env:TMP = $temporary
 
 try {
     . (Join-Path $ProjectRoot 'tools\network_session_retry_cleanup.ps1')
+    foreach ($message in @(
+        "Game PID 43948 did not reach menu stage 'ready-to-click-load-game' within 600 seconds.",
+        'Companion did not publish a ready status within 12 seconds.',
+        'Native hook injection failed for game PID 2560 with exit code 6',
+        "Persistent paused-network menu pump did not acknowledge generation 'wake-1'"
+    )) {
+        if (-not (Test-Tpf2mpTransientPreAuthorityLaunchFailure $message)) {
+            throw "Known pre-authority launch race was not retryable: $message"
+        }
+    }
+    foreach ($message in @(
+        'match fingerprint mismatch',
+        'Relay credentials do not match this role',
+        'Session is already carrying authored bridge traffic'
+    )) {
+        if (Test-Tpf2mpTransientPreAuthorityLaunchFailure $message) {
+            throw "Unsafe/configuration failure was incorrectly made retryable: $message"
+        }
+    }
     $session = 'connected-client-menu-retry'
     $peer = 'player2'
     $sessionRoot = Get-Tpf2mpSessionRoot $session $peer
@@ -89,4 +108,4 @@ finally {
     $env:TMP = $previousTmp
 }
 
-Write-Host 'PASS connected-client native-menu retry is clean, bounded, and evidence-preserving'
+Write-Host 'PASS pre-authority launch retry is clean, bounded, and evidence-preserving'

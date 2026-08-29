@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-29 after prototype `0.41.10-alpha`, state schema `34`,
+Last updated: 2026-08-29 after prototype `0.41.11-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -49,6 +49,15 @@ TPF2MP contains two usable but differently mature modes:
 
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
+
+Prototype `0.41.11-alpha` adds periodic receipt-bound recovery
+points, ordered timeout cancellation, restart adoption, semantic relay
+diagnostics, nested action-type metadata, retry-safe pre-authority launcher
+failures, one-shot save tunnels, and exact-room cleanup after a failed Host
+launch. Lua failures now select bounded stable fields instead of allowing a
+machine-specific `table: 0x...` address into consensus. All of these paths have
+automated adversarial coverage; the automatic-save cadence and interrupted-
+launch UX still require the next physical two-computer acceptance run.
 
 State schema 34 adds exact-save continuation for ordinary rehosting. A clean,
 initialized network save retains its authoritative company accounts, economy,

@@ -73,6 +73,9 @@ class CommitClient:
                 "anchorPreparationSeq": anchor.get("preparationSeq"),
                 "anchorPreparationCheckpointSeq": anchor.get("preparationCheckpointSeq"),
                 "anchorPreparationDetail": anchor.get("preparationDetail"),
+                "automaticRecovery": anchor.get("automaticRecovery", {
+                    "enabled": False, "status": "unavailable",
+                }),
                 "faultRecovery": anchor.get("faultRecovery", {
                     "status": "healthy", "eligible": False,
                     "detail": "host recovery state has not arrived",

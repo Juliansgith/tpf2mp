@@ -40,6 +40,20 @@ extensions. Both client and server redact secret-looking fields, bearer values,
 join codes, Windows/Unix user paths, and IPv4/IPv6 addresses. Raw crash dumps
 and memory dumps are never uploaded automatically.
 
+Diagnostics are semantic rather than frame-rate telemetry. Unchanged status is
+sampled at most once every 20 seconds, while faults, connection changes,
+recovery transitions, and relay-channel changes are sent immediately.
+Identical log messages are limited to one per minute and ordinary game stdout
+is ignored unless it contains a failure marker. The relay metadata extractor
+records the nested ordered action type but never its payload, and does not
+store the continuously repeated raw `clock_health` or `anchor_state` frames.
+
+The save channel is one-shot. After the receiver verifies and acknowledges the
+complete save bundle, both tunnel roles close that channel instead of entering
+a pointless reconnect loop; gameplay remains connected. A failed Host launch
+closes only the exact credential-bound room it created, while a failed Join
+never gains room-destruction authority.
+
 Default retention is 30 days, with an eight-hour room lifetime and a 100 MiB
 per-room diagnostic ceiling. These are server policy values and may be reduced.
 

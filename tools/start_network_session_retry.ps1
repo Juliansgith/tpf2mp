@@ -48,13 +48,10 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
     catch {
         $lastFailure = $_
         $message = [string]$_.Exception.Message
-        $transientNativeMenu = $message -match 'native Load Game page' `
-            -or $message -match 'ready-to-click-pinned-save' `
-            -or $message -match 'stable native row' `
-            -or $message -match 'Pinned save .+ is not visible'
+        $transientNativeMenu = Test-Tpf2mpTransientPreAuthorityLaunchFailure $message
         if (-not $transientNativeMenu -or $attempt -ge $MaxAttempts) { throw }
         Write-Warning (
-            "Native save manager attempt $attempt/$MaxAttempts failed safely; " `
+            "Pre-authority launch attempt $attempt/$MaxAttempts failed safely; " `
             + "the exact role/session/save will be retried automatically: $message"
         )
         $peer = if ($Role -eq 'Host') { 'player1' } else { 'player2' }

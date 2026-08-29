@@ -22,6 +22,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
     anchor_readiness = host.anchor.readiness()
     receipt_readiness = host.anchor.readiness(receipt=True)
     fault_recovery = host.fault_recovery.assessment()
+    automatic_recovery = host.automatic_recovery.status()
     now = time.monotonic()
     host.bridge.write_status({
         "role": "host",
@@ -76,6 +77,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         **host.restore_session.status(),
         **host.anchor.status(anchor_readiness),
         **host.anchor_preparation.status(),
+        **automatic_recovery,
         **host.anchor_requests.status(),
         **host.restore_plan_exchange.status(),
         **host.industry_content.status(),
@@ -86,6 +88,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         host.anchor_preparation.status(), receipt_readiness,
         paused_heartbeat_required=host.clock_effective_speed == 0,
         fault_recovery=fault_recovery,
+        automatic_recovery=automatic_recovery["automaticRecovery"],
     ))
     if restore_plan_message:
         host._broadcast(restore_plan_message)

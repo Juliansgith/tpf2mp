@@ -4,8 +4,10 @@ import base64
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tpf2mp.relay_api import (
     RelayApiError,
@@ -94,6 +96,26 @@ class RelayTunnelTests(unittest.TestCase):
             manifest.write_text(json.dumps({"fingerprint": "c" * 64}), encoding="utf-8")
             self.assertEqual(tunnel._current_fingerprint(), "c" * 64)
 
+    def test_verified_save_channel_completes_once_without_reconnecting(self) -> None:
+        credentials = RelayCredentials(
+            "https://relay.example.test", "mp-0123456789abcdef", "host", "a" * 43
+        )
+        endpoint = LocalEndpoint("connect", "127.0.0.1", 29743)
+        tunnel = RelayTunnel(credentials, {"save": endpoint})
+        local = mock.Mock()
+        websocket = mock.Mock()
+        tunnel._connect_websocket = mock.Mock(return_value=websocket)
+        tunnel._expect_paired = mock.Mock()
+        tunnel._connect_local = mock.Mock(return_value=local)
+        tunnel._bridge = mock.Mock()
+
+        tunnel._channel_loop("save", endpoint)
+
+        tunnel._connect_websocket.assert_called_once_with("save")
+        tunnel._bridge.assert_called_once_with("save", local, websocket)
+        self.assertEqual(tunnel.status.channels["save"]["state"], "complete")
+        self.assertTrue(tunnel.status.channels["save"]["oneShotComplete"])
+
 
 class RelayDiagnosticsTests(unittest.TestCase):
     def test_reporter_reads_only_explicit_bounded_sources(self) -> None:
@@ -115,10 +137,11 @@ class RelayDiagnosticsTests(unittest.TestCase):
             self.assertEqual(len(events), 3)
             self.assertEqual(events[1]["severity"], "error")
             self.assertEqual({item[0].name for item in advances}, {"companion", "status"})
-            for cursor, offset, identity, snapshot_hash in advances:
+            for cursor, offset, identity, snapshot_hash, critical_hash in advances:
                 cursor.offset = offset
                 cursor.identity = identity
                 cursor.last_snapshot_hash = snapshot_hash
+                cursor.last_critical_hash = critical_hash
             self.assertEqual(reporter._collect()[0], [])
             with self.assertRaises(RelayApiError):
                 RelayDiagnosticReporter(
@@ -146,10 +169,11 @@ class RelayDiagnosticsTests(unittest.TestCase):
             self.assertEqual(first[-1]["payload"]["message"], "line-039")
             observed = list(first)
             while advances:
-                for cursor, offset, identity, snapshot_hash in advances:
+                for cursor, offset, identity, snapshot_hash, critical_hash in advances:
                     cursor.offset = offset
                     cursor.identity = identity
                     cursor.last_snapshot_hash = snapshot_hash
+                    cursor.last_critical_hash = critical_hash
                 batch, advances = reporter._collect()
                 observed.extend(batch)
                 if not batch:
@@ -172,10 +196,11 @@ class RelayDiagnosticsTests(unittest.TestCase):
                 {"companion": log},
             )
             _, accepted = reporter._collect()
-            for cursor, offset, identity, snapshot_hash in accepted:
+            for cursor, offset, identity, snapshot_hash, critical_hash in accepted:
                 cursor.offset = offset
                 cursor.identity = identity
                 cursor.last_snapshot_hash = snapshot_hash
+                cursor.last_critical_hash = critical_hash
 
             replacement = Path(root) / "replacement.log"
             replacement.write_text("replacement-first\nreplacement-second\n", encoding="utf-8")
@@ -187,6 +212,87 @@ class RelayDiagnosticsTests(unittest.TestCase):
                 [event["payload"]["message"] for event in retry_batch],
                 ["replacement-first", "replacement-second"],
             )
+
+    def test_status_is_sampled_but_fault_transitions_are_immediate(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            status = Path(root) / "status.json"
+            status.write_text(
+                json.dumps({"status": "connected", "updatedAtUnix": 1}),
+                encoding="utf-8",
+            )
+            reporter = RelayDiagnosticReporter(
+                RelayCredentials(
+                    "https://relay.example.test",
+                    "mp-0123456789abcdef", "host", "a" * 43,
+                ),
+                {"companion.status": status},
+            )
+            first, advances = reporter._collect()
+            self.assertEqual(len(first), 1)
+            cursor, offset, identity, snapshot_hash, critical_hash = advances[0]
+            cursor.offset, cursor.identity = offset, identity
+            cursor.last_snapshot_hash = snapshot_hash
+            cursor.last_critical_hash = critical_hash
+            cursor.last_snapshot_emitted_at = time.time()
+
+            status.write_text(
+                json.dumps({"status": "connected", "updatedAtUnix": 2}),
+                encoding="utf-8",
+            )
+            self.assertEqual(reporter._collect()[0], [])
+            status.write_text(
+                json.dumps({"status": "faulted", "updatedAtUnix": 3}),
+                encoding="utf-8",
+            )
+            changed, _ = reporter._collect()
+            self.assertEqual(len(changed), 1)
+
+    def test_nested_relay_channel_state_transition_is_immediate(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            status = Path(root) / "relay-status.json"
+            status.write_text(json.dumps({
+                "channels": {"gameplay": {"state": "paired", "bytesSent": 1}},
+                "updatedAtUnix": 1,
+            }), encoding="utf-8")
+            reporter = RelayDiagnosticReporter(
+                RelayCredentials(
+                    "https://relay.example.test",
+                    "mp-0123456789abcdef", "host", "a" * 43,
+                ),
+                {"relay.status": status},
+            )
+            _, advances = reporter._collect()
+            cursor, offset, identity, snapshot_hash, critical_hash = advances[0]
+            cursor.offset, cursor.identity = offset, identity
+            cursor.last_snapshot_hash = snapshot_hash
+            cursor.last_critical_hash = critical_hash
+            cursor.last_snapshot_emitted_at = time.time()
+            status.write_text(json.dumps({
+                "channels": {"gameplay": {"state": "retrying", "bytesSent": 1}},
+                "updatedAtUnix": 2,
+            }), encoding="utf-8")
+            changed, _ = reporter._collect()
+            self.assertEqual(len(changed), 1)
+
+    def test_game_stdout_keeps_failures_and_discards_routine_engine_noise(self) -> None:
+        with tempfile.TemporaryDirectory() as root:
+            log = Path(root) / "stdout.txt"
+            log.write_text(
+                "Loading shader cache\n"
+                '[TPF2MP] {"event":"action","success":true}\n'
+                '[TPF2MP] {"event":"action","success":false,"error":"boom"}\n',
+                encoding="utf-8",
+            )
+            reporter = RelayDiagnosticReporter(
+                RelayCredentials(
+                    "https://relay.example.test",
+                    "mp-0123456789abcdef", "host", "a" * 43,
+                ),
+                {"game.stdout": log},
+            )
+            events, _ = reporter._collect()
+            self.assertEqual(len(events), 1)
+            self.assertIn('"success":false', events[0]["payload"]["message"])
 
     def test_secrets_and_local_identity_are_redacted_before_upload(self) -> None:
         with tempfile.TemporaryDirectory() as root:

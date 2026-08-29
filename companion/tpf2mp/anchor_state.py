@@ -5,6 +5,10 @@ from __future__ import annotations
 import time
 from typing import Any, Mapping
 
+from .automatic_recovery_state import (
+    DEFAULT_AUTOMATIC_RECOVERY,
+    validate_automatic_recovery,
+)
 from .protocol import PROTOCOL_VERSION, ProtocolError, sign
 
 
@@ -14,19 +18,21 @@ def anchor_state_message(
     receipt_readiness: Mapping[str, Any] | None = None,
     paused_heartbeat_required: bool = True,
     fault_recovery: Mapping[str, Any] | None = None,
+    automatic_recovery: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build transient host readiness sent to every client companion."""
 
     preparation = preparation or {}
     receipt_readiness = receipt_readiness or readiness
     recovery = fault_recovery or {}
+    automatic = automatic_recovery or DEFAULT_AUTOMATIC_RECOVERY
     return sign({
         "protocol": PROTOCOL_VERSION,
         "session": session,
         "kind": "anchor_state",
         "peer": peer,
         "payload": {
-            "schemaVersion": 5,
+            "schemaVersion": 6,
             "ready": readiness.get("ready") is True,
             "receiptReady": receipt_readiness.get("ready") is True,
             "boundarySeq": max(0, int(readiness.get("boundarySeq", 0))),
@@ -46,6 +52,7 @@ def anchor_state_message(
                 "boundarySeq": recovery.get("boundarySeq"),
                 "faultCode": recovery.get("faultCode"),
             },
+            "automaticRecovery": dict(automatic),
             "publishedAtUnixMs": int(time.time() * 1000),
         },
     })
@@ -63,13 +70,15 @@ def validate_anchor_state(message: Mapping[str, Any]) -> dict[str, Any]:
     receipt = {"receiptReady"}
     heartbeat = {"pausedHeartbeatRequired"}
     recovery = {"faultRecovery"}
+    automatic = {"automaticRecovery"}
     schema = payload.get("schemaVersion") if isinstance(payload, dict) else None
-    expected = base | preparation | receipt | heartbeat | recovery if schema == 5 \
+    expected = base | preparation | receipt | heartbeat | recovery | automatic if schema == 6 \
+        else base | preparation | receipt | heartbeat | recovery if schema == 5 \
         else base | preparation | receipt | heartbeat if schema == 4 \
         else base | preparation | receipt if schema == 3 \
         else base | preparation if schema == 2 else base
     if message.get("kind") != "anchor_state" or not isinstance(payload, dict) \
-            or set(payload) != expected or schema not in {1, 2, 3, 4, 5}:
+            or set(payload) != expected or schema not in {1, 2, 3, 4, 5, 6}:
         raise ProtocolError("anchor readiness message is malformed")
     boundary = payload.get("boundarySeq")
     published = payload.get("publishedAtUnixMs")
@@ -84,7 +93,7 @@ def validate_anchor_state(message: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(reasons, list) or len(reasons) > 32 \
             or any(not isinstance(item, str) or len(item) > 512 for item in reasons):
         raise ProtocolError("anchor readiness reasons are invalid")
-    if schema in {2, 3, 4, 5}:
+    if schema in {2, 3, 4, 5, 6}:
         if payload.get("preparationStatus") not in {
             "idle", "draining", "pause-requested", "pausing", "checkpointing", "converged",
             "ready", "failed", "superseded",
@@ -99,11 +108,11 @@ def validate_anchor_state(message: Mapping[str, Any]) -> dict[str, Any]:
         detail = payload.get("preparationDetail")
         if detail is not None and (not isinstance(detail, str) or len(detail) > 512):
             raise ProtocolError("anchor preparation detail is invalid")
-    if schema in {3, 4, 5} and not isinstance(payload.get("receiptReady"), bool):
+    if schema in {3, 4, 5, 6} and not isinstance(payload.get("receiptReady"), bool):
         raise ProtocolError("anchor receipt readiness is invalid")
-    if schema in {4, 5} and not isinstance(payload.get("pausedHeartbeatRequired"), bool):
+    if schema in {4, 5, 6} and not isinstance(payload.get("pausedHeartbeatRequired"), bool):
         raise ProtocolError("anchor paused-heartbeat policy is invalid")
-    if schema == 5:
+    if schema in {5, 6}:
         fault_recovery = payload.get("faultRecovery")
         expected_recovery = {"status", "eligible", "detail", "recoveryId", "boundarySeq", "faultCode"}
         if not isinstance(fault_recovery, dict) or set(fault_recovery) != expected_recovery \
@@ -124,4 +133,6 @@ def validate_anchor_state(message: Mapping[str, Any]) -> dict[str, Any]:
             not isinstance(boundary, int) or isinstance(boundary, bool) or boundary < 1
         ):
             raise ProtocolError("anchor fault recovery boundary is invalid")
+    if schema == 6:
+        validate_automatic_recovery(payload.get("automaticRecovery"))
     return dict(payload)

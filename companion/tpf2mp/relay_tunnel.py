@@ -215,6 +215,28 @@ class RelayTunnel:
                     lastError=None,
                 )
                 self._bridge(channel, local, websocket)
+                if channel == "save":
+                    # The save protocol closes only after the receiver has
+                    # verified and acknowledged the complete bundle. Reopening
+                    # this channel afterward merely creates relay pairing
+                    # timeouts and can race a later launcher on the same port.
+                    listener = self.listeners.pop(channel, None)
+                    if listener is not None:
+                        try:
+                            listener.close()
+                        except OSError:
+                            # Completion is defined by the acknowledged bundle,
+                            # not by whether Windows reports a clean listener
+                            # close while another thread unwinds accept().
+                            pass
+                    self.status.update(
+                        channel,
+                        state="complete",
+                        paired=False,
+                        oneShotComplete=True,
+                        lastError=None,
+                    )
+                    return
             except (OSError, ConnectionError, ConnectionClosed, RelayApiError, TimeoutError) as exc:
                 attempts += 1
                 self.status.update(

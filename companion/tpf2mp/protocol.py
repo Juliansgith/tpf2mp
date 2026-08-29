@@ -36,6 +36,7 @@ NETWORK_ACTIONS = {
     "network.sync_fault",
     "network.checkpoint_request",
     "recovery.prepare",
+    "recovery.cancel",
     "recovery.requalify",
     "recovery.resume",
     "recovery.continue",
@@ -1621,8 +1622,21 @@ def validate_action(action: Any) -> dict[str, Any]:
         except AboardMilestoneError as exc:
             raise ProtocolError(str(exc)) from exc
     if action_type == "recovery.prepare":
-        if set(action) != {"type"}:
+        if set(action) not in ({"type"}, {"type", "automatic"}):
             raise ProtocolError("recovery.prepare has client-supplied fields")
+        if "automatic" in action and action.get("automatic") is not True:
+            raise ProtocolError("recovery.prepare automatic marker is invalid")
+    if action_type == "recovery.cancel":
+        if set(action) != {"type", "preparationSeq", "errorCode"}:
+            raise ProtocolError("recovery.cancel has unknown or missing fields")
+        preparation = _protocol_int(
+            action.get("preparationSeq"), "recovery cancel preparationSeq"
+        )
+        error = action.get("errorCode")
+        if preparation < 1 or preparation > MAX_EXACT_INTEGER:
+            raise ProtocolError("recovery cancel preparationSeq is invalid")
+        if not isinstance(error, str) or not error or len(error) > 512:
+            raise ProtocolError("recovery cancel errorCode is invalid")
     if action_type == "recovery.requalify":
         recovery_error = fault_recovery_validation_error(action, MAX_EXACT_INTEGER)
         if recovery_error:
