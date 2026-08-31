@@ -1,6 +1,7 @@
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local constructionReplayPolicy = require "tpf2_mp/construction_replay_policy"
 local depotConnectionRepair = require "tpf2_mp/construction_depot_connection_repair"
+local referenceGuard = require "tpf2_mp/gui_replay_reference_guard"
 
 local M = {
   owns = constructionReplayPolicy.guiOwns,
@@ -12,6 +13,9 @@ function M.isHelperConnection(record)
 end
 
 function M.materialise(record, localRefs, nativePlayerId, apiValue)
+  local referencesValid, referenceError = referenceGuard.validate(
+    record.transaction, localRefs, apiValue)
+  if not referencesValid then return nil, referenceError end
   if M.isHelperConnection(record) then
     return depotConnectionRepair.materialise(record, proposalCodec, apiValue)
   end

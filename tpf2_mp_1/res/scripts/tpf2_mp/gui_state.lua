@@ -26,7 +26,8 @@ function M.new()
   -- A delayed canonical BuildProposal can replace the edge underneath the
   -- origin's still-open road/track/signal ghost.  While its native callback
   -- and wallet samples settle, GUI builder userdata may refer to the removed
-  -- edge and must not be traversed (Build 35924 raises an internal error).
+  -- edge and must not be traversed. It also suspends main-view selection while
+  -- a temporary negative edge is acquiring its native components.
   proposalReplayQuarantine = nil,
   operationIssued = {},
   operationResults = {},

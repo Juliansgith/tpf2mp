@@ -1494,11 +1494,43 @@ local replayRuntime = replayRuntimeModule.new({
 assert(replayRuntime.processProposalQueue() == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-replay-quarantine"
+    and replayGui.proposalReplayQuarantine.phase == "armed"
+    and enabled.mainView == false and #replayBuildCalls == 0,
+  "canonical replay did not suspend the native selector before materialisation")
+replayGui.frames = replayGui.frames + 1
+assert(replayRuntime.processProposalQueue() == true
     and replayBuildCalls[#replayBuildCalls].ignoreErrors == false
-    and replayGui.pendingProposalCaptures[1].captureStartedFrame == 500
-    and replayGui.pendingProposalCaptures[1].canonicalFinanceFallbackFrame == 590
-    and replayGui.pendingProposalCaptures[1].maximumFrame == 860,
+    and replayGui.pendingProposalCaptures[1].captureStartedFrame == 501
+    and replayGui.pendingProposalCaptures[1].canonicalFinanceFallbackFrame == 591
+    and replayGui.pendingProposalCaptures[1].maximumFrame == 861,
   "canonical BuildProposal replay did not arm its stale-builder quarantine")
+for expectedFrame = 502, 503 do
+  replayGui.frames = expectedFrame
+  replayRuntime.processProposalQueue()
+  assert(enabled.mainView == false, "native selector resumed before replay components settled")
+end
+replayGui.frames = 504
+replayRuntime.processProposalQueue()
+assert(enabled.mainView == true and replayGui.proposalReplayQuarantine,
+  "native selector did not resume independently of the longer finance quarantine")
+
+local referenceGuard = require "tpf2_mp/gui_replay_reference_guard"
+local referenceTransaction = { edges = {{
+  node0 = { cid = "node:event:prior:3" }, node1 = { slot = "node:1" },
+}} }
+local referenceApi = {
+  type = { ComponentType = { BASE_NODE = "BASE_NODE" } },
+  engine = {
+    entityExists = function(id) return id == 77 end,
+    getComponent = function(id, component) return id == 77 and component == "BASE_NODE" and {} or nil end,
+  },
+}
+assert(referenceGuard.validate(referenceTransaction, { ["node:event:prior:3"] = 77 }, referenceApi),
+  "live canonical attachment node failed immediate replay preflight")
+local missingReference, missingReferenceError = referenceGuard.validate(
+  referenceTransaction, { ["node:event:prior:3"] = 78 }, referenceApi)
+assert(not missingReference and missingReferenceError:find("disappeared", 1, true),
+  "stale canonical attachment node was allowed into native materialisation")
 
 local quarantineLogs = {}
 local quarantineRuntime = eventRuntimeModule.new({
@@ -1572,9 +1604,21 @@ replayGui.proposalResults = {{
 local resultCountBeforeQuarantineRelease = #sentEvents
 assert(replayRuntime.processProposalQueue() == true
     and replayGui.proposalReplayQuarantine == nil
+    and enabled.mainView == true
     and #sentEvents == resultCountBeforeQuarantineRelease + 1
     and sentEvents[#sentEvents].name == "proposal.result",
   "proposal replay quarantine did not release at the engine result boundary")
+
+local replayQuarantineModule = require "tpf2_mp/gui_replay_quarantine"
+local function issueQueuedReplay()
+  local result = replayRuntime.processProposalQueue()
+  if replayGui.proposalReplayQuarantine
+      and replayGui.proposalReplayQuarantine.phase == "armed" then
+    replayGui.frames = replayGui.frames + 1
+    result = replayRuntime.processProposalQueue()
+  end
+  return result
+end
 
 -- Schema 7 normally belongs to the engine-thread construction helper, except
 -- when its construction removal is collateral to topology. That exact native
@@ -1606,13 +1650,13 @@ replayState.world.proposals.byId["gui-topology-collateral"] = {
   },
   localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
 }
-assert(replayRuntime.processProposalQueue() == true
+assert(issueQueuedReplay() == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-topology-collateral",
   "schema-7 topology demolition did not use atomic GUI BuildProposal replay")
 assert(replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
   "GUI-approved topology demolition did not preserve vanilla soft-error acceptance")
-replayGui.proposalReplayQuarantine = nil
+replayQuarantineModule.reset(replayGui)
 
 replayState.world.proposals.byId["gui-town-road-collateral"] = {
   proposalId = "gui-town-road-collateral",
@@ -1629,13 +1673,13 @@ replayState.world.proposals.byId["gui-town-road-collateral"] = {
   },
   localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
 }
-assert(replayRuntime.processProposalQueue() == true
+assert(issueQueuedReplay() == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-town-road-collateral",
   "removal-only town road and attached buildings did not use atomic GUI replay")
 assert(replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
   "town-road collateral demolition did not preserve vanilla soft-error acceptance")
-replayGui.proposalReplayQuarantine = nil
+replayQuarantineModule.reset(replayGui)
 
 replayState.world.proposals.byId["gui-staged-connected-terminal"] = {
   proposalId = "gui-staged-connected-terminal",
@@ -1654,13 +1698,13 @@ replayState.world.proposals.byId["gui-staged-connected-terminal"] = {
   localRefs = { ["edge:pre:town-road"] = 77 },
   nativeOwnerPlayerId = 100, issuerPlayerId = 100,
 }
-assert(replayRuntime.processProposalQueue() == true
+assert(issueQueuedReplay() == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-staged-connected-terminal"
     and replayMaterialiseCalls[#replayMaterialiseCalls].options.omitConstructionCollateral == true
     and replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
   "post-collateral terminal did not use pointer-free exact GUI replay")
-replayGui.proposalReplayQuarantine = nil
+replayQuarantineModule.reset(replayGui)
 
 local successfulSendCommand = api.cmd.sendCommand
 api.cmd.sendCommand = function(command, callback)
@@ -1672,7 +1716,7 @@ replayState.world.proposals.byId["gui-rejected-unchanged"] = {
   transaction = { schemaVersion = proposalCodec.SCHEMA_VERSION, digest = "rejected" },
   localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
 }
-assert(replayRuntime.processProposalQueue() == true,
+assert(issueQueuedReplay() == true,
   "rejected canonical proposal did not enter GUI replay")
 local rejectedResultCount = #sentEvents
 assert(replayRuntime.processProposalQueue() == true

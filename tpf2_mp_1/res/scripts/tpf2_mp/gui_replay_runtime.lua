@@ -212,7 +212,7 @@ function M.new(deps)
       or proposalCodec.isTopologyConstructionRemoval(transaction)
   end
 
-  local function processGuiProposalQueue()
+  local function processGuiProposalQueue() replayQuarantine.update(gui)
     if processPendingProposalCaptures() then return true end
     if #gui.proposalResults > 0 then
       local payload = table.remove(gui.proposalResults, 1)
@@ -227,12 +227,14 @@ function M.new(deps)
     -- Physical authority permits one proposal at a time.  If a malformed save
     -- or future caller exposes another queued record, do not overlap its native
     -- replay with the proposal whose builder userdata is being quarantined.
-    if gui.proposalReplayQuarantine then return true end
     local proposals = state and state.world and state.world.proposals or {}
     for _, proposalId in ipairs(proposalWork.candidates(
         proposals, gui.proposalIssued, guiOwnsProposal)) do
       local record = (proposals.byId or {})[proposalId]
       if type(record) == "table" and record.status == "queued" and not gui.proposalIssued[proposalId] then
+        local replayGate, replayGateError = replayQuarantine.beforeIssue(gui, proposalId)
+        if not replayGate then rejectGuiProposal(proposalId, replayGateError, true) end
+        if replayGate ~= "ready" then return true end
         gui.proposalIssued[proposalId] = true
         local localRefs = record.localRefs or {}
         local nativePlayerId = tonumber(record.nativeOwnerPlayerId)
@@ -286,10 +288,9 @@ function M.new(deps)
             return true
           end
         end
-        replayQuarantine.begin(gui, proposalId)
         gui.issuingCanonicalProposal = proposalId
         local sent, sendError = util.sendCommand(commandOrError, function(_, success)
-            if success ~= true then
+            replayQuarantine.nativeSettled(gui, proposalId); if success ~= true then
               rejectGuiProposal(proposalId, "native BuildProposal rejected",
                 proposalWorld.unchanged(beforeWorld, types, issuerPlayerId, nativePlayerId))
               return
@@ -336,7 +337,7 @@ function M.new(deps)
             }
           end, "mod.network.replay-build-proposal")
         gui.issuingCanonicalProposal = nil
-        if not sent then
+        if not sent then replayQuarantine.nativeSettled(gui, proposalId)
           rejectGuiProposal(proposalId, sendError,
             proposalWorld.unchanged(beforeWorld, types, issuerPlayerId, nativePlayerId))
         end
@@ -345,7 +346,6 @@ function M.new(deps)
     end
     return false
   end
-  
   local function queueGuiOperationResult(payload)
     gui.operationResults[#gui.operationResults + 1] = util.deepCopy(payload)
   end

@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.2-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.4-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Idle-peer track selector crash (2026-08-31)](IDLE_PEER_TRACK_SELECTOR_CRASH_2026-08-31.md)
+records relay session `mp-00776ff0f75951f1`, Player 2's native `CSelector`
+assertion on temporary edge `-1`, the one-frame main-view selector fence,
+post-callback release, immediate canonical-node preflight, and regression proof.
 
 [Selectable connected-depot helper repair (2026-08-31)](SELECTABLE_CONNECTED_DEPOT_HELPER_REPAIR_2026-08-31.md)
 records relay session `mp-2002d7bf8175d520`, the stock context-helper failure
