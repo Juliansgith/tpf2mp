@@ -4,6 +4,8 @@ param(
     [int]$ValidationTimeoutSeconds = 720,
     [switch]$RunConsoleBuildProbe,
     [switch]$RunFacilityCustodyProbe,
+    [switch]$RunAirFacilityProbe,
+    [switch]$RunWaterFacilityProbe,
     [int]$ConsoleProbeTimeoutSeconds = 120,
     [switch]$NativeHook,
     [switch]$SkipNativeBuild,
@@ -225,7 +227,8 @@ try {
     $gameScriptInjected = $true
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp') -Destination $injectedLibrary -Recurse
     $libraryInjected = $true
-    if ($RunConsoleBuildProbe -or $RunFacilityCustodyProbe) {
+    if ($RunConsoleBuildProbe -or $RunFacilityCustodyProbe -or $RunAirFacilityProbe -or
+        $RunWaterFacilityProbe) {
         $probeSource = Join-Path $projectRoot 'investigation\live_console_probe.lua'
         if (-not (Test-Path -LiteralPath $probeSource)) { throw "Console build probe is missing: $probeSource" }
         Copy-Item -LiteralPath $probeSource -Destination (Join-Path $injectedLibrary 'live_console_probe.lua')
@@ -338,7 +341,8 @@ try {
         Write-Host "Native hook mod integration passed; observer states=$nativeObserverStates, wrapped calls=$nativeCommandCalls, queued=$($nativeHookStatus.commandList.commands), applied=$($nativeHookStatus.applyCommand.calls)"
     }
 
-    if (($RunConsoleBuildProbe -or $RunFacilityCustodyProbe) -and $validationPassed) {
+    if (($RunConsoleBuildProbe -or $RunFacilityCustodyProbe -or $RunAirFacilityProbe -or
+        $RunWaterFacilityProbe) -and $validationPassed) {
         $helper = Join-Path $PSScriptRoot 'send_game_console.ps1'
         function Invoke-ProbeInput([string]$InputAction, [string]$InputCommand, [switch]$SkipClick) {
             $probeInputResult = Join-Path $runDirectory "ui-console-build-probe-$InputAction-$([DateTime]::UtcNow.Ticks).json"
@@ -360,28 +364,84 @@ try {
         # establish a known-focused prompt; clicking the prompt loses focus.
         Invoke-ProbeInput -InputAction 'toggle-console'
         Start-Sleep -Milliseconds 500
-        $probeCommand = if ($RunFacilityCustodyProbe) {
+        $probeCommand = if ($RunWaterFacilityProbe) {
+            'require[[tpf2_mp/live_console_probe]].runWaterFacilityTest()'
+        } elseif ($RunAirFacilityProbe) {
+            'require[[tpf2_mp/live_console_probe]].runAirFacilityTest()'
+        } elseif ($RunFacilityCustodyProbe) {
             'require[[tpf2_mp/live_console_probe]].runFacilityCustodyTest()'
         } else {
             'require[[tpf2_mp/live_console_probe]].run()'
         }
-        $probeCompletionEvent = if ($RunFacilityCustodyProbe) { 'facility-custody-complete' } else { 'build-complete' }
+        $probeCompletionEvent = if ($RunWaterFacilityProbe) {
+            'water-facility-complete'
+        } elseif ($RunAirFacilityProbe) {
+            'air-facility-complete'
+        } elseif ($RunFacilityCustodyProbe) {
+            'facility-custody-complete'
+        } else {
+            'build-complete'
+        }
         Invoke-ProbeInput -InputAction 'custom-stage' -InputCommand $probeCommand -SkipClick
         Invoke-ProbeInput -InputAction 'accept-down'
         Start-Sleep -Milliseconds 650
         Invoke-ProbeInput -InputAction 'accept-up'
         Start-Sleep -Milliseconds 500
         Invoke-ProbeInput -InputAction 'toggle-console'
-        Write-Host $(if ($RunFacilityCustodyProbe) {
+        Write-Host $(if ($RunWaterFacilityProbe) {
+            'Issued the disposable stock-harbor construction probe from the console state.'
+        } elseif ($RunAirFacilityProbe) {
+            'Issued the disposable stock-airport construction probe from the console state.'
+        } elseif ($RunFacilityCustodyProbe) {
             'Issued the disposable native depot/station custody probe from the console state.'
         } else {
             'Issued the supported-API disposable road-build probe from the console state.'
         })
 
         $probeDeadline = (Get-Date).AddSeconds($ConsoleProbeTimeoutSeconds)
+        $airMovementSampleIssued = $false
+        $waterMovementSampleIssued = $false
         while ((Get-Date) -lt $probeDeadline -and -not $process.HasExited) {
             if (Test-Path -LiteralPath $gameLog) {
                 $probeText = Get-Content -Raw -LiteralPath $gameLog
+                if ($RunAirFacilityProbe -and -not $airMovementSampleIssued) {
+                    $readyPattern = '(?m)^.*\[TPF2MP-CONSOLE-PROBE\].*"event":"air-facility-ready".*$'
+                    $readyMatches = @([regex]::Matches($probeText, $readyPattern))
+                    if ($readyMatches.Count -gt 0) {
+                        $airMovementSampleIssued = $true
+                        Write-Host $readyMatches[-1].Value
+                        Start-Sleep -Seconds 25
+                        Invoke-ProbeInput -InputAction 'toggle-console'
+                        Start-Sleep -Milliseconds 500
+                        Invoke-ProbeInput -InputAction 'custom-stage' `
+                            -InputCommand 'require[[tpf2_mp/live_console_probe]].finishAirFacilityTest()' `
+                            -SkipClick
+                        Invoke-ProbeInput -InputAction 'accept-down'
+                        Start-Sleep -Milliseconds 650
+                        Invoke-ProbeInput -InputAction 'accept-up'
+                        Start-Sleep -Milliseconds 500
+                        Invoke-ProbeInput -InputAction 'toggle-console'
+                    }
+                }
+                if ($RunWaterFacilityProbe -and -not $waterMovementSampleIssued) {
+                    $readyPattern = '(?m)^.*\[TPF2MP-CONSOLE-PROBE\].*"event":"water-facility-ready".*$'
+                    $readyMatches = @([regex]::Matches($probeText, $readyPattern))
+                    if ($readyMatches.Count -gt 0) {
+                        $waterMovementSampleIssued = $true
+                        Write-Host $readyMatches[-1].Value
+                        Start-Sleep -Seconds 40
+                        Invoke-ProbeInput -InputAction 'toggle-console'
+                        Start-Sleep -Milliseconds 500
+                        Invoke-ProbeInput -InputAction 'custom-stage' `
+                            -InputCommand 'require[[tpf2_mp/live_console_probe]].finishWaterFacilityTest()' `
+                            -SkipClick
+                        Invoke-ProbeInput -InputAction 'accept-down'
+                        Start-Sleep -Milliseconds 650
+                        Invoke-ProbeInput -InputAction 'accept-up'
+                        Start-Sleep -Milliseconds 500
+                        Invoke-ProbeInput -InputAction 'toggle-console'
+                    }
+                }
                 $probePattern = '(?m)^.*\[TPF2MP-CONSOLE-PROBE\].*"event":"' +
                     [regex]::Escape($probeCompletionEvent) + '".*$'
                 $probeMatches = @([regex]::Matches($probeText, $probePattern))
@@ -400,7 +460,11 @@ try {
         if (-not $consoleProbeLine) { throw "Timed out after $ConsoleProbeTimeoutSeconds seconds waiting for build-probe completion" }
         Write-Host $consoleProbeLine
         if (-not $consoleProbePassed) {
-            throw $(if ($RunFacilityCustodyProbe) {
+            throw $(if ($RunWaterFacilityProbe) {
+                'The disposable stock-harbor construction probe failed.'
+            } elseif ($RunAirFacilityProbe) {
+                'The disposable stock-airport construction probe failed.'
+            } elseif ($RunFacilityCustodyProbe) {
                 'The disposable depot/station custody probe failed.'
             } else {
                 'The disposable supported-API road-build probe failed.'
@@ -444,7 +508,8 @@ try {
 }
 catch { Write-Warning "Checkpoint/replay report rendering failed: $($_.Exception.Message)" }
 
-$consoleProbeRequested = $RunConsoleBuildProbe -or $RunFacilityCustodyProbe
+$consoleProbeRequested = $RunConsoleBuildProbe -or $RunFacilityCustodyProbe -or
+    $RunAirFacilityProbe -or $RunWaterFacilityProbe
 $overallPassed = $validationPassed -and $nativeHookPassed -and
     (-not $consoleProbeRequested -or $consoleProbePassed)
 $status = [ordered]@{
@@ -455,7 +520,7 @@ $status = [ordered]@{
     failure = $failure
     validationLine = $validationLine
     consoleProbeRequested = $consoleProbeRequested
-    consoleProbeMode = if ($RunFacilityCustodyProbe) { 'facility-custody' } elseif ($RunConsoleBuildProbe) { 'road-build' } else { $null }
+    consoleProbeMode = if ($RunWaterFacilityProbe) { 'water-facility' } elseif ($RunAirFacilityProbe) { 'air-facility' } elseif ($RunFacilityCustodyProbe) { 'facility-custody' } elseif ($RunConsoleBuildProbe) { 'road-build' } else { $null }
     consoleProbePassed = $consoleProbePassed
     consoleProbeLine = $consoleProbeLine
     nativeHookRequested = [bool]$NativeHook

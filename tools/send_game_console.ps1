@@ -113,9 +113,28 @@ if ($PhysicalPixels) {
 
 Start-Sleep -Milliseconds $DelayMilliseconds
 $game = Get-Process -Id $GameProcessId -ErrorAction Stop
+$receiptDetails = [ordered]@{}
+# A release event is global keyboard hygiene, not an activation request. The
+# game can replace/reparent its main window while app.startGame/app.loadGame is
+# tearing down the menu; requiring that transient HWND to become foreground
+# before releasing Return can leave the key logically held and abort an
+# otherwise healthy unattended run. Release first and record the receipt even
+# when no stable game HWND exists yet.
+if ($Action -in @('accept-up', 'toggle-console-up')) {
+    [Tpf2ConsoleInput]::ScanCodeUp($(if ($Action -eq 'accept-up') { 0x1C } else { 0x29 }))
+    if ($ResultPath) {
+        [ordered]@{
+            action = $Action
+            processId = $GameProcessId
+            sentAt = (Get-Date).ToString('o')
+            foregroundVerified = $false
+            details = @{ releaseOnly = $true }
+        } | ConvertTo-Json | Set-Content -LiteralPath $ResultPath -Encoding UTF8
+    }
+    exit 0
+}
 $target = $game.MainWindowHandle
 if ($target -eq 0) { throw 'Transport Fever 2 has no main window' }
-$receiptDetails = [ordered]@{}
 
 for ($attempt = 0; $attempt -lt 20 -and [Tpf2ConsoleInput]::GetForegroundWindow() -ne $target; $attempt++) {
     $foreground = [Tpf2ConsoleInput]::GetForegroundWindow()

@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-29 after prototype `0.41.11-alpha`, state schema `34`,
+Last updated: 2026-08-31 after prototype `0.42.0-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -50,7 +50,16 @@ TPF2MP contains two usable but differently mature modes:
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
 
-Prototype `0.41.11-alpha` adds periodic receipt-bound recovery
+Prototype `0.42.0-alpha` adds explicit stock AIR and WATER coverage. All 29
+stock aircraft, 23 stock ships, 60 airport option combinations, and 12 harbor
+layouts pass the portable protocol/construction gates. Passenger and conserved
+freight models, every-stop synchronization, and divergent-native-ID lifecycle
+replay cover both carriers. Exact Build 35924 disposable runs created and
+removed compound facilities, purchased and assigned a Junkers F 13 and Rigi,
+and observed 546.935-metre and 626.771-metre movement respectively. Ordinary-
+GUI two-computer carrier acceptance remains the honest live boundary.
+
+Prototype `0.41.11-alpha` added periodic receipt-bound recovery
 points, ordered timeout cancellation, restart adoption, semantic relay
 diagnostics, nested action-type metadata, retry-safe pre-authority launcher
 failures, one-shot save tunnels, and exact-room cleanup after a failed Host

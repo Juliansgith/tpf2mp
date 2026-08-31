@@ -2565,6 +2565,242 @@ do
 end
 
 do
+  -- Network aircraft and ship operations must converge by canonical identity, not by
+  -- the machine-local depot/line/vehicle IDs allocated on each peer. Run the
+  -- production operation runtime twice with deliberately disjoint native IDs
+  -- and compare the resulting portable bindings and postconditions.
+  local previousApi, previousGame = api, game
+  local originalBridgeEmit = bridgeModule.emit
+  local guarded, guardError = xpcall(function()
+    bridgeModule.emit = function(_, kind, payload)
+      return true, { kind = kind, payload = util.deepCopy(payload), local_seq = 1 }
+    end
+    local carrierSpecs = {
+      {
+        label = "aircraft", carrier = "AIR", prefix = "air-network",
+        depotCid = "depot:event:air:1", lineCid = "line:event:air:1",
+        model = "vehicle/plane/junkers_f_13_v2.mdl",
+        replacementModel = "vehicle/plane/airbus_a320_v2.mdl",
+      },
+      {
+        label = "ship", carrier = "WATER", prefix = "water-network",
+        depotCid = "depot:event:water:1", lineCid = "line:event:water:1",
+        model = "vehicle/ship/rigi.mdl",
+        replacementModel = "vehicle/ship/damen_ferry_v2.mdl",
+      },
+    }
+    for _, carrierSpec in ipairs(carrierSpecs) do
+    local vehicleModel = carrierSpec.model
+    local replacementVehicleModel = carrierSpec.replacementModel
+    local vehicleConfig = {
+      vehicles = {{
+        model = vehicleModel, reversed = false, loadConfig = { 0 },
+        color = { r = 0, g = 0, b = 0 }, logo = "",
+      }},
+      vehicleGroups = { 1 },
+    }
+    local buyTransaction = assert(operationCodecModule.make(
+      "vehicle.buy", "company:2", {
+        depotCid = carrierSpec.depotCid, config = vehicleConfig,
+      }))
+
+    local function replayPeer(ids)
+      local componentSets = {
+        VEHICLE_DEPOT = { [ids.depot] = { carrier = carrierSpec.carrier } },
+        LINE = { [ids.line] = { stops = {} } },
+        TRANSPORT_VEHICLE = {}, MAINTENANCE_COST = {}, PLAYER_OWNED = {
+          [ids.depot] = { player = ids.player },
+          [ids.line] = { player = ids.player },
+        },
+      }
+      api = {
+        type = { ComponentType = {
+          VEHICLE_DEPOT = "VEHICLE_DEPOT", LINE = "LINE",
+          TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE",
+          MAINTENANCE_COST = "MAINTENANCE_COST", PLAYER_OWNED = "PLAYER_OWNED",
+        } },
+        res = { modelRep = { getName = function(modelId)
+          modelId = tonumber(modelId)
+          return modelId == 77 and vehicleModel
+            or (modelId == 78 and replacementVehicleModel or nil)
+        end } },
+        engine = {
+          entityExists = function(localId)
+            for _, values in pairs(componentSets) do
+              if values[localId] ~= nil then return true end
+            end
+            return false
+          end,
+          getComponent = function(localId, kind)
+            return componentSets[kind] and componentSets[kind][localId] or nil
+          end,
+        },
+      }
+      game = { interface = {
+        getPlayer = function() return ids.player end,
+        getEntity = function() return nil end,
+      } }
+      local registry = canonicalModule.newState()
+      assert(canonicalModule.bind(registry, carrierSpec.depotCid, "depot", ids.depot, {
+        owner = "company:2", manifestBound = true,
+      }))
+      assert(canonicalModule.bind(registry, carrierSpec.lineCid, "line", ids.line, {
+        owner = "company:2", manifestBound = true,
+      }))
+      local state = {
+        networkMode = "network", initialized = true, tick = 1,
+        bridge = { peerId = "player2" },
+        canonical = registry,
+        companies = {
+          ["company:1"] = { playerId = ids.player + 1 },
+          ["company:2"] = { playerId = ids.player },
+        },
+        economy = economyModule.newState(),
+        world = {
+          proxyMode = false, logicalOwnershipAuthoritative = true,
+          logicalOwners = {
+            [tostring(ids.depot)] = "company:2",
+            [tostring(ids.line)] = "company:2",
+          },
+          pinnedCustody = {}, originResidueCustody = {},
+          operations = { byId = {}, queued = 0, applied = 0, failed = 0 },
+          operationConsensus = { byId = {}, completed = 0, failed = 0 },
+        },
+        probes = { capture = {
+          operationReplayCount = 0, operationReplayFailureCount = 0,
+        } },
+      }
+      local runtime = operationRuntimeModule.new({
+        getState = function() return state end,
+        requireRunningMatch = function() return true end,
+        balanceOf = function() return 50000000 end,
+        coreDigest = function()
+          return hashModule.value(canonicalModule.digestView(state.canonical))
+        end,
+        refreshOwnershipProbe = function() return {} end,
+        proposalPreparation = { originAppliedOperations = {} },
+      })
+      local buyEventId = carrierSpec.prefix .. ":player1:1"
+      assert(runtime.queue(buyTransaction, buyEventId, 1))
+      componentSets.TRANSPORT_VEHICLE[ids.vehicle] = {
+        line = -1, stopIndex = 0, userStopped = false, sellOnArrival = false,
+        transportVehicleConfig = { vehicles = {{
+          part = { modelId = 77, reversed = false, loadConfig = { 0 } },
+          targetMaintenanceState = 1,
+        }} },
+      }
+      componentSets.MAINTENANCE_COST[ids.vehicle] = { maintenanceCost = 125000 }
+      componentSets.PLAYER_OWNED[ids.vehicle] = { player = ids.player }
+      local bought, buyResult = runtime.finalise({
+        operationId = buyEventId, success = true,
+        outputLocalId = ids.vehicle, financeDelta = -1000000,
+      })
+      assert(bought and buyResult.kind == "vehicle.buy"
+          and buyResult.postcondition.vehicleConfigKnown == true
+          and buyResult.postcondition.vehicleConfig.vehicles[1].model == vehicleModel,
+        "canonical " .. carrierSpec.label .. " purchase did not verify its native consist")
+      local vehicleCid = assert(buyResult.outputs[1].cid)
+      assert(state.world.logicalOwners[tostring(ids.vehicle)] == "company:2"
+          and state.canonical.byCanonical[vehicleCid].metadata.depotCid
+            == carrierSpec.depotCid,
+        carrierSpec.label .. " purchase did not retain Company 2/depot custody")
+
+      local assignTransaction = assert(operationCodecModule.make(
+        "vehicle.assign", "company:2", {
+          targetCid = vehicleCid, lineCid = carrierSpec.lineCid, stopIndex = -1,
+        }))
+      local assignEventId = carrierSpec.prefix .. ":player1:2"
+      state.tick = 2
+      assert(runtime.queue(assignTransaction, assignEventId, 2))
+      componentSets.TRANSPORT_VEHICLE[ids.vehicle].line = ids.line
+      local assigned, assignResult = runtime.finalise({
+        operationId = assignEventId, success = true, financeDelta = 0,
+      })
+      assert(assigned and assignResult.kind == "vehicle.assign"
+          and assignResult.postcondition.lineCid == carrierSpec.lineCid
+          and state.canonical.byCanonical[vehicleCid].metadata.lineCid
+            == carrierSpec.lineCid,
+        "canonical " .. carrierSpec.label
+          .. " assignment did not resolve the peer-local line")
+
+      local replacementConfig = {
+        vehicles = {{
+          model = replacementVehicleModel, reversed = false, loadConfig = { 0 },
+          color = { r = 0, g = 0, b = 0 }, logo = "",
+        }},
+        vehicleGroups = { 1 },
+      }
+      local replaceTransaction = assert(operationCodecModule.make(
+        "vehicle.replace", "company:2", {
+          targetCid = vehicleCid, config = replacementConfig,
+        }))
+      local replaceEventId = carrierSpec.prefix .. ":player1:3"
+      state.tick = 3
+      assert(runtime.queue(replaceTransaction, replaceEventId, 3))
+      componentSets.TRANSPORT_VEHICLE[ids.vehicle].transportVehicleConfig = {
+        vehicles = {{
+          part = { modelId = 78, reversed = false, loadConfig = { 0 } },
+          targetMaintenanceState = 1,
+        }},
+      }
+      componentSets.MAINTENANCE_COST[ids.vehicle].maintenanceCost = 2500000
+      local replaced, replaceResult = runtime.finalise({
+        operationId = replaceEventId, success = true, financeDelta = -5000000,
+      })
+      assert(replaced and replaceResult.kind == "vehicle.replace"
+          and replaceResult.postcondition.vehicleConfigKnown == true
+          and replaceResult.postcondition.vehicleConfig.vehicles[1].model
+            == replacementVehicleModel
+          and state.canonical.byCanonical[vehicleCid].metadata.models[1].model
+            == replacementVehicleModel
+          and state.canonical.byCanonical[vehicleCid].metadata.lineCid
+            == carrierSpec.lineCid,
+        "canonical " .. carrierSpec.label
+          .. " replacement lost its consist or line identity")
+
+      local sellTransaction = assert(operationCodecModule.make(
+        "vehicle.sell", "company:2", { targetCid = vehicleCid }))
+      local sellEventId = carrierSpec.prefix .. ":player1:4"
+      state.tick = 4
+      assert(runtime.queue(sellTransaction, sellEventId, 4))
+      componentSets.TRANSPORT_VEHICLE[ids.vehicle] = nil
+      componentSets.MAINTENANCE_COST[ids.vehicle] = nil
+      componentSets.PLAYER_OWNED[ids.vehicle] = nil
+      local sold, sellResult = runtime.finalise({
+        operationId = sellEventId, success = true, financeDelta = 2000000,
+      })
+      assert(sold and sellResult.kind == "vehicle.sell"
+          and sellResult.postcondition.exists == false
+          and state.canonical.byCanonical[vehicleCid] == nil
+          and state.world.logicalOwners[tostring(ids.vehicle)] == nil,
+        "sold " .. carrierSpec.label .. " retained canonical or logical ownership residue")
+      return {
+        vehicleCid = vehicleCid,
+        canonicalDigest = hashModule.value(canonicalModule.digestView(state.canonical)),
+        buy = buyResult,
+        assign = assignResult,
+        replace = replaceResult,
+        sell = sellResult,
+      }
+    end
+
+    local first = replayPeer({ player = 100, depot = 501, line = 502, vehicle = 503 })
+    local second = replayPeer({ player = 200, depot = 1501, line = 1502, vehicle = 1503 })
+    assert(first.vehicleCid == second.vehicleCid
+        and first.canonicalDigest == second.canonicalDigest
+        and hashModule.value(first.buy) == hashModule.value(second.buy)
+        and hashModule.value(first.assign) == hashModule.value(second.assign)
+        and hashModule.value(first.replace) == hashModule.value(second.replace)
+        and hashModule.value(first.sell) == hashModule.value(second.sell),
+      carrierSpec.label .. " lifecycle encoded peer-local native identities")
+    end
+  end, debug.traceback)
+  bridgeModule.emit = originalBridgeEmit
+  api, game = previousApi, previousGame
+  assert(guarded, guardError)
+end
+
+do
   local current = {
     canonical = {
       byCanonical = {
@@ -4634,6 +4870,31 @@ do
 end
 
 do
+  local cfg = runtimeConfig.read({
+    source = {
+      protocolVersion = 3,
+      startNetwork = true,
+      localProxyEnabled = false,
+      peerId = "stale-launcher-peer",
+      sessionId = "stale-launcher-session",
+      bridgeDir = "C:/bridge/stale-launcher",
+    },
+    forcedValidation = {
+      root = "C:/bridge/auto-live/player1",
+      peerId = "player1",
+      sessionId = "auto-live",
+    },
+    environment = function() return nil end,
+  })
+  assert(cfg.peerId == "player1" and cfg.sessionId == "auto-live"
+      and cfg.root == "C:/bridge/auto-live/player1",
+    "one-shot validation identity did not override a stale launcher profile")
+  assert(cfg.startNetwork == false and cfg.localProxy == true
+      and cfg.autoValidate == true,
+    "one-shot standalone validation inherited stale network authority")
+end
+
+do
   local environment = {
     TPF2MP_MANUAL_NETWORK = "yes",
     TPF2MP_PEER_ID = "player2",
@@ -5718,17 +5979,82 @@ do
       and vehicleSyncStateModule.synchronizesStop(current.economy,
         "line:event:test:1", 2),
     "road/tram endpoint synchronization policy is inconsistent")
+
+  -- Aircraft are sparse, high-value services whose native physical position
+  -- is anchored at every airport, including an intermediate stop. This must
+  -- not inherit the ROAD/TRAM feeder optimization merely because both use a
+  -- three-stop line shape.
   transportVehicle.state, current.tick = 1, 7
   runtime.update()
-  current.economy.services["line:event:test:1"] = nil
+  current.economy.services["line:event:test:1"].metadata.carrier = "AIR"
   transportVehicle.state, transportVehicle.stopIndex, current.tick = 2, 1, 8
+  local airCommandsBefore = #commands
+  runtime.update()
+  assert(vehicleSyncStateModule.synchronizesStop(current.economy,
+      "line:event:test:1", 1)
+      and #commands == airCommandsBefore + 1 and commands[#commands].stopped == true
+      and emitted[#emitted].payload.state == "held"
+      and emitted[#emitted].payload.round == 2
+      and emitted[#emitted].payload.stopIndex == 1,
+    "intermediate AIR arrival did not enter the all-peer station barrier")
+  assert(runtime.applyRelease({
+    type = "vehicle.sync_release",
+    vehicleCid = "vehicle:event:test:1",
+    lineCid = "line:event:test:1",
+    round = 2,
+    stopIndex = 1,
+    releaseAtGameTime = currentTime,
+    releaseWhilePaused = false,
+    schedule = { schemaVersion = 1, enabled = false },
+  }) == true, "ordered AIR station release was rejected")
+  current.tick = 9
+  runtime.update()
+  assert(commands[#commands].stopped == false
+      and emitted[#emitted].payload.state == "released",
+    "AIR vehicle did not leave after its ordered station release")
+
+  -- Ships have the same sparse-route positional anchor policy as aircraft:
+  -- every harbor, including a middle stop, crosses the all-peer barrier.
+  transportVehicle.state, current.tick = 1, 10
+  runtime.update()
+  current.economy.services["line:event:test:1"].metadata.carrier = "WATER"
+  transportVehicle.state, transportVehicle.stopIndex, current.tick = 2, 1, 11
+  local waterCommandsBefore = #commands
+  runtime.update()
+  assert(vehicleSyncStateModule.synchronizesStop(current.economy,
+      "line:event:test:1", 1)
+      and #commands == waterCommandsBefore + 1 and commands[#commands].stopped == true
+      and emitted[#emitted].payload.state == "held"
+      and emitted[#emitted].payload.round == 3
+      and emitted[#emitted].payload.stopIndex == 1,
+    "intermediate WATER arrival did not enter the all-peer station barrier")
+  assert(runtime.applyRelease({
+    type = "vehicle.sync_release",
+    vehicleCid = "vehicle:event:test:1",
+    lineCid = "line:event:test:1",
+    round = 3,
+    stopIndex = 1,
+    releaseAtGameTime = currentTime,
+    releaseWhilePaused = false,
+    schedule = { schemaVersion = 1, enabled = false },
+  }) == true, "ordered WATER station release was rejected")
+  current.tick = 12
+  runtime.update()
+  assert(commands[#commands].stopped == false
+      and emitted[#emitted].payload.state == "released",
+    "WATER vehicle did not leave after its ordered station release")
+
+  transportVehicle.state, current.tick = 1, 13
+  runtime.update()
+  current.economy.services["line:event:test:1"] = nil
+  transportVehicle.state, transportVehicle.stopIndex, current.tick = 2, 1, 14
   runtime.update()
   assert(commands[#commands].stopped == true
-      and emitted[#emitted].payload.round == 2
+      and emitted[#emitted].payload.round == 4
       and emitted[#emitted].payload.stopIndex == 1
       and emitted[#emitted].payload.schedule.enabled == false,
     "ordinary line did not advance with synchronization-only release policy")
-  transportVehicle.state, current.tick = 1, 9
+  transportVehicle.state, current.tick = 1, 15
   runtime.update()
   assert(emitted[#emitted].payload.state == "fault"
       and current.probes.vehicleSync.faults == 1,

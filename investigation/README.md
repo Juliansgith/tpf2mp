@@ -1,6 +1,17 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-29 (Europe/Amsterdam), `0.41.11-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.0-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Water transport support audit (2026-08-30)](WATER_TRANSPORT_SUPPORT_AUDIT_2026-08-30.md)
+records all 12 stock harbor layouts and 23 ship resources, passenger and
+conserved-freight water services, divergent-local-ID lifecycle proof, compound
+harbor removal, and a 626.77-metre native Rigi voyage.
+
+[Air transport support audit (2026-08-29)](AIR_TRANSPORT_SUPPORT_AUDIT_2026-08-29.md)
+records all stock airport option and aircraft-resource coverage, four native
+facility shapes, canonical air-line/purchase/assignment proof, a 560-metre
+live flight, the one-shot validator isolation fix, and the remaining two-peer
+acceptance boundary.
 
 [Relay and recovery reliability hardening (2026-08-29)](RELAY_RECOVERY_RELIABILITY_2026-08-29.md)
 records periodic receipt-bound anchors, restart adoption, ordered timeout

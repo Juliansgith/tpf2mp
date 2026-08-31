@@ -599,6 +599,16 @@ function M.install(gui, env)
     return { entries = entries, signature = table.concat(parts, "|") }
   end
   
+  local CONSTRUCTION_PREVIEW_PARAMETER_FIELDS = {
+    -- Rail/street station geometry.
+    "year", "seed", "trackType", "catenary", "length", "tracks", "paramX", "paramY",
+    -- Stock airport/airfield variants. Airport direction can change the runway
+    -- graph without changing the small module sentinel sample.
+    "templateIndex", "hangar", "terminals", "dir",
+    -- Stock modular bus/tram/truck terminal variants.
+    "platL", "platR", "length2", "tramTrack", "tramTrackType",
+  }
+
   -- A lightweight sample of the construction ghost.  Unlike eventShape(), this
   -- deliberately avoids the node/edge graph and deep module metadata, so it can
   -- run on every proposalCreate without returning the host to single-digit FPS.
@@ -624,22 +634,15 @@ function M.install(gui, env)
       return nil
     end
     local paramsOk, rawParams = pcall(function()
-      return {
-        year = sourceParams.year,
-        seed = sourceParams.seed,
-        trackType = sourceParams.trackType,
-        catenary = sourceParams.catenary,
-        length = sourceParams.length,
-        tracks = sourceParams.tracks,
-        paramX = sourceParams.paramX,
-        paramY = sourceParams.paramY,
-      }
+      local result = {}
+      for _, field in ipairs(CONSTRUCTION_PREVIEW_PARAMETER_FIELDS) do
+        result[field] = sourceParams[field]
+      end
+      return result
     end)
     if not paramsOk then return nil end
     local params, templateParts = {}, { fileName }
-    for _, field in ipairs({
-      "year", "seed", "trackType", "catenary", "length", "tracks", "paramX", "paramY",
-    }) do
+    for _, field in ipairs(CONSTRUCTION_PREVIEW_PARAMETER_FIELDS) do
       local value = gui.finitePreviewNumber(rawParams[field])
       if value ~= nil then
         params[field] = value

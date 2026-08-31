@@ -1,5 +1,6 @@
 local project = assert(arg[1], "project root argument required"):gsub("\\", "/")
 package.path = project .. "/tpf2_mp_1/res/scripts/?.lua;" .. package.path
+local util = require "tpf2_mp/util"
 
 local sentEvents = {}
 local enabled = {}
@@ -900,6 +901,49 @@ local repeatedStationCapture = captures[#captures].param.proposalSnapshot
 assert(repeatedStationCapture.__constructionAdditions["1"].transf["13"] == 888
     and repeatedStationCapture.streetProposal.nodesToAdd["1"].comp.position.x == 888,
   "repeated station capture did not rebase the cached template onto the clicked placement")
+
+-- Airport direction, passenger/cargo template, hangar and terminal count are
+-- scalar stock-construction options.  Some combinations retain the same small
+-- module sentinel sample even though they produce a different runway/taxiway
+-- graph.  Changing one must invalidate the lightweight topology cache instead
+-- of replaying the previous airport layout at the new transform.
+local airportPreview = util.deepCopy(exactPreview)
+local airportAddition = airportPreview.proposal.constructionsToAdd[1]
+airportAddition.fileName = "station/air/airport.con"
+airportAddition.params = {
+  year = 1990, seed = 41, templateIndex = 0,
+  hangar = 0, terminals = 2, dir = 0,
+  modules = {
+    [1002] = { name = "station/air/airport_main_building.module", variant = 0 },
+    [70006] = { name = "station/air/airport_terminal.module", variant = 0 },
+  },
+}
+airportAddition.transf[13] = 1600
+airportPreview.proposal.streetProposal.nodesToAdd[1].comp.position.x = 1600
+airportPreview.proposal.streetProposal.nodesToAdd[2].comp.position.x = 1660
+assert(script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", airportPreview) == nil,
+  "airport preview was unexpectedly vetoed")
+airportAddition.params.dir = 1
+assert(script.guiHandleEvent("constructionBuilder", "builder.proposalCreate", airportPreview) == nil,
+  "opposite-direction airport preview was unexpectedly vetoed")
+script.guiHandleEvent("constructionBuilder", "builder.apply", {
+  data = { costs = 0 },
+  proposal = { streetProposal = {
+    edgesToAdd = {}, nodesToAdd = {}, edgesToRemove = {}, nodesToRemove = {},
+  } },
+  result = {},
+})
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+for _ = 1, 4 do script.guiUpdate() end
+captures = proposalCaptureEvents()
+assert(#captures == repeatedStationCaptureCount + 2,
+  "airport option change was not captured")
+local airportCapture = captures[#captures].param.proposalSnapshot
+assert(airportCapture.__constructionAdditions["1"].params.dir == 1
+    and airportCapture.__constructionAdditions["1"].params.terminals == 2
+    and airportCapture.__constructionAdditions["1"].params.hangar == 0,
+  "airport capture reused stale scalar construction options")
+captureCount = captureCount + 1
 
 -- The stock 8-track/160 m graph has 200 nodes and 192 edges. Verify that the
 -- construction-only projector budget keeps its tail intact; the old generic

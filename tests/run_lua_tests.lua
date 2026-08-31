@@ -1230,7 +1230,12 @@ local function vehicleModelRepository()
     [21] = { 1 }, [22] = { 3 }, [23] = { 1 },
   }
   return {
-    find = function(name) return ids[name] end,
+    find = function(name)
+      return ids[name] or (type(name) == "string"
+        and name:match("^vehicle/plane/[a-z0-9_%-]+%.mdl$") and 23
+        or (type(name) == "string"
+          and name:match("^vehicle/ship/[a-z0-9_%-]+%.mdl$") and 22 or nil))
+    end,
     get = function(id)
       local compartments = {}
       for compartment, count in ipairs(loadConfigCounts[id] or {}) do
@@ -1244,6 +1249,27 @@ local function vehicleModelRepository()
 end
 
 test("vehicle operations accept every portable carrier resource and reject local ids", function()
+  local stockShips = {
+    "barge_big_tanker", "barge_small_tanker", "damen_ferry_v2",
+    "ds_schaffhausen_v2", "dunara_castle_v2", "frontenac_v2",
+    "gms_axalp_v2", "graf_zeppelin_v2", "herkules_xi_tanker_v3",
+    "herkules_xi_universal_v3", "klondike_v2", "merlin_v2", "rigi",
+    "srn6_v2", "vandal_v2", "viola_v3", "virgo_tanker_v3",
+    "virgo_universal_v3", "votrans_tanker_v2", "votrans_universal_v2",
+    "wilhelm_v2", "zoroaster_v4", "zurich_v2",
+  }
+  local stockAircraft = {
+    "airbus_a320_v2", "bae_146_cargo_v2", "bae_146_v2",
+    "boeing_737_700_c_v2", "boeing_737_700_v2", "boeing_737_cargo_v2",
+    "boeing_737_v2", "boeing_757_cargo_v2", "boeing_757_v2",
+    "bombardier_cs300_v2", "bombardier_dhc_8_402pf_v2", "bombardier_q400_v2",
+    "bristol_freighter_v2", "canadair_cl_44_v2", "de_havilland_comet_4b_v2",
+    "dornier_b_merkur_v2", "douglas_c49_skytrain_v2", "douglas_dc3_v2",
+    "douglas_dc4_v2", "hercules_l100_v2", "junkers_f_13_v2",
+    "junkers_ju_52_v2", "short_330_v2", "sukhoi_superjet_100_v2",
+    "super_connie_cargo_v2", "super_connie_v2", "tupolev_tu_204_cargo_v2",
+    "tupolev_tu_204_v2", "vickers_victoria_v2",
+  }
   local extracted = operationCodec.vehicleModelNames({
     [2] = "vehicle/tram/duewag_gt8.mdl",
     [1] = "vehicle/bus/benz.mdl",
@@ -1295,6 +1321,28 @@ test("vehicle operations accept every portable carrier resource and reject local
     truthy(carrierTransaction and operationCodec.validate(carrierTransaction),
       "portable carrier model was rejected: " .. model)
   end
+  for _, name in ipairs(stockAircraft) do
+    local model = "vehicle/plane/" .. name .. ".mdl"
+    local aircraftConfig = operationCodec.defaultVehicleConfig(
+      { model }, { res = { modelRep = vehicleModelRepository() } })
+    local aircraftTransaction = operationCodec.make("vehicle.buy", "company:2", {
+      depotCid = "depot:pre:airport", config = aircraftConfig,
+    })
+    truthy(aircraftTransaction and operationCodec.validate(aircraftTransaction),
+      "stock Build 35924 aircraft was rejected: " .. model)
+  end
+  equal(#stockAircraft, 29)
+  for _, name in ipairs(stockShips) do
+    local model = "vehicle/ship/" .. name .. ".mdl"
+    local shipConfig = operationCodec.defaultVehicleConfig(
+      { model }, { res = { modelRep = vehicleModelRepository() } })
+    local shipTransaction = operationCodec.make("vehicle.buy", "company:2", {
+      depotCid = "depot:pre:shipyard", config = shipConfig,
+    })
+    truthy(shipTransaction and operationCodec.validate(shipTransaction),
+      "stock Build 35924 ship was rejected: " .. model)
+  end
+  equal(#stockShips, 23)
   local invalid = util.deepCopy(config)
   invalid.vehicles[1].model = "vehicle/../construction/depot.mdl"
   local rejected, err = operationCodec.make("vehicle.buy", "company:2", {
@@ -2349,6 +2397,206 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
     end
   end
   equal(terminalCases, 216)
+
+  -- Airports use the same portable-construction adapter, but their generated
+  -- runway/taxiway graph is much larger than an ordinary station and their
+  -- stock options are not rail-style fields. Exercise every passenger/cargo,
+  -- hangar, terminal-count and runway-direction combination. One modern
+  -- airport deliberately carries 384 nodes and 383 STREET edges so the test
+  -- crosses the ordinary 256-edge limit and proves schema 7's airport-sized
+  -- construction budget on both normalization and portable validation.
+  local airportCases, largeAirport
+  airportCases = 0
+  local airportFiles = {
+    {
+      fileName = "station/air/airfield.con",
+      years = { 1930 }, directions = { 0 },
+      modules = function(templateIndex, hangar)
+        local terminalName = templateIndex == 0
+          and "station/air/airfield_passenger_terminal.module"
+          or "station/air/airfield_cargo_terminal.module"
+        local modules = {
+          [10001000] = { name = "station/air/airfield_main_building.module", variant = 0 },
+          [10070002] = { name = terminalName, variant = 0 },
+        }
+        if hangar == 0 then
+          modules[10002004] = { name = "station/air/airfield_hangar.module", variant = 0 }
+        end
+        return modules
+      end,
+    },
+    {
+      fileName = "station/air/airport.con",
+      years = { 1970, 1990 }, directions = { 0, 1 },
+      modules = function(templateIndex, hangar, direction, year, terminals)
+        local terminalName = templateIndex == 0
+          and "station/air/airport_terminal.module"
+          or "station/air/airport_cargo_terminal.module"
+        local modules = {
+          [1002] = { name = "station/air/airport_main_building.module", variant = 0 },
+          [templateIndex == 0 and 70006 or 80006] = { name = terminalName, variant = 0 },
+          [9001 - direction] = { name = year > 1980
+              and "station/air/airport_era_c_landing_direction.module"
+              or "station/air/airport_era_b_landing_direction.module",
+            variant = direction },
+        }
+        if hangar == 0 then
+          modules[2007 + 3 * (terminals + 1)] = {
+            name = "station/air/airport_hangar.module", variant = 0,
+          }
+        end
+        return modules
+      end,
+    },
+  }
+  for _, airport in ipairs(airportFiles) do
+    for _, year in ipairs(airport.years) do
+      for templateIndex = 0, 1 do
+        for hangar = 0, 1 do
+          for terminals = 0, 2 do
+            for _, direction in ipairs(airport.directions) do
+              airportCases = airportCases + 1
+              local nodes, edges = {}, {}
+              local large = airport.fileName == "station/air/airport.con"
+                and year == 1990 and templateIndex == 0 and hangar == 0
+                and terminals == 2 and direction == 1
+              local nodeCount = large and 384 or 0
+              for index = 1, nodeCount do
+                nodes[index] = {
+                  entity = -10000 - index,
+                  comp = { position = { x = 2000 + index * 4, y = 3000, z = 8 } },
+                }
+                if index > 1 then
+                  edges[#edges + 1] = {
+                    entity = -20000 - #edges - 1, type = 0,
+                    comp = {
+                      node0 = nodes[index - 1].entity, node1 = nodes[index].entity,
+                      tangent0 = { x = 4, y = 0, z = 0 },
+                      tangent1 = { x = 4, y = 0, z = 0 }, type = 0, typeIndex = 0,
+                    },
+                    streetEdge = { streetType = 10 },
+                  }
+                end
+              end
+              local airportParams = {
+                templateIndex = templateIndex, year = year, seed = 31,
+                hangar = hangar, terminals = terminals,
+                modules = airport.modules(templateIndex, hangar, direction, year, terminals),
+              }
+              if airport.fileName == "station/air/airport.con" then
+                -- The modern airport exposes landing direction; the 1920
+                -- airfield does not.
+                airportParams.dir = direction
+              end
+              local raw = {
+                __observedCost = 5000000,
+                __constructionAdditions = {{
+                  fileName = airport.fileName,
+                  transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2000, 3000, 8, 1 },
+                  params = airportParams,
+                }},
+                __constructionRemovals = airportCases == 1 and { 701, 702, 703 } or {},
+                streetProposal = {
+                  nodesToAdd = nodes, edgesToAdd = edges,
+                  nodesToRemove = {}, edgesToRemove = {},
+                  edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+                },
+              }
+              local normaliseOptions = {
+                resolveCanonical = function(kind, localId)
+                  if kind == "construction" and localId >= 701 and localId <= 703 then
+                    return "construction:pre:airport-obstruction-" .. tostring(localId)
+                  end
+                end,
+                entityKind = function() return "construction" end,
+                resourceName = function(kind, index)
+                  if kind == "street" and index == 10 then
+                    return "airport/airport_runway_medium.lua"
+                  end
+                end,
+                requireResourceName = true,
+              }
+              local transaction, airportError = proposalCodec.normalise(
+                raw, "company:1", normaliseOptions)
+              truthy(transaction, airportError)
+              equal(transaction.schemaVersion, proposalCodec.CONSTRUCTION_SCHEMA_VERSION)
+              equal(transaction.constructions[1].kind, "station")
+              equal(transaction.constructions[1].adapter, "portable-construction")
+              local portable, portableError = proposalCodec.validatePortable(transaction)
+              truthy(portable, portableError)
+              local spec = assert(proposalCodec.materialiseConstruction(transaction))
+              equal(spec.fileName, airport.fileName)
+              equal(spec.params.templateIndex, templateIndex)
+              equal(spec.params.hangar, hangar)
+              equal(spec.params.terminals, terminals)
+              if airport.fileName == "station/air/airport.con" then
+                equal(spec.params.dir, direction)
+              else
+                equal(spec.params.dir, nil)
+              end
+              if airportCases == 1 then equal(#spec.collateral, 3) end
+              if large then
+                equal(#transaction.nodes, 384)
+                equal(#transaction.edges, 383)
+                equal(transaction.edges[383].resource.name,
+                  "airport/airport_runway_medium.lua")
+                largeAirport = transaction
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  equal(airportCases, 60)
+  truthy(largeAirport, "airport variant matrix never exercised the large runway graph")
+
+  -- The modular harbor is a single construction resource with passenger/cargo,
+  -- small/large, and 1/2/4-terminal templates. Keep every stock template
+  -- portable; modded module names remain data rather than hard-coded topology.
+  local harborCases = 0
+  for templateIndex = 0, 1 do
+    for size = 0, 1 do
+      for terminals = 0, 2 do
+        harborCases = harborCases + 1
+        local modules = validationConstruction.harborModules(
+          templateIndex == 1, size == 1, terminals)
+        local raw = {
+          __observedCost = 750000,
+          __constructionAdditions = {{
+            fileName = "station/water/harbor_modular.con",
+            transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2400, 3200, 0, 1 },
+            params = {
+              templateIndex = templateIndex, size = size, terminals = terminals,
+              seed = 41, year = 1990, modules = modules,
+            },
+          }},
+          __constructionRemovals = harborCases == 1 and { 711, 712 } or {},
+        }
+        local transaction, harborError = proposalCodec.normalise(raw, "company:1", {
+          resolveCanonical = function(kind, localId)
+            if kind == "construction" and (localId == 711 or localId == 712) then
+              return "construction:pre:harbor-obstruction-" .. tostring(localId)
+            end
+          end,
+          entityKind = function() return "construction" end,
+        })
+        truthy(transaction, harborError)
+        equal(transaction.constructions[1].kind, "station")
+        equal(transaction.constructions[1].adapter, "portable-construction")
+        local portable, portableError = proposalCodec.validatePortable(transaction)
+        truthy(portable, portableError)
+        local spec = assert(proposalCodec.materialiseConstruction(transaction))
+        equal(spec.fileName, "station/water/harbor_modular.con")
+        equal(spec.params.templateIndex, templateIndex)
+        equal(spec.params.size, size)
+        equal(spec.params.terminals, terminals)
+        truthy(next(spec.params.modules) ~= nil, "harbor module map was discarded")
+        if harborCases == 1 then equal(#spec.collateral, 2) end
+      end
+    end
+  end
+  equal(harborCases, 12)
 
   -- Live relay regression mp-094022e94f4ae9c3: the depot was placed before
   -- the player drew its visible connection, but Build 35924 silently snapped
@@ -3867,6 +4115,13 @@ end)
 test("validation construction emits stock passenger and cargo station templates", function()
   local passenger = assert(validationConstruction.spec("station", 2000, false))
   local cargo = assert(validationConstruction.spec("cargo_station", 2000, false))
+  local airfield = assert(validationConstruction.spec("airfield", 1850, false))
+  local cargoAirfield = assert(validationConstruction.spec("cargo_airfield", 1850, false))
+  local airport = assert(validationConstruction.spec("airport", 1850, false))
+  local cargoAirport = assert(validationConstruction.spec("cargo_airport", 1850, false))
+  local passengerHarbor = assert(validationConstruction.spec("passenger_harbor", 1850, false))
+  local cargoHarbor = assert(validationConstruction.spec("cargo_harbor", 1850, false))
+  local shipyard = assert(validationConstruction.spec("shipyard", 1850, false))
   equal(passenger.fileName, "station/rail/modular_station/modular_station.con")
   equal(cargo.fileName, passenger.fileName)
   equal(passenger.params.modules[7400000].metadata.passenger_platform, true)
@@ -3876,6 +4131,36 @@ test("validation construction emits stock passenger and cargo station templates"
   equal(cargo.params.modules[6400000].metadata.cargo_platform, true)
   equal(cargo.params.modules[8402000].metadata.track, true)
   equal(cargo.params.modules[7400000], nil)
+  equal(airfield.fileName, "station/air/airfield.con")
+  equal(airfield.params.templateIndex, 0)
+  equal(airfield.params.year, 1920)
+  equal(airfield.params.seed, 0)
+  equal(airfield.params.modules[10070002].metadata.moreCapacity.passenger, 20)
+  equal(airfield.params.modules[10002004].name,
+    "station/air/airfield_hangar.module")
+  equal(cargoAirfield.fileName, airfield.fileName)
+  equal(cargoAirfield.params.templateIndex, 1)
+  equal(airport.fileName, "station/air/airport.con")
+  equal(airport.params.templateIndex, 0)
+  equal(airport.params.dir, 0)
+  equal(airport.params.year, 1950)
+  equal(airport.params.seed, 0)
+  equal(airport.params.modules[70006].metadata.moreCapacity.passenger, 100)
+  equal(airport.params.modules[2010].name, "station/air/airport_hangar.module")
+  equal(cargoAirport.params.modules[80006].metadata.cargo, true)
+  equal(cargoAirport.fileName, airport.fileName)
+  equal(cargoAirport.params.templateIndex, 1)
+  equal(passengerHarbor.fileName, "station/water/harbor_modular.con")
+  equal(passengerHarbor.params.templateIndex, 0)
+  equal(passengerHarbor.params.size, 0)
+  equal(passengerHarbor.params.terminals, 0)
+  equal(passengerHarbor.params.modules[100009604].metadata.passenger, true)
+  equal(passengerHarbor.params.modules[100009536].metadata.pier, true)
+  equal(cargoHarbor.fileName, passengerHarbor.fileName)
+  equal(cargoHarbor.params.templateIndex, 1)
+  equal(cargoHarbor.params.modules[100009604].metadata.cargo, true)
+  equal(cargoHarbor.params.modules[100010028].metadata.moreCapacity.cargo, 200)
+  equal(shipyard.fileName, "depot/shipyard_era_a.con")
 end)
 
 test("freight service binding fails closed without a named cargo consist", function()
@@ -4379,6 +4664,205 @@ test("same-town road service registers a local authored passenger market", funct
     "legacy frequency/rate fallback invented capacity for an empty line")
 end)
 
+test("air service registers, settles, and synchronizes at every airport stop", function()
+  local previousApi = api
+  local planeModel = "vehicle/plane/commuter.mdl"
+  local model = { metadata = { transportVehicle = {
+    carrier = "AIR", topSpeed = 150,
+    compartmentsList = { { loadConfigs = { { cargoEntries = {
+      { capacity = 60, type = "PASSENGERS" },
+    } } } } },
+  } } }
+  api = {
+    type = { ComponentType = {
+      TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE", MAINTENANCE_COST = "MAINTENANCE_COST",
+    } },
+    res = { modelRep = {
+      find = function(name) return name == planeModel and 29 or -1 end,
+      get = function(id) return id == 29 and model or nil end,
+      getName = function(id) return id == 29 and planeModel or nil end,
+    } },
+    engine = { getComponent = function(id, kind)
+      if id == 601 and kind == "TRANSPORT_VEHICLE" then
+        return { transportVehicleConfig = { vehicles = { { part = { modelId = 29 } } } } }
+      end
+      if id == 601 and kind == "MAINTENANCE_COST" then
+        return { maintenanceCost = 2500000 }
+      end
+    end },
+  }
+  local ids = {
+    [88] = "line:event:air:1",
+    [951] = "station_group:event:airport:a",
+    [952] = "station_group:event:airport:b",
+    [701] = "town:pre:airport-a",
+    [702] = "town:pre:airport-b",
+  }
+  local registry = { byCanonical = {
+    ["vehicle:event:air:1"] = {
+      kind = "vehicle", localId = 601,
+      metadata = { owner = "company:1", annualVehicleUpkeepCents = 250000000 },
+    },
+  } }
+  local binding = corridorBindingModule.new({
+    bindExisting = function(_, localId) return ids[localId] end,
+    lineStopGroups = function() return { 951, 952 } end,
+    lineServiceKind = function() return "passenger", "airport passenger terminals" end,
+    stationGroupTown = function(groupId) return groupId == 951 and 701 or 702 end,
+    stationGroupPassengerAccess = function(groupId)
+      return {
+        ready = true,
+        reachableBuildings = groupId == 951 and 40 or 50,
+        townBuildingCount = groupId == 951 and 120 or 150,
+      }
+    end,
+    townCapacity = function(townId)
+      return townId == 701 and 360 or 450, { 120, 120, 120 }
+    end,
+    townBuildingCount = function(townId) return townId == 701 and 120 or 150 end,
+    lineVehicleIds = function() return { 601 } end,
+    nameOf = function(id) return ({ [701] = "Aero A", [702] = "Aero B" })[id] or tostring(id) end,
+    safeEntity = function() return nil end,
+    positionOfEntity = function(id) return id == 951 and { 0, 0 } or { 100000, 0 } end,
+    developmentPositionsOfTown = function() return {} end,
+    resolveLocal = function() return nil end,
+    resolveCanonical = function(_, kind, localId)
+      return kind == "vehicle" and localId == 601 and "vehicle:event:air:1" or nil
+    end,
+  })
+  local economyState = economy.newState()
+  local ok, result = binding.makeLineService(
+    registry, economy, economyState, 88, "company:1", {})
+  api = previousApi
+  truthy(ok, result)
+  equal(result.carrier, "AIR")
+  equal(result.marketScope, "corridor")
+  truthy(not result.marketCid:match("^market:local:"),
+    "intercity air service became a local feeder market")
+  local service = economyState.services["line:event:air:1"]
+  equal(service.metadata.carrier, "AIR")
+  equal(service.metadata.factsSource, "computed-consist")
+  equal(service.metadata.seatsPerVehicle, 60)
+  equal(service.metadata.topSpeedKmh, 540)
+  equal(service.metadata.stationAccessEligible, true)
+  truthy(service.capacity > 0 and service.enabled,
+    "road-connected passenger airports produced no authoritative capacity")
+  truthy(economyState.vehicleCosts["vehicle:event:air:1"],
+    "aircraft upkeep did not enter the authored economy")
+  local settled
+  for _ = 1, 30 do settled = economy.evaluateAll(economyState) end
+  local row = settled.markets[result.marketCid].services["line:event:air:1"]
+  truthy(row.allocated > 0, "eligible air corridor received no passengers")
+  truthy(row.revenueCents > 0, "eligible air corridor earned no authored fare revenue")
+  local syncState = require "tpf2_mp/vehicle_sync_state"
+  -- Unlike dense curb-stop ROAD/TRAM services, AIR remains conservative: every
+  -- airport stop is an all-peer rendezvous until human flight evidence proves a
+  -- cheaper policy safe.
+  service.metadata.stationGroupCids = {
+    "station_group:event:airport:a", "station_group:event:airport:hub",
+    "station_group:event:airport:b",
+  }
+  truthy(syncState.synchronizesStop(economyState, "line:event:air:1", 0))
+  truthy(syncState.synchronizesStop(economyState, "line:event:air:1", 1))
+  truthy(syncState.synchronizesStop(economyState, "line:event:air:1", 2))
+end)
+
+test("water service registers, settles, and synchronizes at every harbor stop", function()
+  local previousApi = api
+  local shipModel = "vehicle/ship/damen_ferry_v2.mdl"
+  api = {
+    type = { ComponentType = {
+      TRANSPORT_VEHICLE = "TRANSPORT_VEHICLE", MAINTENANCE_COST = "MAINTENANCE_COST",
+    } },
+    res = { modelRep = {
+      find = function(name) return name == shipModel and 31 or -1 end,
+      get = function(id) return id == 31 and { metadata = { transportVehicle = {
+        carrier = "WATER", topSpeed = 10,
+        compartmentsList = { { loadConfigs = { { cargoEntries = {
+          { capacity = 80, type = "PASSENGERS" },
+        } } } } },
+      } } } or nil end,
+      getName = function(id) return id == 31 and shipModel or nil end,
+    } },
+    engine = { getComponent = function(id, kind)
+      if id == 611 and kind == "TRANSPORT_VEHICLE" then
+        return { transportVehicleConfig = { vehicles = { { part = { modelId = 31 } } } } }
+      end
+      if id == 611 and kind == "MAINTENANCE_COST" then
+        return { maintenanceCost = 900000 }
+      end
+    end },
+  }
+  local ids = {
+    [89] = "line:event:water:1",
+    [961] = "station_group:event:harbor:a",
+    [962] = "station_group:event:harbor:b",
+    [711] = "town:pre:harbor-a",
+    [712] = "town:pre:harbor-b",
+  }
+  local registry = { byCanonical = {
+    ["vehicle:event:water:1"] = {
+      kind = "vehicle", localId = 611,
+      metadata = { owner = "company:1", annualVehicleUpkeepCents = 90000000 },
+    },
+  } }
+  local binding = corridorBindingModule.new({
+    bindExisting = function(_, localId) return ids[localId] end,
+    lineStopGroups = function() return { 961, 962 } end,
+    lineServiceKind = function() return "passenger", "harbor passenger terminals" end,
+    stationGroupTown = function(groupId) return groupId == 961 and 711 or 712 end,
+    stationGroupPassengerAccess = function(groupId)
+      return {
+        ready = true, reachableBuildings = groupId == 961 and 35 or 45,
+        townBuildingCount = groupId == 961 and 110 or 140,
+      }
+    end,
+    townCapacity = function(townId)
+      return townId == 711 and 330 or 420, { 110, 110, 110 }
+    end,
+    townBuildingCount = function(townId) return townId == 711 and 110 or 140 end,
+    lineVehicleIds = function() return { 611 } end,
+    nameOf = function(id) return ({ [711] = "Harbor A", [712] = "Harbor B" })[id]
+      or tostring(id) end,
+    safeEntity = function() return nil end,
+    positionOfEntity = function(id) return id == 961 and { 0, 0 } or { 20000, 0 } end,
+    developmentPositionsOfTown = function() return {} end,
+    resolveLocal = function() return nil end,
+    resolveCanonical = function(_, kind, localId)
+      return kind == "vehicle" and localId == 611 and "vehicle:event:water:1" or nil
+    end,
+  })
+  local economyState = economy.newState()
+  local ok, result = binding.makeLineService(
+    registry, economy, economyState, 89, "company:1", {})
+  api = previousApi
+  truthy(ok, result)
+  equal(result.carrier, "WATER")
+  equal(result.marketScope, "corridor")
+  local service = economyState.services["line:event:water:1"]
+  equal(service.metadata.carrier, "WATER")
+  equal(service.metadata.factsSource, "computed-consist")
+  equal(service.metadata.seatsPerVehicle, 80)
+  equal(service.metadata.topSpeedKmh, 36)
+  truthy(service.capacity > 0 and service.enabled,
+    "road-connected passenger harbors produced no authoritative capacity")
+  truthy(economyState.vehicleCosts["vehicle:event:water:1"],
+    "ship upkeep did not enter the authored economy")
+  local settled
+  for _ = 1, 30 do settled = economy.evaluateAll(economyState) end
+  local row = settled.markets[result.marketCid].services["line:event:water:1"]
+  truthy(row.allocated > 0 and row.revenueCents > 0,
+    "eligible water corridor produced no passenger revenue")
+  local syncState = require "tpf2_mp/vehicle_sync_state"
+  service.metadata.stationGroupCids = {
+    "station_group:event:harbor:a", "station_group:event:harbor:hub",
+    "station_group:event:harbor:b",
+  }
+  truthy(syncState.synchronizesStop(economyState, "line:event:water:1", 0))
+  truthy(syncState.synchronizesStop(economyState, "line:event:water:1", 1))
+  truthy(syncState.synchronizesStop(economyState, "line:event:water:1", 2))
+end)
+
 test("station boards aggregate model allocations per station group", function()
   local state = marketState(1000)
   corridorService(state, "a", "company:1", {})
@@ -4829,6 +5313,104 @@ test("cargo presentation conserves stock, vehicle load, delivery, and revenue", 
   equal(public.stations["station_group:source"].waiting, 0)
   equal(public.stations["station_group:sink"].delivered, 40,
     "destination station omitted completed cargo deliveries")
+end)
+
+test("air freight uses the conserved cargo ledger without rail-only assumptions", function()
+  local economyState, freight = cargoPresentationFixture()
+  local lineCid = "line:freight:test"
+  local aircraftCid = "vehicle:air-freight:test"
+  local service = economyState.services[lineCid]
+  service.metadata.carrier = "AIR"
+  service.metadata.vehicleCids = { aircraftCid }
+  service.metadata.vehicleCount = 1
+  service.metadata.cargoCapacityPerVehicle = 40
+  service.metadata.cargoCapacityByVehicleCid = { [aircraftCid] = 40 }
+
+  local cargo = cargoPresentation.newState()
+  truthy(cargoPresentation.beginEpoch(cargo, economyState))
+  local function release(round, stopIndex)
+    local ok, result = cargoPresentation.applyRelease(
+      cargo, economyState, freight, {
+        type = "vehicle.sync_release", vehicleCid = aircraftCid,
+        lineCid = lineCid, round = round, stopIndex = stopIndex,
+      }, { owner = "company:1" })
+    truthy(ok, result)
+    return result
+  end
+  local boarded = release(1, 0)
+  local delivered = release(2, 1)
+  equal(boarded.boarded, 40)
+  equal(boarded.capacity, 40)
+  equal(delivered.delivered, 40)
+  equal(delivered.aboard, 0)
+
+  local passenger = passengerPresentation.economySnapshot(
+    passengerPresentation.newState())
+  passenger.presentationEpoch = 1
+  local snapshot, snapshotError = deliverySnapshot.combine(
+    passenger, cargoPresentation.economySnapshot(cargo))
+  truthy(snapshot, snapshotError)
+  local candidate = util.deepCopy(freight)
+  local transported, summary = freightIndustryModel.applyTransportSnapshot(
+    candidate, snapshot.cargoLines)
+  truthy(transported, summary)
+  equal(candidate.industries["industry:source"].outputStock.GRAIN, 60)
+  equal(candidate.industries["industry:sink"].inputStock[1].amount, 40)
+
+  local settled = economy.evaluateAll(economyState, nil, snapshot)
+  local result = settled.markets["market:freight:test"].services[lineCid]
+  equal(result.delivered, 40)
+  equal(result.grossRevenueCents, 40000000,
+    "AIR carrier changed freight delivery or revenue conservation")
+end)
+
+test("water freight uses the conserved cargo ledger without rail-only assumptions", function()
+  local economyState, freight = cargoPresentationFixture()
+  local lineCid = "line:freight:test"
+  local shipCid = "vehicle:water-freight:test"
+  local service = economyState.services[lineCid]
+  service.metadata.carrier = "WATER"
+  service.metadata.vehicleCids = { shipCid }
+  service.metadata.vehicleCount = 1
+  service.metadata.cargoCapacityPerVehicle = 40
+  service.metadata.cargoCapacityByVehicleCid = { [shipCid] = 40 }
+
+  local cargo = cargoPresentation.newState()
+  truthy(cargoPresentation.beginEpoch(cargo, economyState))
+  local function release(round, stopIndex)
+    local ok, result = cargoPresentation.applyRelease(
+      cargo, economyState, freight, {
+        type = "vehicle.sync_release", vehicleCid = shipCid,
+        lineCid = lineCid, round = round, stopIndex = stopIndex,
+      }, { owner = "company:1" })
+    truthy(ok, result)
+    return result
+  end
+  local boarded = release(1, 0)
+  local delivered = release(2, 1)
+  equal(boarded.boarded, 40)
+  equal(boarded.capacity, 40)
+  equal(delivered.delivered, 40)
+  equal(delivered.aboard, 0)
+
+  local passenger = passengerPresentation.economySnapshot(
+    passengerPresentation.newState())
+  passenger.presentationEpoch = 1
+  local snapshot, snapshotError = deliverySnapshot.combine(
+    passenger, cargoPresentation.economySnapshot(cargo))
+  truthy(snapshot, snapshotError)
+  local candidate = util.deepCopy(freight)
+  local transported, summary = freightIndustryModel.applyTransportSnapshot(
+    candidate, snapshot.cargoLines)
+  truthy(transported, summary)
+  equal(candidate.industries["industry:source"].outputStock.GRAIN, 60)
+  equal(candidate.industries["industry:sink"].inputStock[1].amount, 40)
+
+  local settled = economy.evaluateAll(economyState, nil, snapshot)
+  local result = settled.markets["market:freight:test"].services[lineCid]
+  equal(result.delivered, 40)
+  equal(result.grossRevenueCents, 40000000,
+    "WATER carrier changed freight delivery or revenue conservation")
 end)
 
 test("deleting a freight line retires its authoritative transport cursor", function()

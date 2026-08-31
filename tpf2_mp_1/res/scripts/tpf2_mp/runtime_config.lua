@@ -152,7 +152,18 @@ function M.read(options)
   local startNetwork = source.startNetwork == true
     or environmentEnabled("TPF2MP_START_NETWORK") or networkAutoValidate or manualNetwork
   local localProxy = source.localProxyEnabled ~= false
-  if networkRuntimeRequested then localProxy = false end
+  -- The one-shot marker is an explicit request for the disposable standalone
+  -- validator.  A launcher profile can legitimately remain visible to a
+  -- Steam-started process for a short time after a network run; letting that
+  -- stale profile win here silently turns the disposable world into a network
+  -- peer and makes its proxy checks fail before any live probe runs.  The
+  -- marker owns all three identity fields above, so it must also own the mode.
+  if forced ~= nil then
+    startNetwork = false
+    localProxy = true
+  elseif networkRuntimeRequested then
+    localProxy = false
+  end
   return {
     protocol = tonumber(source.protocolVersion) or 1,
     root = root,

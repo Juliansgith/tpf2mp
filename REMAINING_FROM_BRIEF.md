@@ -1,6 +1,6 @@
 # What remains from the TPF2MP brief
 
-Last updated: 2026-08-29 after prototype `0.41.11-alpha`, state schema `34`,
+Last updated: 2026-08-31 after prototype `0.42.0-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, populated two-process convergence,
@@ -13,6 +13,12 @@ route manager, compact deleted-freight history, and a generic named-resource
 compatibility inventory for vanilla and data-only mod infrastructure. The
 remaining boundary is human two-process proof and broader executable-mod
 adapters, not a hardcoded list of stock road/track/station types.
+
+Prototype 0.42 adds explicit deterministic coverage for all stock aircraft,
+ships, airport creation options, and harbor layouts, plus exact-build native
+facility, purchase, assignment, demolition, and movement proof for AIR and
+WATER. Their remaining boundary is ordinary-GUI two-computer acceptance, not a
+missing carrier-specific authority model.
 
 The restricted alpha is now code-complete. Its remaining release work is one
 combined physical two-computer run and clean-machine packaging check, both

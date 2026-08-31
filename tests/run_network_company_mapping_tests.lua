@@ -20,7 +20,7 @@ local components = {
   CONSTRUCTION = {}, STATION = {}, STATION_GROUP = {}, VEHICLE_DEPOT = {},
   ASSET_GROUP = {}, SIGNAL_LIST = {},
 }
-local stationBuildFixture, depotBuildFixture, assetBuildFixture, bulldozeFixture
+local stationBuildFixture, depotBuildFixture, airportBuildFixture, assetBuildFixture, bulldozeFixture
 local stationUpgradeObserved, assetUpgradeObserved
 -- The pinned starting save already contains one Company 1 track. On player2
 -- the source save's native owner becomes the local representative of Company
@@ -105,6 +105,7 @@ game = {
     buildConstruction = function(fileName, params, transform)
       local fixture = (stationBuildFixture and fileName == stationBuildFixture.fileName and stationBuildFixture)
         or (depotBuildFixture and fileName == depotBuildFixture.fileName and depotBuildFixture)
+        or (airportBuildFixture and fileName == airportBuildFixture.fileName and airportBuildFixture)
         or (assetBuildFixture and fileName == assetBuildFixture.fileName and assetBuildFixture)
       assert(fixture, "unexpected construction replay")
       if fixture == stationBuildFixture then
@@ -112,6 +113,7 @@ game = {
         and #transform == 16 and params.modules[8401000],
         "construction replay did not materialise the canonical station payload")
       end
+      if fixture.validate then fixture.validate(fileName, params, transform) end
       if fixture.construction then
         components.CONSTRUCTION[fixture.construction] = { fileName = fileName, transf = transform }
       end
@@ -119,21 +121,27 @@ game = {
       -- graph on a busy live pair. Tests can hold back those child components
       -- to prove the bounded settle window survives the old 120-tick cutoff.
       if fixture.delayTopology then return fixture.root or fixture.construction end
-      if fixture.station then components.STATION[fixture.station] = { cargo = false } end
+      if fixture.station then components.STATION[fixture.station] = { cargo = fixture.cargo == true } end
       if fixture.stationGroup then
         components.STATION_GROUP[fixture.stationGroup] = { stations = { fixture.station } }
       end
-      if fixture.depot then components.VEHICLE_DEPOT[fixture.depot] = { carrier = "RAIL" } end
+      if fixture.depot then
+        components.VEHICLE_DEPOT[fixture.depot] = { carrier = fixture.depotCarrier or "RAIL" }
+      end
       if fixture.asset then components.ASSET_GROUP[fixture.asset] = { assets = {} } end
       for _, node in ipairs(fixture.nodes or {}) do
         components.BASE_NODE[node.id] = { position = node.position }
       end
       for _, edge in ipairs(fixture.edges or {}) do
         components.BASE_EDGE[edge.id] = { node0 = edge.node0, node1 = edge.node1 }
-        components.BASE_EDGE_TRACK[edge.id] = {
-          trackType = edge.trackType or 1,
-          catenary = edge.catenary == nil and true or edge.catenary,
-        }
+        if edge.carrier == "street" then
+          components.BASE_EDGE_STREET[edge.id] = { streetType = edge.streetType or 0 }
+        else
+          components.BASE_EDGE_TRACK[edge.id] = {
+            trackType = edge.trackType or 1,
+            catenary = edge.catenary == nil and true or edge.catenary,
+          }
+        end
         components.PLAYER_OWNED[edge.id] = { player = 100 }
       end
       return fixture.root or fixture.construction
@@ -179,6 +187,7 @@ game = {
       components.PLAYER_OWNED[entity] = { player = player }
       local fixture = (stationBuildFixture and entity == stationBuildFixture.construction and stationBuildFixture)
         or (depotBuildFixture and entity == depotBuildFixture.construction and depotBuildFixture)
+        or (airportBuildFixture and entity == airportBuildFixture.construction and airportBuildFixture)
         or (assetBuildFixture
           and entity == (assetBuildFixture.root or assetBuildFixture.construction) and assetBuildFixture)
       if fixture then
@@ -198,8 +207,13 @@ api = {
       return ({ ["standard.lua"] = 0, ["high_speed.lua"] = 1 })[name] or -1
     end, getAll = function() return { "standard.lua", "high_speed.lua" } end },
     streetTypeRep = { find = function(name)
-      return ({ ["standard/town_small.lua"] = 0 })[name] or -1
-    end, getAll = function() return { "standard/town_small.lua" } end },
+      return ({
+        ["standard/town_small.lua"] = 0,
+        ["airport/airport_runway_medium.lua"] = 10,
+      })[name] or -1
+    end, getAll = function()
+      return { "standard/town_small.lua", "airport/airport_runway_medium.lua" }
+    end },
     modelRep = { find = function(name)
       return name == "railroad/signal_path_a.mdl" and 10 or -1
     end, getAll = function() return { "railroad/signal_path_a.mdl" } end },
@@ -1335,6 +1349,169 @@ assert(featureFinal.world.proposalConsensus.completed == 12
   and featureFinal.lastError == nil,
   "signal/depot/construction/station-edit feature sequence did not close healthy consensus")
 
+-- A modern airport crosses the ordinary non-construction topology budget and
+-- returns four compound roots (construction, station, station group, depot).
+-- Exercise the production exact-GUI attestation path here rather than the
+-- helper fallback: the two peers may assign wholly different local entity
+-- IDs, but every canonical slot and Company 2 custody decision must converge.
+local airportNodes, airportEdges = {}, {}
+for index = 1, 384 do
+  airportNodes[index] = {
+    slot = "node:" .. tostring(index),
+    position = { x = 2000 + index * 4, y = 3000, z = 8 },
+  }
+  if index > 1 then
+    local edgeIndex = index - 1
+    airportEdges[edgeIndex] = {
+      slot = "edge:" .. tostring(edgeIndex), carrier = "street",
+      node0 = { slot = "node:" .. tostring(index - 1) },
+      node1 = { slot = "node:" .. tostring(index) },
+      tangent0 = { x = 4, y = 0, z = 0 },
+      tangent1 = { x = 4, y = 0, z = 0 },
+      type = 0, typeIndex = 0,
+      resource = { index = 10, name = "airport/airport_runway_medium.lua" },
+      private = true, logicalOwnerCid = "company:2",
+    }
+  end
+end
+local airportTransaction = {
+  schemaVersion = proposalCodec.CONSTRUCTION_SCHEMA_VERSION,
+  companyCid = "company:2", cost = 5000000,
+  nodes = airportNodes, edges = airportEdges,
+  edgeObjects = { add = {}, retain = {}, remove = {} },
+  remove = { edges = {}, nodes = {} },
+  constructions = {{
+    slot = "construction:1", mode = "build", adapter = "portable-construction",
+    kind = "station", sourceCid = "", collateral = {},
+    fileName = "station/air/airport.con",
+    transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2000, 3000, 8, 1 },
+    params = {
+      templateIndex = 0, year = 1990, seed = 31,
+      hangar = 0, terminals = 2, dir = 1,
+    },
+    modules = {
+      { slot = 1002, name = "station/air/airport_main_building.module", variant = 0, metadata = {} },
+      { slot = 2016, name = "station/air/airport_hangar.module", variant = 0, metadata = {} },
+      { slot = 9000, name = "station/air/airport_era_c_landing_direction.module", variant = 1, metadata = {} },
+      { slot = 70006, name = "station/air/airport_terminal.module", variant = 0, metadata = {} },
+    },
+  }},
+}
+airportTransaction.digest = proposalCodec.digest(airportTransaction)
+airportTransaction.transactionId = "proposal:" .. airportTransaction.digest
+assert(proposalCodec.validatePortable(airportTransaction),
+  "airport-sized construction fixture is not portable")
+local airportSpec = assert(proposalCodec.materialiseConstruction(airportTransaction))
+assert(airportSpec.params.dir == 1 and airportSpec.params.terminals == 2
+    and airportSpec.params.modules[70006]
+    and #airportTransaction.nodes == 384 and #airportTransaction.edges == 383,
+  "airport construction options or large runway graph were not materialised")
+
+airportBuildFixture = {
+  fileName = "station/air/airport.con", construction = 20000,
+  station = 20001, stationGroup = 20002, depot = 20003,
+  depotCarrier = "AIR", cargo = false, nodes = {}, edges = {},
+  validate = function(fileName, params, transform)
+    assert(fileName == "station/air/airport.con" and #transform == 16
+        and params.templateIndex == 0 and params.hangar == 0
+        and params.terminals == 2 and params.dir == 1
+        and params.modules[70006] and params.modules[2016],
+      "airport helper did not materialise its portable option/module payload")
+  end,
+}
+local airportDelta = {
+  schemaVersion = 1,
+  added = {
+    construction = { airportBuildFixture.construction },
+    station = { airportBuildFixture.station },
+    station_group = { airportBuildFixture.stationGroup },
+    depot = { airportBuildFixture.depot }, asset = {}, edge_object = {},
+    node = {}, edge = {},
+  },
+  removed = {
+    construction = {}, station = {}, station_group = {}, depot = {},
+    asset = {}, edge_object = {}, node = {}, edge = {},
+  },
+}
+for index, node in ipairs(airportNodes) do
+  local localId = 21000 + index
+  airportBuildFixture.nodes[index] = { id = localId, position = node.position }
+  airportDelta.added.node[index] = localId
+end
+for index, edge in ipairs(airportEdges) do
+  local localId = 22000 + index
+  local node0, node1 = 21000 + index, 21000 + index + 1
+  airportBuildFixture.edges[index] = {
+    id = localId, node0 = node0, node1 = node1,
+    carrier = "street", streetType = 10,
+  }
+  airportDelta.added.edge[index] = localId
+end
+
+writeCommit(39, "player2", { type = "proposal.build", transaction = airportTransaction })
+script.update()
+local airportRecord = assert(script.save().world.proposals.byId[proposalId("player2", 39)])
+assert(airportRecord.status == "queued" and airportRecord.replayPath == "gui-build-proposal",
+  "airport construction did not enter exact GUI replay")
+components.CONSTRUCTION[airportBuildFixture.construction] = {
+  fileName = airportBuildFixture.fileName,
+  transf = airportTransaction.constructions[1].transform,
+  params = airportSpec.params,
+}
+components.STATION[airportBuildFixture.station] = { cargo = false }
+components.STATION_GROUP[airportBuildFixture.stationGroup] = {
+  stations = { airportBuildFixture.station },
+}
+components.VEHICLE_DEPOT[airportBuildFixture.depot] = { carrier = "AIR" }
+for _, node in ipairs(airportBuildFixture.nodes) do
+  components.BASE_NODE[node.id] = { position = node.position }
+end
+for _, edge in ipairs(airportBuildFixture.edges) do
+  components.BASE_EDGE[edge.id] = { node0 = edge.node0, node1 = edge.node1 }
+  components.BASE_EDGE_STREET[edge.id] = { streetType = edge.streetType }
+  components.PLAYER_OWNED[edge.id] = { player = 100 }
+end
+script.handleEvent("test", "tpf2mp", "proposal.result", {
+  proposalId = airportRecord.proposalId,
+  success = true,
+  constructionDelta = airportDelta,
+})
+for _ = 1, 6 do script.update() end
+airportRecord = assert(script.save().world.proposals.byId[airportRecord.proposalId])
+local airportState = script.save()
+assert(airportRecord.status == "applied" and #airportRecord.result.outputs == 771,
+  "large airport did not bind 384 nodes, 383 edges, and four compound outputs")
+assert(canonical.resolveCanonical(airportState.canonical, "construction", 20000)
+    and canonical.resolveCanonical(airportState.canonical, "station", 20001)
+    and canonical.resolveCanonical(airportState.canonical, "station_group", 20002)
+    and canonical.resolveCanonical(airportState.canonical, "depot", 20003),
+  "airport compound roots were not assigned canonical identities")
+assert(canonical.resolveCanonical(airportState.canonical, "node", 21001)
+      == canonical.createdId("node", airportRecord.eventId, 1)
+    and canonical.resolveCanonical(airportState.canonical, "edge", 22001)
+      == canonical.createdId("edge", airportRecord.eventId, 1),
+  "airport graph identity encoded machine-local entity allocation")
+assert(airportState.world.logicalOwners["20000"] == "company:2"
+    and airportState.world.logicalOwners["20001"] == "company:2"
+    and airportState.world.logicalOwners["20002"] == "company:2"
+    and airportState.world.logicalOwners["20003"] == "company:2"
+    and airportState.world.logicalOwners["22001"] == "company:2"
+    and airportState.world.logicalOwners["22383"] == "company:2",
+  "airport roots or runway endpoints escaped Company 2 custody")
+assert(airportState.canonical.byCanonical[
+    canonical.resolveCanonical(airportState.canonical, "depot", 20003)].metadata.nativeReadUnsafe == true,
+  "fresh airport depot was not protected from unsafe background native reads")
+writeConsensus(40, airportRecord, -5000000)
+script.update()
+writeCheckpointConsensus(41, script.save(), 40)
+script.update()
+local airportFinal = script.save()
+assert(airportFinal.world.proposalConsensus.completed == 13
+    and airportFinal.world.proposalConsensus.failed == 0
+    and airportFinal.world.checkpointConsensus.completed == 14
+    and airportFinal.world.proposalConsensus.sessionFault == nil,
+  "airport exact replay did not close construction and checkpoint consensus")
+
 -- A bulldozer click on a connected spur has no replacement topology. It must
 -- still cross the ordered BuildProposal path, prove the native edge vanished,
 -- retire its canonical custody, settle, and close a checkpoint before another
@@ -1351,10 +1528,10 @@ removalOnlyTransaction.digest = proposalCodec.digest(removalOnlyTransaction)
 removalOnlyTransaction.transactionId = "proposal:" .. removalOnlyTransaction.digest
 assert(proposalCodec.isRemovalOnly(removalOnlyTransaction),
   "connected-spur fixture was not classified as removal-only")
-writeCommit(39, "player1", { type = "proposal.build", transaction = removalOnlyTransaction })
+writeCommit(42, "player1", { type = "proposal.build", transaction = removalOnlyTransaction })
 script.update()
 local removalOnlyRecord = assert(
-  script.save().world.proposals.byId[proposalId("player1", 39)])
+  script.save().world.proposals.byId[proposalId("player1", 42)])
 assert(removalOnlyRecord.status == "queued" and removalOnlyRecord.localRefs[upgradedEdgeCid] == 403,
   "removal-only edge was not resolved into the physical proposal queue")
 components.BASE_EDGE[403] = nil
@@ -1373,13 +1550,13 @@ assert(removalOnlyRecord.status == "applied" and #removalOnlyRecord.result.outpu
     and removalOnlyApplied.world.logicalOwners["403"] == nil
     and removalOnlyApplied.world.pinnedCustody["403"] == nil,
   "removal-only edge replay did not retire canonical and logical custody")
-writeConsensus(40, removalOnlyRecord, 0)
+writeConsensus(43, removalOnlyRecord, 0)
 script.update()
-writeCheckpointConsensus(41, script.save(), 40)
+writeCheckpointConsensus(44, script.save(), 43)
 script.update()
 local removalOnlyFinal = script.save()
-assert(removalOnlyFinal.world.proposalConsensus.completed == 13
-    and removalOnlyFinal.world.checkpointConsensus.completed == 14
+assert(removalOnlyFinal.world.proposalConsensus.completed == 14
+    and removalOnlyFinal.world.checkpointConsensus.completed == 15
     and removalOnlyFinal.world.proposalConsensus.sessionFault == nil,
   "removal-only edge did not close physical consensus and its checkpoint")
 
@@ -1405,7 +1582,7 @@ script.handleEvent("test", "tpf2mp", "intent", {
 })
 assert(script.save().bridge.emitted == emittedAfterRejectedIntent,
   "second physical intent bypassed the awaiting-order FIFO")
-writeOrdered(42, "control", "player1", {
+writeOrdered(45, "control", "player1", {
   type = "network.intent_rejected",
   originPeer = "player2",
   originLocalSeq = firstIntent.local_seq,
@@ -1427,7 +1604,7 @@ assert(releasedIntent.kind == "intent"
 
 -- Release the still-held latch from the rejection test above with another
 -- benign rejection: no origin token means no fault, only the FIFO release.
-writeOrdered(43, "control", "player1", {
+writeOrdered(46, "control", "player1", {
   type = "network.intent_rejected",
   originPeer = "player2",
   originLocalSeq = releasedIntent.local_seq,
@@ -1467,7 +1644,7 @@ assert(tokenIntent.kind == "intent"
 
 -- Rejecting that ordered intent leaves an un-orderable native mutation on
 -- this peer only: the session must fault closed and request the pause.
-writeOrdered(44, "control", "player1", {
+writeOrdered(47, "control", "player1", {
   type = "network.intent_rejected",
   originPeer = "player2",
   originLocalSeq = tokenIntent.local_seq,
@@ -1573,7 +1750,7 @@ do
     "reloaded failed proposal did not retain a completion report")
   resultDigest = loadedCompletion.resultDigest
   coreDigest = loadedCompletion.coreDigest
-  writeOrdered(45, "control", "player1", {
+  writeOrdered(48, "control", "player1", {
     type = "network.proposal_outcome",
     proposalId = proposalId,
     commitSeq = 999,
@@ -1597,12 +1774,12 @@ do
       fault = rejected.world.proposalConsensus.sessionFault,
       record = rejected.world.proposals.byId[proposalId],
     }))
-  local rejectionBoundary = tostring(45 + sequenceOffset)
+  local rejectionBoundary = tostring(48 + sequenceOffset)
   assert(rejected.world.checkpointConsensus.byBoundary[rejectionBoundary]
       and rejected.world.checkpointConsensus.byBoundary[rejectionBoundary].reason
         == "physical-rejection:" .. proposalId,
     "recoverable native rejection did not open a convergence checkpoint")
-  writeCheckpointConsensus(46, rejected, 45)
+  writeCheckpointConsensus(49, rejected, 48)
   script.update()
   local recovered = script.save()
   assert(recovered.world.checkpointConsensus.byBoundary[rejectionBoundary].status == "complete"
@@ -1627,7 +1804,7 @@ do
       errorCode = "native-proposal-failed",
     },
   }
-  writeOrdered(47, "control", "player1", {
+  writeOrdered(50, "control", "player1", {
     type = "network.proposal_outcome",
     proposalId = residueId,
     commitSeq = 1000,
@@ -1648,4 +1825,4 @@ do
     "a rejected proposal with local outputs was incorrectly treated as recoverable")
 end
 
-print("PASS network signals, depots, arbitrary constructions, station editing/removal, ownership, finance, and consensus")
+print("PASS network airports, signals, depots, arbitrary constructions, station editing/removal, ownership, finance, and consensus")

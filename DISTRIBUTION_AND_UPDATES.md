@@ -67,9 +67,9 @@ Publication intentionally requires a clean worktree and a package whose
 manifest names the exact current commit. After tests, commit, and push:
 
 ```powershell
-.\tools\package_release.ps1 -Version 0.41.11-alpha
+.\tools\package_release.ps1 -Version 0.42.0-alpha
 .\tools\publish_github_release.ps1 `
-  -Version 0.41.11-alpha `
+  -Version 0.42.0-alpha `
   -ConfirmPublish
 ```
 

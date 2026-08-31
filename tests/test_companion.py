@@ -1318,6 +1318,183 @@ class ProtocolTests(unittest.TestCase):
                         checked += 1
         self.assertEqual(checked, 216)
 
+    def test_airport_variants_and_large_runway_graph_are_portable(self) -> None:
+        checked = 0
+        large_airport = None
+        airport_families = (
+            {
+                "fileName": "station/air/airfield.con",
+                "years": (1930,),
+                "directions": (None,),
+            },
+            {
+                "fileName": "station/air/airport.con",
+                "years": (1970, 1990),
+                "directions": (0, 1),
+            },
+        )
+        for family in airport_families:
+            for year in family["years"]:
+                for template_index in range(2):
+                    for hangar in range(2):
+                        for terminals in range(3):
+                            for direction in family["directions"]:
+                                checked += 1
+                                transaction = portable_construction_transaction(
+                                    company="company:1", kind="construction"
+                                )
+                                construction = transaction["constructions"][0]
+                                params = {
+                                    "templateIndex": template_index,
+                                    "year": year,
+                                    "seed": 31,
+                                    "hangar": hangar,
+                                    "terminals": terminals,
+                                }
+                                if direction is not None:
+                                    params["dir"] = direction
+                                if family["fileName"].endswith("airfield.con"):
+                                    terminal_name = (
+                                        "station/air/airfield_passenger_terminal.module"
+                                        if template_index == 0
+                                        else "station/air/airfield_cargo_terminal.module"
+                                    )
+                                    modules = [
+                                        {
+                                            "slot": 10_001_000,
+                                            "name": "station/air/airfield_main_building.module",
+                                            "variant": 0,
+                                            "metadata": {},
+                                        },
+                                        {
+                                            "slot": 10_070_002,
+                                            "name": terminal_name,
+                                            "variant": 0,
+                                            "metadata": {},
+                                        },
+                                    ]
+                                    if hangar == 0:
+                                        modules.append({
+                                            "slot": 10_002_004,
+                                            "name": "station/air/airfield_hangar.module",
+                                            "variant": 0,
+                                            "metadata": {},
+                                        })
+                                else:
+                                    terminal_name = (
+                                        "station/air/airport_terminal.module"
+                                        if template_index == 0
+                                        else "station/air/airport_cargo_terminal.module"
+                                    )
+                                    modules = [
+                                        {
+                                            "slot": 1_002,
+                                            "name": "station/air/airport_main_building.module",
+                                            "variant": 0,
+                                            "metadata": {},
+                                        },
+                                        {
+                                            "slot": 70_006 if template_index == 0 else 80_006,
+                                            "name": terminal_name,
+                                            "variant": 0,
+                                            "metadata": {},
+                                        },
+                                        {
+                                            "slot": 9_001 - int(direction),
+                                            "name": (
+                                                "station/air/airport_era_c_landing_direction.module"
+                                                if year > 1980
+                                                else "station/air/airport_era_b_landing_direction.module"
+                                            ),
+                                            "variant": int(direction),
+                                            "metadata": {},
+                                        },
+                                    ]
+                                    if hangar == 0:
+                                        modules.append({
+                                            "slot": 2_007 + 3 * (terminals + 1),
+                                            "name": "station/air/airport_hangar.module",
+                                            "variant": 0,
+                                            "metadata": {},
+                                        })
+                                modules.sort(key=lambda module: module["slot"])
+                                construction.update({
+                                    "kind": "station",
+                                    "fileName": family["fileName"],
+                                    "params": params,
+                                    "modules": modules,
+                                })
+                                if checked == 1:
+                                    construction["collateral"] = [
+                                        {
+                                            "kind": "construction",
+                                            "cid": f"construction:pre:airport-obstruction-{index}",
+                                        }
+                                        for index in range(1, 4)
+                                    ]
+                                is_large = (
+                                    family["fileName"].endswith("airport.con")
+                                    and year == 1990
+                                    and template_index == 0
+                                    and hangar == 0
+                                    and terminals == 2
+                                    and direction == 1
+                                )
+                                if is_large:
+                                    transaction["nodes"] = [
+                                        {
+                                            "slot": f"node:{index}",
+                                            "position": {
+                                                "x": 2_000 + index * 4,
+                                                "y": 3_000,
+                                                "z": 8,
+                                            },
+                                        }
+                                        for index in range(1, 385)
+                                    ]
+                                    transaction["edges"] = [
+                                        {
+                                            "slot": f"edge:{index}",
+                                            "carrier": "street",
+                                            "node0": {"slot": f"node:{index}"},
+                                            "node1": {"slot": f"node:{index + 1}"},
+                                            "tangent0": {"x": 4, "y": 0, "z": 0},
+                                            "tangent1": {"x": 4, "y": 0, "z": 0},
+                                            "type": 0,
+                                            "typeIndex": 0,
+                                            "resource": {
+                                                "index": 10,
+                                                "name": "airport/airport_runway_medium.lua",
+                                            },
+                                            "logicalOwnerCid": "company:1",
+                                            "private": False,
+                                        }
+                                        for index in range(1, 384)
+                                    ]
+                                redigest_proposal(transaction)
+                                accepted = validate_action({
+                                    "type": "proposal.build", "transaction": transaction,
+                                })
+                                actual = accepted["transaction"]["constructions"][0]
+                                self.assertEqual(actual["fileName"], family["fileName"])
+                                self.assertEqual(actual["params"]["templateIndex"], template_index)
+                                self.assertEqual(actual["params"]["hangar"], hangar)
+                                self.assertEqual(actual["params"]["terminals"], terminals)
+                                if direction is None:
+                                    self.assertNotIn("dir", actual["params"])
+                                else:
+                                    self.assertEqual(actual["params"]["dir"], direction)
+                                if is_large:
+                                    large_airport = accepted["transaction"]
+        self.assertEqual(checked, 60)
+        self.assertIsNotNone(large_airport)
+        self.assertEqual(len(large_airport["nodes"]), 384)
+        self.assertEqual(len(large_airport["edges"]), 383)
+        self.assertEqual(
+            large_airport["edges"][-1]["resource"]["name"],
+            "airport/airport_runway_medium.lua",
+        )
+
     def test_stock_station_transaction_and_compound_outputs_are_strict(self) -> None:
         transaction = station_proposal_transaction()
         accepted = validate_action({"type": "proposal.build", "transaction": transaction})
@@ -1691,6 +1868,37 @@ class ProtocolTests(unittest.TestCase):
             accepted["transaction"]["data"]["config"]["vehicles"][1]["model"],
             "vehicle/waggon/open_1910.mdl",
         )
+        stock_aircraft = tuple(
+            f"vehicle/plane/{name}.mdl"
+            for name in (
+                "airbus_a320_v2", "bae_146_cargo_v2", "bae_146_v2",
+                "boeing_737_700_c_v2", "boeing_737_700_v2", "boeing_737_cargo_v2",
+                "boeing_737_v2", "boeing_757_cargo_v2", "boeing_757_v2",
+                "bombardier_cs300_v2", "bombardier_dhc_8_402pf_v2",
+                "bombardier_q400_v2", "bristol_freighter_v2", "canadair_cl_44_v2",
+                "de_havilland_comet_4b_v2", "dornier_b_merkur_v2",
+                "douglas_c49_skytrain_v2", "douglas_dc3_v2", "douglas_dc4_v2",
+                "hercules_l100_v2", "junkers_f_13_v2", "junkers_ju_52_v2",
+                "short_330_v2", "sukhoi_superjet_100_v2",
+                "super_connie_cargo_v2", "super_connie_v2",
+                "tupolev_tu_204_cargo_v2", "tupolev_tu_204_v2",
+                "vickers_victoria_v2",
+            )
+        )
+        self.assertEqual(len(stock_aircraft), 29)
+        stock_ships = tuple(
+            f"vehicle/ship/{name}.mdl"
+            for name in (
+                "barge_big_tanker", "barge_small_tanker", "damen_ferry_v2",
+                "ds_schaffhausen_v2", "dunara_castle_v2", "frontenac_v2",
+                "gms_axalp_v2", "graf_zeppelin_v2", "herkules_xi_tanker_v3",
+                "herkules_xi_universal_v3", "klondike_v2", "merlin_v2", "rigi",
+                "srn6_v2", "vandal_v2", "viola_v3", "virgo_tanker_v3",
+                "virgo_universal_v3", "votrans_tanker_v2",
+                "votrans_universal_v2", "wilhelm_v2", "zoroaster_v4", "zurich_v2",
+            )
+        )
+        self.assertEqual(len(stock_ships), 23)
         for model in (
             "vehicle/bus/benz.mdl",
             "vehicle/truck/opel_blitz.mdl",
@@ -1698,7 +1906,7 @@ class ProtocolTests(unittest.TestCase):
             "vehicle/ship/ferry.mdl",
             "vehicle/plane/commuter.mdl",
             "vehicle/mod_namespace/future.mdl",
-        ):
+        ) + stock_aircraft + stock_ships:
             carrier = json.loads(json.dumps(transaction))
             carrier["data"]["config"]["vehicles"] = [
                 carrier["data"]["config"]["vehicles"][0]
@@ -1844,6 +2052,42 @@ class ProtocolTests(unittest.TestCase):
         }
         accepted = validate_action(action)
         self.assertEqual(accepted["service"]["metadata"]["carrier"], "ROAD")
+        air = json.loads(json.dumps(action))
+        air.update({
+            "lineCid": "line:event:air:1",
+            "market": {
+                **air["market"],
+                "cid": "market:air:12345678",
+                "name": "Aero A to Aero B",
+                "metadata": {
+                    **air["market"]["metadata"],
+                    "townB": "town:pre:aero-b",
+                    "townSizeB": 550,
+                    "corridorMeters": 100_000,
+                    "marketScope": "corridor",
+                },
+            },
+            "service": {
+                **air["service"],
+                "lineCid": "line:event:air:1",
+                "marketCid": "market:air:12345678",
+                "name": "Intercity flight",
+                "metadata": {
+                    **air["service"]["metadata"],
+                    "carrier": "AIR",
+                    "marketScope": "corridor",
+                    "endpointTownCids": ["town:pre:testville", "town:pre:aero-b"],
+                    "stationGroupCids": [
+                        "station_group:airport-a", "station_group:airport-b",
+                    ],
+                },
+            },
+        })
+        accepted_air = validate_action(air)
+        self.assertEqual(accepted_air["service"]["metadata"]["carrier"], "AIR")
+        self.assertEqual(
+            accepted_air["service"]["metadata"]["marketScope"], "corridor"
+        )
         wrong_town = json.loads(json.dumps(action))
         wrong_town["market"]["metadata"]["townB"] = "town:pre:elsewhere"
         with self.assertRaisesRegex(ProtocolError, "scope"):

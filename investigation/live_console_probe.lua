@@ -28,8 +28,25 @@ do
   if ok then worldLineReading = value else worldLineReadingError = tostring(value) end
 end
 
+local operationCodec
+local operationCodecError
+do
+  local ok, value = pcall(require, "tpf2_mp/operation_codec")
+  if ok then operationCodec = value else operationCodecError = tostring(value) end
+end
+
+local operationVehiclePostcondition
+local operationVehiclePostconditionError
+do
+  local ok, value = pcall(require, "tpf2_mp/operation_vehicle_postcondition")
+  if ok then operationVehiclePostcondition = value
+  else operationVehiclePostconditionError = tostring(value) end
+end
+
 local M = {}
 local sendAction
+local airMovementState
+local waterMovementState
 
 local function marker(event, values)
   local payload = { event = event }
@@ -1127,6 +1144,47 @@ local candidates = {
   { -800, -800 }, { 800, -800 }, { -800, 800 }, { 800, 800 },
 }
 
+local function waterPlacementCandidates()
+  local sampled, seen = {}, {}
+  local terrain = api and api.engine and api.engine.terrain
+  local function add(x, y)
+    local key = tostring(x) .. ":" .. tostring(y)
+    if seen[key] then return end
+    seen[key] = true
+    local position = api and api.type and api.type.Vec2f
+      and api.type.Vec2f.new(x, y) or { x = x, y = y }
+    if terrain and type(terrain.isValidCoordinate) == "function" then
+      local validOk, valid = pcall(terrain.isValidCoordinate, position)
+      if not validOk or not valid then return end
+    end
+    local height
+    if game and game.interface and type(game.interface.getHeight) == "function" then
+      local heightOk, value = pcall(game.interface.getHeight, { x, y })
+      if heightOk then height = tonumber(value) end
+    end
+    if height == nil and terrain and type(terrain.getHeightAt) == "function" then
+      local heightOk, value = pcall(terrain.getHeightAt, position)
+      if heightOk then height = tonumber(value) end
+    end
+    if height ~= nil then sampled[#sampled + 1] = { x, y, height = height } end
+  end
+  -- Default disposable maps are at most a few kilometres across. Sampling a
+  -- coarse deterministic grid finds their river/lake floor without reading an
+  -- undocumented water-system singleton or baking in one generated seed.
+  for x = -1800, 1800, 150 do
+    for y = -1800, 1800, 150 do add(x, y) end
+  end
+  for _, candidate in ipairs(candidates) do add(candidate[1], candidate[2]) end
+  table.sort(sampled, function(a, b)
+    if a.height ~= b.height then return a.height < b.height end
+    local ar, br = a[1] * a[1] + a[2] * a[2], b[1] * b[1] + b[2] * b[2]
+    if ar ~= br then return ar < br end
+    if a[1] ~= b[1] then return a[1] < b[1] end
+    return a[2] < b[2]
+  end)
+  return sampled
+end
+
 local function terrainHeight(position, x, y)
   if api and api.engine and api.engine.terrain and type(api.engine.terrain.getHeightAt) == "function" then
     local ok, value = pcall(api.engine.terrain.getHeightAt, position)
@@ -1834,6 +1892,39 @@ local function facilityDelta(after, before)
   return result
 end
 
+local function liveEntityPosition(entity, preferredComponent)
+  local function read(value, field)
+    local ok, result = pcall(function() return value and value[field] end)
+    return ok and result or nil
+  end
+  local function project(value)
+    local position = read(value, "position") or read(value, "pos")
+    if not position then return nil end
+    local function coordinate(index, name)
+      local nested = read(position, index)
+      if nested == nil then nested = read(position, name) end
+      return tonumber(nested)
+    end
+    local x, y, z = coordinate(1, "x"), coordinate(2, "y"), coordinate(3, "z")
+    if x == nil or y == nil then return nil end
+    return { x = x, y = y, z = z or 0 }
+  end
+  if preferredComponent and api and api.engine and api.engine.getComponent then
+    local ok, component = pcall(api.engine.getComponent, entity, preferredComponent)
+    local position = ok and component and project(component) or nil
+    if position then return position, "component" end
+  end
+  -- This broad binding is unsafe for a few malformed/transitioning station
+  -- records on Build 35924, but a live TRANSPORT_VEHICLE is a proven-safe
+  -- target and exposes the rendered world position here.
+  if game and game.interface and type(game.interface.getEntity) == "function" then
+    local ok, value = pcall(game.interface.getEntity, entity)
+    local position = ok and value and project(value) or nil
+    if position then return position, "entity" end
+  end
+  return nil, "unavailable"
+end
+
 local facilityIds
 
 local function exactConstructionMicros()
@@ -2156,6 +2247,19 @@ local function isStationFacility(kind)
   return kind == "station" or kind == "cargo_station"
 end
 
+local function isAirFacility(kind)
+  return kind == "airfield" or kind == "cargo_airfield"
+    or kind == "airport" or kind == "cargo_airport"
+end
+
+local function isWaterHarbor(kind)
+  return kind == "passenger_harbor" or kind == "cargo_harbor"
+end
+
+local function isWaterFacility(kind)
+  return isWaterHarbor(kind) or kind == "shipyard"
+end
+
 local function tryFacilityCandidate(spec, index, completed)
   if index > #candidates then
     completed(false, { kind = spec.kind, error = "no construction candidate succeeded" })
@@ -2441,7 +2545,8 @@ local function removeFacility(facility, completed)
         if facilityContains(after, entity) then remaining[#remaining + 1] = entity end
       end
     end
-    if after and isStationFacility(facility.kind) then
+    if after and (isStationFacility(facility.kind) or isAirFacility(facility.kind)
+      or isWaterHarbor(facility.kind)) then
       local stationGroupType = api and api.type and api.type.ComponentType.STATION_GROUP
       local transientSet = {}
       for _, groupId in ipairs(facility.delta and facility.delta.stationGroup or {}) do
@@ -2492,6 +2597,15 @@ local function removeFacility(facility, completed)
       shapeOk = shapeOk and #(removed.station or {}) >= 1
         and (#(removed.stationGroup or {}) >= 1 or #transientStationGroups >= 1)
         and #(removed.track or {}) >= 1
+    elseif isAirFacility(facility.kind) then
+      shapeOk = shapeOk and #(removed.station or {}) >= 1
+        and (#(removed.stationGroup or {}) >= 1 or #transientStationGroups >= 1)
+        and #(removed.depot or {}) >= 1
+    elseif isWaterHarbor(facility.kind) then
+      shapeOk = shapeOk and #(removed.station or {}) >= 1
+        and (#(removed.stationGroup or {}) >= 1 or #transientStationGroups >= 1)
+    elseif facility.kind == "shipyard" then
+      shapeOk = shapeOk and #(removed.depot or {}) >= 1
     end
     local verified = commandSuccess and not afterError and shapeOk
     marker("facility-mutation-result", {
@@ -2632,6 +2746,663 @@ function M.runFacilityCustodyTest()
     end)
   end)
   return true
+end
+
+-- A disposable engine-level smoke test for the four stock air templates. This
+-- deliberately uses the same local-only script-event helper as the existing
+-- facility probe: the canonical codec is covered offline, while this test asks
+-- the engine whether each stock resource actually creates a station group and
+-- an integrated aircraft depot with the expected passenger/cargo mode.
+function M.runAirFacilityTest()
+  M.capabilities()
+  local componentType = api and api.type and api.type.ComponentType
+  if not (commandFactory("sendScriptEvent") ~= nil
+    and api and api.cmd and available(api.cmd.sendCommand)
+    and api.engine and api.engine.getComponent and api.engine.forEachEntityWithComponent
+    and componentType and componentType.CONSTRUCTION and componentType.VEHICLE_DEPOT
+    and componentType.STATION and componentType.STATION_GROUP and componentType.LINE
+    and componentType.TRANSPORT_VEHICLE and operationCodec
+    and operationVehiclePostcondition) then
+    marker("air-facility-complete", {
+      success = false, stage = "capabilities",
+      error = operationCodecError or operationVehiclePostconditionError
+        or "required airport/aircraft API is unavailable",
+    })
+    return false
+  end
+
+  local specs = {
+    { kind = "airfield", expected = "passenger" },
+    { kind = "cargo_airfield", expected = "cargo" },
+    { kind = "airport", expected = "passenger" },
+    { kind = "cargo_airport", expected = "cargo" },
+  }
+  local built = {}
+  local airMutations = {}
+  local function completeAirOperation()
+    local first, second = built[1], built[3]
+    local groupA = first and first.delta and first.delta.stationGroup[1]
+    local groupB = second and second.delta and second.delta.stationGroup[1]
+    local depot = first and first.delta and first.delta.depot[1]
+    local player = tonumber(game.interface.getPlayer())
+    local function fail(stage, errorText, evidence)
+      marker("air-facility-complete", {
+        success = false, stage = stage, error = tostring(errorText),
+        facilities = built, airMutations = airMutations, airOperation = evidence,
+      })
+    end
+    if not groupA or not groupB or not depot or not player then
+      fail("air-operation-inputs", "passenger airport outputs are incomplete")
+      return
+    end
+    local function read(value, field)
+      local ok, result = pcall(function() return value and value[field] end)
+      return ok and result or nil
+    end
+    local function outputEntity(result, fields, before, component)
+      for _, field in ipairs(fields) do
+        local value = tonumber(read(result, field))
+        if value and value >= 0 and not before[value] then return value end
+      end
+      local after, snapshotError = entitiesWith(component)
+      if snapshotError then return nil, snapshotError end
+      local delta = positiveSetDifference(after, before)
+      if #delta ~= 1 then
+        return nil, "native operation produced " .. tostring(#delta)
+          .. " candidate outputs; expected exactly one"
+      end
+      return delta[1]
+    end
+    local function materialise(transaction, resolveLocal)
+      return operationCodec.materialise(transaction, {
+        api = api,
+        nativePlayerId = player,
+        resolveLocal = resolveLocal,
+        factory = function(name) return commandFactory(name) end,
+      })
+    end
+    local function issue(transaction, resolveLocal, callback)
+      local materialised, materialiseError = materialise(transaction, resolveLocal)
+      if not materialised then callback(false, nil, materialiseError); return end
+      local unpackValues = unpack or (table and table.unpack)
+      local commandOk, commandOrError = pcall(
+        materialised.factory, unpackValues(materialised.args, 1, #materialised.args))
+      if not commandOk then callback(false, nil, commandOrError); return end
+      local sendOk, sendError = pcall(api.cmd.sendCommand, commandOrError,
+        function(result, success) callback(success == true, result,
+          success == true and nil or "native command callback returned success=false") end)
+      if not sendOk then callback(false, nil, sendError) end
+    end
+
+    local lineBefore, lineSnapshotError = entitiesWith(componentType.LINE)
+    if lineSnapshotError then fail("air-line-baseline", lineSnapshotError); return end
+    local lineCid = "line:probe:air"
+    local groupCidA, groupCidB = "station_group:probe:air:a", "station_group:probe:air:b"
+    local lineTransaction, lineError = operationCodec.make("line.create", "company:1", {
+      name = "TPF2MP automated air route",
+      color = { r = 1000, g = 500, b = 0 },
+      line = operationCodec.defaultLine({ groupCidA, groupCidB }),
+    })
+    if not lineTransaction then fail("air-line-canonicalise", lineError); return end
+    issue(lineTransaction, function(cid)
+      if cid == groupCidA then return groupA end
+      if cid == groupCidB then return groupB end
+    end, function(lineSuccess, lineResult, lineApplyError)
+      if not lineSuccess then fail("air-line-apply", lineApplyError); return end
+      local lineEntity, lineBindError = outputEntity(lineResult,
+        { "resultLineEntity", "resultEntity", "entity" }, lineBefore, componentType.LINE)
+      if not lineEntity then fail("air-line-bind", lineBindError); return end
+
+      local model = "vehicle/plane/junkers_f_13_v2.mdl"
+      local config, configError = operationCodec.defaultVehicleConfig({ model }, api)
+      if not config then fail("aircraft-config", configError, { lineEntity = lineEntity }); return end
+      local buyTransaction, buyError = operationCodec.make("vehicle.buy", "company:1", {
+        depotCid = "depot:probe:air", config = config,
+      })
+      if not buyTransaction then fail("aircraft-canonicalise", buyError); return end
+      local vehicleBefore, vehicleSnapshotError = entitiesWith(componentType.TRANSPORT_VEHICLE)
+      if vehicleSnapshotError then fail("aircraft-baseline", vehicleSnapshotError); return end
+      issue(buyTransaction, function(cid)
+        if cid == "depot:probe:air" then return depot end
+      end, function(buySuccess, buyResult, buyApplyError)
+        if not buySuccess then fail("aircraft-buy-apply", buyApplyError); return end
+        local vehicleEntity, vehicleBindError = outputEntity(buyResult,
+          { "resultVehicleEntity", "resultEntity", "entity" },
+          vehicleBefore, componentType.TRANSPORT_VEHICLE)
+        if not vehicleEntity then fail("aircraft-bind", vehicleBindError); return end
+        local componentOk, vehicle = pcall(
+          api.engine.getComponent, vehicleEntity, componentType.TRANSPORT_VEHICLE)
+        local purchaseProjection = componentOk and vehicle
+          and operationVehiclePostcondition.project(vehicle, api) or nil
+        local purchaseOk, purchaseError = operationVehiclePostcondition.validate(
+          buyTransaction, purchaseProjection)
+        if not purchaseOk then fail("aircraft-buy-readback", purchaseError, {
+          lineEntity = lineEntity, vehicleEntity = vehicleEntity,
+          purchase = purchaseProjection,
+        }); return end
+
+        local assignTransaction, assignError = operationCodec.make(
+          "vehicle.assign", "company:1", {
+            targetCid = "vehicle:probe:air", lineCid = lineCid, stopIndex = -1,
+          })
+        if not assignTransaction then fail("aircraft-assign-canonicalise", assignError); return end
+        issue(assignTransaction, function(cid)
+          if cid == "vehicle:probe:air" then return vehicleEntity end
+          if cid == lineCid then return lineEntity end
+        end, function(assignSuccess, _, assignApplyError)
+          if not assignSuccess then fail("aircraft-assign-apply", assignApplyError); return end
+          local readOk, assigned = pcall(
+            api.engine.getComponent, vehicleEntity, componentType.TRANSPORT_VEHICLE)
+          local observedLine = readOk and assigned and tonumber(read(assigned, "line")) or nil
+          local evidence = {
+            model = model, player = player, depotEntity = depot,
+            stationGroups = { groupA, groupB }, lineEntity = lineEntity,
+            vehicleEntity = vehicleEntity, observedLine = observedLine,
+            purchaseDigest = buyTransaction.digest,
+            lineDigest = lineTransaction.digest,
+            assignDigest = assignTransaction.digest,
+            purchase = purchaseProjection,
+          }
+          if observedLine ~= lineEntity then
+            fail("aircraft-assign-readback",
+              "native aircraft line does not match the created air route", evidence)
+            return
+          end
+          local speedFactory = commandFactory("setGameSpeed")
+          local speedCommandOk, speedCommand = false, nil
+          if speedFactory then speedCommandOk, speedCommand = pcall(speedFactory, 3) end
+          local speedSendOk, speedSendError = false, nil
+          if speedCommandOk then
+            speedSendOk, speedSendError = pcall(api.cmd.sendCommand, speedCommand)
+          end
+          if not speedCommandOk or not speedSendOk then
+            fail("aircraft-movement-start",
+              tostring(speedCommandOk and speedSendError or speedCommand), evidence)
+            return
+          end
+          airMovementState = {
+            facilities = built,
+            airMutations = airMutations,
+            evidence = evidence,
+            vehicleEntity = vehicleEntity,
+            lineEntity = lineEntity,
+            initialPosition = liveEntityPosition(
+              vehicleEntity, componentType.TRANSPORT_VEHICLE),
+          }
+          marker("air-facility-ready", {
+            success = true, stage = "movement-soak", facilities = built,
+            airMutations = airMutations,
+            airOperation = evidence,
+            initialPosition = airMovementState.initialPosition,
+            requestedSpeed = 3,
+          })
+        end)
+      end)
+    end)
+  end
+  local function tryAirCandidate(specIndex, candidateIndex)
+    if specIndex > #specs then
+      -- Exercise compound airport retirement while the facilities are still
+      -- isolated. Airport option edits deliberately remain on the exact GUI
+      -- proposal path: Build 35924's public upgradeConstruction helper reports
+      -- success but leaves airport options unchanged. The two unused cargo
+      -- facilities must still retire their station/depot roots completely.
+      removeFacility(built[2], function(airfieldRemoveOk, airfieldRemove)
+        airMutations.cargoAirfieldRemove = airfieldRemove
+        if not airfieldRemoveOk then
+          marker("air-facility-complete", {
+            success = false, stage = "remove-cargo-airfield", facilities = built,
+            airMutations = airMutations,
+          })
+          return
+        end
+        removeFacility(built[4], function(airportRemoveOk, airportRemove)
+          airMutations.cargoAirportRemove = airportRemove
+          if not airportRemoveOk then
+            marker("air-facility-complete", {
+              success = false, stage = "remove-cargo-airport", facilities = built,
+              airMutations = airMutations,
+            })
+            return
+          end
+          completeAirOperation()
+        end)
+      end)
+      return
+    end
+    local spec = specs[specIndex]
+    if candidateIndex > #candidates then
+      marker("air-facility-complete", {
+        success = false, stage = "build-" .. spec.kind,
+        error = "no clear construction candidate succeeded", facilities = built,
+      })
+      return
+    end
+    local before, beforeError = facilitySnapshot()
+    if not before then
+      marker("air-facility-complete", {
+        success = false, stage = "snapshot-" .. spec.kind,
+        error = beforeError, facilities = built,
+      })
+      return
+    end
+    local x, y = candidates[candidateIndex][1], candidates[candidateIndex][2]
+    sendActionAsync({
+      type = "probe.build_construction", kind = spec.kind,
+      x = x, y = y, localOnly = true,
+    }, function(commandSuccess, result, commandError)
+      local after, afterError = facilitySnapshot()
+      local delta = after and facilityDelta(after, before) or {}
+      local changed = #(delta.construction or {}) + #(delta.station or {})
+        + #(delta.stationGroup or {}) + #(delta.depot or {})
+      if commandSuccess and changed == 0 and not afterError then
+        tryAirCandidate(specIndex, candidateIndex + 1)
+        return
+      end
+      local root = #(delta.construction or {}) == 1 and delta.construction[1] or nil
+      local mode = #(delta.stationGroup or {}) > 0
+        and probeProductionStationGroup(delta.stationGroup[1], 0) or nil
+      local expectedOwner = game.interface.getPlayer()
+      local ownerOk = root ~= nil and tonumber(ownerOf(root)) == tonumber(expectedOwner)
+      for _, entity in ipairs(facilityIds(delta)) do
+        local observed = ownerOf(entity)
+        if observed ~= nil and tonumber(observed) ~= tonumber(expectedOwner) then ownerOk = false end
+      end
+      local shapeOk = root ~= nil and #(delta.station or {}) >= 1
+        and #(delta.stationGroup or {}) >= 1 and #(delta.depot or {}) >= 1
+      local modeOk = mode and mode.success == true and mode.kind == spec.expected
+      local entry = {
+        kind = spec.kind, expected = spec.expected,
+        candidate = candidateIndex, x = x, y = y,
+        commandSuccess = commandSuccess, resultIds = resultIds(result),
+        delta = delta, constructionId = root, transportMode = mode,
+        shapeVerified = shapeOk, ownershipVerified = ownerOk,
+        error = commandError or afterError,
+      }
+      built[#built + 1] = entry
+      marker("air-facility-result", entry)
+      if not (commandSuccess and not afterError and shapeOk and modeOk and ownerOk) then
+        marker("air-facility-complete", {
+          success = false, stage = "verify-" .. spec.kind,
+          facility = entry, facilities = built,
+        })
+        return
+      end
+      tryAirCandidate(specIndex + 1, candidateIndex + 1)
+    end)
+  end
+  tryAirCandidate(1, 1)
+  return true
+end
+
+-- Called by the unattended runner after a short unpaused soak. Keeping the
+-- sample in the same console VM proves more than command acceptance: the
+-- purchased stock plane must remain assigned and physically leave its initial
+-- hangar position on the two-airport route.
+function M.finishAirFacilityTest()
+  local state = airMovementState
+  local componentType = api and api.type and api.type.ComponentType or {}
+  if not state or not state.vehicleEntity or not componentType.TRANSPORT_VEHICLE then
+    marker("air-facility-complete", {
+      success = false, stage = "movement-state",
+      error = "aircraft movement state is unavailable",
+    })
+    return false
+  end
+  local ok, vehicle = pcall(
+    api.engine.getComponent, state.vehicleEntity, componentType.TRANSPORT_VEHICLE)
+  local function read(value, field)
+    local readOk, result = pcall(function() return value and value[field] end)
+    return readOk and result or nil
+  end
+  local finalPosition, positionSource = liveEntityPosition(
+    state.vehicleEntity, componentType.TRANSPORT_VEHICLE)
+  local initial = state.initialPosition
+  local displacement
+  if initial and finalPosition then
+    local dx, dy, dz = finalPosition.x - initial.x,
+      finalPosition.y - initial.y, finalPosition.z - initial.z
+    displacement = math.sqrt(dx * dx + dy * dy + dz * dz)
+  end
+  local observedLine = ok and vehicle and tonumber(read(vehicle, "line")) or nil
+  local movementOk = displacement ~= nil and displacement >= 5
+    and observedLine == state.lineEntity
+  state.evidence.initialPosition = initial
+  state.evidence.finalPosition = finalPosition
+  state.evidence.positionSource = positionSource
+  state.evidence.displacement = displacement
+  state.evidence.observedLineAfterSoak = observedLine
+  state.evidence.userStoppedAfterSoak = ok and vehicle
+    and read(vehicle, "userStopped") == true or false
+  state.evidence.stopIndexAfterSoak = ok and vehicle
+    and tonumber(read(vehicle, "stopIndex")) or nil
+  local speedOk, speed = false, nil
+  if game and game.interface and type(game.interface.getGameSpeed) == "function" then
+    speedOk, speed = pcall(game.interface.getGameSpeed)
+  end
+  state.evidence.gameSpeedAfterSoak = speedOk and tonumber(speed) or nil
+  marker("air-facility-complete", {
+    success = movementOk, stage = movementOk and "complete" or "movement-readback",
+    error = not movementOk and "assigned aircraft did not move at least five metres" or nil,
+    facilities = state.facilities, airMutations = state.airMutations,
+    airOperation = state.evidence,
+  })
+  airMovementState = nil
+  return movementOk
+end
+
+-- Disposable native proof for the stock modular harbors, shipyard, and a
+-- complete ferry lifecycle. Offline tests cover every harbor/ship variant;
+-- this deliberately asks Build 35924 to create real WATER station/depot roots,
+-- route a stock ship, and move it in an unsaved generated world.
+function M.runWaterFacilityTest()
+  M.capabilities()
+  local componentType = api and api.type and api.type.ComponentType
+  if not (commandFactory("sendScriptEvent") ~= nil
+    and api and api.cmd and available(api.cmd.sendCommand)
+    and api.engine and api.engine.getComponent and api.engine.forEachEntityWithComponent
+    and componentType and componentType.CONSTRUCTION and componentType.VEHICLE_DEPOT
+    and componentType.STATION and componentType.STATION_GROUP and componentType.LINE
+    and componentType.TRANSPORT_VEHICLE and operationCodec
+    and operationVehiclePostcondition) then
+    marker("water-facility-complete", {
+      success = false, stage = "capabilities",
+      error = operationCodecError or operationVehiclePostconditionError
+        or "required harbor/ship API is unavailable",
+    })
+    return false
+  end
+
+  local placements = waterPlacementCandidates()
+  local specs = {
+    { kind = "passenger_harbor", expected = "passenger" },
+    { kind = "passenger_harbor", expected = "passenger" },
+    { kind = "cargo_harbor", expected = "cargo" },
+    { kind = "shipyard", expected = "depot" },
+  }
+  local built, waterMutations, occupied = {}, {}, {}
+  local function read(value, field)
+    local ok, result = pcall(function() return value and value[field] end)
+    return ok and result or nil
+  end
+  local function outputEntity(result, fields, before, component)
+    for _, field in ipairs(fields) do
+      local value = tonumber(read(result, field))
+      if value and value >= 0 and not before[value] then return value end
+    end
+    local after, snapshotError = entitiesWith(component)
+    if snapshotError then return nil, snapshotError end
+    local delta = positiveSetDifference(after, before)
+    if #delta ~= 1 then
+      return nil, "native operation produced " .. tostring(#delta)
+        .. " candidate outputs; expected exactly one"
+    end
+    return delta[1]
+  end
+  local player = tonumber(game.interface.getPlayer())
+  local function issue(transaction, resolveLocal, callback)
+    local materialised, materialiseError = operationCodec.materialise(transaction, {
+      api = api, nativePlayerId = player, resolveLocal = resolveLocal,
+      factory = function(name) return commandFactory(name) end,
+    })
+    if not materialised then callback(false, nil, materialiseError); return end
+    local unpackValues = unpack or (table and table.unpack)
+    local commandOk, commandOrError = pcall(
+      materialised.factory, unpackValues(materialised.args, 1, #materialised.args))
+    if not commandOk then callback(false, nil, commandOrError); return end
+    local sendOk, sendError = pcall(api.cmd.sendCommand, commandOrError,
+      function(result, success)
+        callback(success == true, result,
+          success == true and nil or "native command callback returned success=false")
+      end)
+    if not sendOk then callback(false, nil, sendError) end
+  end
+  local function fail(stage, errorText, evidence)
+    marker("water-facility-complete", {
+      success = false, stage = stage, error = tostring(errorText),
+      facilities = built, waterMutations = waterMutations, waterOperation = evidence,
+    })
+  end
+  local function completeWaterOperation()
+    local first, second, shipyard = built[1], built[2], built[4]
+    local groupA = first and first.delta and first.delta.stationGroup[1]
+    local groupB = second and second.delta and second.delta.stationGroup[1]
+    local depot = shipyard and shipyard.delta and shipyard.delta.depot[1]
+    if not groupA or not groupB or not depot or not player then
+      fail("water-operation-inputs", "passenger harbor/shipyard outputs are incomplete")
+      return
+    end
+    local lineBefore, lineSnapshotError = entitiesWith(componentType.LINE)
+    if lineSnapshotError then fail("water-line-baseline", lineSnapshotError); return end
+    local lineCid = "line:probe:water"
+    local groupCidA = "station_group:probe:water:a"
+    local groupCidB = "station_group:probe:water:b"
+    local lineTransaction, lineError = operationCodec.make("line.create", "company:1", {
+      name = "TPF2MP automated water route",
+      color = { r = 0, g = 500, b = 1000 },
+      line = operationCodec.defaultLine({ groupCidA, groupCidB }),
+    })
+    if not lineTransaction then fail("water-line-canonicalise", lineError); return end
+    issue(lineTransaction, function(cid)
+      if cid == groupCidA then return groupA end
+      if cid == groupCidB then return groupB end
+    end, function(lineSuccess, lineResult, lineApplyError)
+      if not lineSuccess then fail("water-line-apply", lineApplyError); return end
+      local lineEntity, lineBindError = outputEntity(lineResult,
+        { "resultLineEntity", "resultEntity", "entity" }, lineBefore, componentType.LINE)
+      if not lineEntity then fail("water-line-bind", lineBindError); return end
+      local model = "vehicle/ship/rigi.mdl"
+      local config, configError = operationCodec.defaultVehicleConfig({ model }, api)
+      if not config then fail("ship-config", configError, { lineEntity = lineEntity }); return end
+      local buyTransaction, buyError = operationCodec.make("vehicle.buy", "company:1", {
+        depotCid = "depot:probe:water", config = config,
+      })
+      if not buyTransaction then fail("ship-canonicalise", buyError); return end
+      local vehicleBefore, vehicleSnapshotError = entitiesWith(componentType.TRANSPORT_VEHICLE)
+      if vehicleSnapshotError then fail("ship-baseline", vehicleSnapshotError); return end
+      issue(buyTransaction, function(cid)
+        if cid == "depot:probe:water" then return depot end
+      end, function(buySuccess, buyResult, buyApplyError)
+        if not buySuccess then fail("ship-buy-apply", buyApplyError); return end
+        local vehicleEntity, vehicleBindError = outputEntity(buyResult,
+          { "resultVehicleEntity", "resultEntity", "entity" },
+          vehicleBefore, componentType.TRANSPORT_VEHICLE)
+        if not vehicleEntity then fail("ship-bind", vehicleBindError); return end
+        local componentOk, vehicle = pcall(
+          api.engine.getComponent, vehicleEntity, componentType.TRANSPORT_VEHICLE)
+        local purchaseProjection = componentOk and vehicle
+          and operationVehiclePostcondition.project(vehicle, api) or nil
+        local purchaseOk, purchaseError = operationVehiclePostcondition.validate(
+          buyTransaction, purchaseProjection)
+        if not purchaseOk then fail("ship-buy-readback", purchaseError, {
+          lineEntity = lineEntity, vehicleEntity = vehicleEntity,
+          purchase = purchaseProjection,
+        }); return end
+        local assignTransaction, assignError = operationCodec.make(
+          "vehicle.assign", "company:1", {
+            targetCid = "vehicle:probe:water", lineCid = lineCid, stopIndex = -1,
+          })
+        if not assignTransaction then fail("ship-assign-canonicalise", assignError); return end
+        issue(assignTransaction, function(cid)
+          if cid == "vehicle:probe:water" then return vehicleEntity end
+          if cid == lineCid then return lineEntity end
+        end, function(assignSuccess, _, assignApplyError)
+          if not assignSuccess then fail("ship-assign-apply", assignApplyError); return end
+          local readOk, assigned = pcall(
+            api.engine.getComponent, vehicleEntity, componentType.TRANSPORT_VEHICLE)
+          local observedLine = readOk and assigned and tonumber(read(assigned, "line")) or nil
+          local evidence = {
+            model = model, player = player, depotEntity = depot,
+            stationGroups = { groupA, groupB }, lineEntity = lineEntity,
+            vehicleEntity = vehicleEntity, observedLine = observedLine,
+            purchaseDigest = buyTransaction.digest,
+            lineDigest = lineTransaction.digest,
+            assignDigest = assignTransaction.digest,
+            purchase = purchaseProjection,
+          }
+          if observedLine ~= lineEntity then
+            fail("ship-assign-readback",
+              "native ship line does not match the created water route", evidence)
+            return
+          end
+          local speedFactory = commandFactory("setGameSpeed")
+          local speedCommandOk, speedCommand = false, nil
+          if speedFactory then speedCommandOk, speedCommand = pcall(speedFactory, 3) end
+          local speedSendOk, speedSendError = false, nil
+          if speedCommandOk then
+            speedSendOk, speedSendError = pcall(api.cmd.sendCommand, speedCommand)
+          end
+          if not speedCommandOk or not speedSendOk then
+            fail("ship-movement-start",
+              tostring(speedCommandOk and speedSendError or speedCommand), evidence)
+            return
+          end
+          waterMovementState = {
+            facilities = built, waterMutations = waterMutations, evidence = evidence,
+            vehicleEntity = vehicleEntity, lineEntity = lineEntity,
+            initialPosition = liveEntityPosition(
+              vehicleEntity, componentType.TRANSPORT_VEHICLE),
+          }
+          marker("water-facility-ready", {
+            success = true, stage = "movement-soak", facilities = built,
+            waterMutations = waterMutations, waterOperation = evidence,
+            initialPosition = waterMovementState.initialPosition, requestedSpeed = 3,
+          })
+        end)
+      end)
+    end)
+  end
+
+  local function farEnough(x, y)
+    for _, point in ipairs(occupied) do
+      local dx, dy = x - point.x, y - point.y
+      if dx * dx + dy * dy < 225 * 225 then return false end
+    end
+    return true
+  end
+  local function tryWaterCandidate(specIndex, candidateIndex)
+    if specIndex > #specs then
+      removeFacility(built[3], function(removeOk, removeResult)
+        waterMutations.cargoHarborRemove = removeResult
+        if not removeOk then fail("remove-cargo-harbor", removeResult.error); return end
+        completeWaterOperation()
+      end)
+      return
+    end
+    local spec = specs[specIndex]
+    while candidateIndex <= #placements
+      and not farEnough(placements[candidateIndex][1], placements[candidateIndex][2]) do
+      candidateIndex = candidateIndex + 1
+    end
+    if candidateIndex > #placements then
+      fail("build-" .. spec.kind, "no clear low-terrain construction candidate succeeded")
+      return
+    end
+    local before, beforeError = facilitySnapshot()
+    if not before then fail("snapshot-" .. spec.kind, beforeError); return end
+    local candidate = placements[candidateIndex]
+    local x, y = candidate[1], candidate[2]
+    sendActionAsync({
+      type = "probe.build_construction", kind = spec.kind,
+      x = x, y = y, localOnly = true,
+    }, function(commandSuccess, result, commandError)
+      local after, afterError = facilitySnapshot()
+      local delta = after and facilityDelta(after, before) or {}
+      local changed = #(delta.construction or {}) + #(delta.station or {})
+        + #(delta.stationGroup or {}) + #(delta.depot or {})
+      if commandSuccess and changed == 0 and not afterError then
+        tryWaterCandidate(specIndex, candidateIndex + 1)
+        return
+      end
+      local root = #(delta.construction or {}) == 1 and delta.construction[1] or nil
+      local mode = isWaterHarbor(spec.kind) and #(delta.stationGroup or {}) > 0
+        and probeProductionStationGroup(delta.stationGroup[1], 0) or nil
+      local expectedOwner = game.interface.getPlayer()
+      local ownerOk = root ~= nil and tonumber(ownerOf(root)) == tonumber(expectedOwner)
+      local ids = facilityIds(delta)
+      for _, entity in ipairs(ids) do
+        local observed = ownerOf(entity)
+        if observed ~= nil and tonumber(observed) ~= tonumber(expectedOwner) then ownerOk = false end
+      end
+      local shapeOk = root ~= nil
+      local modeOk = true
+      if isWaterHarbor(spec.kind) then
+        shapeOk = shapeOk and #(delta.station or {}) >= 1
+          and #(delta.stationGroup or {}) >= 1
+        modeOk = mode and mode.success == true and mode.kind == spec.expected
+      else
+        shapeOk = shapeOk and #(delta.depot or {}) >= 1
+      end
+      local entry = {
+        kind = spec.kind, expected = spec.expected,
+        candidate = candidateIndex, x = x, y = y, terrainHeight = candidate.height,
+        commandSuccess = commandSuccess, resultIds = resultIds(result),
+        delta = delta, ids = ids, constructionId = root, transportMode = mode,
+        shapeVerified = shapeOk, ownershipVerified = ownerOk,
+        error = commandError or afterError,
+      }
+      built[#built + 1] = entry
+      marker("water-facility-result", entry)
+      if not (commandSuccess and not afterError and shapeOk and modeOk and ownerOk) then
+        fail("verify-" .. spec.kind, entry.error or "shape/mode/ownership verification failed", entry)
+        return
+      end
+      occupied[#occupied + 1] = { x = x, y = y }
+      tryWaterCandidate(specIndex + 1, candidateIndex + 1)
+    end)
+  end
+  if #placements == 0 then
+    fail("water-candidates", "no readable terrain samples were available")
+    return false
+  end
+  tryWaterCandidate(1, 1)
+  return true
+end
+
+function M.finishWaterFacilityTest()
+  local state = waterMovementState
+  local componentType = api and api.type and api.type.ComponentType or {}
+  if not state or not state.vehicleEntity or not componentType.TRANSPORT_VEHICLE then
+    marker("water-facility-complete", {
+      success = false, stage = "movement-state",
+      error = "ship movement state is unavailable",
+    })
+    return false
+  end
+  local ok, vehicle = pcall(
+    api.engine.getComponent, state.vehicleEntity, componentType.TRANSPORT_VEHICLE)
+  local function read(value, field)
+    local readOk, result = pcall(function() return value and value[field] end)
+    return readOk and result or nil
+  end
+  local finalPosition, positionSource = liveEntityPosition(
+    state.vehicleEntity, componentType.TRANSPORT_VEHICLE)
+  local initial, displacement = state.initialPosition, nil
+  if initial and finalPosition then
+    local dx, dy, dz = finalPosition.x - initial.x,
+      finalPosition.y - initial.y, finalPosition.z - initial.z
+    displacement = math.sqrt(dx * dx + dy * dy + dz * dz)
+  end
+  local observedLine = ok and vehicle and tonumber(read(vehicle, "line")) or nil
+  local movementOk = displacement ~= nil and displacement >= 5
+    and observedLine == state.lineEntity
+  state.evidence.initialPosition = initial
+  state.evidence.finalPosition = finalPosition
+  state.evidence.positionSource = positionSource
+  state.evidence.displacement = displacement
+  state.evidence.observedLineAfterSoak = observedLine
+  state.evidence.userStoppedAfterSoak = ok and vehicle
+    and read(vehicle, "userStopped") == true or false
+  state.evidence.stopIndexAfterSoak = ok and vehicle
+    and tonumber(read(vehicle, "stopIndex")) or nil
+  marker("water-facility-complete", {
+    success = movementOk, stage = movementOk and "complete" or "movement-readback",
+    error = not movementOk and "assigned ship did not move at least five metres" or nil,
+    facilities = state.facilities, waterMutations = state.waterMutations,
+    waterOperation = state.evidence,
+  })
+  waterMovementState = nil
+  return movementOk
 end
 
 local function tryCandidate(index, followup)

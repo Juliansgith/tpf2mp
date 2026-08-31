@@ -600,7 +600,7 @@ function M.render(gui, snapshot, options)
       sample and (" | " .. tostring(sample.fileName or sample.kindHint or "construction")) or ""
     )
   end
-  lines[#lines + 1] = "Implemented multiplayer slice: canonical roads/tracks/signals, portable depot/construction/asset build and removal, modular station placement/edit/removal, plus host-ordered line and portable vehicle operations. Unsupported opaque mod callbacks fail closed; non-rail carriers and host-owned autonomous simulation remain live-proof gates."
+  lines[#lines + 1] = "Implemented multiplayer slice: canonical roads/tracks/signals, portable depot/construction/asset build and removal, modular station placement/edit/removal, plus host-ordered line and portable vehicle operations. Stock road, rail, tram, air, and water carriers have automated coverage. Unsupported opaque mod callbacks, broader mod-resource compatibility, and host-owned autonomous simulation remain live-proof gates."
   gui.details:setText(table.concat(lines, "\n"))
 end
 
