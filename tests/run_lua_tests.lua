@@ -2279,7 +2279,7 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   -- unlike the modular street terminal below. Pin their exact resource names
   -- and the two tram-catenary variants so a terminal codec change cannot
   -- accidentally narrow ordinary depot support.
-  local stockRoadDepotTx
+  local stockRoadDepotTx, stockTramDepotTx
   for _, depotCase in ipairs({
     { fileName = "depot/road_depot_era_a.con", params = { year = 1990 } },
     { fileName = "depot/tram_depot_era_a.con", params = { year = 1990, tramCatenary = 0 } },
@@ -2303,13 +2303,15 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
     equal(streetDepotSpec.params.tramCatenary, depotCase.params.tramCatenary)
     if depotCase.fileName == "depot/road_depot_era_a.con" then
       stockRoadDepotTx = util.deepCopy(streetDepotTx)
+    elseif depotCase.params.tramCatenary == 0 then
+      stockTramDepotTx = util.deepCopy(streetDepotTx)
     end
   end
 
-  -- A STREET_DEPOT declares a stock street snap node. The helper deterministically
-  -- reconstructs that connection from synchronized road geometry; only hidden
-  -- rail-depot track snapping remains fail-closed below.
-  local snappedRoadDepot = assert(stockRoadDepotTx)
+  -- The helper cannot receive this explicit existing-road endpoint. Connected
+  -- street depots therefore require typed exact replay; connected rail depots
+  -- remain fail-closed because their typed output crashes stock selection UI.
+  local snappedRoadDepot = util.deepCopy(assert(stockRoadDepotTx))
   snappedRoadDepot.edges[1].node1 = { cid = "node:pre:road-depot-approach" }
   table.remove(snappedRoadDepot.nodes, 2)
   snappedRoadDepot.digest = proposalCodec.digest(snappedRoadDepot)
@@ -2318,6 +2320,70 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
     "snapped-road-depot fixture is not structurally valid")
   local snappedRoadOk, snappedRoadError = proposalCodec.validatePortable(snappedRoadDepot)
   truthy(snappedRoadOk, snappedRoadError)
+  local snappedRoadRecord = { transaction = snappedRoadDepot }
+  truthy(constructionReplayState.isExact(snappedRoadRecord, proposalCodec),
+    "connected road depot did not retain its explicit endpoint through exact replay")
+  truthy(constructionReplayState.requiresAtomic(snappedRoadRecord, proposalCodec),
+    "connected road depot could fall back to the detached helper path")
+  equal(constructionReplayState.isExact({ transaction = stockRoadDepotTx }, proposalCodec), false,
+    "isolated road depot escaped the selectable helper-built path")
+
+  local snappedTramDepot = util.deepCopy(assert(stockTramDepotTx))
+  snappedTramDepot.edges[1].node1 = { cid = "node:pre:tram-depot-approach" }
+  table.remove(snappedTramDepot.nodes, 2)
+  snappedTramDepot.digest = proposalCodec.digest(snappedTramDepot)
+  snappedTramDepot.transactionId = "proposal:" .. snappedTramDepot.digest
+  truthy(proposalCodec.validatePortable(snappedTramDepot),
+    "snapped tram-depot fixture is not portable")
+  local snappedTramRecord = { transaction = snappedTramDepot }
+  truthy(constructionReplayState.isConnectedStreetDepot(
+      snappedTramDepot, snappedTramDepot.constructions[1])
+      and constructionReplayState.isExact(snappedTramRecord, proposalCodec)
+      and constructionReplayState.requiresAtomic(snappedTramRecord, proposalCodec),
+    "connected tram depot did not inherit exact atomic street-depot replay")
+
+  -- The policy is graph-derived, not a depot/station/resource allowlist. A
+  -- data-driven or mod-provided construction that exposes the same existing
+  -- street endpoint must never fall back to transform-only placement either.
+  local genericConnected = util.deepCopy(snappedRoadDepot)
+  genericConnected.constructions[1].kind = "construction"
+  genericConnected.constructions[1].fileName = "industry/modded_road_facility.con"
+  genericConnected.digest = proposalCodec.digest(genericConnected)
+  genericConnected.transactionId = "proposal:" .. genericConnected.digest
+  truthy(proposalCodec.validatePortable(genericConnected),
+    "generic connected construction fixture is not portable")
+  local genericRecord = { transaction = genericConnected }
+  truthy(constructionReplayState.hasExistingStreetEndpoint(
+      genericConnected, genericConnected.constructions[1])
+      and constructionReplayState.isExact(genericRecord, proposalCodec)
+      and constructionReplayState.requiresAtomic(genericRecord, proposalCodec),
+    "generic road-connected construction could detach through helper fallback")
+
+  local decoratedConnected = util.deepCopy(genericConnected)
+  decoratedConnected.edgeObjects.add = {{
+    slot = "edge_object:1", edge = { slot = "edge:1" }, param = 0.5,
+    oneWay = false, left = false, model = "street/bus_stop_v2.mdl",
+    name = "", category = 1, logicalOwnerCid = "company:1", private = true,
+  }}
+  decoratedConnected.digest = proposalCodec.digest(decoratedConnected)
+  decoratedConnected.transactionId = "proposal:" .. decoratedConnected.digest
+  truthy(proposalCodec.validatePortable(decoratedConnected),
+    "decorated connected construction fixture is not portable")
+  local decoratedRecord = { transaction = decoratedConnected }
+  truthy(constructionReplayState.isExact(decoratedRecord, proposalCodec)
+      and constructionReplayState.requiresAtomic(decoratedRecord, proposalCodec),
+    "a construction-owned edge object escaped atomic exact replay")
+
+  local isolatedGeneric = util.deepCopy(genericConnected)
+  isolatedGeneric.edges[1].node1 = { slot = "node:2" }
+  isolatedGeneric.nodes[2] = util.deepCopy(stockRoadDepotTx.nodes[2])
+  isolatedGeneric.digest = proposalCodec.digest(isolatedGeneric)
+  isolatedGeneric.transactionId = "proposal:" .. isolatedGeneric.digest
+  local isolatedGenericRecord = { transaction = isolatedGeneric }
+  truthy(constructionReplayState.isExact(isolatedGenericRecord, proposalCodec),
+    "isolated generic construction lost exact replay")
+  equal(constructionReplayState.requiresAtomic(isolatedGenericRecord, proposalCodec), false,
+    "isolated generic construction was unnecessarily forbidden from helper fallback")
 
   -- Build 35924 exposes every vanilla bus/tram and truck terminal size through
   -- one generic construction resource.  Exercise all six era/type templates,

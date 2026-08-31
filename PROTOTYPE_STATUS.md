@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-31 after prototype `0.42.0-alpha`, state schema `34`,
+Last updated: 2026-08-31 after prototype `0.42.1-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -49,6 +49,16 @@ TPF2MP contains two usable but differently mature modes:
 
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
+
+Prototype `0.42.1-alpha` generalizes exact replay for every portable
+construction whose captured graph connects to an existing street endpoint.
+The policy is topology-derived rather than keyed to stock filenames, covering
+road and tram depots, passenger bus/tram terminals, cargo/truck terminals,
+integrated edge objects, collateral demolition, and compatible data-only mod
+constructions. Connected rail depots remain deliberately rejected because
+Build 35924 crashes when their typed output is fed through the stock replay
+context. Exact native road-depot/bus-purchase, electrified tram-depot, and
+connected modular-terminal runs pass with converged structure and finances.
 
 Prototype `0.42.0-alpha` adds explicit stock AIR and WATER coverage. All 29
 stock aircraft, 23 stock ships, 60 airport option combinations, and 12 harbor

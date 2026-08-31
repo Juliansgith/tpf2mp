@@ -70,6 +70,18 @@ local function append(vector, count, value, label)
   return after
 end
 
+local function trimTail(vector, count, target, label)
+  for index = count, target + 1, -1 do
+    local ok, err = assign(vector, index, nil, label .. " removal")
+    if not ok then return nil, err end
+    local after, afterError = length(vector, label)
+    if not after or after ~= index - 1 then
+      return nil, afterError or (label .. " removal did not round-trip")
+    end
+  end
+  return target
+end
+
 local function remap(value, mapping)
   local replacement = mapping[key(value)]
   return replacement ~= nil and replacement or value
@@ -97,15 +109,23 @@ local function carrierCompatible(observed, expected)
   return observedStreet == nil and observedTrack == nil
 end
 
-local function rewriteEdge(observed, expected, nodeMap)
+local function rewriteEdge(observed, expected, nodeMap, disposableNodes)
   local observedComp, expectedComp = field(observed, "comp"), field(expected, "comp")
   if observedComp == nil or expectedComp == nil then return nil, "generated edge component is unavailable" end
   local node0 = remap(field(expectedComp, "node0"), nodeMap)
   local node1 = remap(field(expectedComp, "node1"), nodeMap)
-  if not scalar(field(observedComp, "node0"), node0)
-      or not scalar(field(observedComp, "node1"), node1)
-      or not carrierCompatible(observed, expected) then
+  if not carrierCompatible(observed, expected) then
     return nil, "generated construction topology does not match the captured graph prefix"
+  end
+  local replacements = 0
+  for _, pair in ipairs({ { "node0", node0 }, { "node1", node1 } }) do
+    local observedNode = field(observedComp, pair[1])
+    if not scalar(observedNode, pair[2]) then
+      if not disposableNodes[key(observedNode)] or disposableNodes[key(pair[2])] then
+        return nil, "generated construction topology does not match the captured graph prefix"
+      end
+      replacements = replacements + 1
+    end
   end
   for _, item in ipairs({
       { "node0", node0 }, { "node1", node1 },
@@ -132,7 +152,16 @@ local function rewriteEdge(observed, expected, nodeMap)
       if not ok then return nil, err end
     end
   end
-  return true
+  return true, nil, replacements
+end
+
+local function referencesAnyNode(edges, count, nodes)
+  for index = 1, count do
+    local comp = field(field(edges, index), "comp")
+    if comp and (nodes[key(field(comp, "node0"))]
+      or nodes[key(field(comp, "node1"))]) then return true end
+  end
+  return false
 end
 
 local function prepareExtraEdge(value, nodeMap, allocate)
@@ -177,9 +206,18 @@ function M.applyProcessed(command, exact, safeField)
   local objects, generatedObjects, objectError = findVector(street,
     { "edgeObjectsToAdd" }, "processed edge objects")
   if not objects then return nil, objectError end
-  if generatedNodes > #(exact.nodes or {}) or generatedEdges > #(exact.edges or {})
-      or generatedObjects > #(exact.objects or {}) then
+  local exactNodeCount, exactEdgeCount = #(exact.nodes or {}), #(exact.edges or {})
+  local disposableNodeCount = generatedNodes - exactNodeCount
+  if generatedEdges > exactEdgeCount or generatedObjects > #(exact.objects or {})
+      or disposableNodeCount > 1
+      or (disposableNodeCount > 0 and (exactEdgeCount == 0
+        or generatedEdges ~= exactEdgeCount)) then
     return nil, "generated construction graph exceeds the captured exact graph"
+  end
+
+  local disposableNodes = {}
+  for index = exactNodeCount + 1, generatedNodes do
+    disposableNodes[key(field(field(nodes, index), "entity"))] = true
   end
 
   local allocate = freshAllocator({ nodes, edges })
@@ -201,13 +239,14 @@ function M.applyProcessed(command, exact, safeField)
     end
   end
 
-  local edgeMap, edgeCount = {}, generatedEdges
+  local edgeMap, edgeCount, snapReplacements = {}, generatedEdges, 0
   for index, expected in ipairs(exact.edges or {}) do
     local originalEntity = field(expected, "entity")
     if index <= generatedEdges then
       local observed = field(edges, index)
-      local ok, err = rewriteEdge(observed, expected, nodeMap)
+      local ok, err, replacements = rewriteEdge(observed, expected, nodeMap, disposableNodes)
       if not ok then return nil, err end
+      snapReplacements = snapReplacements + (replacements or 0)
       edgeMap[key(originalEntity)] = field(observed, "entity")
     else
       local ok, err = prepareExtraEdge(expected, nodeMap, allocate)
@@ -216,6 +255,15 @@ function M.applyProcessed(command, exact, safeField)
       edgeCount, err = append(edges, edgeCount, expected, "processed edges")
       if not edgeCount then return nil, err end
     end
+  end
+
+  if disposableNodeCount > 0 then
+    if snapReplacements < 1 or referencesAnyNode(edges, edgeCount, disposableNodes) then
+      return nil, "generated construction snap node could not be replaced safely"
+    end
+    local trimmed, trimError = trimTail(nodes, nodeCount, exactNodeCount, "processed nodes")
+    if not trimmed then return nil, trimError end
+    nodeCount = trimmed
   end
 
   local objectCount = generatedObjects
@@ -234,8 +282,9 @@ function M.applyProcessed(command, exact, safeField)
   return {
     strategy = "post-expansion-exact-graph",
     generated = { nodes = generatedNodes, edges = generatedEdges, edgeObjects = generatedObjects },
-    appended = { nodes = nodeCount - generatedNodes, edges = edgeCount - generatedEdges,
+    appended = { nodes = math.max(0, nodeCount - generatedNodes), edges = edgeCount - generatedEdges,
       edgeObjects = objectCount - generatedObjects },
+    discarded = { nodes = disposableNodeCount },
   }
 end
 

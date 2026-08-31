@@ -4,7 +4,7 @@ local bridge = require "tpf2_mp/bridge"
 local finance = require "tpf2_mp/finance"
 local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
-local validationStationModule = require "tpf2_mp/validation_station_proposal"
+local validationStationModule = require "tpf2_mp/validation_construction_slices"
 local validationClockModule = require "tpf2_mp/validation_clock"
 local validationContentGate = require "tpf2_mp/validation_content_gate"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
@@ -554,7 +554,7 @@ function M.new(deps)
       if not networkValidationMobilityReady("initialMobilitySample") then return end
       validationCheck("initial-mobility-sampled", state.probes.mobility
         and type(state.probes.mobility.digest) == "string", state.probes.mobility)
-      if config().networkValidationSlice == "connected-terminal" then return stationValidation.beginConnected() end
+      if stationValidation.beginSlice(config().networkValidationSlice) then return end
       if state.bridge.peerId == "player1" then
         -- Candidate two is the first terrain-safe location in the deterministic
         -- app.startGame test world on Build 35924; candidate one is deliberately

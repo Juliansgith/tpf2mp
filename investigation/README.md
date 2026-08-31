@@ -1,6 +1,13 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.0-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.1-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Universal connected-street construction replay (2026-08-31)](UNIVERSAL_CONNECTED_STREET_CONSTRUCTION_REPLAY_2026-08-31.md)
+records the graph-derived existing-road invariant, filename-independent atomic
+replay for road/tram depots, passenger/cargo terminals and mod constructions,
+integrated edge-object coverage, the retained rail-depot crash boundary, and
+the road-depot/bus, electrified-tram-depot, and connected-terminal native
+two-process proofs.
 
 [Water transport support audit (2026-08-30)](WATER_TRANSPORT_SUPPORT_AUDIT_2026-08-30.md)
 records all 12 stock harbor layouts and 23 ship resources, passenger and

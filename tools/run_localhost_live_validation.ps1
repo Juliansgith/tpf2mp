@@ -6,7 +6,8 @@ param(
     [ValidateRange(30, 3600)][int]$ClockRunTicks = 30,
     [ValidateRange(120, 3600)][int]$TimeoutSeconds = 900,
     [ValidateRange(30, 600)][int]$ConsensusTimeoutSeconds = 180,
-    [ValidateSet('full', 'connected-terminal')][string]$ValidationSlice = 'full',
+    [ValidateSet('full', 'connected-terminal', 'connected-road-depot', 'connected-tram-depot')]
+    [string]$ValidationSlice = 'full',
     [string]$GameExecutable,
     [string]$LocalModsPath,
     [string]$StartingSave,

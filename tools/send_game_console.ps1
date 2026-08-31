@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][int]$GameProcessId,
-    [Parameter(Mandatory = $true)][ValidateSet('start', 'load', 'quit', 'free-game', 'maximize', 'click-client', 'click-ui', 'message-click-client', 'message-click-replace-ui-text', 'click-replace-ui-text', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui', 'inspect', 'accept', 'accept-down', 'accept-up', 'tab', 'shift-tab', 'escape', 'resume', 'replace-ui-text', 'custom', 'custom-active', 'custom-stay', 'custom-active-stay', 'custom-stage', 'custom-active-stage', 'toggle-console', 'toggle-console-down', 'toggle-console-up')][string]$Action,
+    [Parameter(Mandatory = $true)][ValidateSet('start', 'load', 'quit', 'free-game', 'maximize', 'click-client', 'click-ui', 'message-click-client', 'message-click-ui', 'message-click-replace-ui-text', 'click-replace-ui-text', 'drag-client', 'drag-ui', 'wheel-client', 'wheel-ui', 'inspect', 'accept', 'accept-down', 'accept-up', 'tab', 'shift-tab', 'escape', 'resume', 'replace-ui-text', 'custom', 'custom-active', 'custom-stay', 'custom-active-stay', 'custom-stage', 'custom-active-stage', 'toggle-console', 'toggle-console-down', 'toggle-console-up')][string]$Action,
     [string]$Command,
     [string]$SavePath,
     [int]$DelayMilliseconds = 2500,
@@ -136,7 +136,9 @@ if ($Action -in @('accept-up', 'toggle-console-up')) {
 $target = $game.MainWindowHandle
 if ($target -eq 0) { throw 'Transport Fever 2 has no main window' }
 
-for ($attempt = 0; $attempt -lt 20 -and [Tpf2ConsoleInput]::GetForegroundWindow() -ne $target; $attempt++) {
+$requiresForeground = $Action -notin @('message-click-client', 'message-click-ui')
+for ($attempt = 0; $requiresForeground -and $attempt -lt 20 `
+    -and [Tpf2ConsoleInput]::GetForegroundWindow() -ne $target; $attempt++) {
     $foreground = [Tpf2ConsoleInput]::GetForegroundWindow()
     [uint32]$foregroundOwner = 0
     [uint32]$targetOwner = 0
@@ -164,7 +166,9 @@ for ($attempt = 0; $attempt -lt 20 -and [Tpf2ConsoleInput]::GetForegroundWindow(
     [void][Tpf2ConsoleInput]::AttachThreadInput($currentThread, $foregroundThread, $false)
     Start-Sleep -Milliseconds 200
 }
-if ([Tpf2ConsoleInput]::GetForegroundWindow() -ne $target) { throw 'Could not foreground Transport Fever 2' }
+if ($requiresForeground -and [Tpf2ConsoleInput]::GetForegroundWindow() -ne $target) {
+    throw 'Could not foreground Transport Fever 2'
+}
 
 if ($Action -eq 'maximize') {
     # Keep every target control inside the physical desktop before native UI
@@ -181,9 +185,31 @@ if ($Action -eq 'maximize') {
         $receiptDetails.clientHeight = $maximizedRect.bottom - $maximizedRect.top
     }
 }
-elseif ($Action -in @('message-click-client', 'message-click-replace-ui-text')) {
+elseif ($Action -in @('message-click-client', 'message-click-ui', 'message-click-replace-ui-text')) {
     if ($ClientX -lt 0 -or $ClientY -lt 0) {
         throw 'message-click-client requires non-negative ClientX and ClientY'
+    }
+    if ($Action -eq 'message-click-ui') {
+        if ($UiWidth -le 0 -or $UiHeight -le 0) {
+            throw 'message-click-ui requires positive UiWidth and UiHeight'
+        }
+        $clientRect = New-Object Tpf2ConsoleInput+RECT
+        if (-not [Tpf2ConsoleInput]::GetClientRect($target, [ref]$clientRect)) {
+            throw 'Could not read the game client rectangle'
+        }
+        $clientWidth = $clientRect.right - $clientRect.left
+        $clientHeight = $clientRect.bottom - $clientRect.top
+        if ($clientWidth -le 0 -or $clientHeight -le 0) {
+            throw 'The game client rectangle is empty'
+        }
+        $ClientX = [Math]::Max(0, [Math]::Min($clientWidth - 1,
+            [Math]::Round($ClientX * $clientWidth / $UiWidth)))
+        $ClientY = [Math]::Max(0, [Math]::Min($clientHeight - 1,
+            [Math]::Round($ClientY * $clientHeight / $UiHeight)))
+        $receiptDetails.uiWidth = $UiWidth
+        $receiptDetails.uiHeight = $UiHeight
+        $receiptDetails.clientWidth = $clientWidth
+        $receiptDetails.clientHeight = $clientHeight
     }
     # Build 35924 can render in per-monitor physical pixels while receiving
     # DPI-virtualised global cursor coordinates. Post the exact client-space

@@ -5,6 +5,12 @@
 > Hydration now creates a bounded pointer-free copy and fails before the native
 > factory on opaque values. See
 > [Street-terminal typed table-converter crash](STREET_TERMINAL_TYPED_TABLE_CONVERTER_CRASH_2026-08-27.md).
+>
+> Correction, 2026-08-31: relay session `mp-87164966f1cca6a9` disproved the
+> assumption that `buildConstruction` reconstructs a connected street-depot
+> entrance. It placed the depot shell but never satisfied the captured one-edge
+> graph. Connected street depots now use atomic typed exact replay; only isolated
+> street depots retain the helper path.
 
 ## Live failure
 
@@ -41,10 +47,9 @@ terminals.
 
 The same audit found an independent over-broad validation guard: every depot
 snapped to a canonical endpoint was rejected even though the original live
-failure concerned hidden rail-depot track snapping. The guard now remains
-fail-closed for rail depots attached directly to existing track, while stock
-road/tram depots may reconstruct their declared `STREET` snap against the
-synchronized road geometry.
+failure concerned hidden rail-depot track snapping. The validator admits stock
+road/tram depot street endpoints, but replay must preserve them through its
+typed exact graph; the public helper cannot reconstruct that connection.
 
 ## Verification
 

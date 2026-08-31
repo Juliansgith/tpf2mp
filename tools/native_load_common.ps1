@@ -774,6 +774,13 @@ function Invoke-Tpf2mpUiRectangleClick {
         -GameProcessId $GameProcess.Id -Action click-ui -ClientX $x -ClientY $y `
         -UiWidth ([int]$MenuRectangle.w) -UiHeight ([int]$MenuRectangle.h) `
         -DelayMilliseconds 0 -ResultPath $ReceiptPath
+    if ($LASTEXITCODE -ne 0 -and -not (Test-Path -LiteralPath $ReceiptPath -PathType Leaf)) {
+        Write-Warning 'Foreground UI click failed; retrying the same verified rectangle through a background window message.'
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $helper `
+            -GameProcessId $GameProcess.Id -Action message-click-ui -ClientX $x -ClientY $y `
+            -UiWidth ([int]$MenuRectangle.w) -UiHeight ([int]$MenuRectangle.h) `
+            -DelayMilliseconds 0 -ResultPath $ReceiptPath
+    }
     if ($LASTEXITCODE -ne 0) { throw "Native UI click helper exited $LASTEXITCODE" }
     if (-not (Test-Path -LiteralPath $ReceiptPath -PathType Leaf)) {
         throw "Native UI click receipt is missing: $ReceiptPath"

@@ -1,16 +1,17 @@
 local M = {}
+local connectionReplay = require "tpf2_mp/construction_connection_replay"
 
 local function exactBuildShape(record, codec)
   local transaction = record and record.transaction
   local construction = type(transaction) == "table"
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
-  local edgeObjects = type(transaction) == "table"
-    and type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
   return type(transaction) == "table"
     and transaction.schemaVersion == codec.CONSTRUCTION_SCHEMA_VERSION
     and type(construction) == "table" and construction.mode == "build"
-    and construction.kind ~= "depot"
-    and #(edgeObjects.add or {}) == 0 and #(edgeObjects.retain or {}) == 0
+    -- Connected STREET_DEPOT graphs use exact replay; track depots remain on
+    -- their Build 35924 crash-safe helper boundary.
+    and (construction.kind ~= "depot"
+      or connectionReplay.isConnectedStreetDepot(transaction, construction))
     and not codec.isTopologyConstructionRemoval(transaction)
 end
 
@@ -40,9 +41,7 @@ function M.isGuiExact(record)
     or replayPath == "staged-gui-build-proposal"
 end
 
-function M.guiOwns(record)
-  return M.isGuiExact(record)
-end
+function M.guiOwns(record) return M.isGuiExact(record) end
 
 function M.requiresAtomic(record, codec)
   if not M.isExact(record, codec) and not M.isStagedExact(record, codec) then return false end
@@ -50,10 +49,17 @@ function M.requiresAtomic(record, codec)
   local construction = transaction.constructions[1]
   local remove = type(transaction.remove) == "table" and transaction.remove or {}
   local edgeObjects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
-  return #(construction.collateral or {}) > 0
+  -- Transform-only fallback would detach any captured existing-road endpoint,
+  -- independent of the construction's stock/mod resource name.
+  return connectionReplay.hasExistingStreetEndpoint(transaction, construction)
+    or #(construction.collateral or {}) > 0
     or #(remove.edges or {}) > 0 or #(remove.nodes or {}) > 0
+    or #(edgeObjects.add or {}) > 0 or #(edgeObjects.retain or {}) > 0
     or #(edgeObjects.remove or {}) > 0
 end
+
+M.hasExistingStreetEndpoint = connectionReplay.hasExistingStreetEndpoint
+M.isConnectedStreetDepot = connectionReplay.isConnectedStreetDepot
 
 function M.collateralInputs(record)
   local transaction = type(record) == "table" and record.transaction or nil

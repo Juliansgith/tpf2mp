@@ -1859,17 +1859,13 @@ function M.validatePortable(transaction)
   end
   if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
     local construction = transaction.constructions[1]
-    -- Build 35924 may silently snap a rail depot's generated access edge onto
-    -- an existing track node even when the depot was placed before the player
-    -- draws the visible connecting track.  The public buildConstruction helper
-    -- receives only filename/params/transform and cannot reproduce that hidden
-    -- canonical endpoint on another machine.  Reject this shape before native
-    -- mutation instead of accepting two visually plausible but topologically
-    -- different depots. Street depots are different: their declared STREET
-    -- snap node is reconstructed by buildConstruction against the synchronized
-    -- road geometry, so road and tram depots may connect directly to a road.
-    -- An isolated rail depot followed by a separate track build remains
-    -- portable and supported.
+    -- Build 35924's buildConstruction helper receives only
+    -- filename/params/transform, so it cannot reproduce a captured existing
+    -- endpoint for any depot. Connected street depots remain portable because
+    -- replay routes them through the typed exact-graph path; connected rail
+    -- depots stay rejected because typed rail-depot outputs crash the stock
+    -- context helper when selected. An isolated depot followed by a separate
+    -- road/track build remains portable through the selectable helper path.
     if construction.mode == "build" and construction.kind == "depot" then
       for _, edge in ipairs(transaction.edges) do
         local node0, node1 = edge.node0 or {}, edge.node1 or {}

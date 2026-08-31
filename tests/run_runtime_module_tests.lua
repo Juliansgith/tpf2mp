@@ -62,6 +62,9 @@ local guiConstructionReplay = require "tpf2_mp/gui_construction_replay"
 local proposalDerivedStationRuntime = require "tpf2_mp/proposal_derived_station_runtime"
 local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local validationStationProposalModule = require "tpf2_mp/validation_station_proposal"
+local validationRoadDepotProposalModule = require "tpf2_mp/validation_connected_road_depot_proposal"
+local validationRoadDepotRuntimeModule = require "tpf2_mp/validation_connected_road_depot_runtime"
+local validationDepotPurchaseModule = require "tpf2_mp/validation_depot_vehicle_purchase"
 local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
 local economyPublicViewModule = require "tpf2_mp/economy_public_view"
 local financeModule = require "tpf2_mp/finance"
@@ -423,6 +426,164 @@ do
   assert(runtime.maintain("wait-for-connected-terminal-checkpoint") == true and finished == 88,
     "connected-terminal validator did not cross its post-build checkpoint")
   api, game = previousApi, previousGame
+end
+
+do
+  local transaction = assert(validationRoadDepotProposalModule.transaction("company:1"))
+  local tramTransaction = assert(validationRoadDepotProposalModule.transaction("company:1", {
+    fileName = "depot/tram_depot_era_a.con", params = { tramCatenary = 1 },
+  }))
+  assert(#transaction.nodes == 1 and #transaction.edges == 1
+      and transaction.edges[1].node1.cid == "node:pre:410b0cf7"
+      and constructionReplayState.isExact({ transaction = transaction }, proposalCodec)
+      and constructionReplayState.requiresAtomic({ transaction = transaction }, proposalCodec)
+      and tramTransaction.constructions[1].fileName == "depot/tram_depot_era_a.con"
+      and tramTransaction.constructions[1].params.tramCatenary == 1
+      and constructionReplayState.isExact({ transaction = tramTransaction }, proposalCodec)
+      and constructionReplayState.requiresAtomic(
+        { transaction = tramTransaction }, proposalCodec),
+    "connected road/tram-depot fixtures lost their exact atomic replay boundary")
+
+  local fakeApi = {
+    type = {
+      SimpleProposal = {
+        ConstructionEntity = { new = function() return {} end },
+        new = function() return { constructionsToAdd = {}, constructionsToRemove = {},
+          old2new = {}, streetProposal = { nodesToAdd = {}, edgesToAdd = {},
+            nodesToRemove = {}, edgesToRemove = {}, edgeObjectsToAdd = {},
+            edgeObjectsToRemove = {} } } end,
+      },
+      SegmentAndEntity = { new = function() return { comp = {} } end },
+      PlayerOwned = { new = function() return {} end },
+      NodeAndEntity = { new = function() return { comp = {} } end },
+      Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end },
+      Vec4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+      Mat4f = { new = function(a, b, c, d) return { a, b, c, d } end },
+      BaseEdgeStreet = { new = function() return {} end },
+      BaseEdgeTrack = { new = function() return {} end },
+    },
+    res = {
+      streetTypeRep = { find = function() return 29 end },
+      trackTypeRep = { find = function() return 1 end },
+    },
+  }
+  local proposal, materialisation = proposalCodec.materialise(transaction, {
+    api = fakeApi, nativePlayerId = 100,
+    resolveLocal = function(cid) if cid == "node:pre:410b0cf7" then return 700 end end,
+  })
+  assert(proposal and materialisation and #proposal.constructionsToAdd == 1,
+    "connected road depot did not materialise as a typed construction")
+  local tramProposal = assert(proposalCodec.materialise(tramTransaction, {
+    api = fakeApi, nativePlayerId = 100,
+    resolveLocal = function(cid) if cid == "node:pre:410b0cf7" then return 700 end end,
+  }))
+  assert(#tramProposal.constructionsToAdd == 1
+      and tramProposal.constructionsToAdd[1].fileName == "depot/tram_depot_era_a.con"
+      and tramProposal.constructionsToAdd[1].params.tramCatenary == 1,
+    "connected tram depot did not materialise through the generic typed path")
+  local command = assert(guiBuildCommandFactory.make(function()
+    return { proposal = { proposal = {
+      addedNodes = {
+        { entity = -10, comp = { position = { x = 0, y = 0, z = 0 } } },
+        { entity = -12, comp = { position = { x = 1, y = 1, z = 0 } } },
+      },
+      addedSegments = {{ entity = -11, type = 0,
+        comp = { node0 = -10, node1 = -12,
+          tangent0 = { x = 0, y = 1, z = 0 },
+          tangent1 = { x = 0, y = 1, z = 0 }, type = 0, typeIndex = -1 },
+        streetEdge = { streetType = 29 } }},
+      edgeObjectsToAdd = {},
+    } } }
+  end, proposal, transaction, materialisation, function(value, name) return value[name] end))
+  local processed = command.proposal.proposal
+  assert(#processed.addedNodes == 1
+      and processed.addedNodes[1].comp.position.x == transaction.nodes[1].position.x
+      and processed.addedSegments[1].comp.node1 == 700
+      and processed.addedSegments[1].comp.tangent0.y == transaction.edges[1].tangent0.y,
+    "native road-depot graph was not reconciled to its captured road endpoint")
+
+  local transitions, submissions, finished = {}, {}, nil
+  local current = {
+    bridge = { peerId = "player1" }, validation = { values = {} },
+    world = { proposalConsensus = { completed = 5 }, proposals = { byId = {} } },
+  }
+  local runtime = validationRoadDepotRuntimeModule.new({
+    getState = function() return current end,
+    transition = function(stage) transitions[#transitions + 1] = stage end,
+    check = function(name, passed) assert(passed, name) end,
+    submit = function(action) submissions[#submissions + 1] = action; return { local_seq = 91 } end,
+    checkpoint = function(predicate)
+      local record = { proposalId = "depot:1", success = true, boundarySeq = 99 }
+      return predicate(record) and record or nil
+    end,
+    finish = function(boundarySeq) finished = boundarySeq end,
+    afterCheckpoint = function(_, _, boundarySeq) finished = boundarySeq end,
+  })
+  runtime.begin()
+  assert(#submissions == 1 and submissions[1].type == "proposal.prepare"
+      and current.validation.values.connectedRoadDepotConsensusBefore == 5,
+    "road-depot validator did not submit through ordered prepare")
+  local outputs = {
+    { kind = "construction", slot = "construction:1" },
+    { kind = "depot", slot = "depot:1" },
+    { kind = "node", slot = "node:1" }, { kind = "edge", slot = "edge:1" },
+  }
+  current.world.proposalConsensus = {
+    completed = 6, lastOutcome = { success = true, proposalId = "depot:1" },
+  }
+  current.world.proposals.byId["depot:1"] = {
+    result = { constructionReplayPath = "gui-build-proposal", outputs = outputs },
+  }
+  assert(runtime.maintain("wait-for-connected-road-depot-consensus") == true
+      and transitions[2] == "wait-for-connected-road-depot-checkpoint"
+      and runtime.maintain("wait-for-connected-road-depot-checkpoint") == true
+      and finished == 99,
+    "road-depot validator did not prove physical consensus and checkpoint it")
+end
+
+do
+  local transitions, submissions, finished = {}, {}, nil
+  local current = {
+    bridge = { peerId = "player1" }, validation = { values = {} },
+    world = {
+      operationConsensus = { completed = 2, rejected = 1, failed = 0 },
+      operations = { byId = {} },
+    },
+  }
+  local runtime = validationDepotPurchaseModule.new({
+    getState = function() return current end,
+    transition = function(stage) transitions[#transitions + 1] = stage end,
+    check = function(name, passed) assert(passed, name) end,
+    submit = function(action) submissions[#submissions + 1] = action; return { local_seq = 101 } end,
+    checkpoint = function(predicate)
+      local record = { proposalId = "operation:bus:1", success = true, boundarySeq = 102 }
+      return predicate(record) and record or nil
+    end,
+    finish = function(boundarySeq) finished = boundarySeq end,
+    makeTransaction = function(depotCid, companyCid)
+      return { kind = "vehicle.buy", digest = "12345678", companyCid = companyCid,
+        data = { depotCid = depotCid } }
+    end,
+  })
+  runtime.begin("depot:event:1", "company:1")
+  assert(#submissions == 1 and submissions[1].type == "operation.execute"
+      and current.validation.values.depotPurchaseCompletedBefore == 2
+      and current.validation.values.depotPurchaseRejectedBefore == 1,
+    "connected-depot validator did not order the bus purchase")
+  current.world.operationConsensus = {
+    completed = 3, rejected = 1, failed = 0,
+    lastOutcome = { success = true, operationId = "operation:bus:1" },
+  }
+  current.world.operations.byId["operation:bus:1"] = {
+    result = { outputs = {{ kind = "vehicle", slot = "vehicle:1",
+      cid = "vehicle:event:1" }} },
+  }
+  assert(runtime.maintain("wait-for-connected-road-depot-bus-consensus") == true
+      and transitions[2] == "wait-for-connected-road-depot-bus-checkpoint"
+      and current.validation.values.depotPurchaseVehicleCid == "vehicle:event:1"
+      and runtime.maintain("wait-for-connected-road-depot-bus-checkpoint") == true
+      and finished == 102,
+    "connected-depot validator did not prove and checkpoint its bus purchase")
 end
 
 do
@@ -1035,6 +1196,15 @@ do
   local depotRecord = { transaction = util.deepCopy(transaction) }
   depotRecord.transaction.constructions[1].kind = "depot"
   depotRecord.transaction.constructions[1].fileName = "depot/train_depot_era_a.con"
+  local connectedStreetDepotRecord = { transaction = util.deepCopy(depotRecord.transaction) }
+  connectedStreetDepotRecord.transaction.edges = {
+    {
+      carrier = "street",
+      node0 = { slot = "node:1" },
+      node1 = { cid = "node:pre:road" },
+      resource = { index = 29, name = "street_depot/entrance_old.lua" },
+    },
+  }
   assert(not constructionReplayState.isExact(upgradeRecord, proposalCodec)
       and not constructionReplayState.isExact(removeRecord, proposalCodec)
       and not constructionReplayState.isExact(collateralRecord, proposalCodec)
@@ -1042,7 +1212,9 @@ do
       and constructionReplayState.requiresAtomic(collateralRecord, proposalCodec)
       and not constructionReplayState.requiresAtomic(record, proposalCodec)
       and #collateralInputs == 1 and collateralInputs[1].localId == 71
-      and not constructionReplayState.isExact(depotRecord, proposalCodec),
+      and not constructionReplayState.isExact(depotRecord, proposalCodec)
+      and constructionReplayState.isExact(connectedStreetDepotRecord, proposalCodec)
+      and constructionReplayState.requiresAtomic(connectedStreetDepotRecord, proposalCodec),
     "construction replay routing lost its typed/helper safety boundaries")
 
   local stagedPending = {

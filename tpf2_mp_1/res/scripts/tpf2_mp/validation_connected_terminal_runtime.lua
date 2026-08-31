@@ -25,6 +25,8 @@ function M.new(deps)
     local state = getState()
     state.validation.values.connectedTerminalConsensusBefore =
       state.world.proposalConsensus.completed or 0
+    state.validation.values.connectedTerminalFailuresBefore =
+      state.world.proposalConsensus.failed or 0
     if state.bridge.peerId == "player1" then
       local transaction, transactionError = connectedTerminal.transaction("company:1")
       check("connected-terminal-transaction-valid", transaction ~= nil, {
@@ -41,8 +43,10 @@ function M.new(deps)
     local state = getState()
     if stage == "wait-for-connected-terminal-consensus" then
       local before = state.validation.values.connectedTerminalConsensusBefore or 0
+      local failuresBefore = state.validation.values.connectedTerminalFailuresBefore or 0
       local consensus = state.world.proposalConsensus
-      if (consensus.completed or 0) <= before then return true end
+      if (consensus.completed or 0) <= before
+        and (consensus.failed or 0) <= failuresBefore then return true end
       local outcome = consensus.lastOutcome
       local record = outcome and state.world.proposals.byId[outcome.proposalId] or nil
       local result = record and record.result or nil
