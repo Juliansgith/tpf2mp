@@ -243,13 +243,16 @@ function M.new(deps)
         end
         local issuerBalanceBefore = balanceOf(issuerPlayerId)
         local nativeOwnerBalanceBefore = balanceOf(nativePlayerId)
-        local proposal, materialisation = proposalCodec.materialise(record.transaction,
-          constructionReplay.materialiseOptions(record, localRefs, nativePlayerId))
+        local proposal, replayMaterialisation = constructionReplay.materialise(
+          record, localRefs, nativePlayerId, api)
         if not proposal then
-          constructionReplay.rejectOrFallback(record, proposalId, materialisation,
+          constructionReplay.rejectOrFallback(record, proposalId, replayMaterialisation,
             queueGuiProposalResult, rejectGuiProposal)
           return true
         end
+        local proposalTransaction = replayMaterialisation.transaction
+        local materialisation = replayMaterialisation.materialisation
+        local helperConnection = constructionReplay.isHelperConnection(record)
         local factory = util.commandFactory("buildProposal")
         if not (factory and api and api.cmd and type(api.cmd.sendCommand) == "function") then
           rejectGuiProposal(proposalId, "GUI BuildProposal API is unavailable", true)
@@ -257,7 +260,8 @@ function M.new(deps)
         end
         local types = api.type and api.type.ComponentType or {}
         local exactConstruction = constructionReplay.isExact(record)
-        local captureEntityDelta = exactConstruction or derivedStation.requiresCapture(record.transaction, state.canonical)
+        local captureEntityDelta = exactConstruction
+          or derivedStation.requiresCapture(proposalTransaction, state.canonical)
         local beforeWorld, worldCaptureError = proposalWorld.capture(
           types, issuerPlayerId, nativePlayerId, captureEntityDelta)
         if not beforeWorld then
@@ -267,7 +271,7 @@ function M.new(deps)
         local beforeEdges = beforeWorld.sets.edges
         local beforeNodes = beforeWorld.sets.nodes
         local commandOrError, commandError = buildCommandFactory.make(
-          factory, proposal, record.transaction, materialisation, safeField)
+          factory, proposal, proposalTransaction, materialisation, safeField)
         if not commandOrError then rejectGuiProposal(proposalId, commandError, true); return true end
         if state.networkMode == "network" then
           local authorize = rawget(_G, "tpf2mp_native_authorize_build")
@@ -314,6 +318,8 @@ function M.new(deps)
               beforeWorld = beforeWorld,
               exactConstruction = exactConstruction,
               captureEntityDelta = captureEntityDelta,
+              repairExpectedNodes = replayMaterialisation.expectedNodes,
+              repairExpectedEdges = replayMaterialisation.expectedEdges,
               requireBalanceMutation = exactConstruction
                 and util.integer(record.transaction.cost, 0) ~= 0,
               -- Build 35924 exposes the new topology in the callback before its
@@ -323,7 +329,7 @@ function M.new(deps)
               -- been observed more than 45 GUI frames after topology success.
               -- A short "stable" window before that debit is a false zero, so
               -- do not begin settlement sampling until a conservative delay.
-              minimumFrame = gui.frames + (exactConstruction and 1 or 90),
+              minimumFrame = gui.frames + ((exactConstruction or helperConnection) and 1 or 90),
               canonicalFinanceFallbackFrame = state.networkMode == "network"
                 and (gui.frames + proposalResultCapture.NETWORK_FINANCE_GRACE_FRAMES) or nil,
               maximumFrame = gui.frames + proposalResultCapture.HARD_DEADLINE_FRAMES,

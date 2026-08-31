@@ -1862,10 +1862,11 @@ function M.validatePortable(transaction)
     -- Build 35924's buildConstruction helper receives only
     -- filename/params/transform, so it cannot reproduce a captured existing
     -- endpoint for any depot. Connected street depots remain portable because
-    -- replay routes them through the typed exact-graph path; connected rail
-    -- depots stay rejected because typed rail-depot outputs crash the stock
-    -- context helper when selected. An isolated depot followed by a separate
-    -- road/track build remains portable through the selectable helper path.
+    -- replay first creates a stock-helper-safe root, then appends the captured
+    -- connection as a second topology-only proposal. Connected rail depots
+    -- stay rejected because typed rail-depot outputs crash the stock context
+    -- helper when selected. An isolated depot followed by a separate road or
+    -- track build remains portable through the selectable helper path.
     if construction.mode == "build" and construction.kind == "depot" then
       for _, edge in ipairs(transaction.edges) do
         local node0, node1 = edge.node0 or {}, edge.node1 or {}
@@ -2168,6 +2169,10 @@ function M.materialise(transaction, options)
         nodes = #exactTopology.nodes, edges = #exactTopology.edges,
         edgeObjects = #exactTopology.objects, typed = exactTopology,
       }
+      -- Construction expansion happens inside api.cmd.make.buildProposal and
+      -- Build 35924 substitutes the command issuer for this value. Carry the
+      -- intended peer-local representative into the post-expansion exact pass.
+      exactTopology.nativePlayerId = integer(options.nativePlayerId)
     end
   end
   return proposal, {

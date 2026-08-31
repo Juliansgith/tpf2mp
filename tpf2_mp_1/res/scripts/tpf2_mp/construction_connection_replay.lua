@@ -30,10 +30,11 @@ local function streetOnly(transaction)
   return true
 end
 
--- Typed exact replay is safe for the stock STREET_DEPOT family (road and
--- tram). Any depot graph containing track remains on the separately guarded
--- path because Build 35924's stock rail-depot selection UI crashes on typed
--- rail-depot output.
+-- A connected street depot needs two native stages. Its construction root
+-- must come from buildConstruction (typed depot roots crash Build 35924's
+-- stock context helper), while its captured connection graph cannot be
+-- reproduced by that transform-only helper. The repair stage is deliberately
+-- classified from graph shape rather than a stock/mod filename allowlist.
 function M.isConnectedStreetDepot(transaction, construction)
   return type(construction) == "table" and construction.kind == "depot"
     and streetOnly(transaction)

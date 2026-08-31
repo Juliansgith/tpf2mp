@@ -7,11 +7,12 @@ local function completeOutputs(outputs)
   local wanted = {
     ["construction:construction:1"] = true, ["depot:depot:1"] = true,
     ["edge:edge:1"] = true, ["node:node:1"] = true,
+    ["edge:edge:helper:1"] = true,
   }
   for _, item in ipairs(outputs or {}) do
     wanted[tostring(item.kind) .. ":" .. tostring(item.slot)] = nil
   end
-  return #(outputs or {}) == 4 and next(wanted) == nil
+  return #(outputs or {}) == 5 and next(wanted) == nil
 end
 
 function M.new(deps)
@@ -61,8 +62,8 @@ function M.new(deps)
       local result = record and record.result or nil
       check(checkPrefix .. "-physical-consensus",
         outcome and outcome.success == true, outcome)
-      check(checkPrefix .. "-used-exact-replay", result
-        and result.constructionReplayPath == "gui-build-proposal", result)
+      check(checkPrefix .. "-used-selectable-helper-repair", result
+        and result.constructionReplayPath == "helper-connected-depot", result)
       check(checkPrefix .. "-created-complete-graph",
         result and completeOutputs(result.outputs), result)
       for _, output in ipairs(result and result.outputs or {}) do

@@ -42,6 +42,8 @@ function M.sample(pending, frame, deps)
   return {
     proposalId = pending.proposalId, success = true,
     createdEdgeIds = pending.createdEdgeIds, createdNodeIds = pending.createdNodeIds,
+    repairExpectedEdges = pending.repairExpectedEdges,
+    repairExpectedNodes = pending.repairExpectedNodes,
     issuerBalanceBefore = pending.issuerBalanceBefore, issuerBalanceAfter = issuerBalance,
     nativeOwnerBalanceBefore = pending.nativeOwnerBalanceBefore,
     nativeOwnerBalanceAfter = nativeOwnerBalance, constructionDelta = constructionDelta,

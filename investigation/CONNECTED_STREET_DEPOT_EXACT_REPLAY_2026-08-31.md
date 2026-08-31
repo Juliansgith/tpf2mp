@@ -2,9 +2,14 @@
 
 Date: 2026-08-31 (Europe/Amsterdam)
 
-Status: fixed and proven in two disposable Build 35924 game processes using
-the exact populated save and proposal recovered from relay session
-`mp-87164966f1cca6a9`.
+Status: superseded for depot roots by
+[SELECTABLE_CONNECTED_DEPOT_HELPER_REPAIR_2026-08-31.md](SELECTABLE_CONNECTED_DEPOT_HELPER_REPAIR_2026-08-31.md).
+The physical connection and purchase proof below was valid, but automation did
+not open the resulting stock depot window. Relay session
+`mp-2002d7bf8175d520` later proved that a typed depot root is not selection-safe
+and that its native owner can be rewritten to the command issuer on each peer.
+The replacement retains exact connection semantics without creating a typed
+depot root.
 
 The follow-up universalization, including electrified tram-depot and modular
 street-terminal native proof, is documented in

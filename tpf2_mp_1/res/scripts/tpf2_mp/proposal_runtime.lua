@@ -1,4 +1,7 @@
 local util = require "tpf2_mp/util"
+local constructionTopologyCandidates = require "tpf2_mp/construction_topology_candidates"
+local depotConnectionRepair = require "tpf2_mp/construction_depot_connection_repair"
+local depotAuxiliaryBinding = require "tpf2_mp/construction_depot_auxiliary_binding"
 local hash = require "tpf2_mp/hash"
 local canonical = require "tpf2_mp/canonical"
 local bridge = require "tpf2_mp/bridge"
@@ -7,7 +10,7 @@ local world = require "tpf2_mp/world"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalCollateralRuntime = require "tpf2_mp/proposal_collateral_runtime"
 local proposalBindingRuntime = require "tpf2_mp/proposal_binding_runtime"
-local edgeOwnership = require "tpf2_mp/edge_ownership"
+local edgeOwnerRepair = require "tpf2_mp/edge_owner_repair_runtime"
 local networkFinanceHousekeepingModule = require "tpf2_mp/network_finance_housekeeping"
 local resourceCompatibility = require "tpf2_mp/resource_compatibility"
 local activeRecordIndex = require "tpf2_mp/active_record_index"
@@ -681,6 +684,7 @@ function M.new(deps)
     if record.status == "applied" then return true, util.deepCopy(record.result) end
     if record.status == "failed" then return false, util.deepCopy(record.result) end
     local exactConstruction = constructionReplayState.isGuiExact(record)
+    local helperConnection = record.replayPath == "helper-depot-connection"
     local stagedExactConstruction = record.replayPath == "staged-gui-build-proposal"
     if exactConstruction and payload.fallbackHelper == true and payload.worldUnchanged == true then
       if constructionReplayState.requiresAtomic(record, proposalCodec) then
@@ -704,8 +708,13 @@ function M.new(deps)
         -- staged construction has already demolished collateral and cannot
         -- make that claim even if its second-stage command was unchanged.
         rollbackLazyBindings = payload.worldUnchanged == true
-          and not stagedExactConstruction,
+          and not stagedExactConstruction and not helperConnection,
       })
+    end
+    if helperConnection then
+      local accepted, acceptError = depotConnectionRepair.accept(record, payload, state.tick)
+      if not accepted then return proposalFailure(record, acceptError) end
+      return finaliseCanonicalConstruction(record)
     end
     if exactConstruction then
       local accepted, acceptError = constructionReplayState.accept(
@@ -757,55 +766,11 @@ function M.new(deps)
     for _, edge in ipairs(transaction.edges) do
       if edge.private then
         local localId = matched.edges[edge.slot]
-        local observedOwner = world.ownerOf(localId)
-        if tonumber(observedOwner) ~= tonumber(record.nativeOwnerPlayerId) then
-          if observedOwner ~= nil and tonumber(observedOwner) ~= -1 then
-            return proposalFailure(record, {
-              error = "private proposal edge was created under an unexpected rival owner",
-              slot = edge.slot,
-              observedOwner = observedOwner,
-              expectedOwner = record.nativeOwnerPlayerId,
-            })
-          end
-          local beforeEdges, captureError = edgeOwnership.captureBaseEdges()
-          if not beforeEdges then return proposalFailure(record, tostring(captureError)) end
-          local ownershipProposal, ownershipError = edgeOwnership.makeProposal(localId, record.nativeOwnerPlayerId)
-          if not ownershipProposal then return proposalFailure(record, tostring(ownershipError)) end
-          local factory = util.commandFactory("buildProposal")
-          if not (factory and api and api.cmd and type(api.cmd.sendCommand) == "function") then
-            return proposalFailure(record, "ownership replacement BuildProposal API is unavailable")
-          end
-          if state.networkMode == "network" then
-            local authorize = rawget(_G, "tpf2mp_native_authorize_build")
-            if type(authorize) ~= "function" then
-              return proposalFailure(record, "ownership replacement requires native authorization")
-            end
-            local called, authorized, authorizeError = pcall(authorize)
-            if not called or authorized == false then
-              return proposalFailure(record, tostring(authorizeError or authorized))
-            end
-          end
-          local commandOk, commandOrError = pcall(factory, ownershipProposal, nil, false)
-          if not commandOk then return proposalFailure(record, tostring(commandOrError)) end
-          local callbackCalled, replacementSuccess, replacementResult = false, false, nil
-          local sent, sendError = util.sendCommand(commandOrError, function(result, success)
-            callbackCalled, replacementSuccess, replacementResult = true, success == true, result
-          end, "mod.proposal.rebind-edge-owner")
-          if not sent then return proposalFailure(record, tostring(sendError)) end
-          if not callbackCalled then return proposalFailure(record, "ownership replacement callback was not synchronous") end
-          if not replacementSuccess then return proposalFailure(record, "ownership replacement BuildProposal was rejected") end
-          local replacementId, candidates, replacementError = edgeOwnership.findReplacement(
-            beforeEdges, localId, replacementResult, record.nativeOwnerPlayerId
-          )
-          if not replacementId then
-            return proposalFailure(record, {
-              error = tostring(replacementError),
-              slot = edge.slot,
-              candidates = candidates,
-            })
-          end
-          matched.edges[edge.slot] = replacementId
-        end
+        local replacementId, replacementError = edgeOwnerRepair.ensure(
+          localId, record.nativeOwnerPlayerId,
+          { api = api, networkMode = state.networkMode, ownerOf = world.ownerOf })
+        if not replacementId then return proposalFailure(record, replacementError) end
+        matched.edges[edge.slot] = replacementId
       end
     end
     local finalEdgeIds = {}
@@ -1088,34 +1053,8 @@ function M.new(deps)
     }
   end
   
-  function proposalPreparation.construction.topologyCandidates(kind, record, added, after)
-    local values, seen = {}, {}
-    local function add(localId)
-      localId = tonumber(localId)
-      if localId and not seen[localId] then seen[localId] = true; values[#values + 1] = localId end
-    end
-    for _, localId in ipairs(added[kind] or {}) do add(localId) end
-    for _, input in ipairs(record.localInputs or {}) do
-      if input.kind == kind and after[kind] and after[kind][tonumber(input.localId)] then add(input.localId) end
-    end
-    table.sort(values)
-    return values
-  end
-  
-  function proposalPreparation.construction.unexpectedTopologyRemoval(record, removed)
-    local expected = { node = {}, edge = {}, edge_object = {} }
-    for _, input in ipairs(record.localInputs or {}) do
-      if expected[input.kind] then expected[input.kind][tonumber(input.localId)] = true end
-    end
-    for kind, values in pairs(expected) do
-      for _, localId in ipairs(removed[kind] or {}) do
-        if not values[tonumber(localId)] then
-          return kind .. " " .. tostring(localId) .. " was removed without a canonical input"
-        end
-      end
-    end
-    return nil
-  end
+  proposalPreparation.construction.topologyCandidates = constructionTopologyCandidates.collect
+  proposalPreparation.construction.unexpectedTopologyRemoval = constructionTopologyCandidates.unexpectedRemoval
 
   function proposalPreparation.construction.reconcileChangedOutputs(record, bound, added, removed, pending)
     if pending.spec.mode ~= "upgrade" then
@@ -1249,9 +1188,27 @@ function M.new(deps)
       and #(added[rootKind] or {}) == 1 then
       pending.rootEntity = added[rootKind][1]
     end
-    local expectedNodes, expectedEdges = #(record.transaction.nodes or {}), #(record.transaction.edges or {})
+    local expectedNodes, expectedEdges = #(record.transaction.nodes or {}), #(record.transaction.edges or {}); expectedNodes, expectedEdges = depotConnectionRepair.expectedCounts(record, proposalCodec, expectedNodes, expectedEdges)
     local candidateNodes = proposalPreparation.construction.topologyCandidates("node", record, added, after)
-    local candidateEdges = proposalPreparation.construction.topologyCandidates("edge", record, added, after)
+    local candidateEdges = proposalPreparation.construction.topologyCandidates("edge", record, added, after); candidateNodes, candidateEdges = depotConnectionRepair.canonicalCandidates(record, candidateNodes, candidateEdges)
+    local depotHandled, depotProgress, depotError =
+      depotConnectionRepair.advance(record, pending, {
+        candidateNodes = added.node or {}, candidateEdges = added.edge or {},
+        counts = counts, removedCounts = removedCounts,
+        signature = signature, tick = state.tick,
+        stableTicks = CONSTRUCTION_STABLE_TICKS,
+        pendingRescanTicks = CONSTRUCTION_PENDING_RESCAN_TICKS,
+        rootReady = pending.rootEntity ~= nil
+          and rootSet[pending.rootEntity] == true
+          and beforeRootSet[pending.rootEntity] ~= true,
+        inspectNodes = inspectCreatedNodes, inspectEdges = inspectCreatedEdges,
+        proposals = state.world.proposals,
+      })
+    if depotHandled then
+      if not depotProgress then return proposalFailure(record, depotError) end
+      if depotProgress.stagedDepotConnection then constructionWork.invalidate() end
+      return true, depotProgress
+    end
     local ready = #candidateNodes == expectedNodes and #candidateEdges == expectedEdges
     local upgradeChanged = true
     local pendingRemovalInputs, pendingRemovalKinds =
@@ -1339,31 +1296,28 @@ function M.new(deps)
       unmatchedNodes = {}, unmatchedEdges = {}, unmatchedEdgeObjects = {} }
     if mode ~= "remove" then
       local matchError
-      matched, matchError = proposalCodec.matchCreated(
-        record.transaction,
-        inspectCreatedNodes(candidateNodes),
-        inspectCreatedEdges(candidateEdges),
-        0.5,
-        function(cid)
-          local localId = canonical.resolveLocal(state.canonical, cid)
-          return localId and nodePosition(localId) or nil
-        end,
-        function(cid) return canonical.resolveLocal(state.canonical, cid) end
-      )
+      local function resolvePosition(cid)
+        local localId = canonical.resolveLocal(state.canonical, cid); return localId and nodePosition(localId) or nil
+      end; local function resolveLocal(cid) return canonical.resolveLocal(state.canonical, cid) end
+      local matchDeps = { inspectNodes = inspectCreatedNodes, inspectEdges = inspectCreatedEdges, resolvePosition = resolvePosition, resolveLocal = resolveLocal }
+      if record.replayPath == "helper-connected-depot" then
+        matched, matchError = depotConnectionRepair.match(record, proposalCodec, candidateNodes, candidateEdges, matchDeps)
+      else
+        matched, matchError = proposalCodec.matchCreated(
+          record.transaction, inspectCreatedNodes(candidateNodes), inspectCreatedEdges(candidateEdges),
+          0.5, resolvePosition, resolveLocal)
+      end
       if not matched or #matched.unmatchedNodes > 0 or #matched.unmatchedEdges > 0
         or #matched.unmatchedEdgeObjects > 0 then
         return proposalFailure(record, tostring(matchError or "construction created unexpected topology"))
       end
       for _, edge in ipairs(record.transaction.edges) do
         if edge.private then
-          local observedOwner = world.ownerOf(matched.edges[edge.slot])
-          if tonumber(observedOwner) ~= tonumber(record.nativeOwnerPlayerId) then
-            return proposalFailure(record, {
-              error = "construction track/street was created under an unexpected owner",
-              slot = edge.slot, observedOwner = observedOwner,
-              expectedOwner = record.nativeOwnerPlayerId,
-            })
-          end
+          local replacementId, replacementError = edgeOwnerRepair.ensure(
+            matched.edges[edge.slot], record.nativeOwnerPlayerId,
+            { api = api, networkMode = state.networkMode, ownerOf = world.ownerOf })
+          if not replacementId then return proposalFailure(record, replacementError) end
+          matched.edges[edge.slot] = replacementId
         end
       end
     end
@@ -1384,6 +1338,10 @@ function M.new(deps)
         for _, item in ipairs(preservedBound) do graphBound[#graphBound + 1] = item end
         bound = graphBound
         bound, bindError = bindConstructionOutputs(record, bound, mutableAdded, pending)
+        if bound and not bindError then
+          bound, bindError = depotAuxiliaryBinding.apply(
+            state, record, bound, world.ownerOf)
+        end
       end
     end
     if bindError then

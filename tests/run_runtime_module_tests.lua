@@ -58,6 +58,8 @@ local guiProposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
 local constructionOutputOrder = require "tpf2_mp/construction_output_order"
 local constructionProposalMaterializer = require "tpf2_mp/construction_proposal_materializer"
 local constructionReplayState = require "tpf2_mp/construction_replay_state"
+local depotConnectionRepair = require "tpf2_mp/construction_depot_connection_repair"
+local depotAuxiliaryBinding = require "tpf2_mp/construction_depot_auxiliary_binding"
 local guiConstructionReplay = require "tpf2_mp/gui_construction_replay"
 local proposalDerivedStationRuntime = require "tpf2_mp/proposal_derived_station_runtime"
 local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
@@ -435,14 +437,16 @@ do
   }))
   assert(#transaction.nodes == 1 and #transaction.edges == 1
       and transaction.edges[1].node1.cid == "node:pre:410b0cf7"
-      and constructionReplayState.isExact({ transaction = transaction }, proposalCodec)
+      and not constructionReplayState.isExact({ transaction = transaction }, proposalCodec)
+      and depotConnectionRepair.isRepairable({ transaction = transaction })
       and constructionReplayState.requiresAtomic({ transaction = transaction }, proposalCodec)
       and tramTransaction.constructions[1].fileName == "depot/tram_depot_era_a.con"
       and tramTransaction.constructions[1].params.tramCatenary == 1
-      and constructionReplayState.isExact({ transaction = tramTransaction }, proposalCodec)
+      and not constructionReplayState.isExact({ transaction = tramTransaction }, proposalCodec)
+      and depotConnectionRepair.isRepairable({ transaction = tramTransaction })
       and constructionReplayState.requiresAtomic(
         { transaction = tramTransaction }, proposalCodec),
-    "connected road/tram-depot fixtures lost their exact atomic replay boundary")
+    "connected road/tram-depot fixtures lost their helper-repair atomic boundary")
 
   local fakeApi = {
     type = {
@@ -472,7 +476,7 @@ do
     resolveLocal = function(cid) if cid == "node:pre:410b0cf7" then return 700 end end,
   })
   assert(proposal and materialisation and #proposal.constructionsToAdd == 1,
-    "connected road depot did not materialise as a typed construction")
+    "connected road-depot codec fixture lost its typed construction payload")
   local tramProposal = assert(proposalCodec.materialise(tramTransaction, {
     api = fakeApi, nativePlayerId = 100,
     resolveLocal = function(cid) if cid == "node:pre:410b0cf7" then return 700 end end,
@@ -480,7 +484,7 @@ do
   assert(#tramProposal.constructionsToAdd == 1
       and tramProposal.constructionsToAdd[1].fileName == "depot/tram_depot_era_a.con"
       and tramProposal.constructionsToAdd[1].params.tramCatenary == 1,
-    "connected tram depot did not materialise through the generic typed path")
+    "connected tram-depot codec fixture lost its portable resource payload")
   local command = assert(guiBuildCommandFactory.make(function()
     return { proposal = { proposal = {
       addedNodes = {
@@ -493,14 +497,99 @@ do
           tangent1 = { x = 0, y = 1, z = 0 }, type = 0, typeIndex = -1 },
         streetEdge = { streetType = 29 } }},
       edgeObjectsToAdd = {},
-    } } }
+    }, toAdd = { { playerEntity = 101 } } } }
   end, proposal, transaction, materialisation, function(value, name) return value[name] end))
   local processed = command.proposal.proposal
   assert(#processed.addedNodes == 1
       and processed.addedNodes[1].comp.position.x == transaction.nodes[1].position.x
       and processed.addedSegments[1].comp.node1 == 700
-      and processed.addedSegments[1].comp.tangent0.y == transaction.edges[1].tangent0.y,
-    "native road-depot graph was not reconciled to its captured road endpoint")
+      and processed.addedSegments[1].comp.tangent0.y == transaction.edges[1].tangent0.y
+      and processed.addedSegments[1].playerOwned.player == 100
+      and command.proposal.toAdd[1].playerEntity == 100,
+    "native road-depot graph or ownership was not reconciled to its canonical capture")
+
+  local repairRecord = {
+    proposalId = "depot:repair", transaction = util.deepCopy(transaction),
+    nativeOwnerPlayerId = 100,
+    localRefs = { ["node:pre:410b0cf7"] = 700 },
+    constructionPending = { phase = "settling-build", deadlineTick = 30 },
+  }
+  local repairDeps = {
+    candidateNodes = { 801, 802 }, candidateEdges = { 803 },
+    counts = { construction = 1, depot = 1, edge_object = 0 },
+    removedCounts = {}, signature = "helper:801:802:803", tick = 10,
+    stableTicks = 2, pendingRescanTicks = 1, rootReady = true,
+    inspectNodes = function()
+      return {
+        { localId = 801, position = util.deepCopy(transaction.nodes[1].position) },
+        { localId = 802, position = { x = -1080, y = -1040, z = 8.6015548706055 } },
+      }
+    end,
+    inspectEdges = function()
+      return {{ localId = 803, carrier = "street",
+        node0Position = util.deepCopy(transaction.nodes[1].position),
+        node1Position = { x = -1080, y = -1040, z = 8.6015548706055 } }}
+    end,
+    proposals = { queued = 1 },
+  }
+  local handled, waiting = depotConnectionRepair.advance(
+    repairRecord, repairRecord.constructionPending, repairDeps)
+  assert(handled and waiting.waiting and repairRecord.status == nil,
+    "helper depot repair did not require a stable native graph")
+  repairDeps.tick = 12
+  local staged = assert(select(2, depotConnectionRepair.advance(
+    repairRecord, repairRecord.constructionPending, repairDeps)))
+  assert(staged.stagedDepotConnection and repairRecord.status == "queued"
+      and repairRecord.replayPath == "helper-depot-connection"
+      and repairDeps.proposals.queued == 2,
+    "safe helper depot root did not enter topology-only GUI repair")
+  local repairProposal, repairMetadata = assert(
+    depotConnectionRepair.materialise(repairRecord, proposalCodec, fakeApi))
+  assert(repairMetadata.transaction.schemaVersion == proposalCodec.SCHEMA_VERSION
+      and #repairMetadata.transaction.nodes == 0
+      and repairProposal.streetProposal.edgesToAdd[1].comp.node0 == 802
+      and repairProposal.streetProposal.edgesToAdd[1].comp.node1 == 700
+      and math.abs(repairProposal.streetProposal.edgesToAdd[1].comp.tangent0.x
+        - repairProposal.streetProposal.edgesToAdd[1].comp.tangent1.x) < 0.001
+      and #repairProposal.streetProposal.edgesToRemove == 0
+      and #repairProposal.streetProposal.nodesToRemove == 0,
+    "depot repair did not retain the complete helper entrance while appending its connection")
+  local repairAccepted = assert(depotConnectionRepair.accept(repairRecord, {
+    createdNodeIds = {}, createdEdgeIds = { 900 },
+    repairExpectedNodes = 0, repairExpectedEdges = 1,
+  }, 13))
+  assert(repairAccepted.helperDepotConnection
+      and repairRecord.status == "building-construction"
+      and repairRecord.replayPath == "helper-connected-depot",
+    "depot repair result did not return to full canonical verification")
+  local canonicalNodes, canonicalEdges = depotConnectionRepair.canonicalCandidates(
+    repairRecord, { 801, 802 }, { 803, 900 })
+  assert(#canonicalNodes == 0
+      and #canonicalEdges == 1 and canonicalEdges[1] == 900,
+    "depot repair exposed its engine-owned helper entrance to canonical matching")
+
+  local auxiliaryState = {
+    canonical = canonicalModule.newState(),
+    companies = { ["company:1"] = { playerId = 100 } },
+    world = { logicalOwners = {}, pinnedCustody = {} },
+  }
+  repairRecord.eventId = "depot-helper-test:player1:13"
+  repairRecord.companyCid = "company:1"
+  local auxiliary = assert(depotAuxiliaryBinding.apply(
+    auxiliaryState, repairRecord, {}, function() return 100 end))
+  assert(#auxiliary == 1 and auxiliary[1].kind == "edge"
+      and auxiliary[1].slot == "edge:helper:1"
+      and canonicalModule.resolveCanonical(auxiliaryState.canonical, "edge", 803)
+        == auxiliary[1].cid
+      and auxiliaryState.world.logicalOwners["803"] == "company:1"
+      and auxiliaryState.world.pinnedCustody["803"].nativePlayerId == 100,
+    "helper depot entrance edge was not journaled as a private derived output")
+  local revision = auxiliaryState.canonical.revisions
+  local rediscovered = worldModule.bindExisting(auxiliaryState.canonical, 803,
+    "edge", { name = "late structural probe" }, "74991209")
+  assert(rediscovered == auxiliary[1].cid
+      and auxiliaryState.canonical.revisions == revision,
+    "structural discovery could rebind a checkpointed helper entrance edge")
 
   local transitions, submissions, finished = {}, {}, nil
   local current = {
@@ -527,12 +616,13 @@ do
     { kind = "construction", slot = "construction:1" },
     { kind = "depot", slot = "depot:1" },
     { kind = "node", slot = "node:1" }, { kind = "edge", slot = "edge:1" },
+    { kind = "edge", slot = "edge:helper:1" },
   }
   current.world.proposalConsensus = {
     completed = 6, lastOutcome = { success = true, proposalId = "depot:1" },
   }
   current.world.proposals.byId["depot:1"] = {
-    result = { constructionReplayPath = "gui-build-proposal", outputs = outputs },
+    result = { constructionReplayPath = "helper-connected-depot", outputs = outputs },
   }
   assert(runtime.maintain("wait-for-connected-road-depot-consensus") == true
       and transitions[2] == "wait-for-connected-road-depot-checkpoint"
@@ -1090,12 +1180,15 @@ do
         tangent0 = { 0, path[3], 0 }, tangent1 = { 0, path[3], 0 },
         type = 0, typeIndex = -1,
       },
-      trackEdge = { trackType = 1, catenary = false }, playerOwned = { player = 7 },
+      -- Reproduce Build 35924's construction expansion: it substitutes the
+      -- locally controlled command issuer (8) for canonical Company 1 (7).
+      trackEdge = { trackType = 1, catenary = false }, playerOwned = { player = 8 },
     }
   end
   local stationCommand = assert(guiBuildCommandFactory.make(function()
     return { proposal = { proposal = { addedNodes = generatedNodes,
-      addedSegments = generatedEdges, edgeObjectsToAdd = {} }, toRemove = {} } }
+      addedSegments = generatedEdges, edgeObjectsToAdd = {} },
+      toAdd = { { playerEntity = 8 } }, toRemove = {} } }
   end, stationProposal, stationTransaction, stationMetadata,
     function(value, name) return value[name] end))
   assert(stationMetadata.nativeGeneratedTopology == true
@@ -1104,9 +1197,12 @@ do
       and #stationCommand.proposal.proposal.addedSegments == 12
       and stationCommand.proposal.proposal.addedNodes[1].entity == -101
       and stationCommand.proposal.proposal.addedSegments[1].entity == -201
+      and stationCommand.proposal.toAdd[1].playerEntity == 7
+      and stationCommand.proposal.proposal.addedSegments[1].playerOwned.player == 7
       and stationMetadata.construction.exactTopology.processed.generated.nodes == 13
-      and stationMetadata.construction.exactTopology.processed.appended.edges == 0,
-    "typed construction replay did not reconcile native-generated station topology exactly")
+      and stationMetadata.construction.exactTopology.processed.appended.edges == 0
+      and stationMetadata.construction.exactTopology.processed.nativePlayerId == 7,
+    "typed construction replay did not reconcile native-generated topology and ownership exactly")
 
   local upgradeProposal = fakeApi.type.SimpleProposal.new()
   local applied = assert(constructionProposalMaterializer.apply(upgradeProposal, {
@@ -1197,6 +1293,9 @@ do
   depotRecord.transaction.constructions[1].kind = "depot"
   depotRecord.transaction.constructions[1].fileName = "depot/train_depot_era_a.con"
   local connectedStreetDepotRecord = { transaction = util.deepCopy(depotRecord.transaction) }
+  connectedStreetDepotRecord.transaction.nodes = {
+    { slot = "node:1", position = { x = 10, y = 0, z = 0 } },
+  }
   connectedStreetDepotRecord.transaction.edges = {
     {
       carrier = "street",
@@ -1213,7 +1312,8 @@ do
       and not constructionReplayState.requiresAtomic(record, proposalCodec)
       and #collateralInputs == 1 and collateralInputs[1].localId == 71
       and not constructionReplayState.isExact(depotRecord, proposalCodec)
-      and constructionReplayState.isExact(connectedStreetDepotRecord, proposalCodec)
+      and not constructionReplayState.isExact(connectedStreetDepotRecord, proposalCodec)
+      and depotConnectionRepair.isRepairable(connectedStreetDepotRecord)
       and constructionReplayState.requiresAtomic(connectedStreetDepotRecord, proposalCodec),
     "construction replay routing lost its typed/helper safety boundaries")
 

@@ -10,16 +10,16 @@ local M = {
   isGuiExact = constructionReplayPolicy.isGuiExact,
   guiOwns = constructionReplayPolicy.guiOwns,
   requiresAtomic = constructionReplayPolicy.requiresAtomic,
-  hasExistingStreetEndpoint = constructionReplayPolicy.hasExistingStreetEndpoint,
-  isConnectedStreetDepot = constructionReplayPolicy.isConnectedStreetDepot,
+  hasExistingStreetEndpoint = constructionReplayPolicy.connection.hasExistingStreetEndpoint,
+  isConnectedStreetDepot = constructionReplayPolicy.connection.isConnectedStreetDepot,
   collateralInputs = constructionReplayPolicy.collateralInputs,
   stageAfterCollateral = constructionCollateralReplay.stage,
   advanceCollateral = constructionCollateralReplay.advance,
 }
 
 function M.prepare(record, deps)
-  local spec, specError = deps.codec.materialiseConstruction(record.transaction)
-  if not spec then return nil, tostring(specError) end
+  local spec, specError = deps.codec.materialiseConstruction(record.transaction); local helperSafe, helperError = constructionReplayPolicy.helperSafe(record)
+  if not spec or not helperSafe then return nil, tostring(specError or helperError) end
   local before, captureError = deps.verification.snapshot()
   if not before then return nil, tostring(captureError) end
   local beforeFingerprints = {}

@@ -1,5 +1,6 @@
 local M = {}
 local connectionReplay = require "tpf2_mp/construction_connection_replay"
+local depotConnectionRepair = require "tpf2_mp/construction_depot_connection_repair"
 
 local function exactBuildShape(record, codec)
   local transaction = record and record.transaction
@@ -8,10 +9,10 @@ local function exactBuildShape(record, codec)
   return type(transaction) == "table"
     and transaction.schemaVersion == codec.CONSTRUCTION_SCHEMA_VERSION
     and type(construction) == "table" and construction.mode == "build"
-    -- Connected STREET_DEPOT graphs use exact replay; track depots remain on
-    -- their Build 35924 crash-safe helper boundary.
-    and (construction.kind ~= "depot"
-      or connectionReplay.isConnectedStreetDepot(transaction, construction))
+    -- Every fresh depot root stays on the Build 35924 context-helper-safe
+    -- engine helper. Connected street depots receive a later topology-only
+    -- GUI repair; no depot ConstructionEntity is ever typed across Lua.
+    and construction.kind ~= "depot"
     and not codec.isTopologyConstructionRemoval(transaction)
 end
 
@@ -41,12 +42,14 @@ function M.isGuiExact(record)
     or replayPath == "staged-gui-build-proposal"
 end
 
-function M.guiOwns(record) return M.isGuiExact(record) end
+function M.guiOwns(record) return M.isGuiExact(record) or type(record) == "table" and record.replayPath == "helper-depot-connection" end
 
 function M.requiresAtomic(record, codec)
+  local transaction = type(record) == "table" and record.transaction or nil
+  local construction = type(transaction) == "table"
+    and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
+  if connectionReplay.isConnectedStreetDepot(transaction, construction) then return true end
   if not M.isExact(record, codec) and not M.isStagedExact(record, codec) then return false end
-  local transaction = record.transaction
-  local construction = transaction.constructions[1]
   local remove = type(transaction.remove) == "table" and transaction.remove or {}
   local edgeObjects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
   -- Transform-only fallback would detach any captured existing-road endpoint,
@@ -58,8 +61,8 @@ function M.requiresAtomic(record, codec)
     or #(edgeObjects.remove or {}) > 0
 end
 
-M.hasExistingStreetEndpoint = connectionReplay.hasExistingStreetEndpoint
-M.isConnectedStreetDepot = connectionReplay.isConnectedStreetDepot
+M.connection = connectionReplay
+M.helperSafe = depotConnectionRepair.helperSafe
 
 function M.collateralInputs(record)
   local transaction = type(record) == "table" and record.transaction or nil

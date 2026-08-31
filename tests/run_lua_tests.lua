@@ -8,6 +8,7 @@ local util = require "tpf2_mp/util"
 local canonical = require "tpf2_mp/canonical"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local constructionReplayState = require "tpf2_mp/construction_replay_state"
+local depotConnectionRepair = require "tpf2_mp/construction_depot_connection_repair"
 local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local operationCodec = require "tpf2_mp/operation_codec"
 local guiLineCommandCodec = require "tpf2_mp/gui_line_command_codec"
@@ -1948,6 +1949,7 @@ test("construction collateral stages demolition before exact connected replay", 
         }},
         edgeObjectsToAdd = {},
       },
+      toAdd = { { playerEntity = 101 } },
       toRemove = removals,
     } }
   end
@@ -1956,6 +1958,8 @@ test("construction collateral stages demolition before exact connected replay", 
     proposal, transaction, materialisation, function(value, name) return value[name] end)
   truthy(command, commandError)
   local processed = command.proposal.proposal
+  equal(command.proposal.toAdd[1].playerEntity, 100,
+    "connected terminal retained the remote command issuer as its native owner")
   equal(#processed.addedNodes, 2, "connected terminal duplicated generated nodes")
   equal(#processed.addedSegments, 3,
     "connected terminal omitted the captured road replacement halves")
@@ -2309,8 +2313,9 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   end
 
   -- The helper cannot receive this explicit existing-road endpoint. Connected
-  -- street depots therefore require typed exact replay; connected rail depots
-  -- remain fail-closed because their typed output crashes stock selection UI.
+  -- street depots therefore require an atomic helper-root/topology-repair pair;
+  -- connected rail depots remain fail-closed because their typed output crashes
+  -- stock selection UI.
   local snappedRoadDepot = util.deepCopy(assert(stockRoadDepotTx))
   snappedRoadDepot.edges[1].node1 = { cid = "node:pre:road-depot-approach" }
   table.remove(snappedRoadDepot.nodes, 2)
@@ -2321,8 +2326,9 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   local snappedRoadOk, snappedRoadError = proposalCodec.validatePortable(snappedRoadDepot)
   truthy(snappedRoadOk, snappedRoadError)
   local snappedRoadRecord = { transaction = snappedRoadDepot }
-  truthy(constructionReplayState.isExact(snappedRoadRecord, proposalCodec),
-    "connected road depot did not retain its explicit endpoint through exact replay")
+  truthy(not constructionReplayState.isExact(snappedRoadRecord, proposalCodec)
+      and depotConnectionRepair.isRepairable(snappedRoadRecord),
+    "connected road depot did not enter selectable helper-root repair")
   truthy(constructionReplayState.requiresAtomic(snappedRoadRecord, proposalCodec),
     "connected road depot could fall back to the detached helper path")
   equal(constructionReplayState.isExact({ transaction = stockRoadDepotTx }, proposalCodec), false,
@@ -2338,9 +2344,10 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   local snappedTramRecord = { transaction = snappedTramDepot }
   truthy(constructionReplayState.isConnectedStreetDepot(
       snappedTramDepot, snappedTramDepot.constructions[1])
-      and constructionReplayState.isExact(snappedTramRecord, proposalCodec)
+      and not constructionReplayState.isExact(snappedTramRecord, proposalCodec)
+      and depotConnectionRepair.isRepairable(snappedTramRecord)
       and constructionReplayState.requiresAtomic(snappedTramRecord, proposalCodec),
-    "connected tram depot did not inherit exact atomic street-depot replay")
+    "connected tram depot did not inherit atomic helper-root repair")
 
   -- The policy is graph-derived, not a depot/station/resource allowlist. A
   -- data-driven or mod-provided construction that exposes the same existing

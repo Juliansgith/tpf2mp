@@ -2,9 +2,12 @@
 
 Date: 2026-08-31 (Europe/Amsterdam)
 
-Status: implemented, fully regression-tested, and proven in two disposable
-Transport Fever 2 Build 35924 processes for connected road depots, electrified
-tram depots, and the modular street-terminal family.
+Status: implemented and regression-tested. The non-depot typed path remains
+live-proven for the modular street-terminal family. The typed depot-root part
+of the original proof is superseded by
+[SELECTABLE_CONNECTED_DEPOT_HELPER_REPAIR_2026-08-31.md](SELECTABLE_CONNECTED_DEPOT_HELPER_REPAIR_2026-08-31.md):
+road and tram depots now use a selectable stock helper root followed by an
+exact topology-only connection repair.
 
 ## Problem class
 
@@ -29,13 +32,15 @@ era, module count, and stock versus mod provenance.
 For all supported fresh construction graphs:
 
 1. non-depot construction builds use typed exact replay;
-2. a graph with an existing street endpoint is atomic and may never degrade to
+2. connected street depots use a stock-helper root plus an exact topology-only
+   connection repair, because typed depot roots are not stock-UI safe;
+3. a graph with an existing street endpoint is atomic and may never degrade to
    transform-only placement;
-3. explicit edge-object additions, retained objects, and removals travel in
+4. explicit edge-object additions, retained objects, and removals travel in
    the same exact graph and also make fallback atomic;
-4. collateral buildings are removed through the established bounded first
+5. collateral buildings are removed through the established bounded first
    stage, after which the exact connected graph is issued; and
-5. any converter, resource, topology, or postcondition mismatch rejects
+6. any converter, resource, topology, or postcondition mismatch rejects
    fail-closed instead of leaving a detached or incomplete shell.
 
 This directly covers:
@@ -111,7 +116,8 @@ no test game was left running.
 
 ## Remaining acceptance
 
-The engine, canonical graph, finance, and consensus paths are proven. A future
+The non-depot engine, canonical graph, finance, and consensus paths are proven.
+The replacement road-depot helper path is also live-proven through purchase; a future
 packaged two-computer acceptance should still click one road depot, one tram
 depot, one passenger terminal, and one cargo truck terminal from the ordinary
 UI, then open/buy/bulldoze immediately afterward. That checks human-facing

@@ -1,3 +1,5 @@
+local exactOwnership = require "tpf2_mp/construction_exact_ownership"
+
 local M = {}
 
 local function field(value, key)
@@ -109,7 +111,7 @@ local function carrierCompatible(observed, expected)
   return observedStreet == nil and observedTrack == nil
 end
 
-local function rewriteEdge(observed, expected, nodeMap, disposableNodes)
+local function rewriteEdge(observed, expected, nodeMap, disposableNodes, nativePlayerId)
   local observedComp, expectedComp = field(observed, "comp"), field(expected, "comp")
   if observedComp == nil or expectedComp == nil then return nil, "generated edge component is unavailable" end
   local node0 = remap(field(expectedComp, "node0"), nodeMap)
@@ -152,6 +154,9 @@ local function rewriteEdge(observed, expected, nodeMap, disposableNodes)
       if not ok then return nil, err end
     end
   end
+  local ownershipOk, ownershipError = exactOwnership.rewriteEdge(
+    observed, expected, nativePlayerId)
+  if not ownershipOk then return nil, ownershipError end
   return true, nil, replacements
 end
 
@@ -197,6 +202,9 @@ function M.applyProcessed(command, exact, safeField)
   if street == nil or type(exact) ~= "table" then
     return nil, "processed construction topology is unavailable"
   end
+  local nativePlayerId = number(exact.nativePlayerId)
+  local ownerOk, ownerError = exactOwnership.rewriteConstruction(processed, nativePlayerId)
+  if not ownerOk then return nil, ownerError end
   local nodes, generatedNodes, nodeError = findVector(street,
     { "addedNodes", "nodesToAdd" }, "processed nodes")
   if not nodes then return nil, nodeError end
@@ -244,7 +252,8 @@ function M.applyProcessed(command, exact, safeField)
     local originalEntity = field(expected, "entity")
     if index <= generatedEdges then
       local observed = field(edges, index)
-      local ok, err, replacements = rewriteEdge(observed, expected, nodeMap, disposableNodes)
+      local ok, err, replacements = rewriteEdge(
+        observed, expected, nodeMap, disposableNodes, nativePlayerId)
       if not ok then return nil, err end
       snapReplacements = snapReplacements + (replacements or 0)
       edgeMap[key(originalEntity)] = field(observed, "entity")
@@ -285,6 +294,7 @@ function M.applyProcessed(command, exact, safeField)
     appended = { nodes = math.max(0, nodeCount - generatedNodes), edges = edgeCount - generatedEdges,
       edgeObjects = objectCount - generatedObjects },
     discarded = { nodes = disposableNodeCount },
+    nativePlayerId = nativePlayerId,
   }
 end
 

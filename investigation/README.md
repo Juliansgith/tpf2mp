@@ -1,6 +1,12 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.1-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.2-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Selectable connected-depot helper repair (2026-08-31)](SELECTABLE_CONNECTED_DEPOT_HELPER_REPAIR_2026-08-31.md)
+records relay session `mp-2002d7bf8175d520`, the stock context-helper failure
+and peer-local owner rewrite caused by typed depot roots, the helper-root plus
+topology-repair architecture, explicit helper-edge identity, and the live
+two-process road-depot/purchase proof.
 
 [Universal connected-street construction replay (2026-08-31)](UNIVERSAL_CONNECTED_STREET_CONSTRUCTION_REPLAY_2026-08-31.md)
 records the graph-derived existing-road invariant, filename-independent atomic
