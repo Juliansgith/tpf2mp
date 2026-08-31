@@ -1,6 +1,11 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.4-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.5-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+
+[Slot-local station preflight regression (2026-08-31)](SLOT_LOCAL_STATION_PREFLIGHT_REGRESSION_2026-08-31.md)
+records relay session `mp-2b831d5eac67c488`, the second station's staged
+collateral removal, the unconditional canonical-node API check, and the
+slot-local/callable-API correction.
 
 [Idle-peer track selector crash (2026-08-31)](IDLE_PEER_TRACK_SELECTOR_CRASH_2026-08-31.md)
 records relay session `mp-00776ff0f75951f1`, Player 2's native `CSelector`

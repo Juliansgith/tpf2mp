@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-31 after prototype `0.42.4-alpha`, state schema `34`,
+Last updated: 2026-08-31 after prototype `0.42.5-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -50,13 +50,16 @@ TPF2MP contains two usable but differently mature modes:
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
 
-Prototype `0.42.4-alpha` places every GUI-owned canonical BuildProposal behind
+Prototype `0.42.5-alpha` places every GUI-owned canonical BuildProposal behind
 a native main-view selector fence. Replay begins only after one complete GUI
 update, remains non-interactive through native callback settlement, and checks
 every referenced canonical node immediately before materialization. This closes
 the idle-peer `UI::CSelector` assertion observed while temporary track edge
 `-1` was acquiring its native components in relay session
-`mp-00776ff0f75951f1`.
+`mp-00776ff0f75951f1`. The preflight now distinguishes real canonical
+attachments from transaction-local station nodes and accepts Build 35924's
+callable API wrappers, fixing the staged second-station regression from relay
+session `mp-2b831d5eac67c488` without weakening attachment validation.
 
 Prototype `0.42.3-alpha` keeps fresh connected road and tram depots on the
 engine's stock-selectable construction helper, then appends and canonically

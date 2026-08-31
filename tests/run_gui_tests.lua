@@ -1515,6 +1515,21 @@ assert(enabled.mainView == true and replayGui.proposalReplayQuarantine,
   "native selector did not resume independently of the longer finance quarantine")
 
 local referenceGuard = require "tpf2_mp/gui_replay_reference_guard"
+local stagedFreshStation = {
+  edges = {
+    { node0 = { slot = "node:1" }, node1 = { slot = "node:2" } },
+    { node0 = { slot = "node:3" }, node1 = { slot = "node:4" } },
+  },
+  constructions = { {
+    mode = "build", kind = "rail_station",
+    collateral = {
+      { kind = "construction", cid = "construction:pre:house:1" },
+      { kind = "construction", cid = "construction:pre:house:2" },
+    },
+  } },
+}
+assert(referenceGuard.validate(stagedFreshStation, {}, nil),
+  "slot-local station after collateral demolition incorrectly required a canonical-node API")
 local referenceTransaction = { edges = {{
   node0 = { cid = "node:event:prior:3" }, node1 = { slot = "node:1" },
 }} }
@@ -1527,6 +1542,22 @@ local referenceApi = {
 }
 assert(referenceGuard.validate(referenceTransaction, { ["node:event:prior:3"] = 77 }, referenceApi),
   "live canonical attachment node failed immediate replay preflight")
+local callableReferenceApi = {
+  type = referenceApi.type,
+  engine = {
+    entityExists = referenceApi.engine.entityExists,
+    getComponent = setmetatable({}, { __call = function(_, id, component)
+      return referenceApi.engine.getComponent(id, component)
+    end }),
+  },
+}
+assert(referenceGuard.validate(
+    referenceTransaction, { ["node:event:prior:3"] = 77 }, callableReferenceApi),
+  "callable native component reader was mistaken for an unavailable Lua function")
+local missingApiReference, missingApiReferenceError = referenceGuard.validate(
+  referenceTransaction, { ["node:event:prior:3"] = 77 }, nil)
+assert(not missingApiReference and missingApiReferenceError:find("API is unavailable", 1, true),
+  "canonical attachment bypassed the fail-closed preflight when its API was unavailable")
 local missingReference, missingReferenceError = referenceGuard.validate(
   referenceTransaction, { ["node:event:prior:3"] = 78 }, referenceApi)
 assert(not missingReference and missingReferenceError:find("disappeared", 1, true),

@@ -11,7 +11,7 @@ Run from the repository root:
 
 ```powershell
 .\tools\run_tests.ps1
-.\tools\package_release.ps1 -Version 0.42.4-alpha
+.\tools\package_release.ps1 -Version 0.42.5-alpha
 ```
 
 The gate covers Lua/Python deterministic parity, proposal and operation codecs,

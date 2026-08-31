@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.42.4-alpha',
+    [string]$Version = '0.42.5-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -214,8 +214,9 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_update.cmd') -Destinati
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination (Join-Path $releaseRoot 'LAUNCH_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'relay-config.json') -Destination (Join-Path $releaseRoot 'relay-config.json')
 $documentNames = @(
-    'README.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
-    'SECURE_RELAY.md', 'RELEASE_NOTES_0.42.4-alpha.md', 'RELEASE_NOTES_0.42.3-alpha.md',
+    'README.md', 'PUBLIC_ALPHA_GUIDE.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
+    'SECURE_RELAY.md', 'RELEASE_NOTES_0.42.5-alpha.md', 'RELEASE_NOTES_0.42.4-alpha.md',
+    'RELEASE_NOTES_0.42.3-alpha.md',
     'RELEASE_NOTES_0.42.2-alpha.md',
     'RELEASE_NOTES_0.42.1-alpha.md', 'RELEASE_NOTES_0.42.0-alpha.md',
     'RELEASE_NOTES_0.41.11-alpha.md',
@@ -318,7 +319,8 @@ Useful commands:
     .\tools\get_network_session_status.ps1 -Session match-1 -Peer player1
     .\tools\uninstall.ps1
 
-Read `docs\ALPHA_QUICK_START.md` first. `docs\DISTRIBUTION_AND_UPDATES.md`
+Read `docs\PUBLIC_ALPHA_GUIDE.md` first. `docs\ALPHA_QUICK_START.md` contains
+the more technical launch flow, and `docs\DISTRIBUTION_AND_UPDATES.md`
 documents the stable installed commands and private/public release updater.
 `docs\ALPHA_RELEASE_CHECKLIST.md` is
 the exact machine-checkable release gate; `docs\REMAINING_FROM_BRIEF.md` keeps
