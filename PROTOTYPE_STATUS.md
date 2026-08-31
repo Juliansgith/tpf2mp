@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-31 after prototype `0.42.2-alpha`, state schema `34`,
+Last updated: 2026-08-31 after prototype `0.42.3-alpha`, state schema `34`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -50,7 +50,7 @@ TPF2MP contains two usable but differently mature modes:
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
 
-Prototype `0.42.2-alpha` keeps fresh connected road and tram depots on the
+Prototype `0.42.3-alpha` keeps fresh connected road and tram depots on the
 engine's stock-selectable construction helper, then appends and canonically
 binds the captured street connection as a separate topology-only operation.
 The depot root, depot, connector, and retained helper entrance receive the

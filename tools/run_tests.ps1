@@ -78,6 +78,9 @@ try {
     & $lua (Join-Path $projectRoot 'tests\run_runtime_module_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Runtime module tests failed with exit code $LASTEXITCODE" }
 
+    & $lua (Join-Path $projectRoot 'tests\run_construction_exact_ownership_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Construction exact-ownership tests failed with exit code $LASTEXITCODE" }
+
     & $lua (Join-Path $projectRoot 'tests\run_edge_ownership_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Edge ownership tests failed with exit code $LASTEXITCODE" }
 

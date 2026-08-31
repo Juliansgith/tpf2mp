@@ -111,7 +111,8 @@ local function carrierCompatible(observed, expected)
   return observedStreet == nil and observedTrack == nil
 end
 
-local function rewriteEdge(observed, expected, nodeMap, disposableNodes, nativePlayerId)
+local function rewriteEdge(observed, expected, nodeMap, disposableNodes,
+    canonicalOwner, nativePlayerId, playerOwnedFactory)
   local observedComp, expectedComp = field(observed, "comp"), field(expected, "comp")
   if observedComp == nil or expectedComp == nil then return nil, "generated edge component is unavailable" end
   local node0 = remap(field(expectedComp, "node0"), nodeMap)
@@ -155,7 +156,7 @@ local function rewriteEdge(observed, expected, nodeMap, disposableNodes, nativeP
     end
   end
   local ownershipOk, ownershipError = exactOwnership.rewriteEdge(
-    observed, expected, nativePlayerId)
+    observed, expected, canonicalOwner, nativePlayerId, playerOwnedFactory)
   if not ownershipOk then return nil, ownershipError end
   return true, nil, replacements
 end
@@ -215,6 +216,9 @@ function M.applyProcessed(command, exact, safeField)
     { "edgeObjectsToAdd" }, "processed edge objects")
   if not objects then return nil, objectError end
   local exactNodeCount, exactEdgeCount = #(exact.nodes or {}), #(exact.edges or {})
+  if #(exact.edgeOwners or {}) ~= exactEdgeCount then
+    return nil, "canonical construction edge ownership plan is incomplete"
+  end
   local disposableNodeCount = generatedNodes - exactNodeCount
   if generatedEdges > exactEdgeCount or generatedObjects > #(exact.objects or {})
       or disposableNodeCount > 1
@@ -253,7 +257,8 @@ function M.applyProcessed(command, exact, safeField)
     if index <= generatedEdges then
       local observed = field(edges, index)
       local ok, err, replacements = rewriteEdge(
-        observed, expected, nodeMap, disposableNodes, nativePlayerId)
+        observed, expected, nodeMap, disposableNodes, exact.edgeOwners[index],
+        nativePlayerId, exact.playerOwnedFactory)
       if not ok then return nil, err end
       snapReplacements = snapReplacements + (replacements or 0)
       edgeMap[key(originalEntity)] = field(observed, "entity")

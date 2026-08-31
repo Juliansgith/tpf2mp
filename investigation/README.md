@@ -742,6 +742,7 @@ Relevant documented behavior used by the implementation:
 
 ## Investigation documents
 
+- [CONSTRUCTION_OWNER_PLAN_REGRESSION_2026-08-31.md](CONSTRUCTION_OWNER_PLAN_REGRESSION_2026-08-31.md) - relay-proven modular-terminal rejection caused by trusting engine-mutated `PlayerOwned` userdata, immutable canonical owner-plan repair, adversarial terminal-family matrix, and the next packaged native gate.
 - [RELAY_AUTOSAVE_PROPOSAL_TIMEOUT_2026-08-24.md](RELAY_AUTOSAVE_PROPOSAL_TIMEOUT_2026-08-24.md) - relay-proven 256.781-second P2 stock autosave collision, physical proposal timeout, exact-process autosave lease/restore guard, and the next two-computer gate.
 - [P2_LINE_CREATE_DEPOT_TRANSITION_2026-08-24.md](P2_LINE_CREATE_DEPOT_TRANSITION_2026-08-24.md) - physical P2 empty-line/depot-transition fault, optimistic `line:pre:*` adoption, vanished-output replay, strict finalisation, and exact failure telemetry.
 - [EXACT_CONSTRUCTION_REPLAY_AND_LATENCY_2026-08-22.md](EXACT_CONSTRUCTION_REPLAY_AND_LATENCY_2026-08-22.md) - typed `SimpleProposal.ConstructionEntity` discovery, debit-driven exact `BuildProposal` replay, strict GUI delta attestation, crash-safe canonical construction identity, 273/436 ms native measurements, passing two-process station checkpoint/soak evidence, and the remaining connected/landscaped human gate.

@@ -51,30 +51,57 @@ function M.rewriteConstruction(processed, nativePlayerId)
   return true
 end
 
-function M.rewriteEdge(observed, expected, nativePlayerId)
-  local expectedOwned, observedOwned = field(expected, "playerOwned"), field(observed, "playerOwned")
-  if expectedOwned ~= nil then
-    local expectedPlayer = number(field(expectedOwned, "player"))
-    if not expectedPlayer or expectedPlayer ~= nativePlayerId then
-      return nil, "captured construction edge has an unexpected native owner"
-    end
+local function freshOwned(expected, factory)
+  local owned = field(expected, "playerOwned")
+  if owned ~= nil then return owned end
+  if type(factory) ~= "function" then
+    return nil, "private edge ownership component factory is unavailable"
+  end
+  local ok, value = pcall(factory)
+  if not ok or value == nil then
+    return nil, "private edge ownership component could not be materialised"
+  end
+  return value
+end
+
+-- The canonical owner is a plain-Lua plan derived from the validated wire
+-- transaction before api.cmd.make.buildProposal runs. Build 35924 is allowed
+-- to mutate both its input PlayerOwned userdata and the generated edge prefix,
+-- so neither is an authority source at this boundary.
+function M.rewriteEdge(observed, expected, canonicalOwner, nativePlayerId, factory)
+  nativePlayerId, canonicalOwner = number(nativePlayerId), number(canonicalOwner)
+  if not nativePlayerId or nativePlayerId < 0
+      or (canonicalOwner ~= -1 and canonicalOwner ~= nativePlayerId) then
+    return nil, "canonical construction edge ownership plan is invalid"
+  end
+
+  local observedOwned = field(observed, "playerOwned")
+  if canonicalOwner == nativePlayerId then
     if observedOwned == nil then
-      local ok, err = assign(observed, "playerOwned", expectedOwned,
-        "generated edge ownership component")
-      if not ok then return nil, err end
+      local component, componentError = freshOwned(expected, factory)
+      if not component then return nil, componentError end
+      local ownerOk, ownerError = assign(component, "player", canonicalOwner,
+        "generated private edge owner")
+      if not ownerOk then return nil, ownerError end
+      local componentOk, componentAssignment = assign(observed, "playerOwned", component,
+        "generated private edge ownership component")
+      if not componentOk then return nil, componentAssignment end
       observedOwned = field(observed, "playerOwned")
     else
-      local ok, err = assign(observedOwned, "player", nativePlayerId,
-        "generated edge owner")
-      if not ok then return nil, err end
+      local ownerOk, ownerError = assign(observedOwned, "player", canonicalOwner,
+        "generated private edge owner")
+      if not ownerOk then return nil, ownerError end
     end
-    if number(field(observedOwned, "player")) ~= nativePlayerId then
-      return nil, "generated edge owner did not round-trip"
+    if number(field(observedOwned, "player")) ~= canonicalOwner then
+      return nil, "generated private edge owner did not round-trip"
     end
-  elseif observedOwned ~= nil and number(field(observedOwned, "player")) ~= nil
-      and number(field(observedOwned, "player")) >= 0 then
-    local ok, err = assign(observedOwned, "player", -1, "generated public edge owner")
-    if not ok then return nil, err end
+  elseif observedOwned ~= nil then
+    -- A native construction expansion may attach the local command issuer to
+    -- a canonical public road. Clear it even when the pre-write value is an
+    -- opaque or otherwise unreadable userdata field.
+    local ownerOk, ownerError = assign(observedOwned, "player", -1,
+      "generated public edge owner")
+    if not ownerOk then return nil, ownerError end
     if number(field(observedOwned, "player")) ~= -1 then
       return nil, "generated public edge owner did not clear"
     end

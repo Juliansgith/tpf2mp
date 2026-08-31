@@ -308,6 +308,12 @@ $guiCapture = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_capture.lua') -Raw
 $guiBuildRuntime = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_capture_runtime.lua') -Raw
+$exactOwnershipSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\construction_exact_ownership.lua') -Raw
+$exactTopologySource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\construction_exact_topology.lua') -Raw
+$proposalCodecSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Raw
 $nativeHookSource = Get-Content -LiteralPath `
     (Join-Path $root 'native\src\hook_dll.cpp') -Raw
 foreach ($correlationBoundary in @(
@@ -331,6 +337,23 @@ foreach ($captureBoundary in @(
 }
 if ($guiEventRuntime.Contains('gui.lastConstructionPreviewSnapshot = rebased')) {
     throw 'Click-time construction rebase regressed to mutating/replacing the cached template.'
+}
+foreach ($ownershipBoundary in @(
+    'canonical construction edge ownership plan is invalid',
+    'canonicalOwner == nativePlayerId',
+    'generated public edge owner'
+)) {
+    if (-not $exactOwnershipSource.Contains($ownershipBoundary)) {
+        throw "Canonical construction-ownership boundary is missing: $ownershipBoundary"
+    }
+}
+if ($exactOwnershipSource.Contains('captured construction edge has an unexpected native owner') `
+    -or $exactOwnershipSource.Contains('field(expectedOwned, "player")')) {
+    throw 'Construction ownership regressed to trusting engine-mutated PlayerOwned userdata.'
+}
+if (-not $exactTopologySource.Contains('canonical construction edge ownership plan is incomplete') `
+    -or -not $proposalCodecSource.Contains('exactTopology.edgeOwners[index] = canonicalOwner')) {
+    throw 'Exact construction replay no longer carries a complete canonical edge-owner plan.'
 }
 foreach ($nativeCorrelationBoundary in @(
     'tpf2mp_native_arm_build_correlation',

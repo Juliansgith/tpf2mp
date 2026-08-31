@@ -1186,6 +1186,18 @@ do
     }
   end
   local stationCommand = assert(guiBuildCommandFactory.make(function()
+    -- Build 35924 mutates the typed input while expanding constructions. The
+    -- ownership authority must therefore survive outside PlayerOwned userdata.
+    -- Exercise both the observed live mutation and a missing component so the
+    -- fallback factory remains covered.
+    for index, captured in ipairs(stationMetadata.construction.exactTopology.typed.edges) do
+      if index == 1 then
+        captured.playerOwned = nil
+        generatedEdges[index].playerOwned = nil
+      else
+        captured.playerOwned.player = 8
+      end
+    end
     return { proposal = { proposal = { addedNodes = generatedNodes,
       addedSegments = generatedEdges, edgeObjectsToAdd = {} },
       toAdd = { { playerEntity = 8 } }, toRemove = {} } }
@@ -1199,10 +1211,16 @@ do
       and stationCommand.proposal.proposal.addedSegments[1].entity == -201
       and stationCommand.proposal.toAdd[1].playerEntity == 7
       and stationCommand.proposal.proposal.addedSegments[1].playerOwned.player == 7
+      and #stationMetadata.construction.exactTopology.typed.edgeOwners == 12
+      and stationMetadata.construction.exactTopology.typed.edgeOwners[1] == 7
       and stationMetadata.construction.exactTopology.processed.generated.nodes == 13
       and stationMetadata.construction.exactTopology.processed.appended.edges == 0
       and stationMetadata.construction.exactTopology.processed.nativePlayerId == 7,
     "typed construction replay did not reconcile native-generated topology and ownership exactly")
+  for index, generated in ipairs(stationCommand.proposal.proposal.addedSegments) do
+    assert(generated.playerOwned and generated.playerOwned.player == 7,
+      "typed construction replay lost canonical ownership at edge " .. tostring(index))
+  end
 
   local upgradeProposal = fakeApi.type.SimpleProposal.new()
   local applied = assert(constructionProposalMaterializer.apply(upgradeProposal, {

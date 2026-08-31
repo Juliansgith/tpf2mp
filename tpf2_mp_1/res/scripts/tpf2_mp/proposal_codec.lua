@@ -2009,7 +2009,10 @@ function M.materialise(transaction, options)
   end
 
   local proposal = gameApi.type.SimpleProposal.new()
-  local exactTopology = { nodes = {}, edges = {}, objects = {} }
+  local exactTopology = {
+    nodes = {}, edges = {}, objects = {}, edgeOwners = {},
+    playerOwnedFactory = gameApi.type.PlayerOwned and gameApi.type.PlayerOwned.new or nil,
+  }
   local slotIds, nextId = {}, -1
   for _, edge in ipairs(transaction.edges) do slotIds[edge.slot], nextId = nextId, nextId - 1 end
   for _, node in ipairs(transaction.nodes) do slotIds[node.slot], nextId = nextId, nextId - 1 end
@@ -2087,6 +2090,7 @@ function M.materialise(transaction, options)
     elseif safeField(value.comp, "objects") == nil and type(value.comp) == "table" then
       value.comp.objects = {}
     end
+    local canonicalOwner = -1
     if edge.private then
       local nativePlayerId = integer(options.nativePlayerId)
       if not nativePlayerId or nativePlayerId < 0 then return nil, "private edge requires a local native player" end
@@ -2095,7 +2099,9 @@ function M.materialise(transaction, options)
       end
       value.playerOwned = gameApi.type.PlayerOwned.new()
       value.playerOwned.player = nativePlayerId
+      canonicalOwner = nativePlayerId
     end
+    exactTopology.edgeOwners[index] = canonicalOwner
     local selectedResource, resourceError = resourceId(edge, gameApi)
     if selectedResource == nil or selectedResource < 0 then
       return nil, resourceError or "edge resource is unavailable locally"
