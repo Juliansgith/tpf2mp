@@ -15,6 +15,7 @@ local cargoPresentation = require "tpf2_mp/cargo_presentation"
 local passengerCosmetics = require "tpf2_mp/passenger_cosmetics"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local operationCodec = require "tpf2_mp/operation_codec"
+local operationCaptureBindingModule = require "tpf2_mp/operation_capture_binding"
 local networkOperationOutcomeModule = require "tpf2_mp/network_operation_outcome"
 local edgeOwnership = require "tpf2_mp/edge_ownership"
 local runtimeConfig = require "tpf2_mp/runtime_config"
@@ -84,6 +85,9 @@ local function newState()
   })
 end
 local state = newState()
+local bindOperationCapture = operationCaptureBindingModule.new({
+  canonical = canonical, world = world, getState = function() return state end,
+})
 local performanceRuntime = performanceRuntimeModule.new({ getState = function() return state end })
 local economyAssetCosts = economyAssetCostRuntimeModule.new({ getState = function() return state end })
 local recordProposalInfrastructure = economyAssetCosts.recordProposal
@@ -2279,29 +2283,10 @@ local function normaliseOperationCapture(action)
   local originApplied = capture.originApplied == true
   local data
   local function bindLocal(localId, expectedKind)
-    localId = tonumber(localId)
-    if not localId then return nil, "operation capture is missing a local " .. expectedKind end
-    local actualKind = world.kindOf(localId)
-    if expectedKind ~= "entity" and actualKind ~= expectedKind then
-      return nil, "selected object is " .. tostring(actualKind) .. ", expected " .. expectedKind
-    end
-    local cid, bindError = world.bindExisting(state.canonical, localId, actualKind)
-    if not cid then return nil, bindError end
-    local binding = state.canonical.byCanonical[cid]
-    if state.networkMode == "network" and cid:find(":pre:", 1, true)
-      and not (binding and binding.metadata and binding.metadata.manifestBound == true) then
-      return nil, "selected pre-existing object is ambiguous across peers"
-    end
     -- Must stay a superset of commit-time operationAccess: with vanilla
     -- pass-through the native world has already mutated, so anything the
     -- ordered commit would reject must already be rejected here.
-    local owner = world.logicalOwnerOf(state.world, state.companies, localId)
-      or (binding and binding.metadata and binding.metadata.owner or nil)
-    if owner and owner ~= companyCid then
-      return nil, "operation cannot mutate rival-owned "
-        .. tostring(expectedKind) .. " " .. tostring(cid)
-    end
-    return cid
+    return bindOperationCapture(localId, expectedKind, companyCid)
   end
   if kind == "line.create" or kind == "line.update" then
     local encodedStops = {}

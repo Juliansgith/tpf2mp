@@ -59,6 +59,7 @@ local constructionOutputOrder = require "tpf2_mp/construction_output_order"
 local constructionProposalMaterializer = require "tpf2_mp/construction_proposal_materializer"
 local constructionReplayState = require "tpf2_mp/construction_replay_state"
 local depotConnectionRepair = require "tpf2_mp/construction_depot_connection_repair"
+local depotConnectionGraph = require "tpf2_mp/construction_depot_connection_graph"
 local depotAuxiliaryBinding = require "tpf2_mp/construction_depot_auxiliary_binding"
 local guiConstructionReplay = require "tpf2_mp/gui_construction_replay"
 local proposalDerivedStationRuntime = require "tpf2_mp/proposal_derived_station_runtime"
@@ -614,6 +615,34 @@ do
       and #repairProposal.streetProposal.edgesToRemove == 0
       and #repairProposal.streetProposal.nodesToRemove == 0,
     "depot repair did not retain the complete helper entrance while appending its connection")
+
+  -- A live connected-depot capture can contain both the helper-owned internal
+  -- node and another newly added approach node.  Removing the former used to
+  -- leave the derived one-node graph labelled node:2.  PREPARE had already
+  -- succeeded, so the late codec rejection occurred after the helper depot had
+  -- changed the world and forced an otherwise symmetric session to fault.
+  local retainedNodeTransaction = util.deepCopy(transaction)
+  retainedNodeTransaction.nodes[2] = {
+    slot = "node:2",
+    position = { x = -1070, y = -1040, z = 8.6015548706055 },
+  }
+  retainedNodeTransaction.edges[1].node1 = { slot = "node:2" }
+  retainedNodeTransaction.digest = proposalCodec.digest(retainedNodeTransaction)
+  retainedNodeTransaction.transactionId = "proposal:" .. retainedNodeTransaction.digest
+  assert(proposalCodec.validatePortable(retainedNodeTransaction),
+    "retained-node depot regression fixture is not portable")
+  local retainedRecord = util.deepCopy(repairRecord)
+  retainedRecord.transaction = retainedNodeTransaction
+  retainedRecord.replayPath = "helper-depot-connection"
+  local physical, _, physicalError, slotPlan = depotConnectionGraph.build(
+    retainedRecord, proposalCodec)
+  assert(physical, physicalError)
+  assert(#physical.nodes == 1 and physical.nodes[1].slot == "node:1"
+      and physical.edges[1].node0.cid == "node:repair:depot-external"
+      and physical.edges[1].node1.slot == "node:1"
+      and slotPlan.physicalSlotByOriginal["node:2"] == "node:1"
+      and proposalCodec.validatePortable(physical),
+    "derived depot connection graph retained a non-sequential canonical node slot")
   local repairAccepted = assert(depotConnectionRepair.accept(repairRecord, {
     createdNodeIds = {}, createdEdgeIds = { 900 },
     repairExpectedNodes = 0, repairExpectedEdges = 1,

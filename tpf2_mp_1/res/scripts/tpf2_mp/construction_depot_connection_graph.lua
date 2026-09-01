@@ -3,6 +3,27 @@ local util = require "tpf2_mp/util"
 local M = {}
 local EXTERNAL_CID = "node:repair:depot-external"
 
+local function reindexRetainedNodes(nodes)
+  local byOriginalSlot = {}
+  for index, node in ipairs(nodes) do
+    local originalSlot = tostring(node.slot or "")
+    local physicalSlot = "node:" .. tostring(index)
+    byOriginalSlot[originalSlot] = physicalSlot
+    node.slot = physicalSlot
+  end
+  return byOriginalSlot
+end
+
+local function remapNodeReference(reference, byOriginalSlot)
+  if type(reference) ~= "table" or reference.slot == nil then return true end
+  local physicalSlot = byOriginalSlot[tostring(reference.slot)]
+  if not physicalSlot then
+    return nil, "depot connection edge references a removed or unknown node slot"
+  end
+  reference.slot = physicalSlot
+  return true
+end
+
 local function vector(a, b, scale)
   return {
     x = (tonumber(a.x) or 0) + scale * (tonumber(b.x) or 0),
@@ -35,6 +56,12 @@ function M.build(record, codec)
   for _, node in ipairs(transaction.nodes or {}) do
     if node.slot ~= repair.internalNodeSlot then nodes[#nodes + 1] = util.deepCopy(node) end
   end
+  -- Removing the helper-owned internal node may leave a dense Lua array whose
+  -- canonical labels begin at node:2 (or contain another gap).  The wire codec
+  -- quite correctly rejects that shape later.  Reindex the derived physical
+  -- graph now, before api.cmd.make.buildProposal can mutate the native world,
+  -- and retain the inverse association for canonical result matching.
+  local physicalSlotByOriginal = reindexRetainedNodes(nodes)
   local delta = vector(repair.helperExternalPosition, repair.helperInternalPosition, -1)
   local edges, shifted = {}, 0
   for _, source in ipairs(transaction.edges or {}) do
@@ -53,6 +80,10 @@ function M.build(record, codec)
       edge.tangent1 = vector(source.tangent1, delta, 1)
       shifted = shifted + 1
     end
+    local firstOk, firstError = remapNodeReference(edge.node0, physicalSlotByOriginal)
+    if not firstOk then return nil, nil, firstError end
+    local secondOk, secondError = remapNodeReference(edge.node1, physicalSlotByOriginal)
+    if not secondOk then return nil, nil, secondError end
     edges[#edges + 1] = edge
   end
   if shifted ~= 1 then
@@ -69,9 +100,19 @@ function M.build(record, codec)
   }
   physical.digest = codec.digest(physical)
   physical.transactionId = "proposal:" .. physical.digest
+  -- The source proposal has already crossed the mode-appropriate portable
+  -- gate.  Validate the derived graph structurally here without making this
+  -- shared helper reject legacy standalone captures that retain local-only
+  -- resource indices.
+  local valid, validationError = codec.validate(physical)
+  if not valid then
+    return nil, nil, "derived depot connection graph is invalid: " .. tostring(validationError)
+  end
   local localRefs = util.deepCopy(record.localRefs or {})
   localRefs[EXTERNAL_CID] = repair.helperNodeIds[1]
-  return physical, localRefs
+  return physical, localRefs, nil, {
+    physicalSlotByOriginal = physicalSlotByOriginal,
+  }
 end
 
 function M.filter(record, nodes, edges)
@@ -102,7 +143,7 @@ function M.expected(record, codec, defaultNodes, defaultEdges)
 end
 
 function M.match(record, codec, nodes, edges, deps)
-  local physical, _, physicalError = M.build(record, codec)
+  local physical, _, physicalError, slotPlan = M.build(record, codec)
   if not physical then return nil, physicalError end
   local repair = assert(repairOf(record))
   local function resolvePosition(cid)
@@ -124,7 +165,8 @@ function M.match(record, codec, nodes, edges, deps)
     unmatchedNodes = {}, unmatchedEdges = {}, unmatchedEdgeObjects = {} }
   for _, node in ipairs(record.transaction.nodes or {}) do
     canonical.nodes[node.slot] = node.slot == repair.internalNodeSlot
-      and repair.internalNodeId or matched.nodes[node.slot]
+      and repair.internalNodeId
+      or matched.nodes[slotPlan.physicalSlotByOriginal[node.slot]]
   end
   return canonical
 end

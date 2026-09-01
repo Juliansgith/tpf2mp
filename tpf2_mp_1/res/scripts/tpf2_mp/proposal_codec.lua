@@ -1538,8 +1538,12 @@ function M.validate(transaction)
     and M.MAX_CONSTRUCTION_NODES or M.MAX_NODES
   local edgeLimit = transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
     and M.MAX_CONSTRUCTION_EDGES or M.MAX_EDGES
-  if type(transaction.nodes) ~= "table" or #transaction.nodes > nodeLimit then return false, "invalid proposal nodes" end
-  if type(transaction.edges) ~= "table" or #transaction.edges > edgeLimit then
+  if type(transaction.nodes) ~= "table" or #transaction.nodes > nodeLimit
+    or not exactList(transaction.nodes, #transaction.nodes) then
+    return false, "invalid proposal nodes"
+  end
+  if type(transaction.edges) ~= "table" or #transaction.edges > edgeLimit
+    or not exactList(transaction.edges, #transaction.edges) then
     return false, "invalid proposal edges"
   end
   local nodeSlots, edgeSlots = {}, {}
@@ -1576,7 +1580,10 @@ function M.validate(transaction)
   local edgeObjects = transaction.edgeObjects
   if type(edgeObjects) ~= "table" or not exactFields(edgeObjects, { "add", "retain", "remove" })
     or type(edgeObjects.add) ~= "table" or type(edgeObjects.retain) ~= "table"
-    or type(edgeObjects.remove) ~= "table" then
+    or type(edgeObjects.remove) ~= "table"
+    or not exactList(edgeObjects.add, #edgeObjects.add)
+    or not exactList(edgeObjects.retain, #edgeObjects.retain)
+    or not exactList(edgeObjects.remove, #edgeObjects.remove) then
     return false, "invalid edge-object lists"
   end
   if #edgeObjects.add > M.MAX_EDGE_OBJECTS or #edgeObjects.retain > M.MAX_EDGE_OBJECTS

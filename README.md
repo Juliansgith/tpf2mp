@@ -8,7 +8,7 @@ systems to Transport Fever 2. It contains two related modes:
 2. a restricted same-area network alpha in which two independent game
    processes replay supported actions and verify their results.
 
-Current release: `0.43.1-alpha`
+Current release: `0.43.2-alpha`
 
 Supported executable: Transport Fever 2 Build 35924, Windows x64
 
@@ -86,7 +86,7 @@ route-phase drift but is not continuous coordinate lockstep.
 
 ## Current evidence
 
-The `0.43.1-alpha` qualification includes:
+The `0.43.2-alpha` qualification includes:
 
 - a 604.9-second populated two-process run with 1,168 samples;
 - ten converged checkpoints, four station releases, zero vehicle faults, and
@@ -113,7 +113,7 @@ Run the complete source gate from a PowerShell prompt:
 Build and transactionally verify a clean release bundle:
 
 ```powershell
-.\tools\package_release.ps1 -Version 0.43.1-alpha
+.\tools\package_release.ps1 -Version 0.43.2-alpha
 ```
 
 Publishing requires a clean commit, matching manifest, SHA-256 sidecar, release
@@ -121,8 +121,8 @@ notes, and explicit confirmation:
 
 ```powershell
 .\tools\publish_github_release.ps1 `
-  -Version 0.43.1-alpha `
-  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.43.1-alpha.md `
+  -Version 0.43.2-alpha `
+  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.43.2-alpha.md `
   -ConfirmPublish
 ```
 

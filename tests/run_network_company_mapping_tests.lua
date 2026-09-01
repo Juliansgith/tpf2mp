@@ -1615,6 +1615,36 @@ script.update()
 assert(script.save().world.operationConsensus.sessionFault == nil,
   "a tokenless intent rejection must release the latch without faulting")
 
+-- Rejecting a peer-local operation against an object that was not bound by
+-- the starting manifest must be observationally pure. The production
+-- normalizer used to bind the object first and only then reject it as
+-- ambiguous, leaving a one-peer canonical entry that poisoned the next
+-- proposal/checkpoint digest.
+components.ASSET_GROUP[8900] = { assets = {}, fileName = "asset/test/unbound.con" }
+local ambiguousCanonicalBefore = hash.value(canonical.digestView(script.save().canonical))
+local ambiguousRevisionBefore = script.save().canonical.revisions
+local ambiguousEmittedBefore = tonumber(script.save().bridge.emitted)
+script.handleEvent("test", "tpf2mp", "intent", {
+  type = "operation.capture",
+  capture = {
+    kind = "entity.name",
+    targetLocalId = 8900,
+    originApplied = false,
+    name = "Must Not Bind",
+  },
+})
+local ambiguousState = script.save()
+assert(tostring(ambiguousState.lastError):find(
+    "selected pre%-existing object is ambiguous across peers"),
+  "unbound pre-existing operation did not reject at the ambiguity boundary")
+assert(canonical.resolveCanonical(ambiguousState.canonical, "asset", 8900) == nil
+    and ambiguousState.canonical.revisions == ambiguousRevisionBefore
+    and hash.value(canonical.digestView(ambiguousState.canonical)) == ambiguousCanonicalBefore,
+  "rejected peer-local operation changed the canonical digest")
+assert(tonumber(ambiguousState.bridge.emitted) == ambiguousEmittedBefore,
+  "rejected peer-local operation escaped onto the ordered bridge")
+components.ASSET_GROUP[8900] = nil
+
 -- An origin-applied vanilla capture that normalises cleanly must carry its
 -- origin token onto the wire.
 -- bridge.emitted is read as a plain number immediately: the harness save()

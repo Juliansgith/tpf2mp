@@ -197,9 +197,15 @@ Runtime-controller modules:
   precedence, and running-match authorization.
 - `operation_runtime.lua` owns canonical operation authorization, native result
   binding, postconditions, completion reports, and finance deltas.
+- `operation_capture_binding.lua` resolves pre-consensus native operation
+  targets without binding them until network ambiguity and ownership checks
+  pass, keeping rejected peer-local input out of the canonical digest.
 - `proposal_runtime.lua` owns proposal prepare/build/finalize, construction
   stabilization, canonical output binding, physical completion, and finance
-  normalization. `network_finance_housekeeping.lua` owns the adaptive cadence
+  normalization. `construction_depot_connection_graph.lua` owns the derived
+  helper-to-road repair graph and reindexes retained node slots before native
+  replay; original-to-physical slot mapping is carried back into canonical
+  output matching. `network_finance_housekeeping.lua` owns the adaptive cadence
   for the native wallet presentation cache and its barrier-safe deferral.
 - `network_intent_runtime.lua` owns the local intent FIFO, host-order wait state,
   barrier back-pressure, bridge ingress, acknowledgement, and reset lifecycle.

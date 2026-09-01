@@ -259,6 +259,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_delta_attestation.lua' = 170
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_proposal_result_capture.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_output_order.lua' = 60
+    'tpf2_mp_1\res\scripts\tpf2_mp\operation_capture_binding.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_proposal_materializer.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_exact_topology.lua' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_connected_terminal_proposal.lua' = 130
