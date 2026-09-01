@@ -407,6 +407,9 @@ foreach ($launcherPath in @('tools\run_localhost_live_validation.ps1', 'tools\st
 }
 $liveLauncher = Get-Content -LiteralPath `
     (Join-Path $root 'tools\run_localhost_live_validation.ps1') -Raw
+if (-not $liveLauncher.Contains('Stop-Tpf2mpSessionCompanionChildren')) {
+    throw 'The localhost harness no longer retires PyInstaller companion children by exact session identity.'
+}
 foreach ($loadedSaveHandoffBoundary in @(
     'function Suspend-LoadedWorldForPeerHandoff',
     'Suspend-LoadedWorldForPeerHandoff $GameProcess $Peer',

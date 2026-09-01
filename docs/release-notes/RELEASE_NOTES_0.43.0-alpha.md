@@ -45,6 +45,9 @@ format `4`, and native hook `0.19.0`.
 - Vehicle lifecycle, passenger transfer/feeders, multi-hop freight,
   save/rehost, automatic recovery, relay, launcher, updater, and installer
   regression suites remain green.
+- The packaged localhost harness now retires the PyInstaller companion child
+  processes by exact executable, session, and peer identity, preventing a
+  completed local test from leaving a stale session that blocks an update.
 
 ## Repository and documentation hygiene
 

@@ -1195,6 +1195,60 @@ function Stop-ExactProcess([Diagnostics.Process]$Process, [string]$Label, [int]$
     }
 }
 
+function Stop-Tpf2mpSessionCompanionChildren(
+    [string]$SessionId,
+    [string]$CompanionExecutable
+) {
+    if (-not $SessionId -or -not $CompanionExecutable `
+            -or -not (Test-Path -LiteralPath $CompanionExecutable -PathType Leaf)) {
+        return @()
+    }
+    $safeSession = Assert-Tpf2mpSessionId $SessionId
+    $expectedExecutable = Resolve-Tpf2mpFullPath $CompanionExecutable
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
+        $matches = @(
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.ExecutablePath `
+                        -and [string]::Equals(
+                            (Resolve-Tpf2mpFullPath ([string]$_.ExecutablePath)),
+                            $expectedExecutable,
+                            [StringComparison]::OrdinalIgnoreCase
+                        ) `
+                        -and (
+                            (Test-Tpf2mpCompanionCommandLine -CommandLine ([string]$_.CommandLine) `
+                                -Session $safeSession -Peer player1) `
+                            -or (Test-Tpf2mpCompanionCommandLine -CommandLine ([string]$_.CommandLine) `
+                                -Session $safeSession -Peer player2)
+                        )
+                }
+        )
+        if ($matches.Count -eq 0) { return @() }
+        foreach ($match in $matches) {
+            Stop-Process -Id ([int]$match.ProcessId) -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 100
+    }
+    return @(
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.ExecutablePath `
+                    -and [string]::Equals(
+                        (Resolve-Tpf2mpFullPath ([string]$_.ExecutablePath)),
+                        $expectedExecutable,
+                        [StringComparison]::OrdinalIgnoreCase
+                    ) `
+                    -and (
+                        (Test-Tpf2mpCompanionCommandLine -CommandLine ([string]$_.CommandLine) `
+                            -Session $safeSession -Peer player1) `
+                        -or (Test-Tpf2mpCompanionCommandLine -CommandLine ([string]$_.CommandLine) `
+                            -Session $safeSession -Peer player2)
+                    )
+            } |
+            ForEach-Object { [int]$_.ProcessId }
+    )
+}
+
 New-Item -ItemType Directory -Force -Path $runRoot | Out-Null
 try {
     if ($restorePlanData) {
@@ -2083,6 +2137,26 @@ finally {
     Stop-ExactProcess $peer1RecoveryWatcher 'player1 recovery watcher' 1
     Stop-ExactProcess $clientProcess 'client companion' 1
     Stop-ExactProcess $hostProcess 'host companion' 1
+    try {
+        # PyInstaller one-file executables keep the real companion in a child
+        # process. The Start-Process handle names only the short-lived
+        # bootloader, so verify and retire every child carrying this exact
+        # session identity before a later test or updater mistakes it for an
+        # active match.
+        $remainingCompanions = @(Stop-Tpf2mpSessionCompanionChildren `
+            -SessionId $Session -CompanionExecutable $companionCommand.File)
+        if ($remainingCompanions.Count -gt 0) {
+            $cleanupError = "Localhost cleanup left verified $Session companion PID(s): " + `
+                ($remainingCompanions -join ',')
+            Write-Warning $cleanupError
+            if (-not $failure) { $failure = $cleanupError }
+        }
+    }
+    catch {
+        $cleanupError = "Could not verify localhost companion cleanup: $($_.Exception.Message)"
+        Write-Warning $cleanupError
+        if (-not $failure) { $failure = $cleanupError }
+    }
     foreach ($name in @('SteamAppId', 'SteamGameId', 'TPF2MP_PEER_ID', 'TPF2MP_SESSION_ID',
         'TPF2MP_BRIDGE_DIR', 'TPF2MP_START_NETWORK', 'TPF2MP_NETWORK_AUTOTEST',
         'TPF2MP_MANUAL_NETWORK',
