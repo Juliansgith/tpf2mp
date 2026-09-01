@@ -2429,6 +2429,44 @@ test("proposal codec canonicalises the measured smallest modular passenger stati
     "station/rail/modular_station/platform_track.module")
   equal(rotatedSpec.transform[2], 1)
 
+  -- A fresh stock 80 m / one-track tool may omit zero-valued selectors from
+  -- the pointer-free proposal. Recover those defaults only because the exact
+  -- stock module set and track graph independently prove the same layout.
+  local omittedDefaults = smallestStationProposal(250, 3400020, nil, 0)
+  local omittedParams = omittedDefaults.__constructionAdditions[1].params
+  for _, key in ipairs({ "trackType", "catenary", "length", "tracks", "paramX", "paramY" }) do
+    omittedParams[key] = nil
+  end
+  local omitted, omittedError = proposalCodec.normalise(omittedDefaults, "company:1")
+  truthy(omitted, omittedError)
+  local canonicalDefaults = omitted.constructions[1].params
+  equal(canonicalDefaults.trackType, 0)
+  equal(canonicalDefaults.catenary, 0)
+  equal(canonicalDefaults.length, 0)
+  equal(canonicalDefaults.tracks, 0)
+  equal(canonicalDefaults.paramX, 0)
+  equal(canonicalDefaults.paramY, 0)
+  local omittedDiagnostic = assert(proposalCodec.stationLayoutDiagnostic(omittedDefaults))
+  equal(omittedDiagnostic.defaultTemplateMatch, true)
+  equal(omittedDiagnostic.moduleCount, 8)
+  truthy(omittedDiagnostic.params:find("length=missing->0", 1, true))
+  truthy(omittedDiagnostic.missingDefaults:find("tracks", 1, true))
+
+  -- Boolean native toggle representations are semantically identical, while
+  -- an omitted non-default selector must still fail the module allow-list.
+  local booleanCatenary = smallestStationProposal(260, 3400020, nil, 1)
+  booleanCatenary.__constructionAdditions[1].params.catenary = true
+  local booleanStation, booleanError = proposalCodec.normalise(booleanCatenary, "company:1")
+  truthy(booleanStation, booleanError)
+  equal(booleanStation.constructions[1].params.catenary, 1)
+  local outOfRange = smallestStationProposal(270, 3400020, nil, 0)
+  outOfRange.__constructionAdditions[1].params.tracks = 8
+  local rangeDiagnostic = assert(proposalCodec.stationLayoutDiagnostic(outOfRange))
+  truthy(rangeDiagnostic.invalidParams:find("tracks", 1, true))
+  local rangeStation, rangeError = proposalCodec.normalise(outOfRange, "company:1")
+  equal(rangeStation, nil)
+  truthy(tostring(rangeError):find("layout parameters", 1, true), rangeError)
+
   local tampered = smallestStationProposal(0)
   tampered.__constructionAdditions[1].params.modules[8401000].name =
     "station/rail/modular_station/platform_track.module"
@@ -2470,6 +2508,11 @@ test("proposal codec canonicalises the measured smallest modular passenger stati
   equal(#longer.nodes, 19)
   equal(#longer.edges, 18)
   equal(#longer.constructions[1].modules, 11)
+  local omittedNonDefault = util.deepCopy(longerRaw)
+  omittedNonDefault.__constructionAdditions[1].params.length = nil
+  local unsafeDefault, unsafeDefaultError = proposalCodec.normalise(omittedNonDefault, "company:1")
+  equal(unsafeDefault, nil)
+  truthy(tostring(unsafeDefaultError):find("module set", 1, true), unsafeDefaultError)
 
   local twoTrackRaw = setStationPathGraph(smallestStationProposal(500, 3701000, nil, 1), { 13, 13 }, 1)
   local twoTrackParams = twoTrackRaw.__constructionAdditions[1].params

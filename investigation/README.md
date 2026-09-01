@@ -1,7 +1,7 @@
 # TPF2MP investigation record
 
 Last updated: 2026-09-01 (Europe/Amsterdam), development candidate after
-`0.43.3-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+`0.43.4-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
 passenger-presentation schema `4`, cargo-presentation schema `2`,
 freight-industry schema `3`, edge proposal schema `5`, construction proposal
 schema `7`, native hook `0.19.0`.

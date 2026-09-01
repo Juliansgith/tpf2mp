@@ -786,8 +786,8 @@ local exactPreview = {
   },
 }
 -- Construction input remains capturable while a prior ordered action is in
--- flight. The engine queue keeps one latest construction lane, so the click is
--- neither silently discarded nor retained as an unbounded ghost backlog.
+-- flight, but its raw native IDs must be rejected instead of surviving behind
+-- topology-changing work.
 script.handleEvent("test", "tpf2mp", "snapshot", {
   networkMode = "network", activeCompanyCid = "company:1",
   proposals = { queued = 1, applied = 0, failed = 0 },
@@ -805,8 +805,8 @@ nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
 for _ = 1, 35 do script.guiUpdate() end
 local busyCaptures = proposalCaptureEvents()
 assert(#busyCaptures == captureCount + 2
-    and busyCaptures[#busyCaptures].param.queuePolicy == "coalesce-latest-construction",
-  "busy construction click was discarded or missed its latest-only queue policy")
+    and busyCaptures[#busyCaptures].param.queuePolicy == "reject-if-busy",
+  "busy construction click missed its fail-closed raw-snapshot queue policy")
 captureCount = captureCount + 1
 script.handleEvent("test", "tpf2mp", "snapshot", {
   networkMode = "network", activeCompanyCid = "company:1",
@@ -1562,7 +1562,9 @@ local stagedFreshStation = {
     },
   } },
 }
-assert(referenceGuard.validate(stagedFreshStation, {}, nil),
+assert(referenceGuard.validate(stagedFreshStation, {}, nil, {
+    omitConstructionCollateral = true,
+  }),
   "slot-local station after collateral demolition incorrectly required a canonical-node API")
 local referenceTransaction = { edges = {{
   node0 = { cid = "node:event:prior:3" }, node1 = { slot = "node:1" },
@@ -1596,6 +1598,82 @@ local missingReference, missingReferenceError = referenceGuard.validate(
   referenceTransaction, { ["node:event:prior:3"] = 78 }, referenceApi)
 assert(not missingReference and missingReferenceError:find("disappeared", 1, true),
   "stale canonical attachment node was allowed into native materialisation")
+
+do
+-- A native BuildProposal rejection can mutate an existing edge in place while
+-- leaving every entity ID intact. That is the residue sequence which later
+-- reached Build 35924's StreetGeometry assertion in live relay sessions.
+local topologyGuard = require "tpf2_mp/gui_native_topology_guard"
+local topologyComponents = {
+  BASE_NODE = {
+    [201] = { position = { x = 0, y = 0, z = 0 } },
+    [202] = { position = { x = 20, y = 0, z = 0 } },
+  },
+  BASE_EDGE = { [203] = {
+    node0 = 201, node1 = 202,
+    tangent0 = { x = 20, y = 0, z = 0 },
+    tangent1 = { x = 20, y = 0, z = 0 }, objects = {},
+  } },
+  BASE_EDGE_TRACK = { [203] = { trackType = 4, catenary = false } },
+}
+local topologyApi = {
+  type = { ComponentType = {
+    BASE_NODE = "BASE_NODE", BASE_EDGE = "BASE_EDGE",
+    BASE_EDGE_STREET = "BASE_EDGE_STREET", BASE_EDGE_TRACK = "BASE_EDGE_TRACK",
+    PLAYER_OWNED = "PLAYER_OWNED",
+  } },
+  engine = {
+    entityExists = function(id)
+      return topologyComponents.BASE_NODE[id] ~= nil
+        or topologyComponents.BASE_EDGE[id] ~= nil
+    end,
+    getComponent = function(id, kind)
+      return topologyComponents[kind] and topologyComponents[kind][id] or nil
+    end,
+  },
+}
+local topologyTransaction = {
+  nodes = {}, edges = {},
+  edgeObjects = { add = {}, retain = {}, remove = {} },
+  remove = { edges = { "edge:event:prior:1" }, nodes = {} },
+}
+local topologyBefore = assert(topologyGuard.capture(
+  topologyTransaction, { ["edge:event:prior:1"] = 203 }, topologyApi))
+topologyComponents.BASE_EDGE[203].tangent0.x = 17
+local topologyAfter = assert(topologyGuard.recapture(topologyBefore, topologyApi))
+local topologySame, topologyMutation = topologyGuard.compare(topologyBefore, topologyAfter)
+assert(not topologySame and topologyMutation:find("edge:203", 1, true),
+  "in-place native edge mutation escaped rejection residue attestation")
+topologyComponents.BASE_EDGE[203].tangent0.x = 20
+
+local rejectionSnapshotModule = require "tpf2_mp/gui_proposal_rejection_snapshot"
+local rejectionSnapshot = rejectionSnapshotModule.new({
+  componentEntitySet = function(kind)
+    if kind == "BASE_EDGE" then return { [203] = true } end
+    if kind == "BASE_NODE" then return { [201] = true, [202] = true } end
+    return {}
+  end,
+  balanceOf = function() return 5000000 end,
+  getApi = function() return topologyApi end,
+})
+local rejectionBefore = assert(rejectionSnapshot.capture(
+  topologyApi.type.ComponentType, 100, 100, false, topologyTransaction,
+  { ["edge:event:prior:1"] = 203 }))
+topologyComponents.BASE_NODE[202].position.y = 3
+local rejectionUnchanged, rejectionMutation = rejectionSnapshot.unchanged(
+  rejectionBefore, topologyApi.type.ComponentType, 100, 100)
+assert(not rejectionUnchanged and rejectionMutation:find("topology", 1, true),
+  "unchanged ID sets concealed an in-place native node mutation")
+topologyComponents.BASE_NODE[202].position.y = 0
+
+local staleFingerprint, staleFingerprintError = referenceGuard.validate(
+  { edges = {}, edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = { "edge:pre:deadbeef" }, nodes = {} } },
+  { ["edge:pre:deadbeef"] = 203 }, topologyApi,
+  { fingerprint = function() return "cafebabe" end })
+assert(not staleFingerprint and staleFingerprintError:find("fingerprint changed", 1, true),
+  "stale canonical edge fingerprint reached native replay")
+end
 
 local quarantineLogs = {}
 local quarantineRuntime = eventRuntimeModule.new({
@@ -1746,6 +1824,28 @@ assert(replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
   "town-road collateral demolition did not preserve vanilla soft-error acceptance")
 replayQuarantineModule.reset(replayGui)
 
+local stagedEntityExists = api.engine.entityExists
+local stagedGetComponent = api.engine.getComponent
+api.type.ComponentType.BASE_EDGE_TRACK = "BASE_EDGE_TRACK"
+api.engine.entityExists = function(id)
+  return id == 77 or id == 78 or id == 79 or stagedEntityExists(id)
+end
+api.engine.getComponent = function(id, componentType)
+  if id == 77 and componentType == "BASE_EDGE" then
+    return {
+      node0 = 78, node1 = 79,
+      tangent0 = { x = 20, y = 0, z = 0 },
+      tangent1 = { x = 20, y = 0, z = 0 }, objects = {},
+    }
+  end
+  if (id == 78 or id == 79) and componentType == "BASE_NODE" then
+    return { position = { x = id, y = 0, z = 0 } }
+  end
+  if id == 77 and componentType == "BASE_EDGE_TRACK" then
+    return { trackType = 0, catenary = false }
+  end
+  return stagedGetComponent(id, componentType)
+end
 replayState.world.proposals.byId["gui-staged-connected-terminal"] = {
   proposalId = "gui-staged-connected-terminal",
   status = "queued",
@@ -1763,13 +1863,22 @@ replayState.world.proposals.byId["gui-staged-connected-terminal"] = {
   localRefs = { ["edge:pre:town-road"] = 77 },
   nativeOwnerPlayerId = 100, issuerPlayerId = 100,
 }
-assert(issueQueuedReplay() == true
+local stagedReplayIssued
+for _ = 1, 6 do
+  stagedReplayIssued = issueQueuedReplay()
+  if replayGui.proposalReplayQuarantine
+      and replayGui.proposalReplayQuarantine.proposalId == "gui-staged-connected-terminal" then break end
+end
+assert(stagedReplayIssued == true
     and replayGui.proposalReplayQuarantine
     and replayGui.proposalReplayQuarantine.proposalId == "gui-staged-connected-terminal"
     and replayMaterialiseCalls[#replayMaterialiseCalls].options.omitConstructionCollateral == true
     and replayBuildCalls[#replayBuildCalls].ignoreErrors == true,
   "post-collateral terminal did not use pointer-free exact GUI replay")
 replayQuarantineModule.reset(replayGui)
+api.engine.entityExists = stagedEntityExists
+api.engine.getComponent = stagedGetComponent
+api.type.ComponentType.BASE_EDGE_TRACK = nil
 
 local successfulSendCommand = api.cmd.sendCommand
 api.cmd.sendCommand = function(command, callback)

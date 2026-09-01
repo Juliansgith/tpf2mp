@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Current release: `0.43.3-alpha`
+Current release: `0.43.4-alpha`
 
 Last reviewed: 2026-09-01
 
@@ -138,7 +138,7 @@ and [practical geometry qualification](../investigation/PRACTICAL_TRACK_AND_STAT
 
 ## Release position
 
-`0.43.3-alpha` is suitable for external trusted-tester feedback. The next
+`0.43.4-alpha` is suitable for external trusted-tester feedback. The next
 evidence priority is a multi-hour physical two-computer relay match exercising
 dense construction, several simultaneous vehicles, passenger transfers,
 positive freight, reconnect, and receipt-bound restore. The machine-checkable

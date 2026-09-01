@@ -2518,6 +2518,7 @@ local function normaliseForNetwork(action)
     end
     if not transaction then
       local capture = state.probes.capture
+      local stationDiagnostic = proposalCodec.stationLayoutDiagnostic(copy.proposalSnapshot)
       local failure = {
         tick = state.tick,
         companyCid = companyCid,
@@ -2525,6 +2526,14 @@ local function normaliseForNetwork(action)
         snapshotDigest = hash.value(copy.proposalSnapshot),
         diagnostic = proposalCodec.diagnose(copy.proposalSnapshot),
       }
+      if stationDiagnostic then
+        failure.stationParams = stationDiagnostic.params
+        failure.stationParamKeys = stationDiagnostic.paramKeys
+        failure.stationMissingDefaults = stationDiagnostic.missingDefaults
+        failure.stationInvalidParams = stationDiagnostic.invalidParams
+        failure.stationModuleCount = stationDiagnostic.moduleCount
+        failure.stationDefaultTemplateMatch = stationDiagnostic.defaultTemplateMatch
+      end
       capture.proposalCodecFailureCount = (capture.proposalCodecFailureCount or 0) + 1
       capture.lastProposalCodecFailure = util.deepCopy(failure)
       capture.proposalCodecFailures = capture.proposalCodecFailures or {}
@@ -2537,6 +2546,12 @@ local function normaliseForNetwork(action)
         companyCid = failure.companyCid,
         snapshotDigest = failure.snapshotDigest,
         diagnostic = util.deepCopy(failure.diagnostic),
+        stationParams = failure.stationParams,
+        stationParamKeys = failure.stationParamKeys,
+        stationMissingDefaults = failure.stationMissingDefaults,
+        stationInvalidParams = failure.stationInvalidParams,
+        stationModuleCount = failure.stationModuleCount,
+        stationDefaultTemplateMatch = failure.stationDefaultTemplateMatch,
       }, state.tick)
       return nil, proposalError
     end

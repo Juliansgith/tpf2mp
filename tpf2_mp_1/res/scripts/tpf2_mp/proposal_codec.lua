@@ -5,6 +5,7 @@ if not constructionMaterializerOk then
   constructionProposalMaterializer = require "tpf2_mp_probe/construction_proposal_materializer"
 end
 local hash = require "tpf2_mp/hash"
+local stationLayout = require "tpf2_mp/proposal_station_layout"
 local util = require "tpf2_mp/util"
 
 -- Canonical, pointer-free BuildProposal vertical slice.  The native proposal
@@ -623,6 +624,28 @@ local function matchStockStationModules(moduleEntries, params)
   return nil
 end
 
+-- Stock defaults may be omitted or expose boolean catenary. The extracted
+-- policy normalises them, while this wrapper independently reports whether the
+-- complete stock module template agrees for relay-visible support evidence.
+function M.stationLayoutDiagnostic(root)
+  local station
+  for _, entry in ipairs(entries(constructionAdditions(root))) do
+    local candidate = entry.value
+    if (safeField(candidate, "fileName") or safeField(candidate, "name")) == STATION_FILE then
+      station = candidate
+      break
+    end
+  end
+  if station == nil then return nil end
+  local sourceParams = safeField(station, "params") or safeField(station, "param")
+  local moduleEntries = entries(safeField(sourceParams, "modules"))
+  local params = stationLayout.params(sourceParams)
+  local templateMatch = params.year ~= nil and params.seed ~= nil
+    and stationLayout.inRange(params)
+    and matchStockStationModules(moduleEntries, params) ~= nil
+  return stationLayout.diagnostic(sourceParams, #moduleEntries, templateMatch)
+end
+
 local function affineTransform(value)
   local transform = diagnosticTransform(value)
   if not transform then return nil, "station construction transform is not a finite 4x4 matrix" end
@@ -657,23 +680,10 @@ local function normaliseStationConstruction(value)
   if type(sourceParams) ~= "table" and type(sourceParams) ~= "userdata" then
     return nil, "station construction params are unavailable"
   end
-  local params = {
-    year = integer(safeField(sourceParams, "year")),
-    seed = integer(safeField(sourceParams, "seed")),
-    trackType = integer(safeField(sourceParams, "trackType")),
-    catenary = integer(safeField(sourceParams, "catenary")),
-    length = integer(safeField(sourceParams, "length")),
-    tracks = integer(safeField(sourceParams, "tracks")),
-    paramX = integer(safeField(sourceParams, "paramX")),
-    paramY = integer(safeField(sourceParams, "paramY")),
-  }
+  local params = stationLayout.params(sourceParams)
   if not params.year or params.year < 1850 or params.year > 3000 then return nil, "station year is invalid" end
   if not params.seed or params.seed < 0 or params.seed > 2147483647 then return nil, "station seed is invalid" end
-  if (params.trackType ~= 0 and params.trackType ~= 1)
-    or (params.catenary ~= 0 and params.catenary ~= 1)
-    or not params.length or params.length < 0 or params.length > 4
-    or not params.tracks or params.tracks < 0 or params.tracks > 7
-    or params.paramX ~= 0 or params.paramY ~= 0 then
+  if not stationLayout.inRange(params) then
     return nil, "station layout parameters are outside the stock modular menu range"
   end
   local moduleEntries = entries(safeField(sourceParams, "modules"))

@@ -1,6 +1,4 @@
-local M = {
-  COALESCE_LATEST = "coalesce-latest-construction",
-}
+local M = { REJECT_IF_BUSY = "reject-if-busy" }
 
 local function pending(section)
   return math.max(0, tonumber(section and section.pending) or 0)
@@ -36,17 +34,34 @@ end
 
 function M.message(reason)
   return "TPF2MP: " .. tostring(reason or "multiplayer is synchronising")
-    .. "; the newest construction click is pending. Another click replaces it instead of creating delayed duplicates."
+    .. "; this construction click was not queued. Retry when synchronisation completes."
 end
 
 function M.refresh(gui, snapshot)
+  local capture = snapshot and snapshot.probes and snapshot.probes.capture or {}
+  local failures = math.max(0, tonumber(capture.proposalCodecFailureCount) or 0)
+  if gui.observedProposalCodecFailures == nil then
+    gui.observedProposalCodecFailures = failures
+  elseif failures > gui.observedProposalCodecFailures then
+    gui.observedProposalCodecFailures = failures
+    if type(gui.invalidateBuildCorrelation) == "function" then
+      gui.invalidateBuildCorrelation("proposal-codec-rejection", { clearConstruction = true })
+    end
+  end
   if M.reason(snapshot) then return end
   gui.blockedConstructionApplyUntilFrame = nil
   gui.constructionBusyNoticeActive = false
 end
 
 function M.queuePolicy(gui, snapshot)
-  return gui.proposalSnapshotHasConstructionChange(snapshot) and M.COALESCE_LATEST or nil
+  -- Engine-local IDs are valid only against the topology visible at click time.
+  if M.reason(snapshot or gui.snapshot)
+      and type(gui.invalidateBuildCorrelation) == "function" then
+    gui.invalidateBuildCorrelation("busy-build-capture-retired", {
+      clearConstruction = true, silent = true,
+    })
+  end
+  return M.REJECT_IF_BUSY
 end
 
 local function capturedConstruction(gui, pending)
@@ -75,22 +90,19 @@ function M.handleBuilderEvent(gui, id, isCreate, isApply, param, diagnosticLog)
   if not isApply then return false end
   local capture = gui.nativeBuildCapture or {}
   local firstNotice = gui.constructionBusyNoticeActive ~= true
-  if firstNotice then capture.busyDeferred = (capture.busyDeferred or 0) + 1 end
+  if firstNotice then capture.busyRejected = (capture.busyRejected or 0) + 1 end
   gui.constructionBusyNoticeActive = true
   gui.nativeBuildCapture = capture
   local message = M.message(reason)
   gui.lastError = message
   if firstNotice then
     gui.lastConstructionBusyDiagnosticFrame = gui.frames or 0
-    diagnosticLog("construction-input-coalesced", {
+    diagnosticLog("construction-input-busy-rejected", {
       sourceId = tostring(id or ""), reason = reason,
-      builderEvent = isApply and "builder.apply" or "builder.proposalCreate",
-      deferred = capture.busyDeferred,
+      builderEvent = isApply and "builder.apply" or "builder.proposalCreate", rejected = capture.busyRejected,
     })
   end
-  -- Do not veto the builder callback. The native visitor still suppresses the
-  -- local mutation, and the engine-side policy retains only the latest exact
-  -- click until the ordered lane is free.
+  -- Native suppression still prevents mutation; the exact capture is rejected.
   return false
 end
 

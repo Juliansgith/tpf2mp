@@ -508,10 +508,16 @@ assert(players[100].balance == 5000000 and players[101].balance == 5000000
 local emittedBeforeCodecFailure = script.save().bridge.emitted
 script.handleEvent("test", "tpf2mp", "intent", {
   type = "proposal.capture",
-  companyCid = "company:2",
-  proposalSnapshot = {
-    __observedCost = 100,
-    constructionsToAdd = {{ fileName = "station/unsupported.con" }},
+    companyCid = "company:2",
+    proposalSnapshot = {
+      __observedCost = 100,
+      constructionsToAdd = {{
+        fileName = "station/rail/modular_station/modular_station.con",
+        params = {
+          year = 1992, seed = 0, trackType = 0, catenary = 0,
+          length = 0, tracks = 8, paramX = 0, paramY = 0, modules = {},
+        },
+      }},
   },
 })
 local codecFailureState = script.save()
@@ -527,7 +533,10 @@ codecFailureFile:close()
 assert(codecFailureEnvelope.kind == "telemetry"
   and codecFailureEnvelope.payload.type == "proposal-codec-failure"
   and codecFailureEnvelope.payload.snapshotDigest
-  and codecFailureEnvelope.payload.diagnostic.counts.constructionsToAdd == 1,
+  and codecFailureEnvelope.payload.diagnostic.counts.constructionsToAdd == 1
+  and codecFailureEnvelope.payload.stationParams:find("tracks=8", 1, true)
+  and codecFailureEnvelope.payload.stationInvalidParams:find("tracks", 1, true)
+  and codecFailureEnvelope.payload.stationModuleCount == 0,
   "unsupported proposal disappeared without a bounded bridge diagnostic")
 
 local transaction = {
@@ -559,11 +568,10 @@ assert(record.companyCid == "company:2" and record.issuerPlayerId == 100
   and record.nativeOwnerPlayerId == 100,
   "player2's own proposal did not bind its issuer and native owner to Company 2")
 
--- Vanilla clicks can arrive after the native gate suppressed them but while a
--- prior physical/checkpoint barrier is still pending. Preserve a bounded FIFO
--- and submit its head after authority becomes idle instead of silently losing
--- clicks or reordering them.
-local deferredCapture = {
+-- Canonical prepared work may wait in the bounded physical FIFO. Raw vanilla
+-- captures may not: their engine-local IDs describe only the topology at the
+-- instant of the click.
+local rawDeferredCapture = {
   type = "proposal.capture",
   companyCid = "company:2",
   proposalSnapshot = {
@@ -590,6 +598,29 @@ local deferredCapture = {
     constructionsToAdd = {}, constructionsToRemove = {},
   },
 }
+local function deferredPrepare(cost, x)
+  local prepared = {
+    schemaVersion = proposalCodec.SCHEMA_VERSION,
+    companyCid = "company:2", cost = cost,
+    nodes = {
+      { slot = "node:1", position = { x = x, y = 0, z = 0 } },
+      { slot = "node:2", position = { x = x + 40, y = 0, z = 0 } },
+    },
+    edges = {{
+      slot = "edge:1", carrier = "track",
+      node0 = { slot = "node:1" }, node1 = { slot = "node:2" },
+      tangent0 = { x = 40, y = 0, z = 0 }, tangent1 = { x = 40, y = 0, z = 0 },
+      type = 0, typeIndex = 0, resource = { index = 0, name = "standard.lua" },
+      catenary = false, private = true, logicalOwnerCid = "company:2",
+    }},
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    remove = { edges = {}, nodes = {} },
+  }
+  prepared.digest = proposalCodec.digest(prepared)
+  prepared.transactionId = "proposal:" .. prepared.digest
+  return { type = "proposal.prepare", companyCid = "company:2", transaction = prepared }
+end
+local deferredCapture = deferredPrepare(12345, 200)
 local emittedBeforeDeferred = script.save().bridge.emitted
 script.handleEvent("test", "tpf2mp", "intent", deferredCapture)
 local deferredState = script.save()
@@ -601,7 +632,7 @@ assert(deferredState.lastResult and deferredState.lastResult.deferred == true
 assert(deferredState.bridge.emitted == emittedBeforeDeferred,
   "deferred build escaped to the companion before the physical barrier closed")
 local rejectIfBusyCapture = {}
-for key, value in pairs(deferredCapture) do rejectIfBusyCapture[key] = value end
+for key, value in pairs(rawDeferredCapture) do rejectIfBusyCapture[key] = value end
 rejectIfBusyCapture.queuePolicy = "reject-if-busy"
 script.handleEvent("test", "tpf2mp", "intent", rejectIfBusyCapture)
 local busyRejectedState = script.save()
@@ -612,10 +643,8 @@ assert(busyRejectedState.lastResult and busyRejectedState.lastResult.rejected ==
   "construction-only busy policy did not reject instead of deferring")
 assert(busyRejectedState.bridge.emitted == emittedBeforeDeferred,
   "busy-rejected construction escaped to the companion")
-deferredCapture.proposalSnapshot.__observedCost = 54321
-deferredCapture.proposalSnapshot.streetProposal.nodesToAdd[1].comp.position.x = 300
-deferredCapture.proposalSnapshot.streetProposal.nodesToAdd[2].comp.position.x = 340
-script.handleEvent("test", "tpf2mp", "intent", deferredCapture)
+local secondDeferredCapture = deferredPrepare(54321, 300)
+script.handleEvent("test", "tpf2mp", "intent", secondDeferredCapture)
 local secondDeferredState = script.save()
 assert(secondDeferredState.lastResult and secondDeferredState.lastResult.deferred == true
   and secondDeferredState.lastResult.queuePosition == 2
@@ -686,7 +715,7 @@ end
 assert(deferredEnvelope and deferredEnvelope.payload.action.transaction.companyCid == "company:2"
   and deferredEnvelope.payload.action.transaction.cost == 12345
   and deferredEnvelope.payload.action.proposalSnapshot == nil,
-  "released deferred build was not canonicalized into one portable intent")
+  "released canonical build was not emitted as one portable intent")
 
 -- Ordering the released head must hold its follower until the first physical
 -- result and checkpoint both close. Then the second independent capture is

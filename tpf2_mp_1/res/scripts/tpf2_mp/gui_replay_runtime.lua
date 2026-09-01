@@ -24,12 +24,10 @@ function M.new(deps)
   local componentEntitySet = assert(deps.componentEntitySet, "componentEntitySet dependency is required")
   local balanceOf = assert(deps.balanceOf, "balanceOf dependency is required")
   local queueAction = assert(deps.queueAction, "queueAction dependency is required")
-  local EVENT_ID = tostring(deps.eventId or "tpf2mp")
-  local SCRIPT_FILE = tostring(deps.scriptFile or "tpf2_mp.lua")
+  local EVENT_ID, SCRIPT_FILE = tostring(deps.eventId or "tpf2mp"), tostring(deps.scriptFile or "tpf2_mp.lua")
   local setDifference = util.setDifference
   local proposalWorld = proposalRejectionSnapshot.new({
-    componentEntitySet = componentEntitySet,
-    balanceOf = balanceOf,
+    componentEntitySet = componentEntitySet, balanceOf = balanceOf, diagnosticLog = deps.diagnosticLog,
   })
 
   local state = setmetatable({}, {
@@ -265,7 +263,9 @@ function M.new(deps)
         local captureEntityDelta = exactConstruction
           or derivedStation.requiresCapture(proposalTransaction, state.canonical)
         local beforeWorld, worldCaptureError = proposalWorld.capture(
-          types, issuerPlayerId, nativePlayerId, captureEntityDelta)
+          types, issuerPlayerId, nativePlayerId, captureEntityDelta,
+          proposalTransaction, localRefs, { omitConstructionCollateral =
+            record.replayPath == "staged-gui-build-proposal" })
         if not beforeWorld then
           rejectGuiProposal(proposalId, worldCaptureError, true)
           return true
@@ -291,8 +291,8 @@ function M.new(deps)
         gui.issuingCanonicalProposal = proposalId
         local sent, sendError = util.sendCommand(commandOrError, function(_, success)
             replayQuarantine.nativeSettled(gui, proposalId); if success ~= true then
-              rejectGuiProposal(proposalId, "native BuildProposal rejected",
-                proposalWorld.unchanged(beforeWorld, types, issuerPlayerId, nativePlayerId))
+              rejectGuiProposal(proposalId, proposalWorld.rejection(beforeWorld,
+                types, issuerPlayerId, nativePlayerId, "native BuildProposal rejected"))
               return
             end
             local afterEdges, afterEdgeError = componentEntitySet(types.BASE_EDGE)
@@ -338,8 +338,8 @@ function M.new(deps)
           end, "mod.network.replay-build-proposal")
         gui.issuingCanonicalProposal = nil
         if not sent then replayQuarantine.nativeSettled(gui, proposalId)
-          rejectGuiProposal(proposalId, sendError,
-            proposalWorld.unchanged(beforeWorld, types, issuerPlayerId, nativePlayerId))
+          rejectGuiProposal(proposalId, proposalWorld.rejection(beforeWorld,
+            types, issuerPlayerId, nativePlayerId, sendError))
         end
         return true
       end

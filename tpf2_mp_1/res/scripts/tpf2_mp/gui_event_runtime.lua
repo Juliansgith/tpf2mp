@@ -798,7 +798,7 @@ function M.new(deps)
     eventShape = eventShape,
     componentEntitySet = componentEntitySet,
     balanceOf = balanceOf,
-    queueAction = queueAction,
+    queueAction = queueAction, diagnosticLog = diagnosticLog,
     eventId = EVENT_ID,
     scriptFile = SCRIPT_FILE,
   })

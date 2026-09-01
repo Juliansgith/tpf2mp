@@ -62,6 +62,11 @@ function M.finish(gui, proposalId)
   assert(type(gui) == "table", "GUI state is required")
   local quarantine = gui.proposalReplayQuarantine
   if not quarantine or tostring(quarantine.proposalId) ~= tostring(proposalId) then return false end
+  if type(gui.invalidateBuildCorrelation) == "function" then
+    gui.invalidateBuildCorrelation("canonical-replay-finish", {
+      clearConstruction = true, silent = true,
+    })
+  end
   selectorGuard.release(quarantine)
   gui.proposalReplayQuarantine = nil
   return true

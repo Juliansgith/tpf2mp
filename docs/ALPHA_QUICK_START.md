@@ -1,6 +1,6 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.43.3-alpha` is a restricted two-player competitive build for the
+TPF2MP `0.43.4-alpha` is a restricted two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
 trust each other. Its preferred transport is the TPF2MP secure relay: both
 players make outbound WSS connections, so neither player opens a port. Direct

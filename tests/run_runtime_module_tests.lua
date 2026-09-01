@@ -15,6 +15,7 @@ local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_sche
 local guiClockCapturePolicyModule = require "tpf2_mp/gui_clock_capture_policy"
 local guiBuildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
 local guiBuildCorrelationModule = require "tpf2_mp/gui_build_correlation"
+local guiConstructionSubmissionModule = require "tpf2_mp/gui_construction_submission"
 local guiProposalPredicatesModule = require "tpf2_mp/gui_proposal_predicates"
 local proposalCodec = require "tpf2_mp/proposal_codec"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
@@ -82,6 +83,36 @@ local canonicalModule = require "tpf2_mp/canonical"
 local worldModule = require "tpf2_mp/world"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
+
+do
+  local invalidations = {}
+  local gui = {
+    observedProposalCodecFailures = 2,
+    invalidateBuildCorrelation = function(reason, options)
+      invalidations[#invalidations + 1] = { reason = reason, options = options }
+    end,
+  }
+  local rejected = {
+    networkMode = "standalone",
+    probes = { capture = { proposalCodecFailureCount = 3 } },
+  }
+  guiConstructionSubmissionModule.refresh(gui, rejected)
+  guiConstructionSubmissionModule.refresh(gui, rejected)
+  assert(#invalidations == 1
+      and invalidations[1].reason == "proposal-codec-rejection"
+      and invalidations[1].options.clearConstruction == true,
+    "codec rejection did not retire the cached native construction preview once")
+  local busy = {
+    networkMode = "network",
+    bridge = { companion = { connected = true } },
+    deferredNetworkQueue = { awaitingOrder = true },
+  }
+  assert(guiConstructionSubmissionModule.queuePolicy(gui, busy) == "reject-if-busy"
+      and #invalidations == 2
+      and invalidations[2].reason == "busy-build-capture-retired"
+      and invalidations[2].options.clearConstruction == true,
+    "busy native construction capture was retained for delayed replay")
+end
 
 do
   -- Stock line/vehicle/depot windows issue SetGameSpeed(0) as modal UI
@@ -4535,9 +4566,9 @@ do
 end
 
 do
-  -- Construction input has a latest-only physical lane while consensus is
-  -- busy.  Replacing a preview must not replay old station ghosts, change its
-  -- position relative to other work, or overflow the bounded FIFO.
+  -- A captured proposal contains native IDs from the topology visible at the
+  -- click. It must never be retained or replace another capture while ordered
+  -- work is changing that topology.
   local state = { tick = 41 }
   local queue = {
     { action = { type = "operation.execute" }, queuedTick = 39 },
@@ -4550,17 +4581,15 @@ do
     type = "proposal.capture", queuePolicy = "coalesce-latest-construction",
     companyCid = "company:1", cost = 200,
   }, "ordered work pending", state, queue, 2, function() end, function() end)
-  assert(handled and accepted and result.replaced and #queue == 2
-      and queue[1].action.type == "operation.execute"
-      and queue[2].action.cost == 200 and queue[2].queuedTick == 41,
-    "latest construction input was not coalesced at the physical FIFO tail")
-  queue[2] = { action = { type = "operation.execute" }, queuedTick = 40 }
+  assert(handled and not accepted and type(result) == "string" and #queue == 2
+      and queue[2].action.cost == 100,
+    "legacy latest-only proposal capture was allowed to outlive its topology")
   handled, accepted, result = networkBusyRejectionModule.handle({
-    type = "proposal.capture", queuePolicy = "coalesce-latest-construction",
+    type = "proposal.capture", queuePolicy = "reject-if-busy",
     companyCid = "company:1", cost = 300,
   }, "ordered work pending", state, queue, 2, function() end, function() end)
   assert(handled and not accepted and type(result) == "string" and #queue == 2,
-    "construction coalescing exceeded the bounded physical FIFO")
+    "raw proposal capture entered the bounded physical FIFO")
 end
 
 do

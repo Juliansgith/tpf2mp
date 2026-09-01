@@ -251,7 +251,7 @@ function M.new(deps)
       pendingReason = "earlier multiplayer physical actions are queued locally"
     end
     if pendingReason then
-      local deferablePhysical = action.type == "proposal.capture" or action.type == "proposal.prepare"
+      local deferablePhysical = action.type == "proposal.prepare"
         or action.type == "proposal.build" or action.type == "operation.execute"
       local busyHandled, busyAccepted, busyResult = busyRejection.handle(
         action, pendingReason, state, deferredNetworkIntents,
