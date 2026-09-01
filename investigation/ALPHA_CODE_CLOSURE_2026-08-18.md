@@ -64,7 +64,7 @@ architecture boundaries.
 
 No local test can honestly manufacture the first physical two-computer receipt.
 The code-side alpha profile is closed; release still requires the exact run in
-`ALPHA_RELEASE_CHECKLIST.md`: passenger and cargo transfers, town development,
+`docs/ALPHA_RELEASE_CHECKLIST.md`: passenger and cargo transfers, town development,
 multiple vehicles, disconnect/reconnect, paired restore, and a passing
 `-Profile alpha` report assembled from both machines. Clean-machine install and
 performance/usability observation also remain human gates. Public Internet,

@@ -8,6 +8,7 @@ if (-not $ProjectRoot) { $ProjectRoot = Split-Path -Parent $PSScriptRoot }
 $root = [IO.Path]::GetFullPath($ProjectRoot)
 
 $budgets = [ordered]@{
+    'tools\check_documentation.ps1' = 260
     'tools\recovery_plan_common.ps1' = 120
     'tools\recovery_save_common.ps1' = 120
     'tools\save_recovery_via_ui.ps1' = 240

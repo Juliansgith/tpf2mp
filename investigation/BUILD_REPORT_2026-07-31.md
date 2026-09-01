@@ -83,7 +83,7 @@ A separate supervised capability run, `runtime/supported-api-probe/20260801-0327
 
 The current automated suite passes 11 Lua unit tests plus edge-replacement, game-script, hot-seat, replay, and GUI integrations; syntax checks for all 12 mod Lua files, two investigation Lua probes, and 17 PowerShell tools; 14 Python/companion tests including real localhost TCP and the Windows-Lua halfway-float checksum vector; an actual Lua-checkpoint-to-Python replay; and a separate 104-event cross-language replay trace.
 
-See `REMAINING_FROM_BRIEF.md` for the current itemized product gap. The old hashes and “main-menu only” result later in this dated report describe the 2026-07-31 artifact, not the installed 2026-08-01 build.
+See `docs/REMAINING_FROM_BRIEF.md` for the current itemized product gap. The old hashes and “main-menu only” result later in this dated report describe the 2026-07-31 artifact, not the installed 2026-08-01 build.
 
 ## Delivered architecture
 

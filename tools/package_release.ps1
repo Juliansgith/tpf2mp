@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.42.5-alpha',
+    [string]$Version = '0.43.0-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -213,43 +213,10 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_uninstall.cmd') -Destin
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'release_update.cmd') -Destination (Join-Path $releaseRoot 'UPDATE_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination (Join-Path $releaseRoot 'LAUNCH_TPF2MP.cmd')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'relay-config.json') -Destination (Join-Path $releaseRoot 'relay-config.json')
-$documentNames = @(
-    'README.md', 'PUBLIC_ALPHA_GUIDE.md', 'ALPHA_QUICK_START.md', 'ALPHA_RELEASE_CHECKLIST.md',
-    'SECURE_RELAY.md', 'RELEASE_NOTES_0.42.5-alpha.md', 'RELEASE_NOTES_0.42.4-alpha.md',
-    'RELEASE_NOTES_0.42.3-alpha.md',
-    'RELEASE_NOTES_0.42.2-alpha.md',
-    'RELEASE_NOTES_0.42.1-alpha.md', 'RELEASE_NOTES_0.42.0-alpha.md',
-    'RELEASE_NOTES_0.41.11-alpha.md',
-    'RELEASE_NOTES_0.41.10-alpha.md',
-    'RELEASE_NOTES_0.41.9-alpha.md',
-    'RELEASE_NOTES_0.41.8-alpha.md',
-    'RELEASE_NOTES_0.41.7-alpha.md',
-    'RELEASE_NOTES_0.41.6-alpha.md',
-    'RELEASE_NOTES_0.41.5-alpha.md',
-    'RELEASE_NOTES_0.41.4-alpha.md',
-    'RELEASE_NOTES_0.41.3-alpha.md',
-    'RELEASE_NOTES_0.41.2-alpha.md',
-    'RELEASE_NOTES_0.41.1-alpha.md',
-    'RELEASE_NOTES_0.41.0-alpha.md',
-    'RELEASE_NOTES_0.40.9-alpha.md',
-    'RELEASE_NOTES_0.40.8-alpha.md',
-    'RELEASE_NOTES_0.40.7-alpha.md',
-    'RELEASE_NOTES_0.40.6-alpha.md',
-    'RELEASE_NOTES_0.40.5-alpha.md',
-    'RELEASE_NOTES_0.40.4-alpha.md',
-    'RELEASE_NOTES_0.40.2-alpha.md',
-    'RELEASE_NOTES_0.40.1-alpha.md',
-    'RELEASE_NOTES_0.40.0-alpha.md',
-    'TPF2MP_FULL_ALPHA_TEST_INSTRUCTIONS.txt',
-    'DISTRIBUTION_AND_UPDATES.md',
-    'ARCHITECTURE.md', 'PROTOTYPE_STATUS.md', 'REMAINING_FROM_BRIEF.md',
-    'tpf2-competitive-multiplayer-concept.md', 'tpf2-competitive-multiplayer-technical-plan.md',
-    'multiplayer-companies-audit.md'
-)
-foreach ($name in $documentNames) {
-    Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination (Join-Path $releaseRoot "docs\$name")
-}
-Copy-ReleaseTree (Join-Path $projectRoot 'investigation') (Join-Path $releaseRoot 'docs\investigation')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') `
+    -Destination (Join-Path $releaseRoot 'README.md')
+Copy-ReleaseTree (Join-Path $projectRoot 'docs') (Join-Path $releaseRoot 'docs')
+Copy-ReleaseTree (Join-Path $projectRoot 'investigation') (Join-Path $releaseRoot 'investigation')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'native\README.md') -Destination (Join-Path $releaseRoot 'docs\NATIVE_HOOK.md')
 
 $quickStart = @'

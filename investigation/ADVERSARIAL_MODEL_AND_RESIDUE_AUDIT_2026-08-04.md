@@ -2,8 +2,8 @@
 
 Date: 2026-08-04 (Europe/Amsterdam)  
 Auditor: Codex  
-Scope: `36e3b46`, `13c309d`, and the handoff in
-`CODEX_HANDOFF_2026-08-04.md`  
+Scope: `36e3b46`, `13c309d`, and the transient agent handoff whose actionable
+findings are retained in this report
 Result: four material defect classes reproduced and closed; offline and native
 build gates pass; fresh human live tests remain pending.
 

@@ -32,6 +32,9 @@ New-Item -ItemType Directory -Force -Path $gameOutbox, $gameInbox, $mainOutbox, 
 New-Item -ItemType Directory -Force -Path $industryContent, $industryState | Out-Null
 
 try {
+    & (Join-Path $projectRoot 'tools\check_documentation.ps1') -ProjectRoot $projectRoot
+    if (-not $?) { throw 'Documentation integrity checks failed' }
+
     & (Join-Path $projectRoot 'tools\check_source_boundaries.ps1') -ProjectRoot $projectRoot
     if (-not $?) { throw 'Architecture boundary checks failed' }
 

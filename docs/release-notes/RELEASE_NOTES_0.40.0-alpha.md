@@ -57,7 +57,7 @@ the host's 45-second physical-completion deadline therefore faulted correctly.
 The 53,532,582-byte save eventually completed, too late for that session.
 
 The full autosave timeline and next live gate are in
-`investigation/RELAY_AUTOSAVE_PROPOSAL_TIMEOUT_2026-08-24.md`.
+`../../investigation/RELAY_AUTOSAVE_PROPOSAL_TIMEOUT_2026-08-24.md`.
 
 ## Verification state
 
