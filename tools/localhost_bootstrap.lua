@@ -6,9 +6,15 @@
 -- through the ordinary game console after both native hooks are installed.
 -- No game is saved by this script.
 function data()
-  local peer = os.getenv("TPF2MP_PEER_ID") or "unknown"
-  local session = os.getenv("TPF2MP_SESSION_ID") or "unknown"
-  local root = (os.getenv("TPF2MP_BRIDGE_DIR") or "."):gsub("\\", "/"):gsub("/+$", "")
+  local peer = os.getenv("TPF2MP_PEER_ID")
+  local session = os.getenv("TPF2MP_SESSION_ID")
+  local bridgeRoot = os.getenv("TPF2MP_BRIDGE_DIR")
+  if (peer ~= "player1" and peer ~= "player2")
+      or type(session) ~= "string" or not session:match("^[%w][%w_.%-]*$")
+      or #session > 64 or type(bridgeRoot) ~= "string" or bridgeRoot == "" then
+    return { update = function() end }
+  end
+  local root = bridgeRoot:gsub("\\", "/"):gsub("/+$", "")
   local frames = 0
   local started = false
   local stopping = false

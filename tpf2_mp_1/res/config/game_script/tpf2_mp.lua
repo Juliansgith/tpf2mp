@@ -1,5 +1,6 @@
-local util = require "tpf2_mp/util"
-local json = require "tpf2_mp/json"
+-- TPF2MP managed base-game runtime overlay; inert without explicit activation.
+local activationLoaded, runtimeActivation = pcall(require, "tpf2_mp/runtime_activation"); if activationLoaded and runtimeActivation.explicit() then
+local util, json = require "tpf2_mp/util", require "tpf2_mp/json"
 local hash = require "tpf2_mp/hash"
 local canonical = require "tpf2_mp/canonical"
 local economy = require "tpf2_mp/economy"
@@ -3509,7 +3510,5 @@ local script = {
     return result
   end,
 }
-
-function data()
-  return script
-end
+function data() return script end
+else function data() return {} end end

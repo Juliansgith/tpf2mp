@@ -297,6 +297,7 @@ $state = [ordered]@{
     nativeSaveLoadReceipt = $null
     pausedNetworkWake = $null
     runtimeOverlay = $null
+    runtimeOverlayCleanup = $null
     menuBootstrap = $null
     directLaunchMarker = $null
     initialRecoveryArchive = $null
@@ -583,6 +584,19 @@ catch {
         if ($cleanupProcess) {
             Stop-Process -Id $cleanupProcess.Id -Force -ErrorAction SilentlyContinue
             [void]$cleanupProcess.WaitForExit(5000)
+        }
+    }
+    if (($runtimeOverlay -or $menuBootstrap) -and $game) {
+        try {
+            $state.runtimeOverlayCleanup = Remove-Tpf2mpManagedRuntimeOverlay `
+                -BundleRoot $bundle -GameExecutable $game -SkipIfGameRunning
+        }
+        catch {
+            Write-Warning "Failed-launch runtime-overlay cleanup requires attention: $($_.Exception.Message)"
+            $state.runtimeOverlayCleanup = [pscustomobject]@{
+                status = 'error'; removed = 0; archive = $null
+                error = $_.Exception.Message
+            }
         }
     }
     [void](Write-Tpf2mpSessionState $safeSession $peer $state)

@@ -2181,6 +2181,22 @@ finally {
     if ($gameScriptInjected -and (Test-Path -LiteralPath $injectedGameScript)) {
         Remove-Item -LiteralPath $injectedGameScript -Force
     }
+    if (-not $KeepGamesOpen -or $failure) {
+        try {
+            $overlayCleanup = Remove-Tpf2mpManagedRuntimeOverlay `
+                -BundleRoot $projectRoot -GameExecutable $game `
+                -ArchiveRoot (Join-Path $runRoot 'runtime-overlay-backups') `
+                -SkipIfGameRunning
+            if ($overlayCleanup.status -eq 'in-use') {
+                throw 'Disposable runtime overlay remained in use after localhost game cleanup.'
+            }
+        }
+        catch {
+            $cleanupError = "Could not archive localhost runtime overlay: $($_.Exception.Message)"
+            Write-Warning $cleanupError
+            if (-not $failure) { $failure = $cleanupError }
+        }
+    }
     if ($createdSteamMarker -and (Test-Path -LiteralPath $steamAppIdPath)) {
         Remove-Item -LiteralPath $steamAppIdPath -Force
     }

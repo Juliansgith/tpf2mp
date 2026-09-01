@@ -1,6 +1,6 @@
 # What remains from the TPF2MP brief
 
-Current release: `0.43.0-alpha`
+Current release: `0.43.1-alpha`
 
 Last reviewed: 2026-09-01
 

@@ -1,6 +1,7 @@
 Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'network_common.ps1')
+. (Join-Path $PSScriptRoot 'runtime_overlay_common.ps1')
 
 $script:Tpf2mpMenuBootstrapRelative = 'res/scripts/tpf2mp_multiplayer_menu_bootstrap.lua'
 

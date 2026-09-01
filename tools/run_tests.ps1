@@ -42,6 +42,10 @@ try {
         (Join-Path $projectRoot 'tools\multiplayer_menu_bootstrap.lua')
     if ($LASTEXITCODE -ne 0) { throw "Multiplayer menu-bootstrap tests failed with exit code $LASTEXITCODE" }
 
+    & $lua (Join-Path $projectRoot 'tests\run_runtime_overlay_isolation_tests.lua') `
+        $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Runtime-overlay isolation tests failed with exit code $LASTEXITCODE" }
+
     & $lua (Join-Path $projectRoot 'tests\run_lua_tests.lua') $projectRoot $temporary
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed with exit code $LASTEXITCODE" }
 
@@ -168,6 +172,10 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Session lifecycle cleanup tests failed' }
 
+    & (Join-Path $projectRoot 'tests\run_runtime_overlay_cleanup_tests.ps1') `
+        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    if (-not $?) { throw 'Runtime-overlay cleanup tests failed' }
+
     & (Join-Path $projectRoot 'tests\run_live_fixture_tests.ps1') `
         -ProjectRoot $projectRoot
     if (-not $?) { throw 'Pinned live fixture tests failed' }
@@ -204,8 +212,13 @@ try {
         -ProjectRoot $projectRoot -TemporaryRoot $temporary
     if (-not $?) { throw 'Launcher QoL tests failed' }
 
-    & (Join-Path $projectRoot 'tests\run_release_install_transaction_tests.ps1') `
-        -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    $previousOverlayCleanupTestMode = $env:TPF2MP_TEST_SKIP_RUNTIME_OVERLAY_CLEANUP
+    try {
+        $env:TPF2MP_TEST_SKIP_RUNTIME_OVERLAY_CLEANUP = '1'
+        & (Join-Path $projectRoot 'tests\run_release_install_transaction_tests.ps1') `
+            -ProjectRoot $projectRoot -TemporaryRoot $temporary
+    }
+    finally { $env:TPF2MP_TEST_SKIP_RUNTIME_OVERLAY_CLEANUP = $previousOverlayCleanupTestMode }
     if (-not $?) { throw 'Transactional release install tests failed' }
 
     & (Join-Path $projectRoot 'tests\run_fault_evidence_watcher_tests.ps1') `

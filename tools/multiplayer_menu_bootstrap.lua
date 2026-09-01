@@ -8,11 +8,20 @@
 -- asks this script to advance one idempotent stage at a time through files in
 -- launcher/.
 function data()
-  local peer = os.getenv("TPF2MP_PEER_ID") or "unknown"
-  local session = os.getenv("TPF2MP_SESSION_ID") or "unknown"
+  local peer = os.getenv("TPF2MP_PEER_ID")
+  local session = os.getenv("TPF2MP_SESSION_ID")
+  local bridgeRoot = os.getenv("TPF2MP_BRIDGE_DIR")
+  if (peer ~= "player1" and peer ~= "player2")
+      or type(session) ~= "string" or not session:match("^[%w][%w_.%-]*$")
+      or #session > 64 or type(bridgeRoot) ~= "string" or bridgeRoot == "" then
+    -- This file is a disposable base-game overlay. If a launcher dies before
+    -- removing it, an ordinary Steam launch must not gain a MULTIPLAYER entry
+    -- or run any menu automation.
+    return { update = function() end }
+  end
   local expectedSave = tostring(os.getenv("TPF2MP_STAGED_SAVE_NAME") or "")
   local requireMenuEntry = tostring(os.getenv("TPF2MP_REQUIRE_MENU_ENTRY") or "") == "1"
-  local root = (os.getenv("TPF2MP_BRIDGE_DIR") or "."):gsub("\\", "/"):gsub("/+$", "")
+  local root = bridgeRoot:gsub("\\", "/"):gsub("/+$", "")
   local frames = 0
   local stage = "main-menu"
   local lastPublished = ""

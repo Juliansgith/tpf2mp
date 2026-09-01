@@ -326,6 +326,27 @@ if (Test-Path -LiteralPath $launcherConfig -PathType Leaf) {
     }
 }
 
+# Archive launcher-owned base-game files after the final TF2 process exits;
+# the first of two localhost peer teardowns safely reports them as in-use.
+if (-not $gameStillRunning -and $state.PSObject.Properties['gameExecutable'] `
+        -and $state.gameExecutable) {
+    try {
+        $overlayCleanup = Remove-Tpf2mpManagedRuntimeOverlay `
+            -BundleRoot (Split-Path -Parent $PSScriptRoot) `
+            -GameExecutable ([string]$state.gameExecutable) -SkipIfGameRunning
+        $state | Add-Member -NotePropertyName runtimeOverlayCleanup `
+            -NotePropertyValue $overlayCleanup -Force
+    }
+    catch {
+        Write-Warning "Runtime-overlay cleanup requires attention: $($_.Exception.Message)"
+        $state | Add-Member -NotePropertyName runtimeOverlayCleanup `
+            -NotePropertyValue ([pscustomobject]@{
+                status = 'error'; removed = 0; archive = $null
+                error = $_.Exception.Message
+            }) -Force
+    }
+}
+
 $state.status = 'stopped'
 $state | Add-Member -NotePropertyName stoppedAtUtc -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force
 $state | Add-Member -NotePropertyName stopReason -NotePropertyValue $StopReason -Force

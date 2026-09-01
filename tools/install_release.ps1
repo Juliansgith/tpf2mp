@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'release_common.ps1')
+. (Join-Path $PSScriptRoot 'runtime_overlay_common.ps1')
 
 # 0.38.0/0.38.1 array-splatted the named installer arguments. Windows
 # PowerShell 5.1 binds those tokens positionally, so a corrected release must
@@ -83,6 +84,18 @@ $backupRoot = Join-Path $install 'backups'
 $transactionId = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 
 New-Item -ItemType Directory -Force -Path $install, (Join-Path $install 'versions'), $backupRoot, $mods | Out-Null
+$overlayCleanup = $null
+$skipRuntimeOverlayCleanup = $env:TPF2MP_TEST_SKIP_RUNTIME_OVERLAY_CLEANUP -eq '1'
+if (-not $skipRuntimeOverlayCleanup) {
+    $overlayGame = Find-Tpf2mpGameExecutable
+    if ($overlayGame) {
+        $overlayCleanup = Remove-Tpf2mpManagedRuntimeOverlay -BundleRoot $bundle `
+            -GameExecutable $overlayGame -ArchiveRoot $backupRoot
+    }
+    else {
+        Write-Warning 'Transport Fever 2 was not discovered; no stale base-game TPF2MP overlay could be checked.'
+    }
+}
 $bridge = Initialize-Tpf2mpBridge -Reset:$ResetBridge
 $staging = Resolve-Tpf2mpFullPath (Join-Path $install ('.staging-' + [guid]::NewGuid().ToString('N')))
 $installPrefix = $install.TrimEnd('\') + '\'
@@ -309,4 +322,7 @@ elseif (Test-Path -LiteralPath (Join-Path $versionRoot 'LAUNCH_TPF2MP.cmd') -Pat
 Write-Host "Bridge roots: $bridge"
 if ($supportBackup) { Write-Host "Previous same-version support bundle archived at: $supportBackup" }
 if ($modBackup) { Write-Host "Previous mod backup: $modBackup" }
+if ($overlayCleanup -and $overlayCleanup.status -eq 'archived') {
+    Write-Host "Stale runtime overlay archived at: $($overlayCleanup.archive)"
+}
 Write-Host 'For network experiments, open LAUNCH_TPF2MP.cmd; for hot-seat, enable the mod in a fresh free-game setup.'

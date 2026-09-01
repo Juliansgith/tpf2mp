@@ -183,18 +183,19 @@ config = {
         throw 'Verified session teardown left its detached companion or state active.'
     }
 
-    $overlayCleanup = Get-Content -LiteralPath `
-        (Join-Path $ProjectRoot 'tools\cleanup_localhost_runtime_overlay.ps1') -Raw
-    $requiredOverlayPairs = @(
-        @('multiplayer_menu_bootstrap.lua', 'tpf2mp_multiplayer_menu_bootstrap.lua'),
-        @('localhost_bootstrap.lua', 'tpf2mp_localhost_bootstrap.lua')
-    )
-    foreach ($pair in $requiredOverlayPairs) {
-        $sourcePattern = [regex]::Escape("Source = Join-Path `$PSScriptRoot '$($pair[0])'")
-        $targetPattern = [regex]::Escape("Target = Join-Path `$resourceRoot 'scripts\$($pair[1])'")
-        if ($overlayCleanup -notmatch "(?s)$sourcePattern.{0,300}$targetPattern") {
-            throw "Guarded cleanup does not inventory disposable overlay $($pair[1])."
+    $overlayCommon = Get-Content -LiteralPath `
+        (Join-Path $ProjectRoot 'tools\runtime_overlay_common.ps1') -Raw
+    foreach ($targetName in @('tpf2mp_multiplayer_menu_bootstrap.lua',
+            'tpf2mp_localhost_bootstrap.lua', 'config\game_script\tpf2_mp.lua',
+            'scripts\tpf2_mp')) {
+        if (-not $overlayCommon.Contains($targetName)) {
+            throw "Managed runtime-overlay inventory omits $targetName."
         }
+    }
+    $stopSource = Get-Content -LiteralPath `
+        (Join-Path $ProjectRoot 'tools\stop_network_session.ps1') -Raw
+    if (-not $stopSource.Contains('Remove-Tpf2mpManagedRuntimeOverlay')) {
+        throw 'Verified session teardown does not retire the base-game runtime overlay.'
     }
 }
 finally {

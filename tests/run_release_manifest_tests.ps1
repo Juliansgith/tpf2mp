@@ -17,6 +17,8 @@ $requiredFiles = @(
     'tools/verify_install.ps1',
     'tools/uninstall.ps1',
     'tools/release_common.ps1',
+    'tools/runtime_overlay_common.ps1',
+    'tools/cleanup_localhost_runtime_overlay.ps1',
     'tools/update_release.ps1',
     'tools/update_common.ps1',
     'tools/github_release_common.ps1',

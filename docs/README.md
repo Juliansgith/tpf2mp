@@ -39,5 +39,5 @@ excluded from Git.
 
 ## Releases
 
-- [Current release: 0.43.0-alpha](release-notes/RELEASE_NOTES_0.43.0-alpha.md)
+- [Current release: 0.43.1-alpha](release-notes/RELEASE_NOTES_0.43.1-alpha.md)
 - [Complete release-note archive](release-notes/)

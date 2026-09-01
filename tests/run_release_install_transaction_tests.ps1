@@ -45,6 +45,7 @@ New-Item -ItemType Directory -Force -Path `
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'UPDATE_TPF2MP.cmd') -Destination (Join-Path $bundle 'UPDATE_TPF2MP.cmd')
 foreach ($name in @(
         'install_release.ps1', 'verify_install.ps1', 'uninstall.ps1', 'release_common.ps1',
+        'runtime_overlay_common.ps1',
         'update_release.ps1', 'update_common.ps1', 'github_release_common.ps1',
         'installed_entrypoint.ps1', 'installed_command.cmd')) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\$name") -Destination (Join-Path $bundle "tools\$name")

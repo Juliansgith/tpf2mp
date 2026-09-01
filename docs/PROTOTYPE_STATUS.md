@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Current release: `0.43.0-alpha`
+Current release: `0.43.1-alpha`
 
 Last reviewed: 2026-09-01
 
@@ -116,8 +116,8 @@ The 2026-09-01 qualification completed all fourteen repeatable local gates:
   `1940-05-31`;
 - automatic paired recovery capture and successful restore;
 - 153 Lua unit tests, 7 transport-network tests, 3 alpha-readiness tests,
-  227 Python tests, 214 mod Lua syntax files, 10 investigation Lua syntax files,
-  80 PowerShell syntax files, 109 economy vectors, 256 freight stress steps,
+  227 Python tests, 215 mod Lua syntax files, 10 investigation Lua syntax files,
+  82 PowerShell syntax files, 109 economy vectors, 256 freight stress steps,
   and a 1,024-event replay trace.
 
 See [the consolidated qualification](../investigation/ALPHA_QUALIFICATION_2026-09-01.md),
@@ -138,7 +138,7 @@ and [practical geometry qualification](../investigation/PRACTICAL_TRACK_AND_STAT
 
 ## Release position
 
-`0.43.0-alpha` is suitable for external trusted-tester feedback. The next
+`0.43.1-alpha` is suitable for external trusted-tester feedback. The next
 evidence priority is a multi-hour physical two-computer relay match exercising
 dense construction, several simultaneous vehicles, passenger transfers,
 positive freight, reconnect, and receipt-bound restore. The machine-checkable
