@@ -30,6 +30,7 @@ local networkSpeedIndicatorModule = require "tpf2_mp/network_speed_indicator"
 local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local vehicleSyncStateModule = require "tpf2_mp/vehicle_sync_state"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
+local validationTrackCandidatesModule = require "tpf2_mp/validation_track_candidates"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
 local checkpointRetentionModule = require "tpf2_mp/checkpoint_retention"
@@ -116,6 +117,86 @@ do
   assert(policy.ignoreCapturedPause(0) == false
       and policy.ignoreCapturedPause(2) == false,
     "modal pause suppression escaped its bounded correlation window")
+end
+
+do
+  -- A native terrain rejection is a completed, recoverable consensus outcome,
+  -- not a missing completion. Match it by the attempted transaction digest,
+  -- checkpoint that rejection, then deterministically advance the candidate.
+  local submissions, checks = {}, {}
+  local current = {
+    tick = 40,
+    bridge = { peerId = "player2" },
+    validation = { values = {} },
+    world = {
+      proposals = { byId = {} },
+      proposalConsensus = { byId = {} },
+    },
+  }
+  local applyAttempts = 0
+  local candidates = validationTrackCandidatesModule.new({
+    getState = function() return current end,
+    transaction = function(x, y, companyCid)
+      return {
+        companyCid = companyCid,
+        digest = string.format("%d:%d", x, y),
+      }
+    end,
+    applyCommitted = function(action)
+      applyAttempts = applyAttempts + 1
+      if applyAttempts == 1 then return false, { error = "native rejection" } end
+      return true, { digest = action.transaction.digest }
+    end,
+    check = function(name, passed, details)
+      assert(passed, "validation candidate check failed: " .. tostring(name))
+      checks[#checks + 1] = { name = name, details = details }
+    end,
+    submit = function(action, label)
+      submissions[#submissions + 1] = { action = action, label = label }
+      return { local_seq = #submissions }
+    end,
+  })
+
+  candidates.queue("client", "company:2", "player2", 3, 2,
+    "candidate-normalised", "candidate-queued")
+  local firstDigest = "-1400:1400"
+  assert(#submissions == 1
+      and submissions[1].action.transaction.digest == firstDigest
+      and current.validation.values.clientProposalCandidate == 3,
+    "validation candidate queue did not retain the deterministic first attempt")
+  current.world.proposals.byId["proposal:rejected"] = {
+    commitSeq = 8,
+    transaction = { digest = firstDigest, companyCid = "company:2" },
+  }
+  current.world.proposalConsensus.byId["proposal:rejected"] = {
+    proposalId = "proposal:rejected", commitSeq = 8,
+    status = "rejected", success = false, recoverable = true,
+    errorCode = "native-proposal-rejected",
+  }
+  local outcome = candidates.outcome("client", "company:2")
+  assert(outcome and outcome.status == "rejected" and outcome.recoverable == true,
+    "validation candidate did not find a rejected attempt by digest")
+  candidates.retainRejection("client", outcome)
+  local checkpointSeen = false
+  local retried = candidates.retryAfterCheckpoint(
+    "client", "company:2", "player2", 2,
+    function(predicate)
+      local checkpoint = {
+        proposalId = "proposal:rejected", success = true, boundarySeq = 9,
+      }
+      checkpointSeen = predicate(checkpoint)
+      return checkpointSeen and checkpoint or nil
+    end,
+    "rejection-checkpoint", "retry-normalised", "retry-queued")
+  assert(retried == true and checkpointSeen and #submissions == 2
+      and current.validation.values.clientProposalCandidate == 4
+      and submissions[2].action.transaction.digest == "1400:1400"
+      and #current.validation.values.clientProposalRejections == 1,
+    "validation candidate rejection did not checkpoint and advance exactly once")
+
+  local standaloneOk, standalone = candidates.standalone("company:1", 1)
+  assert(standaloneOk == true and standalone.candidate == 2 and applyAttempts == 2,
+    "standalone validation did not advance after a native candidate rejection")
 end
 
 do
@@ -643,6 +724,69 @@ do
       and slotPlan.physicalSlotByOriginal["node:2"] == "node:1"
       and proposalCodec.validatePortable(physical),
     "derived depot connection graph retained a non-sequential canonical node slot")
+
+  -- Exercise the other endpoint and both possible internal-node ordinals.
+  -- The helper edge direction is not stable across depot orientation, while
+  -- a retained approach node may sort before or after the helper-owned node.
+  local reverseEndpoint = util.deepCopy(transaction)
+  reverseEndpoint.edges[1].node0 = { cid = "node:pre:410b0cf7" }
+  reverseEndpoint.edges[1].node1 = { slot = "node:1" }
+  reverseEndpoint.digest = proposalCodec.digest(reverseEndpoint)
+  reverseEndpoint.transactionId = "proposal:" .. reverseEndpoint.digest
+  local reverseRecord = util.deepCopy(repairRecord)
+  reverseRecord.transaction = reverseEndpoint
+  local reversePhysical, _, reverseError = depotConnectionGraph.build(
+    reverseRecord, proposalCodec)
+  assert(reversePhysical, reverseError)
+  assert(reversePhysical.edges[1].node0.cid == "node:pre:410b0cf7"
+      and reversePhysical.edges[1].node1.cid == "node:repair:depot-external",
+    "depot connection graph did not repair an internal node1 endpoint")
+
+  local secondInternal = util.deepCopy(retainedNodeTransaction)
+  secondInternal.nodes[1].position = { x = -1040, y = -1000, z = 8.6015548706055 }
+  secondInternal.nodes[2].position = util.deepCopy(transaction.nodes[1].position)
+  secondInternal.edges[1].node0 = { slot = "node:2" }
+  secondInternal.edges[1].node1 = { slot = "node:1" }
+  secondInternal.digest = proposalCodec.digest(secondInternal)
+  secondInternal.transactionId = "proposal:" .. secondInternal.digest
+  local secondInternalRecord = util.deepCopy(repairRecord)
+  secondInternalRecord.transaction = secondInternal
+  secondInternalRecord.constructionPending.depotConnectionRepair.internalNodeSlot = "node:2"
+  local secondPhysical, _, secondError, secondPlan = depotConnectionGraph.build(
+    secondInternalRecord, proposalCodec)
+  assert(secondPhysical, secondError)
+  assert(#secondPhysical.nodes == 1 and secondPhysical.nodes[1].slot == "node:1"
+      and secondPlan.physicalSlotByOriginal["node:1"] == "node:1"
+      and secondPhysical.edges[1].node0.cid == "node:repair:depot-external"
+      and secondPhysical.edges[1].node1.slot == "node:1",
+    "depot connection graph did not reindex around a node:2 internal helper")
+
+  -- Persisted transient repair records are untrusted input. All of these must
+  -- stop before materialisation/native command construction, rather than
+  -- discovering the corruption after the helper shell has mutated the world.
+  local staleSlot = util.deepCopy(repairRecord)
+  staleSlot.constructionPending.depotConnectionRepair.internalNodeSlot = "node:2"
+  local stalePhysical, _, staleError = depotConnectionGraph.build(staleSlot, proposalCodec)
+  assert(stalePhysical == nil and tostring(staleError):find(
+      "does not name exactly one", 1, true),
+    "stale depot internal-node repair record was accepted")
+
+  local malformedSource = util.deepCopy(repairRecord)
+  malformedSource.transaction.nodes[3] = {
+    slot = "node:3", position = { x = 0, y = 0, z = 0 },
+  }
+  local malformedPhysical, _, malformedError = depotConnectionGraph.build(
+    malformedSource, proposalCodec)
+  assert(malformedPhysical == nil and tostring(malformedError):find(
+      "source transaction is invalid", 1, true),
+    "sparse depot source node array reached derived materialisation")
+
+  local malformedHelper = util.deepCopy(repairRecord)
+  malformedHelper.constructionPending.depotConnectionRepair.helperEdgeIds = {}
+  local helperPhysical, _, helperError = depotConnectionGraph.build(
+    malformedHelper, proposalCodec)
+  assert(helperPhysical == nil and helperError == "connected depot helper graph is unavailable",
+    "incomplete helper edge identity reached derived materialisation")
   local repairAccepted = assert(depotConnectionRepair.accept(repairRecord, {
     createdNodeIds = {}, createdEdgeIds = { 900 },
     repairExpectedNodes = 0, repairExpectedEdges = 1,
@@ -904,6 +1048,46 @@ do
   assert(canonicalModule.resolveLocal(registry, "station:event:curb-stop:17:1") == nil
       and canonicalModule.resolveLocal(registry, "station_group:event:curb-stop:17:1") == nil,
     "curbside-stop removal retained stale station identities")
+end
+
+do
+  -- Derived curb-stop station/group binding is one atomic canonical change.
+  -- A conflict discovered while adding the replacement must not first unbind
+  -- the retired stop or clear its custody metadata.
+  local registry = canonicalModule.newState()
+  assert(canonicalModule.bind(registry, "station:pre:retired", "station", 501, {
+    owner = "company:1",
+  }))
+  assert(canonicalModule.bind(registry, "station:pre:occupied", "station", 701, {
+    owner = "company:1",
+  }))
+  local state = {
+    canonical = registry,
+    companies = { ["company:1"] = { playerId = 1 } },
+    world = {
+      logicalOwners = { ["501"] = "company:1", ["701"] = "company:1" },
+      pinnedCustody = {
+        ["501"] = { cid = "station:pre:retired" },
+        ["701"] = { cid = "station:pre:occupied" },
+      },
+    },
+  }
+  local record = {
+    eventId = "curb-stop:conflict", companyCid = "company:1", nativeOwnerPlayerId = 1,
+    transaction = { digest = "87654321" },
+  }
+  local delta = {
+    added = { construction = {}, depot = {}, asset = {}, station = { 701 }, station_group = {} },
+    removed = { construction = {}, depot = {}, asset = {}, station = { 501 }, station_group = {} },
+  }
+  local before = hashModule.value(canonicalModule.snapshot(registry))
+  local bound, bindError = proposalDerivedStationRuntime.bind(state, record, {}, delta)
+  assert(bound == nil and tostring(bindError):find("already bound", 1, true)
+      and hashModule.value(canonicalModule.snapshot(registry)) == before
+      and canonicalModule.resolveLocal(registry, "station:pre:retired") == 501
+      and state.world.logicalOwners["501"] == "company:1"
+      and state.world.pinnedCustody["501"].cid == "station:pre:retired",
+    "late derived-station binding conflict left partial canonical removal residue")
 end
 
 do
@@ -1522,6 +1706,16 @@ do
       and reconstructed.construction[10] and reconstructed.construction[11]
       and reconstructed.node[21] and not reconstructed.node[20],
     "GUI construction delta did not validate and reconstruct its exact world sets")
+  local sparse = util.deepCopy(delta)
+  sparse.added.station = { [1] = 501, [3] = 503 }
+  local sparseAccepted, sparseError = constructionDeltaAttestation.normalise(sparse, 16)
+  assert(sparseAccepted == nil and tostring(sparseError):find("sparse", 1, true),
+    "sparse construction entity delta silently omitted an output")
+  local keyed = util.deepCopy(delta)
+  keyed.removed.station_group = { [1] = 601, source = "native" }
+  local keyedAccepted, keyedError = constructionDeltaAttestation.normalise(keyed, 16)
+  assert(keyedAccepted == nil and tostring(keyedError):find("non-array key", 1, true),
+    "keyed construction entity delta crossed the exact-array boundary")
 end
 
 do

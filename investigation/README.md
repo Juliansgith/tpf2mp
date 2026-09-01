@@ -1,10 +1,16 @@
 # TPF2MP investigation record
 
 Last updated: 2026-09-01 (Europe/Amsterdam), development candidate after
-`0.43.2-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+`0.43.3-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
 passenger-presentation schema `4`, cargo-presentation schema `2`,
 freight-industry schema `3`, edge proposal schema `5`, construction proposal
 schema `7`, native hook `0.19.0`.
+
+[Construction hardening and local regression sweep (2026-09-01)](CONSTRUCTION_HARDENING_REGRESSION_2026-09-01.md)
+records recoverable terrain-candidate retry, atomic station/group rebinding,
+dense native-delta enforcement, persisted depot-graph validation, fail-fast
+localhost prerequisites, the final exact two-process proof, and fresh
+rail/road/air/water construction and vehicle-lifecycle evidence.
 
 [All-fourteen-gate alpha qualification (2026-09-01)](ALPHA_QUALIFICATION_2026-09-01.md)
 records the authored calendar, exact sequential-station regression, full

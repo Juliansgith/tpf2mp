@@ -1,6 +1,6 @@
 # TPF2MP public alpha guide
 
-This guide is for the two-player `0.43.2-alpha` release. It supports the
+This guide is for the two-player `0.43.3-alpha` release. It supports the
 Windows x64 Transport Fever 2 **Build 35924** only. This is an early alpha:
 use a disposable or backed-up save and expect bugs.
 
@@ -11,7 +11,7 @@ use a disposable or backed-up save and expect bugs.
 2. Close Transport Fever 2, then run `INSTALL_TPF2MP.cmd`.
 3. Accept the optional desktop shortcut if wanted.
 4. Open **TPF2MP Multiplayer** and confirm that it reports
-   `0.43.2-alpha` and a compatible native hook.
+   `0.43.3-alpha` and a compatible native hook.
 
 For the first test, enable only TPF2MP. Later tests may use identical
 data-only mods on both computers, with the same versions and load order.
@@ -174,7 +174,7 @@ start a new world.
 Please paste this template:
 
 ```text
-TPF2MP version: 0.43.2-alpha
+TPF2MP version: 0.43.3-alpha
 Support/session ID: mp-________________
 Player: P1/Host or P2/Join
 Approximate local time and timezone:

@@ -15,9 +15,18 @@ local MAPPINGS = {
 
 local function normaliseIds(value, limit, label)
   if type(value) ~= "table" then return nil, label .. " is not an array" end
-  if #value > limit then return nil, label .. " exceeds the output limit" end
+  local count = 0
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then
+      return nil, label .. " contains a non-array key"
+    end
+    count = count + 1
+  end
+  if count > limit then return nil, label .. " exceeds the output limit" end
   local result, seen = {}, {}
-  for index, raw in ipairs(value) do
+  for index = 1, count do
+    local raw = value[index]
+    if raw == nil then return nil, label .. " is sparse at " .. tostring(index) end
     local id = tonumber(raw)
     if not id or id ~= math.floor(id) or id < 0 or seen[id] then
       return nil, label .. " contains an invalid entity id at " .. tostring(index)

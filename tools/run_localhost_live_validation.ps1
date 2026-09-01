@@ -148,6 +148,18 @@ if ($industryArtifactSource) {
 }
 $usingNativeSaveLoader = -not [string]::IsNullOrWhiteSpace($StartingSave) -or $null -ne $restorePlanData
 $usingNativeMenuBootstrap = $usingNativeSaveLoader -or $NativeFreshWorld
+if (-not $usingNativeMenuBootstrap -and -not $industryArtifactSource `
+        -and -not $OperationalCaptureLab) {
+    throw ('Disposable app.startGame localhost validation bypasses the resource loader, while ' +
+        'match initialisation now requires a content-attested industry registry. Supply ' +
+        '-IndustryArtifactSourceRoot with independently captured player1/player2 artifacts; ' +
+        'the harness refuses to enter an impossible match.initialise retry loop.')
+}
+if (-not $usingNativeSaveLoader -and -not $ManualOnly -and -not $OperationalCaptureLab) {
+    throw ("Automated '$ValidationSlice' construction validation replays exact captured " +
+        'canonical references from a populated world. Supply -StartingSave (or a restore plan) ' +
+        'containing that fixture; an empty app.startGame world cannot resolve those references.')
+}
 $bootstrapFileName = if ($usingNativeMenuBootstrap) {
     'tpf2mp_multiplayer_menu_bootstrap.lua'
 } else { 'tpf2mp_localhost_bootstrap.lua' }
@@ -2278,6 +2290,7 @@ $steamMarkerClean = if ($createdSteamMarker) {
 } else {
     -not (Test-Path -LiteralPath $steamAppIdPath)
 }
+$runtimeOverlayShouldRemain = $KeepGamesOpen -and -not $failure
 $runStatus = [ordered]@{
     schemaVersion = 1
     session = $Session
@@ -2338,15 +2351,19 @@ $runStatus = [ordered]@{
     finalClientStatus = $finalClientStatus
     settingsRestored = $settingsRestored
     steamMarkerRestored = $steamMarkerClean
-    temporaryBootstrapRemoved = if ($injectedBootstrap) {
-        -not (Test-Path -LiteralPath $bootstrapTarget)
-    } else { Test-Path -LiteralPath $bootstrapTarget -PathType Leaf }
-    temporaryGameScriptRemoved = if ($gameScriptInjected) {
-        -not (Test-Path -LiteralPath $injectedGameScript)
-    } else { Test-Path -LiteralPath $injectedGameScript -PathType Leaf }
-    temporaryLibraryRemoved = if ($libraryInjected) {
-        -not (Test-Path -LiteralPath $injectedLibrary)
-    } else { Test-Path -LiteralPath $injectedLibrary -PathType Container }
+    # Cleanup archives every recognizably managed overlay, including an
+    # identical one left by an interrupted prior lab. Created=false therefore
+    # does not mean the path should survive. Keep it only for an explicitly
+    # handed-off interactive run; otherwise require all three targets absent.
+    temporaryBootstrapRemoved = if ($runtimeOverlayShouldRemain) {
+        Test-Path -LiteralPath $bootstrapTarget -PathType Leaf
+    } else { -not (Test-Path -LiteralPath $bootstrapTarget) }
+    temporaryGameScriptRemoved = if ($runtimeOverlayShouldRemain) {
+        Test-Path -LiteralPath $injectedGameScript -PathType Leaf
+    } else { -not (Test-Path -LiteralPath $injectedGameScript) }
+    temporaryLibraryRemoved = if ($runtimeOverlayShouldRemain) {
+        Test-Path -LiteralPath $injectedLibrary -PathType Container
+    } else { -not (Test-Path -LiteralPath $injectedLibrary) }
     temporaryStartingSaveRemoved = @($stagedStartingFiles | Where-Object { Test-Path -LiteralPath $_ }).Count -eq 0
     bridgeRoot = $bridgeBase
     evidenceRoot = $runRoot

@@ -277,9 +277,20 @@ automated tests do not satisfy this gate.
 
 Automated localhost baseline (already passed bidirectionally as `localhost-20260802-175636`):
 
+The exact construction slices contain populated-world canonical references,
+so automated runs require their matching pinned fixture save. The disposable
+`app.startGame()` route also bypasses the resource loader; manual empty-world
+labs must seed two independently captured stock registries explicitly (the
+root contains `player1/content/industry` and `player2/content/industry`):
+
 ```powershell
-.\tools\run_localhost_live_validation.ps1 -SkipNativeBuild -SoakTicks 600
+.\tools\run_localhost_live_validation.ps1 -SkipNativeBuild -SoakTicks 600 `
+  -StartingSave C:\path\to\matching-fixture.sav `
+  -IndustryArtifactSourceRoot C:\path\to\two-peer-industry-artifacts
 ```
+
+The wrapper now rejects either missing prerequisite before launching a game
+instead of entering an impossible initialisation or canonical-reference loop.
 
 One-PC manual lab:
 

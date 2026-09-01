@@ -7,11 +7,31 @@ local function reindexRetainedNodes(nodes)
   local byOriginalSlot = {}
   for index, node in ipairs(nodes) do
     local originalSlot = tostring(node.slot or "")
+    if originalSlot == "" or byOriginalSlot[originalSlot] then
+      return nil, "connected depot retained an invalid or duplicate node slot"
+    end
     local physicalSlot = "node:" .. tostring(index)
     byOriginalSlot[originalSlot] = physicalSlot
     node.slot = physicalSlot
   end
   return byOriginalSlot
+end
+
+local function finiteInteger(value)
+  local number = tonumber(value)
+  if not number or number ~= number or number == math.huge or number == -math.huge
+    or number < 0 or number ~= math.floor(number) then return nil end
+  return number
+end
+
+local function finitePosition(value)
+  if type(value) ~= "table" then return nil end
+  for _, key in ipairs({ "x", "y", "z" }) do
+    local number = tonumber(value[key])
+    if not number or number ~= number or number == math.huge or number == -math.huge
+      or math.abs(number) > 10000000 then return nil end
+  end
+  return true
 end
 
 local function remapNodeReference(reference, byOriginalSlot)
@@ -39,8 +59,16 @@ end
 local function repairOf(record)
   local pending = type(record) == "table" and record.constructionPending or nil
   local repair = type(pending) == "table" and pending.depotConnectionRepair or nil
-  if type(repair) ~= "table" or not repair.internalNodeSlot
-    or not repair.internalNodeId or #(repair.helperNodeIds or {}) ~= 1 then
+  if type(repair) ~= "table" or type(repair.internalNodeSlot) ~= "string"
+    or not repair.internalNodeSlot:match("^node:%d+$")
+    or finiteInteger(repair.internalNodeId) == nil
+    or #(repair.helperNodeIds or {}) ~= 1
+    or finiteInteger(repair.helperNodeIds[1]) == nil
+    or #(repair.helperEdgeIds or {}) ~= 1
+    or finiteInteger(repair.helperEdgeIds[1]) == nil
+    or not finitePosition(repair.helperInternalPosition)
+    or not finitePosition(repair.helperExternalPosition)
+    or tonumber(repair.internalNodeId) == tonumber(repair.helperNodeIds[1]) then
     return nil, "connected depot helper graph is unavailable"
   end
   return repair
@@ -52,16 +80,34 @@ function M.build(record, codec)
   if type(transaction) ~= "table" or not repair then
     return nil, nil, repairError or "connected depot transaction is unavailable"
   end
+  -- This path can resume from persisted transient state. Never rely only on
+  -- PREPARE having validated the source in an earlier process: a stale or
+  -- partially migrated repair record must be rejected before the GUI issues
+  -- api.cmd.make.buildProposal and changes the native world.
+  local sourceValid, sourceError = codec.validate(transaction)
+  if not sourceValid then
+    return nil, nil, "connected depot source transaction is invalid: "
+      .. tostring(sourceError)
+  end
   local nodes = {}
+  local internalNodes = 0
   for _, node in ipairs(transaction.nodes or {}) do
-    if node.slot ~= repair.internalNodeSlot then nodes[#nodes + 1] = util.deepCopy(node) end
+    if node.slot == repair.internalNodeSlot then
+      internalNodes = internalNodes + 1
+    else
+      nodes[#nodes + 1] = util.deepCopy(node)
+    end
+  end
+  if internalNodes ~= 1 then
+    return nil, nil, "connected depot repair does not name exactly one source internal node"
   end
   -- Removing the helper-owned internal node may leave a dense Lua array whose
   -- canonical labels begin at node:2 (or contain another gap).  The wire codec
   -- quite correctly rejects that shape later.  Reindex the derived physical
   -- graph now, before api.cmd.make.buildProposal can mutate the native world,
   -- and retain the inverse association for canonical result matching.
-  local physicalSlotByOriginal = reindexRetainedNodes(nodes)
+  local physicalSlotByOriginal, reindexError = reindexRetainedNodes(nodes)
+  if not physicalSlotByOriginal then return nil, nil, reindexError end
   local delta = vector(repair.helperExternalPosition, repair.helperInternalPosition, -1)
   local edges, shifted = {}, 0
   for _, source in ipairs(transaction.edges or {}) do

@@ -8,6 +8,7 @@ local validationStationModule = require "tpf2_mp/validation_construction_slices"
 local validationClockModule = require "tpf2_mp/validation_clock"
 local validationContentGate = require "tpf2_mp/validation_content_gate"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_authored_world"
+local validationTrackCandidatesModule = require "tpf2_mp/validation_track_candidates"
 
 local M = {}
 
@@ -219,28 +220,6 @@ function M.new(deps)
     return proposalCodec.normalise(snapshot, companyCid, { resourceName = proposalResourceName })
   end
   
-  local function runValidationCanonicalProposal(companyCid, startIndex)
-    local candidates = {
-      { -1400, -1400 }, { 1400, -1400 }, { -1400, 1400 }, { 1400, 1400 },
-      { -1000, -1200 }, { 1000, -1200 }, { -1000, 1200 }, { 1000, 1200 },
-      { -600, -1400 }, { 600, -1400 }, { -600, 1400 }, { 600, 1400 },
-      { -1600, 0 }, { 1600, 0 }, { 0, -1600 }, { 0, 1600 },
-    }
-    local errors = {}
-    for index = math.max(1, util.integer(startIndex, 1)), #candidates do
-      local candidate = candidates[index]
-      local transaction, transactionError = validationTrackTransaction(candidate[1], candidate[2], companyCid)
-      if transaction then
-        local ok, result = applyCommitted({ type = "proposal.build", transaction = transaction }, "auto-validator", nil)
-        if ok then return true, { candidate = index, transaction = transaction, result = result } end
-        errors[#errors + 1] = tostring(type(result) == "table" and result.error or result)
-      else
-        errors[#errors + 1] = tostring(transactionError)
-      end
-    end
-    return false, { error = "no canonical track proposal candidate succeeded", attempts = #candidates, errors = errors }
-  end
-  
   local function networkValidationCompanionReady()
     local companion = bridge.pollCompanionStatus(state.bridge) or {}
     if companion.available ~= true then return false, companion end
@@ -305,6 +284,16 @@ function M.new(deps)
     validationCheck(label, ok, result)
     return result
   end
+
+  -- Native buildability is decided only by replay. Symmetric no-residue
+  -- rejections are checkpointed and advanced through deterministic candidates.
+  local validationTrackCandidates = validationTrackCandidatesModule.new({
+    getState = getState,
+    transaction = validationTrackTransaction,
+    applyCommitted = applyCommitted,
+    check = validationCheck,
+    submit = networkValidationSubmit,
+  })
   
   local function networkValidationMobilityReady(keyName)
     local result = state.lastAction and state.lastAction.type == "probe.mobility"
@@ -555,26 +544,24 @@ function M.new(deps)
       validationCheck("initial-mobility-sampled", state.probes.mobility
         and type(state.probes.mobility.digest) == "string", state.probes.mobility)
       if stationValidation.beginSlice(config().networkValidationSlice) then return end
-      if state.bridge.peerId == "player1" then
-        -- Candidate two is the first terrain-safe location in the deterministic
-        -- app.startGame test world on Build 35924; candidate one is deliberately
-        -- retained by the standalone validator as a rejection-path exercise.
-        local transaction, transactionError = validationTrackTransaction(1400, -1400, "company:1")
-        validationCheck("network-track-transaction-normalised", transaction ~= nil, {
-          error = transactionError,
-          digest = transaction and transaction.digest or nil,
-        })
-        validation.values.proposalDigest = transaction.digest
-        local result = networkValidationSubmit({ type = "proposal.prepare", transaction = transaction },
-          "host-origin-track-proposal-queued")
-        validation.values.proposalLocalSeq = result and result.local_seq
-      end
+      -- Candidate two is the first terrain-safe location in the deterministic
+      -- app.startGame test world on Build 35924. Populated saves can differ, so
+      -- both validators deterministically retain the chosen digest and retry a
+      -- later candidate only after a symmetric rejection checkpoint.
+      validationTrackCandidates.queue("host", "company:1", "player1", 2, nil,
+        "network-track-transaction-normalised", "host-origin-track-proposal-queued")
       validationTransition("wait-for-proposal-consensus")
   
     elseif stage == "wait-for-proposal-consensus" then
-      local consensus = state.world.proposalConsensus
-      if (consensus.completed or 0) < 1 then return end
-      local outcome = consensus.lastOutcome
+      local outcome = validationTrackCandidates.outcome("host", "company:1")
+      if not outcome then return end
+      if outcome.success ~= true then
+        validationCheck("host-origin-track-rejection-recoverable",
+          outcome.recoverable == true and outcome.status == "rejected", outcome)
+        validationTrackCandidates.retainRejection("host", outcome)
+        validationTransition("wait-for-host-proposal-rejection-checkpoint")
+        return
+      end
       validationCheck("host-origin-physical-proposal-consensus", outcome and outcome.success == true, outcome)
       validationCheck("host-origin-track-bound-locally", util.tableCount(state.canonical.byCanonical) >= 3, {
         canonicalCount = util.tableCount(state.canonical.byCanonical),
@@ -582,6 +569,14 @@ function M.new(deps)
       validation.values.proposalOutcomeBoundary = outcome.commitSeq
       validation.values.hostProposalId = outcome.proposalId
       validationTransition("wait-for-proposal-checkpoint")
+
+    elseif stage == "wait-for-host-proposal-rejection-checkpoint" then
+      if not validationTrackCandidates.retryAfterCheckpoint(
+        "host", "company:1", "player1", nil, networkValidationCheckpoint,
+        "host-origin-rejected-proposal-checkpoint-consensus",
+        "network-track-retry-transaction-normalised", "host-origin-track-retry-queued")
+        then return end
+      validationTransition("wait-for-proposal-consensus")
   
     elseif stage == "wait-for-proposal-checkpoint" then
       local wantedProposalId = validation.values.hostProposalId
@@ -592,26 +587,24 @@ function M.new(deps)
       if not agreed then return end
       validationCheck("host-origin-post-proposal-checkpoint-consensus", agreed.success == true, agreed)
       validation.values.hostProposalCheckpointBoundary = agreed.boundarySeq
-      if state.bridge.peerId == "player2" then
-        -- Exercise the reverse network direction as a real authority case, not
-        -- merely as an echoed host commit. This location is distinct from the
-        -- host proposal and deterministic in the pinned app.startGame world.
-        local transaction, transactionError = validationTrackTransaction(-1400, 1400, "company:2")
-        validationCheck("client-track-transaction-normalised", transaction ~= nil, {
-          error = transactionError,
-          digest = transaction and transaction.digest or nil,
-        })
-        validation.values.clientProposalDigest = transaction.digest
-        local result = networkValidationSubmit({ type = "proposal.prepare", transaction = transaction },
-          "client-origin-track-proposal-queued")
-        validation.values.clientProposalLocalSeq = result and result.local_seq
-      end
+      -- Exercise the reverse direction as a real client-authority case. Never
+      -- reuse the host's successful candidate, even if earlier host candidates
+      -- were symmetrically rejected and left no residue.
+      validationTrackCandidates.queue("client", "company:2", "player2", 3,
+        validation.values.hostProposalCandidate,
+        "client-track-transaction-normalised", "client-origin-track-proposal-queued")
       validationTransition("wait-for-client-proposal-consensus")
   
     elseif stage == "wait-for-client-proposal-consensus" then
-      local consensus = state.world.proposalConsensus
-      if (consensus.completed or 0) < 2 then return end
-      local outcome = consensus.lastOutcome
+      local outcome = validationTrackCandidates.outcome("client", "company:2")
+      if not outcome then return end
+      if outcome.success ~= true then
+        validationCheck("client-origin-track-rejection-recoverable",
+          outcome.recoverable == true and outcome.status == "rejected", outcome)
+        validationTrackCandidates.retainRejection("client", outcome)
+        validationTransition("wait-for-client-proposal-rejection-checkpoint")
+        return
+      end
       validationCheck("client-origin-physical-proposal-consensus", outcome and outcome.success == true, outcome)
       local record = outcome and state.world.proposals.byId[outcome.proposalId] or nil
       validationCheck("client-origin-company-authority",
@@ -625,6 +618,14 @@ function M.new(deps)
       validation.values.clientProposalOutcomeBoundary = outcome.commitSeq
       validation.values.clientProposalId = outcome.proposalId
       validationTransition("wait-for-client-proposal-checkpoint")
+
+    elseif stage == "wait-for-client-proposal-rejection-checkpoint" then
+      if not validationTrackCandidates.retryAfterCheckpoint(
+        "client", "company:2", "player2", validation.values.hostProposalCandidate,
+        networkValidationCheckpoint, "client-origin-rejected-proposal-checkpoint-consensus",
+        "client-track-retry-transaction-normalised", "client-origin-track-retry-queued")
+        then return end
+      validationTransition("wait-for-client-proposal-consensus")
   
     elseif stage == "wait-for-client-proposal-checkpoint" then
       local wantedProposalId = validation.values.clientProposalId
@@ -840,7 +841,7 @@ function M.new(deps)
       validation.values.proposalControlBefore = controlBalance
       validation.values.proposalCompanyBefore = companyBalance
       validation.values.proposalCanonicalBefore = util.tableCount(state.canonical.byCanonical)
-      local proposalOk, proposalResult = runValidationCanonicalProposal(firstCid)
+      local proposalOk, proposalResult = validationTrackCandidates.standalone(firstCid)
       validationCheck("canonical-track-proposal-replay", proposalOk, proposalResult)
       validation.values.proposal = proposalResult
       validationTransition("verify-canonical-proposal")
@@ -854,7 +855,8 @@ function M.new(deps)
       if proposalRecord.status == "failed" then
         local retryable = tostring(proposalRecord.error or ""):find("rejected", 1, true) ~= nil
         if retryable and tonumber(proposal.candidate) and proposal.candidate < 16 then
-          local retryOk, retryResult = runValidationCanonicalProposal(firstCid, proposal.candidate + 1)
+          local retryOk, retryResult = validationTrackCandidates.standalone(
+            firstCid, proposal.candidate + 1)
           validationCheck("canonical-track-proposal-retry-queued", retryOk, retryResult)
           validation.values.proposal = retryResult
           validation.stageStartedTick = state.tick
