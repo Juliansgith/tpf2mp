@@ -6,11 +6,13 @@ local json = require "tpf2_mp/json"
 local hash = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 local economy = require "tpf2_mp/economy"
+local calendarModel = require "tpf2_mp/calendar_model"
 local bridgeModule = require "tpf2_mp/bridge"
 
 local nextPlayer = 100
 local commands = {}
 local nativeGameSpeed = 1
+local nativeDate = { year = 1990, month = 1, day = 1 }
 local buildGateEnables, commandGateEnables = 0, 0
 local buildGateEnabled, commandGateEnabled = false, false
 local authorizedCommandTags = {}
@@ -75,7 +77,8 @@ game = {
     setTownCapacities = function() end,
     setTownDevelopmentActive = function() end,
     getGameSpeed = function() return nativeGameSpeed end,
-    getGameTime = function() return { time = 100.2 } end,
+    getGameTime = function() return { time = 100.2, date = util.deepCopy(nativeDate) } end,
+    getMillisPerDay = function() return 2000 end,
     getPlayerJournal = function() return { income = { _sum = 0 } } end,
   },
 }
@@ -90,6 +93,9 @@ api = {
     },
     JournalEntryCategory = { new = function() return {} end },
     JournalEntry = { new = function() return {} end },
+    Date = { new = function(year, month, day)
+      return { year = year, month = month, day = day }
+    end },
   },
   engine = {
     getComponent = function() return nil end,
@@ -110,11 +116,13 @@ api = {
       developTown = function() return {} end,
       setSimBuildingManualDevelopment = function() return {} end,
       setCalendarSpeed = function(speed) return { kind = "calendar", speed = speed } end,
+      setDate = function(date) return { kind = "date", date = util.deepCopy(date) } end,
       setGameSpeed = function(speed) return { kind = "speed", speed = speed } end,
     },
     sendCommand = function(command, callback)
       commands[#commands + 1] = command
       if command.kind == "speed" then nativeGameSpeed = command.speed end
+      if command.kind == "date" then nativeDate = util.deepCopy(command.date) end
       if callback then callback(command, true) end
     end,
   },
@@ -183,7 +191,7 @@ assert(initialized.initialized == true, "paused snapshot pump did not apply the 
 assert(#initialized.companyOrder == 2, "two companies were not created")
 assert(initialized.eventLog.items[1].commitSeq == 1, "commit sequence was not retained")
 assert(initialized.bridge.nextInSeq == 2, "commit cursor did not advance")
-assert(initialized.version == 34,
+assert(initialized.version == 35,
   "state schema was not migrated to exact-save continuation")
 assert(initialized.checkpoint.exports == 1 and initialized.checkpoint.lastError == nil,
   "match initialisation did not export a clean baseline checkpoint")
@@ -282,6 +290,8 @@ local firstBoundary = economy.nextBoundary(demo.economy)
 local authoritativeResults = economy.evaluateAll(
   util.deepCopy(demo.economy), firstBoundary, firstDelivery)
 assert(authoritativeResults.epoch == 1, "first authoritative settlement should use epoch 1")
+local _, firstCalendar = assert(calendarModel.prepareSettlement(
+  demo.world.calendar, authoritativeResults.epoch, true, demo.economy.scheduler.epochSeconds))
 local settleCommit = {
   protocol = 1,
   session = "engine-test",
@@ -290,7 +300,8 @@ local settleCommit = {
   origin_peer = "player1",
   origin_local_seq = 2,
   tick = 3,
-  payload = { action = { type = "economy.settle", results = authoritativeResults,
+  payload = { action = { type = "economy.settle", scheduled = true,
+    results = authoritativeResults, calendar = firstCalendar,
     boundaryGameTimeSeconds = firstBoundary, deliverySnapshot = firstDelivery } },
 }
 settleCommit.checksum = hash.value(settleCommit)
@@ -317,6 +328,8 @@ local secondDelivery = { schemaVersion = 3,
 local secondBoundary = economy.nextBoundary(settled.economy)
 local secondResults = economy.evaluateAll(
   util.deepCopy(settled.economy), secondBoundary, secondDelivery)
+local _, secondCalendar = assert(calendarModel.prepareSettlement(
+  settled.world.calendar, secondResults.epoch, true, settled.economy.scheduler.epochSeconds))
 local secondSettleCommit = {
   protocol = 1,
   session = "engine-test",
@@ -325,7 +338,8 @@ local secondSettleCommit = {
   origin_peer = "player1",
   origin_local_seq = 3,
   tick = 4,
-  payload = { action = { type = "economy.settle", results = secondResults,
+  payload = { action = { type = "economy.settle", scheduled = true,
+    results = secondResults, calendar = secondCalendar,
     boundaryGameTimeSeconds = secondBoundary, deliverySnapshot = secondDelivery } },
 }
 secondSettleCommit.checksum = hash.value(secondSettleCommit)

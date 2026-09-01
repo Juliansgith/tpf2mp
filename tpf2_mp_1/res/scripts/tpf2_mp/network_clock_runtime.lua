@@ -84,34 +84,49 @@ function M.new(deps)
       state.probes.networkCalendar = { frozen = false, requested = false, standalone = true }
       return true
     end
+    local priorProbe = type(state.probes.networkCalendar) == "table"
+      and state.probes.networkCalendar or {}
+    local preFreezeMillisPerDay = tonumber(priorProbe.preFreezeMillisPerDay)
+    if not preFreezeMillisPerDay and game and game.interface
+      and util.isCallable(game.interface.getMillisPerDay) then
+      local readOk, value = pcall(game.interface.getMillisPerDay)
+      if readOk and tonumber(value) and tonumber(value) > 0 then
+        preFreezeMillisPerDay = math.floor(tonumber(value))
+      end
+    end
     local factory = commandFactory("setCalendarSpeed")
     if not factory then
       local message = "network mode requires an authorized setCalendarSpeed command to freeze native finance drift"
-      state.probes.networkCalendar = { frozen = false, requested = false, error = message }
+      state.probes.networkCalendar = { frozen = false, requested = false, error = message,
+        preFreezeMillisPerDay = preFreezeMillisPerDay }
       return false, message
     end
     local authorized, authorizeError = authorizeCommand(1)
     if not authorized then
       local message = "could not authorize the network calendar freeze: " .. tostring(authorizeError)
-      state.probes.networkCalendar = { frozen = false, requested = false, error = message }
+      state.probes.networkCalendar = { frozen = false, requested = false, error = message,
+        preFreezeMillisPerDay = preFreezeMillisPerDay }
       return false, message
     end
     local made, commandOrError = pcall(factory, 0)
     if not made then
       local message = "could not create the network calendar freeze command: " .. tostring(commandOrError)
-      state.probes.networkCalendar = { frozen = false, requested = false, error = message }
+      state.probes.networkCalendar = { frozen = false, requested = false, error = message,
+        preFreezeMillisPerDay = preFreezeMillisPerDay }
       return false, message
     end
     local sent, sendError = sendCommand(commandOrError, nil, "mod.network.freeze-calendar")
     if not sent then
       local message = "could not issue the network calendar freeze command: " .. tostring(sendError)
-      state.probes.networkCalendar = { frozen = false, requested = true, error = message }
+      state.probes.networkCalendar = { frozen = false, requested = true, error = message,
+        preFreezeMillisPerDay = preFreezeMillisPerDay }
       return false, message
     end
     state.probes.networkCalendar = {
       frozen = true, requested = true, speed = 0, commandTag = 1, tick = state.tick,
+      preFreezeMillisPerDay = preFreezeMillisPerDay,
     }
-    return true
+    return true, nil, state.probes.networkCalendar
   end
 
   local emitHealth
@@ -168,7 +183,9 @@ function M.new(deps)
     if nativeRearmPending then
       -- A normal update runs after Build 35924 compares duplicate ScriptSave() values.
       current.startupPause = { requested = false, confirmed = false }
-      state.probes.networkCalendar = { frozen = false, requested = false }
+      state.probes.networkCalendar = { frozen = false, requested = false,
+        preFreezeMillisPerDay = state.probes.networkCalendar
+          and state.probes.networkCalendar.preFreezeMillisPerDay or nil }
       nativeRearmPending = false
     end
     -- app.loadGame restores native clocks after init(); re-arm them after each load.

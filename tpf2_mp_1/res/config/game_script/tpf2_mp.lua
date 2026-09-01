@@ -32,6 +32,9 @@ local operationRuntimeModule = require "tpf2_mp/operation_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkPumpRuntimeModule = require "tpf2_mp/network_pump_runtime"
 local networkClockRuntimeModule = require "tpf2_mp/network_clock_runtime"
+local calendarModel = require "tpf2_mp/calendar_model"
+local calendarRuntimeModule = require "tpf2_mp/calendar_runtime"
+local matchRules = require "tpf2_mp/match_rules"
 local networkBootstrapPolicy = require "tpf2_mp/network_bootstrap_policy"
 local matchInitialisePolicy = require "tpf2_mp/match_initialise_policy"
 local performanceRuntimeModule = require "tpf2_mp/performance_runtime"
@@ -67,7 +70,7 @@ local resultError = require "tpf2_mp/result_error"
 local recoveryActionProtocol = require "tpf2_mp/recovery_action_protocol"
 local SCRIPT_FILE = "tpf2_mp.lua"
 local EVENT_ID = "tpf2mp"
-local STATE_VERSION = 34
+local STATE_VERSION = 35
 local CHECKPOINT_VERSION = 5
 local EVENT_RECORD_VERSION = 1
 local configReader = runtimeConfig.newReader()
@@ -107,7 +110,7 @@ local applyCommitted
 -- Raw captures are never portable match state and deliberately never enter
 -- saves or core digests; each is canonicalized only when it reaches the head.
 local MAX_DEFERRED_NETWORK_INTENTS = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS
-local networkIntentController, networkClock, economyClock, vehicleSync
+local networkIntentController, networkClock, economyClock, calendarRuntime, vehicleSync
 local freezeNetworkGame, freezeNetworkCalendar
 -- Automatic line registration is defined beside its handler but referenced by
 -- the operation runtime constructed earlier, and it submits intents through a
@@ -149,6 +152,7 @@ local function migrate(saved)
     config = config,
     stateVersion = STATE_VERSION,
     checkpointVersion = CHECKPOINT_VERSION,
+    calendarSnapshot = world.clockSnapshot,
   })
 end
 local function isEngineThread()
@@ -695,34 +699,8 @@ end
 -- with different numbers, and the numbers are authored match state so both
 -- peers judge by identical rules.
 local function normaliseMatchRules(rules)
-  rules = type(rules) == "table" and rules or {}
-  local cfg = config()
-  local observedClock = world.clockSnapshot()
-  local observedStart = util.integer(observedClock and observedClock.time, 0)
-  local economyStartGameTimeSeconds = math.max(0, util.integer(
-    rules.economyStartGameTimeSeconds, observedStart))
-  local bankruptcyEnabled = rules.bankruptcyEnabled
-  if bankruptcyEnabled == nil then bankruptcyEnabled = cfg.bankruptcyEnabled end
-  local difficultyRule = economy.difficultyRule(rules.economyDifficulty or cfg.economyDifficulty)
-  return {
-    startingCash = math.max(0, util.integer(rules.startingCash, cfg.startingCash)),
-    maxEpochs = math.max(0, util.integer(rules.maxEpochs, cfg.maxEpochs)),
-    valuationTargetCents = math.max(0, util.integer(rules.valuationTargetCents, cfg.valuationTargetCents)),
-    bankruptcyEnabled = bankruptcyEnabled ~= false,
-    -- Zero keeps credit available but never eliminates anyone: debt still
-    -- costs interest and still constrains what you can buy.
-    insolventSettlements = math.max(0, util.integer(rules.insolventSettlements,
-      cfg.insolventSettlements)),
-    creditBaseLimitCents = math.max(0, util.integer(rules.creditBaseLimitCents,
-      cfg.creditBaseLimitCents)),
-    creditRevenueMultiple = math.max(0, util.integer(rules.creditRevenueMultiple,
-      cfg.creditRevenueMultiple)),
-    creditInterestPermille = math.max(0, util.integer(rules.creditInterestPermille,
-      cfg.creditInterestPermille)),
-    economyDifficulty = difficultyRule.key, revenueMultiplierPpm = difficultyRule.revenueMultiplierPpm,
-    economyEpochSeconds = economy.EPOCH_SECONDS,
-    economyStartGameTimeSeconds = economyStartGameTimeSeconds,
-  }
+  return matchRules.normalise(rules, config(), world.clockSnapshot(),
+    state.probes and state.probes.networkCalendar)
 end
 
 local function initialiseMatch(rules)
@@ -732,6 +710,9 @@ local function initialiseMatch(rules)
   local difficultyOk, difficultyError = economy.validateDifficultyRule(rules)
   if not difficultyOk then return false, difficultyError end
   local matchRules = normaliseMatchRules(rules)
+  local calendarCandidate, calendarError = calendarModel.initialise(
+    matchRules, state.networkMode)
+  if not calendarCandidate then return false, calendarError end
   diagnosticLog("match-initialise-stage", { stage = "begin", tick = state.tick,
     networkMode = state.networkMode })
   local proxyMode = state.networkMode == "standalone" and config().localProxy
@@ -784,6 +765,7 @@ local function initialiseMatch(rules)
     economy.applyInfrastructureChange(state.economy, companyCid, 0, 0)
   end
   state.initialized = true
+  state.world.calendar = calendarCandidate
   state.probes.capabilities = world.capabilityProbe()
   local proxySetup
   if state.world.proxyMode then
@@ -1498,6 +1480,18 @@ handlers["economy.settle"] = function(action, eventId)
     state, economy, passengerPresentation, cargoPresentation,
     freightIndustryRuntime, action, deliverySnapshot)
   if not candidate then return false, candidateError end
+  if action.calendar == nil and state.networkMode ~= "network" then
+    local _, payload, payloadError = calendarModel.prepareSettlement(
+      state.world.calendar, candidate.results.epoch, action.scheduled == true,
+      state.economy.scheduler and state.economy.scheduler.epochSeconds or 300)
+    if not payload then return false, payloadError end
+    -- Standalone developer settlement is normalized at the commit boundary;
+    -- retain the generated fields on the action so portable event replay sees
+    -- the same complete record that the handler applied.
+    action.results, action.calendar = candidate.results, payload
+  end
+  local calendarOk, calendarResult = calendarRuntime.applySettlement(action)
+  if not calendarOk then return false, calendarResult end
   state.economy = candidate.economy
   state.world.freightIndustry = candidate.freightIndustry
   state.world.passengerPresentation = candidate.passengerPresentation
@@ -1664,6 +1658,7 @@ handlers["probe.gui_capabilities"] = function(action)
         speed = 0,
         source = "validated-gui-native-bootstrap",
         tick = state.tick,
+        preFreezeMillisPerDay = tonumber(bootstrap.preFreezeMillisPerDay),
       }
       state.lastError = nil
     else
@@ -2664,6 +2659,11 @@ local function normaliseForNetwork(action)
     end
     copy = economyActionRuntime.settlement(state, economy, passengerPresentation,
       cargoPresentation, boundary, scheduled)
+    local _, calendarPayload, calendarError = calendarModel.prepareSettlement(
+      state.world.calendar, copy.results and copy.results.epoch,
+      scheduled, state.economy.scheduler and state.economy.scheduler.epochSeconds or 300)
+    if not calendarPayload then return nil, calendarError end
+    copy.calendar = calendarPayload
   elseif copy.type == "town.develop" then
     if state.bridge.peerId ~= "player1" then return nil, "only the host peer can order town development" end
     for key in pairs(copy) do
@@ -2912,6 +2912,11 @@ economyClock = economyClockRuntimeModule.new({
   gameTimeSeconds = world.gameTimeSeconds,
 })
 
+calendarRuntime = calendarRuntimeModule.new({
+  getState = function() return state end,
+  clockSnapshot = world.clockSnapshot,
+})
+
 vehicleSync = vehicleSyncRuntimeModule.new({
   getState = function() return state end,
   diagnosticLog = diagnosticLog,
@@ -2934,7 +2939,7 @@ local engineBackgroundRuntime = engineBackgroundRuntimeModule.new({
 local networkPump = networkPumpRuntimeModule.new({
   getState = function() return state end, config = config, bridge = bridge,
   consumeBridge = consumeBridge, networkClock = networkClock,
-  economyClock = economyClock, vehicleSync = vehicleSync,
+  economyClock = economyClock, calendar = calendarRuntime, vehicleSync = vehicleSync,
   processDeferred = processDeferredNetworkIntent, hasDeferred = networkIntentController.hasDeferred,
   industryContent = industryContentRuntime, freightIndustry = freightIndustryRuntime,
   world = world, localWorkState = networkIntentController.localWorkState,
@@ -3207,6 +3212,7 @@ local function resetTransientRuntime()
   networkIntentController.reset()
   networkClock.reset()
   economyClock.reset()
+  calendarRuntime.reset()
   vehicleSync.reset()
   aboardMilestoneIntegration.reset()
   -- Custody of an origin-applied (already natively mutated) operation lives

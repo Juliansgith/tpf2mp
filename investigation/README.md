@@ -1,6 +1,29 @@
 # TPF2MP investigation record
 
-Last updated: 2026-08-31 (Europe/Amsterdam), `0.42.5-alpha`, state schema `34`, checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`, cargo-presentation schema `2`, freight-industry schema `3`, edge proposal schema `5`, construction proposal schema `7`, native hook `0.19.0`.
+Last updated: 2026-09-01 (Europe/Amsterdam), development candidate after
+`0.42.5-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+passenger-presentation schema `4`, cargo-presentation schema `2`,
+freight-industry schema `3`, edge proposal schema `5`, construction proposal
+schema `7`, native hook `0.19.0`.
+
+[All-fourteen-gate alpha qualification (2026-09-01)](ALPHA_QUALIFICATION_2026-09-01.md)
+records the authored calendar, exact sequential-station regression, full
+construction/vehicle/passenger/freight matrix, paired save and automatic
+recovery cycles, 604.9-second populated soak, performance sample, local and
+deployed relay qualification, complete green suite, and honest physical-PC
+residual gates.
+
+[Construction edge-case qualification (2026-09-01)](CONSTRUCTION_EDGE_CASE_QUALIFICATION_2026-09-01.md)
+records the exact 52-resource stock inventory, headquarters and unusual-root
+codec repairs, rootless junction and hybrid buoy shapes, eight new native
+build/remove cases, mature facility regressions, adversarial hard bounds, and
+the remaining cursor/mod-content limits.
+
+[Practical track and station geometry qualification (2026-09-01)](PRACTICAL_TRACK_AND_STATION_GEOMETRY_2026-09-01.md)
+records kilometre-scale straight/curved rail, terrain grades, a 900-metre
+tunnel, atomic road-split plus collateral demolition, steep-site stations,
+exact long-bridge GUI captures, cleanup recovery, and the remaining real-cursor
+and physical-PC limits.
 
 [Slot-local station preflight regression (2026-08-31)](SLOT_LOCAL_STATION_PREFLIGHT_REGRESSION_2026-08-31.md)
 records relay session `mp-2b831d5eac67c488`, the second station's staged

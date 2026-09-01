@@ -602,8 +602,14 @@ if ($corridorSource -match 'local\s+capacity[AB]\s*=\s*townCapacity\(') {
 }
 $validationSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\validation_runtime.lua') -Raw
-if (-not $validationSource.Contains('require "tpf2_mp/validation_town_development"')) {
-    throw 'Validation runtime no longer composes the town-development validation boundary.'
+if (-not $validationSource.Contains('require "tpf2_mp/validation_authored_world"')) {
+    throw 'Validation runtime no longer composes the authored-world validation boundary.'
+}
+$authoredValidationSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\validation_authored_world.lua') -Raw
+if (-not $authoredValidationSource.Contains('require "tpf2_mp/validation_town_development"') `
+    -or -not $authoredValidationSource.Contains('require "tpf2_mp/validation_calendar"')) {
+    throw 'Authored-world validation no longer composes both town and calendar proofs.'
 }
 
 $hostSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\network.py') -Raw

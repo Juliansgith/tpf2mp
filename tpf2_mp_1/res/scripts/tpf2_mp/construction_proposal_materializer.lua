@@ -109,7 +109,7 @@ function M.apply(proposal, spec, options)
       construction.transf = transform
       construction.name = ""
       construction.playerEntity = math.floor(nativePlayerId)
-      construction.headquarters = false
+      construction.headquarters = spec.headquarters == true
       additions[1] = construction
     end)
     if not assigned then

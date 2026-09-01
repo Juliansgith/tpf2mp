@@ -562,6 +562,8 @@ function M.render(gui, snapshot, options)
     lines[#lines + 1] = "Network calendar: "
       .. (calendar.frozen == true and "frozen (native recurring finance disabled)"
         or "FAULTED - " .. tostring(calendar.error or "freeze unavailable"))
+    local authoredCalendar = snapshot.calendar or {}; local authoredDate = authoredCalendar.currentDate or {}
+    lines[#lines + 1] = string.format("Shared date: %04d-%02d-%02d | %d ms/day | epoch %d", tonumber(authoredDate.year) or 0, tonumber(authoredDate.month) or 0, tonumber(authoredDate.day) or 0, tonumber(authoredCalendar.millisPerDay) or 0, tonumber(authoredCalendar.lastEpoch) or 0)
     local alpha = snapshot.alphaReadiness or {}
     local firstBlocker = type(alpha.blockers) == "table" and alpha.blockers[1] or nil
     lines[#lines + 1] = "Multiplayer readiness: " .. (alpha.ready == true and "READY"

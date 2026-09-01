@@ -6,6 +6,7 @@ local finance = require "tpf2_mp/finance"
 local vehicleSyncRuntime = require "tpf2_mp/vehicle_sync_runtime"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
 local freightIndustryModel = require "tpf2_mp/freight_industry_model"
+local calendarModel = require "tpf2_mp/calendar_model"
 
 local M = {}
 
@@ -112,6 +113,7 @@ function M.new(env)
         currentState().world.industryContent),
       freightIndustry = freightIndustryModel.digestView(
         currentState().world.freightIndustry),
+      calendar = calendarModel.digestView(currentState().world.calendar),
     }
   end
   

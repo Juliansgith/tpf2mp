@@ -2319,6 +2319,14 @@ def _apply_portable_action(model: dict[str, Any], action: Mapping[str, Any], eve
             economy["lastResults"] = copy.deepcopy(results)
         else:
             results = _evaluate_all(economy)
+        if "calendar" in model:
+            from .calendar_model import apply_settlement as apply_calendar_settlement
+            scheduler_value = economy.get("scheduler")
+            scheduler = scheduler_value if isinstance(scheduler_value, Mapping) else {}
+            apply_calendar_settlement(
+                model, action, int(results["epoch"]),
+                _integer(scheduler.get("epochSeconds"), 300, 60, 86_400),
+            )
         _record_settlement(economy, results)
         freight_value = model.get("freightIndustry")
         if isinstance(freight_value, dict) and freight_value.get("ready") is True:

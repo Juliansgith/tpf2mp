@@ -66,6 +66,7 @@ local guiBuildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local validationStationProposalModule = require "tpf2_mp/validation_station_proposal"
 local validationRoadDepotProposalModule = require "tpf2_mp/validation_connected_road_depot_proposal"
 local validationRoadDepotRuntimeModule = require "tpf2_mp/validation_connected_road_depot_runtime"
+local validationSecondStationRuntimeModule = require "tpf2_mp/validation_second_station_runtime"
 local validationDepotPurchaseModule = require "tpf2_mp/validation_depot_vehicle_purchase"
 local economyAssetCostRuntimeModule = require "tpf2_mp/economy_asset_cost_runtime"
 local economyPublicViewModule = require "tpf2_mp/economy_public_view"
@@ -428,6 +429,65 @@ do
   assert(runtime.maintain("wait-for-connected-terminal-checkpoint") == true and finished == 88,
     "connected-terminal validator did not cross its post-build checkpoint")
   api, game = previousApi, previousGame
+end
+
+do
+  local transactions = {
+    { digest = "7fbee410", companyCid = "company:1" },
+    { digest = "bcc7bc62", companyCid = "company:1" },
+  }
+  local transitions, submissions, checks, finished = {}, {}, {}, nil
+  local current = {
+    bridge = { peerId = "player1", root = "unused" }, validation = { values = {} },
+    canonical = { byCanonical = {
+      ["construction:pre:8d3528af"] = { localId = 201 },
+      ["construction:pre:8d4028a5"] = { localId = 202 },
+    } },
+    world = { proposalConsensus = { completed = 2, failed = 0 }, proposals = { byId = {} } },
+  }
+  local runtime = validationSecondStationRuntimeModule.new({
+    getState = function() return current end,
+    transition = function(stage) transitions[#transitions + 1] = stage end,
+    check = function(name, passed) assert(passed, name); checks[#checks + 1] = name end,
+    submit = function(action) submissions[#submissions + 1] = action; return { local_seq = #submissions } end,
+    checkpoint = function(predicate)
+      for _, record in ipairs({
+          { proposalId = "station:first", success = true, boundarySeq = 31 },
+          { proposalId = "station:second", success = true, boundarySeq = 42 },
+        }) do
+        if predicate(record) then return record end
+      end
+    end,
+    finish = function(boundarySeq) finished = boundarySeq end,
+    loadFixture = function() return transactions end,
+  })
+  runtime.begin()
+  assert(#submissions == 1 and submissions[1].transaction.digest == "7fbee410"
+      and transitions[1] == "wait-for-second-station-1-consensus",
+    "second-station validator did not queue the captured first transaction")
+  local firstOutputs = {}
+  for index = 1, 149 do firstOutputs[index] = { kind = "test", cid = tostring(index) } end
+  current.world.proposalConsensus = { completed = 3, failed = 0,
+    lastOutcome = { success = true, proposalId = "station:first", proposalDigest = "7fbee410" } }
+  current.world.proposals.byId["station:first"] = { result = { outputs = firstOutputs } }
+  assert(runtime.maintain("wait-for-second-station-1-consensus") == true
+      and transitions[2] == "wait-for-second-station-1-checkpoint"
+      and runtime.maintain("wait-for-second-station-1-checkpoint") == true
+      and #submissions == 2 and submissions[2].transaction.digest == "bcc7bc62"
+      and transitions[3] == "wait-for-second-station-2-consensus",
+    "second-station validator did not checkpoint the first station before queuing the second")
+  local secondOutputs = {}
+  for index = 1, 149 do secondOutputs[index] = { kind = "test", cid = tostring(index) } end
+  current.world.proposalConsensus = { completed = 4, failed = 0,
+    lastOutcome = { success = true, proposalId = "station:second", proposalDigest = "bcc7bc62" } }
+  current.world.proposals.byId["station:second"] = { result = { outputs = secondOutputs } }
+  current.canonical.byCanonical["construction:pre:8d3528af"] = nil
+  current.canonical.byCanonical["construction:pre:8d4028a5"] = nil
+  assert(runtime.maintain("wait-for-second-station-2-consensus") == true
+      and transitions[4] == "wait-for-second-station-2-checkpoint"
+      and runtime.maintain("wait-for-second-station-2-checkpoint") == true
+      and finished == 42 and #checks == 11,
+    "captured second station did not converge through its own checkpoint")
 end
 
 do
@@ -1075,9 +1135,28 @@ do
   }))
   assert(proposal.constructionsToAdd[1].fileName == "asset/default_multi_bench_new.con"
       and proposal.constructionsToAdd[1].playerEntity == 7
+      and proposal.constructionsToAdd[1].headquarters == false
       and proposal.constructionsToAdd[1].transf[4][4] == 1
       and metadata.construction.factory == "SimpleProposal.ConstructionEntity",
     "exact construction materialisation lost its typed payload or transform")
+
+  local headquartersRaw = {
+    __observedCost = 100000,
+    __constructionAdditions = {{
+      fileName = "asset/headquarter.con", headquarters = true,
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 30, 40, 3, 1 },
+      params = { size = 0, seed = 2, year = 1990 },
+    }},
+    __constructionRemovals = {},
+  }
+  local headquartersTransaction = assert(proposalCodec.normalise(
+    headquartersRaw, "company:1"))
+  local headquartersProposal = assert(proposalCodec.materialise(
+    headquartersTransaction, {
+      api = fakeApi, nativePlayerId = 7, resolveLocal = function() return nil end,
+    }))
+  assert(headquartersProposal.constructionsToAdd[1].headquarters == true,
+    "stock headquarters identity was lost at the typed native boundary")
 
   local moduleProposal = fakeApi.type.SimpleProposal.new()
   local resourceMetadata = { price = 37, customModFact = "preserved" }

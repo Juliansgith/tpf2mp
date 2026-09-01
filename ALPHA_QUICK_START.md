@@ -119,8 +119,9 @@ or plans, and never use a normal autosave as if it were a coordinated restore.
 - ordinary line create/edit/delete, portable vehicle purchase and assignment,
   lifecycle controls, replacement, and bounded multi-sale;
 - synchronized speeds, pauses, station departures, passenger/cargo loads,
-  five-minute competitive accounting, model-town growth, feeder services,
-  passenger connections, and conserved multi-line freight transfers;
+  five-minute competitive accounting and shared calendar progression,
+  model-town growth, feeder services, passenger connections, and conserved
+  multi-line freight transfers;
 - automatic checkpoints, first-fault evidence, and paired recovery saves.
 
 Executable mod callbacks, arbitrary script commands, hostile peers, host

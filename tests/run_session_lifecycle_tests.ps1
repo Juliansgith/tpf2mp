@@ -182,6 +182,20 @@ config = {
             -or $stoppedState.stopReason -cne 'lifecycle-test') {
         throw 'Verified session teardown left its detached companion or state active.'
     }
+
+    $overlayCleanup = Get-Content -LiteralPath `
+        (Join-Path $ProjectRoot 'tools\cleanup_localhost_runtime_overlay.ps1') -Raw
+    $requiredOverlayPairs = @(
+        @('multiplayer_menu_bootstrap.lua', 'tpf2mp_multiplayer_menu_bootstrap.lua'),
+        @('localhost_bootstrap.lua', 'tpf2mp_localhost_bootstrap.lua')
+    )
+    foreach ($pair in $requiredOverlayPairs) {
+        $sourcePattern = [regex]::Escape("Source = Join-Path `$PSScriptRoot '$($pair[0])'")
+        $targetPattern = [regex]::Escape("Target = Join-Path `$resourceRoot 'scripts\$($pair[1])'")
+        if ($overlayCleanup -notmatch "(?s)$sourcePattern.{0,300}$targetPattern") {
+            throw "Guarded cleanup does not inventory disposable overlay $($pair[1])."
+        }
+    }
 }
 finally {
     foreach ($process in $processes) {
@@ -198,4 +212,4 @@ finally {
     $env:LOCALAPPDATA = $previousLocalAppData
 }
 
-Write-Host 'PASS launcher/game exit teardown and prior managed-session replacement'
+Write-Host 'PASS launcher/game exit teardown, overlay inventory, and prior managed-session replacement'

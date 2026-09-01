@@ -923,6 +923,14 @@ end
 
 local function constructionKind(fileName)
   local lower = string.lower(fileName or "")
+  -- Despite living below asset/, the stock headquarters is type NONE and
+  -- creates a CONSTRUCTION root.  Treating it as ASSET_GROUP makes output
+  -- attestation wait for an entity class that can never appear.
+  if lower == "asset/headquarter.con"
+    or lower == "asset/field_decoration.con"
+    or lower == "asset/ground_texture_builder.con" then
+    return "construction"
+  end
   if lower:find("asset/", 1, true) == 1 then return "asset" end
   if lower:find("depot", 1, true) then return "depot" end
   if lower:find("station", 1, true) then return "station" end
@@ -991,6 +999,11 @@ local function normaliseConstructionChange(additions, removals, options)
   end
   local value = #additions == 1 and additions[1].value or nil
   local rawFileName = value and (safeField(value, "fileName") or safeField(value, "name")) or nil
+  local rawHeadquarters
+  if value ~= nil then rawHeadquarters = safeField(value, "headquarters") end
+  if rawHeadquarters ~= nil and type(rawHeadquarters) ~= "boolean" then
+    return nil, "construction headquarters marker is invalid"
+  end
   local prospectiveKind = rawFileName and constructionKind(rawFileName) or nil
   local sourceParams = value and (safeField(value, "params") or safeField(value, "param")) or nil
   local explicitUpgrade = value ~= nil and safeField(sourceParams, "upgrade") == true
@@ -1047,6 +1060,14 @@ local function normaliseConstructionChange(additions, removals, options)
   end
   local fileName, fileError = portableResourceName(rawFileName, ".con", "construction")
   if not fileName then return nil, fileError end
+  local headquarters = string.lower(fileName) == "asset/headquarter.con"
+  -- Build 35924 stores headquarters identity outside the resource parameter
+  -- table.  Preserve the stock semantic by its content-attested resource and
+  -- reject a contradictory projected marker.  The canonical fact is derived,
+  -- so schema 7 remains compatible with already-journalled construction rows.
+  if rawHeadquarters ~= nil and rawHeadquarters ~= headquarters then
+    return nil, "construction headquarters marker contradicts its resource"
+  end
   local transform, transformError = portableTransform(
     safeField(value, "transf") or safeField(value, "transform"), "construction")
   if not transform then return nil, transformError end
@@ -2301,6 +2322,7 @@ function M.materialiseConstruction(transaction, options)
     sourceCid = source.sourceCid,
     collateral = util.deepCopy(source.collateral),
     fileName = source.fileName,
+    headquarters = string.lower(source.fileName or "") == "asset/headquarter.con",
     transform = util.deepCopy(source.transform),
     params = params,
   }

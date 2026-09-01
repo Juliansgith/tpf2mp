@@ -169,7 +169,7 @@ function M.new(env)
       transfers = util.deepCopy(currentState().finance.transfers),
       startingCash = util.deepCopy(currentState().finance.startingCash),
       networkAccounts = util.deepCopy(currentState().finance.networkAccounts),
-      networkClock = util.deepCopy(currentState().world.networkClock),
+      networkClock = util.deepCopy(currentState().world.networkClock), calendar = util.deepCopy(currentState().world.calendar),
       vehicleSync = util.deepCopy(currentState().world.vehicleSync),
       industryContent = util.deepCopy(currentState().world.industryContent),
       freightIndustry = freightIndustryModel.publicView(

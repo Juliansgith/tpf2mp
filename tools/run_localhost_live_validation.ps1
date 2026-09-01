@@ -6,7 +6,8 @@ param(
     [ValidateRange(30, 3600)][int]$ClockRunTicks = 30,
     [ValidateRange(120, 3600)][int]$TimeoutSeconds = 900,
     [ValidateRange(30, 600)][int]$ConsensusTimeoutSeconds = 180,
-    [ValidateSet('full', 'connected-terminal', 'connected-road-depot', 'connected-tram-depot')]
+    [ValidateSet('full', 'connected-terminal', 'connected-road-depot', 'connected-tram-depot',
+        'second-station')]
     [string]$ValidationSlice = 'full',
     [string]$GameExecutable,
     [string]$LocalModsPath,
@@ -15,6 +16,7 @@ param(
     [string]$Player1StartingSave,
     [string]$Player2StartingSave,
     [switch]$RequireVehicleSyncRound,
+    [ValidateRange(0, 3600)][int]$PostBootstrapSoakSeconds = 0,
     [switch]$SkipTests,
     [switch]$SkipInstall,
     [switch]$SkipNativeBuild,
@@ -47,6 +49,10 @@ if ($AutoPrepareRestorePoint -and -not $ManualOnly) {
 }
 if ($AutoPrepareRestorePoint -and ($InteractiveAfterValidation -or $KeepGamesOpen)) {
     throw 'AutoPrepareRestorePoint is an unattended capture; it cannot keep an interactive game open.'
+}
+if ($PostBootstrapSoakSeconds -gt 0 -and (-not $ManualOnly -or -not $RestorePlan `
+        -or -not $RequireVehicleSyncRound -or -not $AutoPrepareRestorePoint)) {
+    throw 'PostBootstrapSoakSeconds requires ManualOnly, RestorePlan, RequireVehicleSyncRound, and AutoPrepareRestorePoint.'
 }
 if ($NativeFreshWorld -and -not $OperationalCaptureLab) {
     throw 'NativeFreshWorld is an observer-only capture mode; use it with OperationalCaptureLab.'
@@ -194,6 +200,7 @@ $startingCompanyPlayerIds = ''
 $processPolicies = @{}
 $windowLayout = $null
 $automaticRestoreCapture = $null
+$postBootstrapSoakEvidence = $null
 
 function Set-LocalhostValidationSettings([string]$Path) {
     $content = [IO.File]::ReadAllText($Path)
@@ -424,6 +431,146 @@ function Wait-ManualVehicleSyncRound(
     Write-Host ("PASS restored active vehicle round: releases {0}->{1}, tracked={2}" -f `
         $baselineReleases, $sync.releases, $sync.trackedVehicles)
     return $hostState
+}
+
+function Invoke-PopulatedPostBootstrapSoak(
+    [Diagnostics.Process]$OriginGame,
+    [int]$DurationSeconds
+) {
+    if ($DurationSeconds -le 0) { return $null }
+    $startHost = Read-CompanionStatus $peer1Bridge
+    $startClient = Read-CompanionStatus $peer2Bridge
+    Assert-LiveCompanionStatus $startHost $startClient
+    if (-not $startHost.vehicleSync -or [int]$startHost.vehicleSync.trackedVehicles -lt 1 `
+        -or [int]$startHost.vehicleSync.releases -lt 1) {
+        throw 'The populated soak requires a restored vehicle and one completed station rendezvous.'
+    }
+
+    # The preceding rendezvous normally leaves the shared clock running. If
+    # the save itself requested a pause, exercise the same stock speed widget
+    # used by a player and wait for host ordering before starting the timer.
+    if ([int]$startHost.clock.requestedSpeed -eq 0) {
+        Invoke-GameInput $OriginGame 'resume'
+        $runDeadline = (Get-Date).AddSeconds(45)
+        do {
+            Start-Sleep -Milliseconds 250
+            $startHost = Read-CompanionStatus $peer1Bridge
+            $startClient = Read-CompanionStatus $peer2Bridge
+            Assert-LiveCompanionStatus $startHost $startClient
+        } while ([int]$startHost.clock.requestedSpeed -eq 0 -and (Get-Date) -lt $runDeadline)
+        if ([int]$startHost.clock.requestedSpeed -eq 0) {
+            throw 'The populated soak could not order a shared running speed.'
+        }
+    }
+
+    $startedAt = Get-Date
+    $deadline = $startedAt.AddSeconds($DurationSeconds)
+    $samples = 0
+    $peakPending = [int]$startHost.vehicleSync.pendingRounds
+    $maxGameTimeSkew = [Math]::Abs([double]$startHost.clock.gameTimeSkew)
+    $maxProjectedSkew = [Math]::Abs([double]$startHost.clock.projectedGameTimeSkew)
+    $minProgressRatio = $null
+    $maxProgressRatio = $null
+    $milestones = [Collections.Generic.List[object]]::new()
+    $nextMilestone = $startedAt
+    $lastHost = $startHost
+    $lastClient = $startClient
+    while ((Get-Date) -lt $deadline) {
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer1Game `
+            -Context 'during the populated post-bootstrap soak')
+        [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $peer2Game `
+            -Context 'during the populated post-bootstrap soak')
+        Assert-CompanionProcessHealthy $hostProcess 'host companion' `
+            (Join-Path $runRoot 'host-companion.stderr.txt')
+        Assert-CompanionProcessHealthy $clientProcess 'client companion' `
+            (Join-Path $runRoot 'client-companion.stderr.txt')
+        $lastHost = Read-CompanionStatus $peer1Bridge
+        $lastClient = Read-CompanionStatus $peer2Bridge
+        Assert-LiveCompanionStatus $lastHost $lastClient
+        if ([int]$lastHost.vehicleSync.faults -ne 0) {
+            throw "Vehicle synchronization faulted during the populated soak: $($lastHost.vehicleSync.faults)"
+        }
+        $samples += 1
+        $peakPending = [Math]::Max($peakPending, [int]$lastHost.vehicleSync.pendingRounds)
+        $maxGameTimeSkew = [Math]::Max($maxGameTimeSkew,
+            [Math]::Abs([double]$lastHost.clock.gameTimeSkew))
+        $maxProjectedSkew = [Math]::Max($maxProjectedSkew,
+            [Math]::Abs([double]$lastHost.clock.projectedGameTimeSkew))
+        if ($null -ne $lastHost.clock.progressRateRatio) {
+            $ratio = [double]$lastHost.clock.progressRateRatio
+            if ($null -eq $minProgressRatio -or $ratio -lt $minProgressRatio) { $minProgressRatio = $ratio }
+            if ($null -eq $maxProgressRatio -or $ratio -gt $maxProgressRatio) { $maxProgressRatio = $ratio }
+        }
+        if ((Get-Date) -ge $nextMilestone) {
+            $milestones.Add([ordered]@{
+                elapsedSeconds = [Math]::Round(((Get-Date) - $startedAt).TotalSeconds, 3)
+                checkpointSeq = [int64]$lastHost.lastAgreedCheckpointSeq
+                requestedSpeed = [int]$lastHost.clock.requestedSpeed
+                effectiveSpeed = [int]$lastHost.clock.effectiveSpeed
+                gameTimeSkew = [double]$lastHost.clock.gameTimeSkew
+                progressRateRatio = $lastHost.clock.progressRateRatio
+                vehicleReleases = [int]$lastHost.vehicleSync.releases
+                pendingVehicleRounds = [int]$lastHost.vehicleSync.pendingRounds
+            })
+            $nextMilestone = (Get-Date).AddSeconds(10)
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    # Space is the stock pause/speed widget path pinned by the native hook.
+    # Request one canonical pause and do not open Escape: the automatic save
+    # capture that follows must start from a clean in-world UI.
+    if ([int]$lastHost.clock.requestedSpeed -ne 0 `
+        -or [int]$lastHost.clock.effectiveSpeed -ne 0 `
+        -or $lastHost.clock.pauseAcknowledged -ne $true) {
+        Invoke-GameInput $OriginGame 'resume'
+    }
+    $pauseDeadline = (Get-Date).AddSeconds(60)
+    do {
+        Start-Sleep -Milliseconds 250
+        $lastHost = Read-CompanionStatus $peer1Bridge
+        $lastClient = Read-CompanionStatus $peer2Bridge
+        Assert-LiveCompanionStatus $lastHost $lastClient
+        $paused = [int]$lastHost.clock.requestedSpeed -eq 0 `
+            -and [int]$lastHost.clock.effectiveSpeed -eq 0 `
+            -and $lastHost.clock.pauseAcknowledged -eq $true
+    } while (-not $paused -and (Get-Date) -lt $pauseDeadline)
+    if (-not $paused) {
+        throw ("The populated soak did not finish at an acknowledged shared pause: " +
+            "requested=$($lastHost.clock.requestedSpeed), effective=$($lastHost.clock.effectiveSpeed), " +
+            "acknowledged=$($lastHost.clock.pauseAcknowledged)")
+    }
+
+    $evidence = [ordered]@{
+        schemaVersion = 1
+        startedAtUtc = $startedAt.ToUniversalTime().ToString('o')
+        completedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+        requestedSeconds = $DurationSeconds
+        observedSeconds = [Math]::Round(((Get-Date) - $startedAt).TotalSeconds, 3)
+        samples = $samples
+        startCheckpointSeq = [int64]$startHost.lastAgreedCheckpointSeq
+        endCheckpointSeqBeforeCapture = [int64]$lastHost.lastAgreedCheckpointSeq
+        trackedVehicles = [int]$lastHost.vehicleSync.trackedVehicles
+        startVehicleReleases = [int]$startHost.vehicleSync.releases
+        endVehicleReleases = [int]$lastHost.vehicleSync.releases
+        vehicleReleaseDelta = [int]$lastHost.vehicleSync.releases - [int]$startHost.vehicleSync.releases
+        peakPendingVehicleRounds = $peakPending
+        vehicleFaults = [int]$lastHost.vehicleSync.faults
+        maxGameTimeSkew = $maxGameTimeSkew
+        maxProjectedGameTimeSkew = $maxProjectedSkew
+        minProgressRateRatio = $minProgressRatio
+        maxProgressRateRatio = $maxProgressRatio
+        finalRequestedSpeed = [int]$lastHost.clock.requestedSpeed
+        finalEffectiveSpeed = [int]$lastHost.clock.effectiveSpeed
+        finalPauseAcknowledged = $lastHost.clock.pauseAcknowledged
+        milestones = @($milestones)
+    }
+    $evidence | ConvertTo-Json -Depth 10 | Set-Content `
+        -LiteralPath (Join-Path $runRoot 'populated-soak.json') -Encoding UTF8
+    Write-Host ("PASS populated soak: {0:n1}s, samples={1}, vehicle releases {2}->{3}, max clock skew={4:n4}" -f `
+        $evidence.observedSeconds, $samples, $evidence.startVehicleReleases,
+        $evidence.endVehicleReleases, $maxGameTimeSkew)
+    return $evidence
 }
 
 function Wait-GameWindow([Diagnostics.Process]$GameProcess, [int]$WaitSeconds = 120) {
@@ -1136,6 +1283,32 @@ try {
                 'waiting', [Text.UTF8Encoding]::new($false))
         }
     }
+    if ($ValidationSlice -eq 'second-station') {
+        $fixturePath = Join-Path $projectRoot 'tests\fixtures\live\second_station_transactions.json.gz.b64'
+        if (-not (Test-Path -LiteralPath $fixturePath -PathType Leaf)) {
+            throw "Second-station fixture is missing: $fixturePath"
+        }
+        $encoded = ((Get-Content -LiteralPath $fixturePath -Raw) -replace '\s', '')
+        $compressed = [Convert]::FromBase64String($encoded)
+        $compressedStream = [IO.MemoryStream]::new($compressed, $false)
+        $gzip = [IO.Compression.GZipStream]::new(
+            $compressedStream, [IO.Compression.CompressionMode]::Decompress)
+        $decodedStream = [IO.MemoryStream]::new()
+        try {
+            $gzip.CopyTo($decodedStream)
+        }
+        finally {
+            $gzip.Dispose()
+            $compressedStream.Dispose()
+        }
+        $fixtureBytes = $decodedStream.ToArray()
+        $decodedStream.Dispose()
+        foreach ($peerBridge in @($peer1Bridge, $peer2Bridge)) {
+            [IO.File]::WriteAllBytes(
+                (Join-Path $peerBridge 'launcher\second-station-transactions.json'), $fixtureBytes)
+        }
+        Write-Host "Seeded exact two-station regression fixture ($($fixtureBytes.Length) bytes) for both peers."
+    }
     if ($industryArtifactSource) {
         foreach ($entry in @(
             @{ Peer = 'player1'; Bridge = $peer1Bridge },
@@ -1492,6 +1665,12 @@ try {
             $hostStatus = Wait-ManualVehicleSyncRound $peer1Game `
                 ([Math]::Min($TimeoutSeconds, 300))
         }
+        if ($PostBootstrapSoakSeconds -gt 0) {
+            $postBootstrapSoakEvidence = Invoke-PopulatedPostBootstrapSoak `
+                $peer1Game $PostBootstrapSoakSeconds
+            $hostStatus = Read-CompanionStatus $peer1Bridge
+            $clientStatus = Read-CompanionStatus $peer2Bridge
+        }
         $peer1RecoveryWatcher = Start-RecoveryWatcher 'player1' $peer1Bridge $peer1Game
         $peer2RecoveryWatcher = Start-RecoveryWatcher 'player2' $peer2Bridge $peer2Game
         if ($AutoPrepareRestorePoint) {
@@ -1586,6 +1765,21 @@ try {
         $peerResults[$peer] | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath (Join-Path $runRoot "$peer-validation.json") -Encoding UTF8
         if ($peerResults[$peer].payload.status -ne 'passed') {
             throw "$peer validation failed: $($peerResults[$peer].payload.error)"
+        }
+    }
+    $sliceProofCheck = @{
+        'connected-terminal' = 'connected-terminal-created-exact-connected-graph'
+        'connected-road-depot' = 'connected-road-depot-bus-checkpoint-consensus'
+        'connected-tram-depot' = 'connected-tram-depot-created-complete-graph'
+        'second-station' = 'second-station-collateral-retired'
+    }[$ValidationSlice]
+    if ($sliceProofCheck) {
+        foreach ($peer in @('player1', 'player2')) {
+            $checkNames = @($peerResults[$peer].payload.checks | ForEach-Object { [string]$_.name })
+            if ($checkNames -notcontains $sliceProofCheck) {
+                throw ("$peer reported a generic validation pass without the requested " +
+                    "'$ValidationSlice' proof check '$sliceProofCheck'. The installed mod or staged slice is stale.")
+            }
         }
     }
     $p1 = $peerResults.player1.payload
@@ -2007,6 +2201,8 @@ $runStatus = [ordered]@{
     soakTicks = $SoakTicks
     clockRunTicks = $ClockRunTicks
     requireVehicleSyncRound = $RequireVehicleSyncRound.IsPresent
+    postBootstrapSoakSeconds = $PostBootstrapSoakSeconds
+    postBootstrapSoak = $postBootstrapSoakEvidence
     interactiveAfterValidation = $InteractiveAfterValidation.IsPresent
     manualOnly = $ManualOnly.IsPresent
     autoPrepareRestorePoint = $AutoPrepareRestorePoint.IsPresent

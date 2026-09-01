@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import io
 import json
 import os
@@ -31,6 +32,11 @@ from tpf2mp.checkpoint import (
     analyse_bridge,
     verify_checkpoint,
     verify_event_record,
+)
+from tpf2mp.calendar_model import (
+    apply_settlement as apply_calendar_settlement,
+    new_state as new_calendar_state,
+    prepare_settlement as prepare_calendar_settlement,
 )
 from tpf2mp.freight import (
     advance as advance_freight,
@@ -674,6 +680,49 @@ def freight_bootstrap(epoch: int = 4) -> dict:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_authored_calendar_matches_lua_settlement_contract(self) -> None:
+        current = new_calendar_state()
+        current.update({
+            "managed": True, "initialized": True, "millisPerDay": 2000,
+            "startDate": {"year": 1990, "month": 1, "day": 1},
+            "currentDate": {"year": 1990, "month": 1, "day": 1},
+        })
+        candidate, payload = prepare_calendar_settlement(current, 1, True, 300)
+        self.assertEqual(payload["advancedDays"], 150)
+        self.assertEqual(candidate["elapsedDays"], 150)
+        model = {"calendar": current}
+        apply_calendar_settlement(model, {
+            "scheduled": True, "calendar": payload,
+        }, 1, 300)
+        self.assertEqual(model["calendar"], candidate)
+        tampered = dict(payload)
+        tampered["elapsedDays"] += 1
+        with self.assertRaisesRegex(ProtocolError, "diverges"):
+            apply_calendar_settlement({"calendar": current}, {
+                "scheduled": True, "calendar": tampered,
+            }, 1, 300)
+
+    def test_calendar_wire_payload_and_match_rules_are_strict(self) -> None:
+        current = new_calendar_state()
+        current.update({
+            "managed": True, "initialized": True, "millisPerDay": 2000,
+            "startDate": {"year": 2000, "month": 2, "day": 28},
+            "currentDate": {"year": 2000, "month": 2, "day": 28},
+        })
+        _, payload = prepare_calendar_settlement(current, 1, True, 300)
+        accepted = validate_action({
+            "type": "economy.settle", "results": {}, "scheduled": True,
+            "calendar": payload,
+        })
+        self.assertEqual(accepted["calendar"], payload)
+        malformed = copy.deepcopy(payload)
+        malformed["date"]["month"] = 13
+        with self.assertRaises(ProtocolError):
+            validate_action({
+                "type": "economy.settle", "results": {}, "scheduled": True,
+                "calendar": malformed,
+            })
+
     def test_cross_language_vector(self) -> None:
         value = {"b": 2, "a": "x"}
         self.assertEqual(canonical_json(value), '{"a":"x","b":2}')

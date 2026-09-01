@@ -12,15 +12,17 @@ function M.new(deps)
     installObserver()
     markNativeContext("gui")
     local authorityReady, authorityError = configureAuthority("network")
-    local gameReady, gameError, calendarReady, calendarError = false, nil, false, nil
+    local gameReady, gameError, calendarReady, calendarError, calendarStatus = false, nil, false, nil, nil
     if authorityReady then
       gameReady, gameError = freezeGame()
-      calendarReady, calendarError = freezeCalendar()
+      calendarReady, calendarError, calendarStatus = freezeCalendar()
     end
     return {
       authorityReady = authorityReady == true,
       gameReady = gameReady == true,
       calendarReady = calendarReady == true,
+      preFreezeMillisPerDay = type(calendarStatus) == "table"
+        and calendarStatus.preFreezeMillisPerDay or nil,
       error = authorityError or gameError or calendarError,
     }
   end

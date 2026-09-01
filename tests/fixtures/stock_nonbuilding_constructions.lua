@@ -1,0 +1,63 @@
+-- Build 35924 construction.zip inventory outside ordinary town buildings.
+-- This is deliberately explicit: a game update adding or removing a public
+-- construction family must fail the resource audit instead of silently
+-- inheriting an untested generic path.
+return {
+  { fileName = "asset/asset_builder.con", type = "ASSET_DEFAULT", kind = "asset", surface = "public", evidence = "native" },
+  { fileName = "asset/default_multi_bench_new.con", type = "ASSET_DEFAULT", kind = "asset", surface = "public", evidence = "native" },
+  { fileName = "asset/default_multi_bench_old.con", type = "ASSET_DEFAULT", kind = "asset", surface = "public", evidence = "native" },
+  { fileName = "asset/default_multi_fence_wood.con", type = "ASSET_DEFAULT", kind = "asset", surface = "public", evidence = "manual" },
+  { fileName = "asset/default_multi_lamp.con", type = "ASSET_DEFAULT", kind = "asset", surface = "public", evidence = "manual" },
+  { fileName = "asset/field_decoration.con", type = "ASSET_DEFAULT", kind = "construction", surface = "public", evidence = "native" },
+  { fileName = "asset/ground_texture_builder.con", type = "ASSET_DEFAULT", kind = "construction", surface = "hidden", evidence = "native" },
+  { fileName = "asset/headquarter.con", type = "NONE", kind = "construction", surface = "public", evidence = "native" },
+  { fileName = "asset/track_multi_gleisfeldleuchte_db_doppelt.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+  { fileName = "asset/track_multi_gleisfeldleuchte_db_einfach.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+  { fileName = "asset/track_multi_p_tafel.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+  { fileName = "asset/track_multi_p_tafel_links.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+  { fileName = "asset/track_multi_pp_tafel.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+  { fileName = "asset/track_multi_pp_tafel_links.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+  { fileName = "asset/track_multi_sound_insulation_10m.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "native" },
+  { fileName = "asset/track_multi_sound_insulation_20m.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+  { fileName = "asset/track_multi_sound_insulation_60m.con", type = "ASSET_TRACK", kind = "asset", surface = "public", evidence = "offline" },
+
+  { fileName = "depot/road_depot_era_a.con", type = "STREET_DEPOT", kind = "depot", surface = "public", evidence = "native" },
+  { fileName = "depot/shipyard_era_a.con", type = "WATER_DEPOT", kind = "depot", surface = "public", evidence = "native" },
+  { fileName = "depot/train_depot_era_a.con", type = "RAIL_DEPOT", kind = "depot", surface = "public", evidence = "native" },
+  { fileName = "depot/tram_depot_era_a.con", type = "STREET_DEPOT", kind = "depot", surface = "public", evidence = "native" },
+
+  { fileName = "industry/chemical_plant.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/coal_mine.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/construction_material.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/extension/field.con", type = "ASSET_DEFAULT", kind = "construction", surface = "internal", evidence = "content" },
+  { fileName = "industry/farm.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/food_processing_plant.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/forest.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/fuel_refinery.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/goods_factory.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/iron_ore_mine.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/machines_factory.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/oil_refinery.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/oil_well.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/quarry.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/saw_mill.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/steel_mill.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+  { fileName = "industry/tools_factory.con", type = "INDUSTRY", kind = "construction", surface = "authored", evidence = "content" },
+
+  { fileName = "placeholders/generic.con", type = "STREET_STATION", kind = "construction", surface = "internal", evidence = "offline" },
+  { fileName = "station/air/airfield.con", type = "AIRPORT", kind = "station", surface = "public", evidence = "native" },
+  { fileName = "station/air/airport.con", type = "AIRPORT", kind = "station", surface = "public", evidence = "native" },
+  { fileName = "station/rail/modular_station/modular_station.con", type = "DYNAMIC", kind = "rail_station", surface = "public", evidence = "native" },
+  { fileName = "station/street/modular_terminal.con", type = "DYNAMIC", kind = "station", surface = "public", evidence = "native" },
+  { fileName = "station/water/harbor_modular.con", type = "DYNAMIC", kind = "station", surface = "public", evidence = "native" },
+
+  { fileName = "street/cloverleaf_interchange.con", type = "STREET_CONSTRUCTION", kind = "construction", surface = "public", evidence = "offline" },
+  { fileName = "street/roundabout.con", type = "STREET_CONSTRUCTION", kind = "construction", surface = "public", evidence = "native" },
+  { fileName = "street/t_interchange.con", type = "STREET_CONSTRUCTION", kind = "construction", surface = "public", evidence = "native" },
+
+  { fileName = "waterway/buoys_waypoint_era_a.con", type = "WATER_WAYPOINT", kind = "construction", surface = "public", evidence = "offline" },
+  { fileName = "waterway/buoys_waypoint_era_b.con", type = "WATER_WAYPOINT", kind = "construction", surface = "public", evidence = "offline" },
+  { fileName = "waterway/buoys_waypoint_era_b_2.con", type = "WATER_WAYPOINT", kind = "construction", surface = "public", evidence = "offline" },
+  { fileName = "waterway/buoys_waypoint_era_c.con", type = "WATER_WAYPOINT", kind = "construction", surface = "public", evidence = "offline" },
+  { fileName = "waterway/buoys_waypoint_era_c_2.con", type = "WATER_WAYPOINT", kind = "construction", surface = "public", evidence = "native" },
+}

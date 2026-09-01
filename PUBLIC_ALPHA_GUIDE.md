@@ -99,6 +99,12 @@ protected.
   command. Fast batches are supported, but this makes alpha bugs easier to
   identify.
 - Pause and game speed are shared. A remote pause may take a moment to arrive.
+- The in-game date is shared authored state. TPF2MP freezes Transport Fever
+  2's independent recurring calendar and advances both games only with an
+  automatic five-minute economy settlement. The pace is copied from the
+  starting save (normally `2000 ms/day`), so the default settlement advances
+  150 days and unlocks the same vehicles on both peers. A developer/manual
+  settlement does not advance the date.
 - Stop building while the panel says waiting, reconnecting, saving, or
   checkpointing.
 - If one player disconnects, do not continue alone. The session pauses and
@@ -124,8 +130,8 @@ For an ordinary clean continuation:
 
 Never use a save made while disconnected, faulted, or while physical work is
 still pending. A healthy initialized multiplayer save preserves both company
-wallets and canonical world bindings; the new session establishes a fresh
-two-peer checkpoint before play resumes.
+wallets, shared date, and canonical world bindings; the new session establishes
+a fresh two-peer checkpoint before play resumes.
 
 The Multiplayer panel also has **Prepare & Save Restore Point**. This creates
 a stricter coordinated recovery boundary and makes a separate save for each

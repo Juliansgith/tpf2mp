@@ -6,6 +6,9 @@ param(
     [switch]$RunFacilityCustodyProbe,
     [switch]$RunAirFacilityProbe,
     [switch]$RunWaterFacilityProbe,
+    [switch]$RunCalendarProbe,
+    [switch]$RunConstructionEdgeCaseProbe,
+    [switch]$RunGeometryStressProbe,
     [int]$ConsoleProbeTimeoutSeconds = 120,
     [switch]$NativeHook,
     [switch]$SkipNativeBuild,
@@ -228,10 +231,19 @@ try {
     Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp') -Destination $injectedLibrary -Recurse
     $libraryInjected = $true
     if ($RunConsoleBuildProbe -or $RunFacilityCustodyProbe -or $RunAirFacilityProbe -or
-        $RunWaterFacilityProbe) {
+        $RunWaterFacilityProbe -or $RunCalendarProbe -or $RunConstructionEdgeCaseProbe -or
+        $RunGeometryStressProbe) {
         $probeSource = Join-Path $projectRoot 'investigation\live_console_probe.lua'
         if (-not (Test-Path -LiteralPath $probeSource)) { throw "Console build probe is missing: $probeSource" }
         Copy-Item -LiteralPath $probeSource -Destination (Join-Path $injectedLibrary 'live_console_probe.lua')
+        if ($RunGeometryStressProbe) {
+            $geometrySource = Join-Path $projectRoot 'investigation\live_geometry_probe.lua'
+            if (-not (Test-Path -LiteralPath $geometrySource)) {
+                throw "Native geometry stress probe is missing: $geometrySource"
+            }
+            Copy-Item -LiteralPath $geometrySource -Destination `
+                (Join-Path $injectedLibrary 'live_geometry_probe.lua')
+        }
     }
     Set-Content -LiteralPath $validationMarker -Value $stamp -Encoding ASCII
     Write-Host 'Installed a temporary base-resource copy because app.startGame() intentionally ignores active mods.'
@@ -342,7 +354,8 @@ try {
     }
 
     if (($RunConsoleBuildProbe -or $RunFacilityCustodyProbe -or $RunAirFacilityProbe -or
-        $RunWaterFacilityProbe) -and $validationPassed) {
+        $RunWaterFacilityProbe -or $RunCalendarProbe -or $RunConstructionEdgeCaseProbe -or
+        $RunGeometryStressProbe) -and $validationPassed) {
         $helper = Join-Path $PSScriptRoot 'send_game_console.ps1'
         function Invoke-ProbeInput([string]$InputAction, [string]$InputCommand, [switch]$SkipClick) {
             $probeInputResult = Join-Path $runDirectory "ui-console-build-probe-$InputAction-$([DateTime]::UtcNow.Ticks).json"
@@ -364,7 +377,13 @@ try {
         # establish a known-focused prompt; clicking the prompt loses focus.
         Invoke-ProbeInput -InputAction 'toggle-console'
         Start-Sleep -Milliseconds 500
-        $probeCommand = if ($RunWaterFacilityProbe) {
+        $probeCommand = if ($RunGeometryStressProbe) {
+            'require[[tpf2_mp/live_geometry_probe]].run()'
+        } elseif ($RunConstructionEdgeCaseProbe) {
+            'require[[tpf2_mp/live_console_probe]].runConstructionEdgeCaseTest()'
+        } elseif ($RunCalendarProbe) {
+            'require[[tpf2_mp/live_console_probe]].runPausedCalendarTest()'
+        } elseif ($RunWaterFacilityProbe) {
             'require[[tpf2_mp/live_console_probe]].runWaterFacilityTest()'
         } elseif ($RunAirFacilityProbe) {
             'require[[tpf2_mp/live_console_probe]].runAirFacilityTest()'
@@ -373,7 +392,13 @@ try {
         } else {
             'require[[tpf2_mp/live_console_probe]].run()'
         }
-        $probeCompletionEvent = if ($RunWaterFacilityProbe) {
+        $probeCompletionEvent = if ($RunGeometryStressProbe) {
+            'geometry-stress-complete'
+        } elseif ($RunConstructionEdgeCaseProbe) {
+            'construction-edge-cases-complete'
+        } elseif ($RunCalendarProbe) {
+            'calendar-complete'
+        } elseif ($RunWaterFacilityProbe) {
             'water-facility-complete'
         } elseif ($RunAirFacilityProbe) {
             'air-facility-complete'
@@ -388,7 +413,13 @@ try {
         Invoke-ProbeInput -InputAction 'accept-up'
         Start-Sleep -Milliseconds 500
         Invoke-ProbeInput -InputAction 'toggle-console'
-        Write-Host $(if ($RunWaterFacilityProbe) {
+        Write-Host $(if ($RunGeometryStressProbe) {
+            'Issued the disposable native track/station geometry stress probe from the console state.'
+        } elseif ($RunConstructionEdgeCaseProbe) {
+            'Issued the disposable stock construction edge-case probe from the console state.'
+        } elseif ($RunCalendarProbe) {
+            'Issued the disposable native-calendar probe from the console state.'
+        } elseif ($RunWaterFacilityProbe) {
             'Issued the disposable stock-harbor construction probe from the console state.'
         } elseif ($RunAirFacilityProbe) {
             'Issued the disposable stock-airport construction probe from the console state.'
@@ -460,7 +491,13 @@ try {
         if (-not $consoleProbeLine) { throw "Timed out after $ConsoleProbeTimeoutSeconds seconds waiting for build-probe completion" }
         Write-Host $consoleProbeLine
         if (-not $consoleProbePassed) {
-            throw $(if ($RunWaterFacilityProbe) {
+            throw $(if ($RunGeometryStressProbe) {
+                'The disposable native track/station geometry stress probe failed.'
+            } elseif ($RunConstructionEdgeCaseProbe) {
+                'The disposable stock construction edge-case probe failed.'
+            } elseif ($RunCalendarProbe) {
+                'The disposable native-calendar probe failed.'
+            } elseif ($RunWaterFacilityProbe) {
                 'The disposable stock-harbor construction probe failed.'
             } elseif ($RunAirFacilityProbe) {
                 'The disposable stock-airport construction probe failed.'
@@ -509,7 +546,8 @@ try {
 catch { Write-Warning "Checkpoint/replay report rendering failed: $($_.Exception.Message)" }
 
 $consoleProbeRequested = $RunConsoleBuildProbe -or $RunFacilityCustodyProbe -or
-    $RunAirFacilityProbe -or $RunWaterFacilityProbe
+    $RunAirFacilityProbe -or $RunWaterFacilityProbe -or $RunCalendarProbe -or
+    $RunConstructionEdgeCaseProbe -or $RunGeometryStressProbe
 $overallPassed = $validationPassed -and $nativeHookPassed -and
     (-not $consoleProbeRequested -or $consoleProbePassed)
 $status = [ordered]@{
@@ -520,7 +558,7 @@ $status = [ordered]@{
     failure = $failure
     validationLine = $validationLine
     consoleProbeRequested = $consoleProbeRequested
-    consoleProbeMode = if ($RunWaterFacilityProbe) { 'water-facility' } elseif ($RunAirFacilityProbe) { 'air-facility' } elseif ($RunFacilityCustodyProbe) { 'facility-custody' } elseif ($RunConsoleBuildProbe) { 'road-build' } else { $null }
+    consoleProbeMode = if ($RunGeometryStressProbe) { 'geometry-stress' } elseif ($RunConstructionEdgeCaseProbe) { 'construction-edge-cases' } elseif ($RunCalendarProbe) { 'calendar' } elseif ($RunWaterFacilityProbe) { 'water-facility' } elseif ($RunAirFacilityProbe) { 'air-facility' } elseif ($RunFacilityCustodyProbe) { 'facility-custody' } elseif ($RunConsoleBuildProbe) { 'road-build' } else { $null }
     consoleProbePassed = $consoleProbePassed
     consoleProbeLine = $consoleProbeLine
     nativeHookRequested = [bool]$NativeHook

@@ -34,6 +34,10 @@ function M.install(gui, env)
     "objects", "position", "param", "left", "oneWay", "category", "segmentEntity", "edgeEntity",
     "edgeObjectEntity", "originalEntity", "model", "modelId", "modelName", "modelInstance", "name",
     "x", "y", "z", "costs", "player", "owner", "playerEntity", "playerOwned",
+    -- ConstructionEntity carries this outside params.  It is true for the
+    -- stock headquarters and changes engine semantics even though the .con
+    -- resource and rendered model are otherwise sufficient to build a shell.
+    "headquarters",
     "resultEntities", "resultProposalData", "proposalData", "withCostRep", "ignoreErrors",
   }
   
@@ -613,7 +617,8 @@ function M.install(gui, env)
   -- deliberately avoids the node/edge graph and deep module metadata, so it can
   -- run on every proposalCreate without returning the host to single-digit FPS.
   gui.constructionPreviewPlacement = function(param)
-    local readOk, fileName, rawTransform, sourceParams, modules, previewCost = pcall(function()
+    local readOk, fileName, rawTransform, sourceParams, modules, previewCost,
+      headquarters = pcall(function()
       local proposal = param.proposal
       local additions = proposal and (proposal.constructionsToAdd or proposal.toAdd)
       local construction = additions and (additions[1] or additions["1"])
@@ -625,7 +630,7 @@ function M.install(gui, env)
         or (nestedData and nestedData.costs) or param.costs
       return construction.fileName or construction.name,
         construction.transf or construction.transform,
-        params, params and params.modules, costs
+        params, params and params.modules, costs, construction.headquarters
     end)
     if not readOk then return nil end
     if type(fileName) ~= "string" or not fileName:match("%.con$") then return nil end
@@ -641,7 +646,10 @@ function M.install(gui, env)
       return result
     end)
     if not paramsOk then return nil end
-    local params, templateParts = {}, { fileName }
+    local params, templateParts = {}, {
+      fileName,
+      "headquarters=" .. tostring(headquarters == true),
+    }
     for _, field in ipairs(CONSTRUCTION_PREVIEW_PARAMETER_FIELDS) do
       local value = gui.finitePreviewNumber(rawParams[field])
       if value ~= nil then
@@ -667,6 +675,7 @@ function M.install(gui, env)
       templateSignature = templateSignature,
       topologySignature = topologySignature,
       topologyCacheable = topologyCacheable == true,
+      headquarters = headquarters == true,
       cost = tonumber(previewCost) and util.integer(previewCost) or nil,
       frame = gui.frames,
     }

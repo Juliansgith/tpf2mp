@@ -14,6 +14,7 @@ local restoreSessionIdentity = require "tpf2_mp/restore_session_identity"
 local stateRetention = require "tpf2_mp/state_retention"
 local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
 local resourceCompatibility = require "tpf2_mp/resource_compatibility"
+local calendarModel = require "tpf2_mp/calendar_model"
 
 local M = {}
 
@@ -323,6 +324,7 @@ function M.new(cfg, versions)
         rendezvousFaults = 0,
         startupPause = { requested = false, confirmed = false },
       },
+      calendar = calendarModel.newState(),
       vehicleSync = {
         schemaVersion = 2,
         enabled = true,
@@ -709,6 +711,19 @@ function M.migrate(saved, context)
       saved.world.networkClock[key] = util.deepCopy(value)
     end
   end
+  local observedCalendar = context and context.calendarSnapshot
+  if type(observedCalendar) == "function" and saved.networkMode == "network"
+    and saved.initialized == true and type(saved.world.calendar) ~= "table" then
+    local observedOk, observed = pcall(observedCalendar)
+    observedCalendar = observedOk and observed or nil
+  end
+  observedCalendar = type(observedCalendar) == "table" and observedCalendar.date or nil
+  saved.world.calendar = calendarModel.migrate(
+    saved.world.calendar,
+    saved.networkMode == "network" and saved.initialized == true and observedCalendar or nil,
+    saved.economy and saved.economy.epoch or 0,
+    saved.match and saved.match.rules and saved.match.rules.calendarMillisPerDay
+      or calendarModel.DEFAULT_MILLIS_PER_DAY)
   saved.world.vehicleSync = saved.world.vehicleSync or util.deepCopy(defaults.world.vehicleSync)
   saved.world.vehicleSync.schemaVersion = 2
   if saved.world.vehicleSync.enabled == nil then saved.world.vehicleSync.enabled = true end

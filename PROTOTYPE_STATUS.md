@@ -1,6 +1,7 @@
 # TPF2MP prototype status
 
-Last updated: 2026-08-31 after prototype `0.42.5-alpha`, state schema `34`,
+Last updated: 2026-09-01 for the development candidate after
+`0.42.5-alpha`, state schema `35`,
 checkpoint format `5`, operation schema `4`, passenger-presentation schema `4`,
 cargo-presentation schema `2`, freight-industry schema `3`, edge proposal
 schema `5`, construction proposal schema `7`, and native hook `0.19.0`.
@@ -49,6 +50,16 @@ TPF2MP contains two usable but differently mature modes:
 
 The network architecture has crossed the populated-world convergence gate. It
 has not crossed the finished-product gate.
+
+State schema 35 makes the calendar authored match state. The host captures the
+starting save's date and native milliseconds-per-day pace in
+`match.initialise`; both native recurring calendars stay frozen. Each automatic
+five-minute `economy.settle` deterministically advances the Gregorian date and
+residual, verifies the same payload in Lua and Python, applies one authorized
+native `SetDate` on both peers, and includes the result in model/core
+checkpoints and restore saves. Manual settlements do not move time. An exact
+two-instance Build 35924 run advanced 1990-01-01 to 1990-05-31 on both peers
+and read the same date back from the native engine.
 
 Prototype `0.42.5-alpha` places every GUI-owned canonical BuildProposal behind
 a native main-view selector fence. Replay begins only after one complete GUI

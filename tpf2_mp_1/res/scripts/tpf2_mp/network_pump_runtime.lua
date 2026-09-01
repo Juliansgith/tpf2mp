@@ -79,6 +79,7 @@ function M.new(deps)
       or deps.economyClock.needsUpdate()) then
       economyClockOk = protected("economy-clock.update", deps.economyClock.update, errors.probe)
     end
+    local calendarOk = true; if not startupFenced and deps.calendar and (type(deps.calendar.needsUpdate) ~= "function" or deps.calendar.needsUpdate()) then calendarOk = protected("calendar.ensure-native", deps.calendar.ensureNative, errors.clock) end
     local vehicleOk = true
     if not startupFenced and performance.due("vehicle-sync.update", vehicleStride(state)) then
       vehicleOk = protected("vehicle-sync.update", deps.vehicleSync.update, errors.vehicle)
@@ -129,8 +130,7 @@ function M.new(deps)
         "bridge.status", deps.bridge.nativeStatus, state.bridge)
       if invoked then performance.setNativeBridge(status) end
     end
-    return consumeOk and clockOk and economyClockOk and vehicleOk and deferredOk
-      and operationHoldOk and contentOk and freightOk and prepareOk and healthOk
+    return consumeOk and clockOk and economyClockOk and calendarOk and vehicleOk and deferredOk and operationHoldOk and contentOk and freightOk and prepareOk and healthOk
   end
 
   return { pump = pump }

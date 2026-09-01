@@ -1123,6 +1123,40 @@ assert(assetCapture.streetProposal.edgesToAdd["1"] == nil
     and assetCapture.streetProposal.nodesToAdd["1"] == nil,
   "graphless asset capture unexpectedly invented a transport graph")
 
+-- The stock headquarters is also graphless, but its native ConstructionEntity
+-- has a semantic boolean outside params.  Preserve it through the same cached
+-- preview/apply path used by ordinary assets.
+local headquartersCaptureCount = #proposalCaptureEvents()
+local headquartersPreview = {
+  data = { costs = 100000 },
+  proposal = {
+    constructionsToAdd = {{
+      fileName = "asset/headquarter.con", headquarters = true,
+      params = { size = 0, year = 1990, seed = 41 },
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 85, 65, 2, 1 },
+    }},
+    streetProposal = {
+      edgesToAdd = {}, nodesToAdd = {}, edgesToRemove = {}, nodesToRemove = {},
+    },
+  },
+}
+assert(script.guiHandleEvent(
+  "constructionBuilder", "builder.proposalCreate", headquartersPreview) == nil,
+  "headquarters preview was unexpectedly vetoed")
+script.guiHandleEvent("constructionBuilder", "builder.apply", {
+  data = { costs = 0 },
+  proposal = { streetProposal = {
+    edgesToAdd = {}, nodesToAdd = {}, edgesToRemove = {}, nodesToRemove = {},
+  }},
+  result = {},
+})
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+for _ = 1, 4 do script.guiUpdate() end
+captures = proposalCaptureEvents()
+assert(#captures == headquartersCaptureCount + 1
+    and captures[#captures].param.proposalSnapshot.__constructionAdditions["1"].headquarters == true,
+  "headquarters marker was lost between cached GUI preview and capture")
+
 -- The release hook carries an explicit preview token on every suppressed
 -- BuildProposal. Exercise the adversarial station -> tool switch -> track
 -- ordering: a late station token must be rejected, never substituted for the

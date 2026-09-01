@@ -43,7 +43,8 @@ Use one fresh, flat, populated save and leave physical town development on.
    issuer may remain slower because it runs native collision/terrain preview,
    but must not show the former sustained single-digit multiplayer collapse.
    Click once and require exactly one replicated result.
-2. Build private road/rail infrastructure, a station, depot, signal, line, and
+2. Build private road/rail infrastructure, two sequential rail stations, a
+   depot, signal, line, and
    at least two assigned vehicles. Exercise one line edit and one vehicle
    lifecycle command. Verify rival private edits are rejected. In a disposable
    area, explicitly run station -> bulldoze -> long track, construction ->
@@ -57,8 +58,11 @@ Use one fresh, flat, populated save and leave physical town development on.
    at hub stock and later board the downstream vehicle without creation or
    duplication.
 5. Allow at least one ordered `town.develop` batch and three all-peer
-   checkpoints. Keep both worlds running long enough to revisit several
-   station barriers.
+   checkpoints. Let one automatic five-minute economy settlement complete and
+   require the authored and native dates to match on both peers. Keep both
+   worlds running for at least ten minutes with a real assigned vehicle,
+   revisit several station barriers, then require an acknowledged shared pause
+   and a new paired recovery boundary.
 6. Disconnect Player 2's companion while the games stay open. Require an
    immediate pause, reconnect within 120 seconds, complete backlog replay, no
    timeout, and a clean manual resume.
@@ -101,6 +105,13 @@ It must report hook `0.19.0`, no dropped/pending native build events, no stale
 or ambiguous capture, increasing unique generations/tokens, both-peer input,
 construction/track/street/edge-object/bulldozer coverage, and one matching
 agreed checkpoint.
+
+The repository's exact second-station fixture is a pinned copy of the two
+sequential live transactions from support session `mp-2b831d5eac67c488`. The
+automated suite verifies its compressed SHA-256, topology, costs, module set,
+and collateral identities. The dedicated two-instance `second-station` slice
+must also report `second-station-collateral-retired` on both peers; a generic
+validator pass is rejected as a stale install.
 
 ## Explicit alpha limits
 

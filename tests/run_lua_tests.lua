@@ -20,6 +20,8 @@ local economyFeederAccess = require "tpf2_mp/economy_feeder_access"
 local economyServiceQuarantine = require "tpf2_mp/economy_service_quarantine"
 local economyLineRegistration = require "tpf2_mp/economy_line_registration"
 local economySettlementTransaction = require "tpf2_mp/economy_settlement_transaction"
+local calendarModel = require "tpf2_mp/calendar_model"
+local calendarRuntimeModule = require "tpf2_mp/calendar_runtime"
 local vehicleResourceFacts = require "tpf2_mp/vehicle_resource_facts"
 local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
 local industryContentRuntime = require "tpf2_mp/industry_content_runtime"
@@ -75,6 +77,58 @@ test("canonical JSON and cross-language checksum", function()
   local decoded = json.decode(encoded)
   equal(decoded.a, "x")
   equal(decoded.b, 2)
+end)
+
+test("pinned GUI geometry evidence retains crossings, bridges, and dense city stations", function()
+  local evidence = assert(dofile(project .. "/tests/fixtures/practical_geometry_evidence.lua"))
+  local crossing = assert(evidence.crossing and evidence.crossing.transaction)
+  equal(crossing.digest, "ae34d9d9",
+    "ordinary-GUI road-crossing source identity changed")
+  local replayableCrossing = util.deepCopy(crossing)
+  replayableCrossing.digest = proposalCodec.digest(replayableCrossing)
+  replayableCrossing.transactionId = "proposal:" .. replayableCrossing.digest
+  equal(replayableCrossing.digest, "aa7ad9d8",
+    "road-crossing projection changed under the current canonical codec")
+  local valid, validationError = proposalCodec.validate(replayableCrossing)
+  truthy(valid, validationError)
+  equal(crossing.transactionId, "proposal:ae34d9d9")
+  equal(#crossing.nodes, 4)
+  equal(#crossing.edges, 5)
+  equal(#crossing.remove.edges, 2)
+  equal(#crossing.remove.nodes, 1)
+  local trackEdges, publicStreetEdges = 0, 0
+  for _, edge in ipairs(crossing.edges) do
+    if edge.carrier == "track" and edge.private == true then trackEdges = trackEdges + 1 end
+    if edge.carrier == "street" and edge.private == false then
+      publicStreetEdges = publicStreetEdges + 1
+    end
+  end
+  equal(trackEdges, 2, "crossing lost its two player-owned rail segments")
+  equal(publicStreetEdges, 3, "crossing lost its three public town-road segments")
+
+  local bridges = assert(evidence.bridges and evidence.bridges.captures)
+  equal(#bridges, 2)
+  for _, capture in ipairs(bridges) do
+    equal(capture.bridgeEdges, 9,
+      "pinned GUI bridge evidence lost its nine-edge structured span")
+    equal(capture.bridgeTypeIndex, 4,
+      "pinned GUI bridge evidence changed its evaluated resource index")
+    truthy(capture.approximateConnectedLengthMetres >= 800,
+      "pinned GUI bridge evidence no longer represents a long span")
+    truthy(capture.maximumZ > capture.minimumZ,
+      "pinned GUI bridge evidence lost its vertical transition")
+  end
+
+  local cityStations = assert(evidence.cityStations and evidence.cityStations.captures)
+  equal(#cityStations, 3)
+  local maximumCollateral = 0
+  for _, capture in ipairs(cityStations) do
+    equal(capture.nodes, 50)
+    equal(capture.edges, 48)
+    maximumCollateral = math.max(maximumCollateral, capture.collateralBuildings)
+  end
+  equal(maximumCollateral, 7,
+    "pinned city-station evidence lost the seven-building collision case")
 end)
 
 test("mod-authored native commands consume and revoke exact visitor tokens", function()
@@ -1013,6 +1067,232 @@ local function setStationPathGraph(root, pathNodeCounts, catenary)
   root.proposal.addedSegments = edges
   return root
 end
+
+test("every stock non-building construction has a pinned portable codec path", function()
+  local matrix = assert(dofile(project .. "/tests/fixtures/stock_nonbuilding_constructions.lua"))
+  equal(#matrix, 52)
+  local seen, publicCount, evidenceCounts = {}, 0, {}
+  for index, row in ipairs(matrix) do
+    truthy(type(row.fileName) == "string" and row.fileName:sub(-4) == ".con",
+      "invalid construction matrix filename at row " .. tostring(index))
+    truthy(not seen[row.fileName], "duplicate construction matrix filename: " .. row.fileName)
+    seen[row.fileName] = true
+    if row.surface == "public" then publicCount = publicCount + 1 end
+    evidenceCounts[row.evidence] = (evidenceCounts[row.evidence] or 0) + 1
+
+    local raw
+    if row.kind == "rail_station" then
+      raw = smallestStationProposal(20000 + index * 100)
+    else
+      local params = { year = 1990, seed = index }
+      if row.fileName == "asset/headquarter.con" then params.size = 0 end
+      raw = {
+        __observedCost = 1000 + index,
+        __constructionAdditions = {{
+          fileName = row.fileName,
+          headquarters = row.fileName == "asset/headquarter.con" and true or nil,
+          transf = {
+            1, 0, 0, 0, 0, 1, 0, 0,
+            0, 0, 1, 0, 100 + index * 10, 200, 5, 1,
+          },
+          params = params,
+        }},
+        __constructionRemovals = {},
+      }
+    end
+    local transaction, transactionError = proposalCodec.normalise(raw, "company:1", {
+      resourceName = function(kind, resourceIndex)
+        return kind .. "/" .. tostring(resourceIndex) .. ".lua"
+      end,
+    })
+    truthy(transaction, row.fileName .. ": " .. tostring(transactionError))
+    equal(transaction.schemaVersion, proposalCodec.CONSTRUCTION_SCHEMA_VERSION, row.fileName)
+    equal(transaction.constructions[1].kind, row.kind, row.fileName)
+    local portable, portableError = proposalCodec.validatePortable(transaction)
+    truthy(portable, row.fileName .. ": " .. tostring(portableError))
+    local spec, specError = proposalCodec.materialiseConstruction(transaction)
+    truthy(spec, row.fileName .. ": " .. tostring(specError))
+    equal(spec.fileName, row.fileName)
+    equal(spec.headquarters, row.fileName == "asset/headquarter.con")
+  end
+  equal(publicCount, 33)
+  equal(evidenceCounts.native, 19)
+  equal(evidenceCounts.manual, 2)
+  equal(evidenceCounts.offline, 14)
+  equal(evidenceCounts.content, 17)
+end)
+
+test("a stock cloverleaf-sized transient construction replays as a pure owned edge graph", function()
+  -- STREET_CONSTRUCTION .con files are build-tool templates, not persistent
+  -- construction entities. The largest stock example expands to 52 street
+  -- edges, comfortably below the ordinary topology bound. Pin that exact
+  -- family shape without invoking the unsafe legacy buildConstruction helper.
+  local nodeCount, edgeCount = 52, 52
+  local nodes, edges = {}, {}
+  for index = 1, nodeCount do
+    local angle = 2 * math.pi * (index - 1) / nodeCount
+    nodes[index] = {
+      entity = -index,
+      comp = { position = { x = 300 * math.cos(angle), y = 300 * math.sin(angle), z = 5 } },
+    }
+  end
+  for index = 1, edgeCount do
+    local nextIndex = index == nodeCount and 1 or index + 1
+    local first, second = nodes[index].comp.position, nodes[nextIndex].comp.position
+    edges[index] = {
+      entity = -(1000 + index), type = 0,
+      comp = {
+        node0 = nodes[index].entity, node1 = nodes[nextIndex].entity,
+        tangent0 = { x = second.x - first.x, y = second.y - first.y, z = 0 },
+        tangent1 = { x = second.x - first.x, y = second.y - first.y, z = 0 },
+        type = 0, typeIndex = 0,
+      },
+      streetEdge = { streetType = 7 },
+      playerOwned = { player = 100 },
+    }
+  end
+  local raw = {
+    __observedCost = 250000,
+    streetProposal = {
+      nodesToAdd = nodes, edgesToAdd = edges,
+      nodesToRemove = {}, edgesToRemove = {},
+      edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+    },
+    constructionsToAdd = {}, constructionsToRemove = {},
+  }
+  local transaction, transactionError = proposalCodec.normalise(raw, "company:1", {
+    resourceName = function(kind, index)
+      if kind == "street" and index == 7 then return "standard/country_small_one_way_new.lua" end
+    end,
+  })
+  truthy(transaction, transactionError)
+  equal(transaction.schemaVersion, proposalCodec.SCHEMA_VERSION)
+  equal(#transaction.nodes, nodeCount)
+  equal(#transaction.edges, edgeCount)
+  equal(transaction.constructions, nil)
+  for _, edge in ipairs(transaction.edges) do truthy(edge.private) end
+  local portable, portableError = proposalCodec.validatePortable(transaction)
+  truthy(portable, portableError)
+end)
+
+test("portable construction hard bounds fail closed at compound edge cases", function()
+  local function raw(params, removals, additions)
+    local construction = {
+      fileName = "asset/default_multi_bench_new.con",
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 100, 200, 5, 1 },
+      params = params or { seed = 1, year = 1990 },
+    }
+    return {
+      __observedCost = 1000,
+      __constructionAdditions = additions or { construction },
+      __constructionRemovals = removals or {},
+    }
+  end
+  local options = {
+    entityKind = function() return "construction" end,
+    resolveCanonical = function(kind, localId)
+      if kind == "construction" then return "construction:pre:" .. tostring(localId) end
+    end,
+  }
+
+  local maximumCollateral = {}
+  for index = 1, proposalCodec.MAX_CONSTRUCTION_COLLATERAL do
+    maximumCollateral[index] = 10000 + index
+  end
+  local bounded, boundedError = proposalCodec.normalise(
+    raw(nil, maximumCollateral), "company:1", options)
+  truthy(bounded, boundedError)
+  equal(#bounded.constructions[1].collateral, proposalCodec.MAX_CONSTRUCTION_COLLATERAL)
+
+  local excessiveCollateral = util.deepCopy(maximumCollateral)
+  excessiveCollateral[#excessiveCollateral + 1] = 20000
+  local excessive, excessiveError = proposalCodec.normalise(
+    raw(nil, excessiveCollateral), "company:1", options)
+  equal(excessive, nil)
+  truthy(tostring(excessiveError):find("bounded change limit", 1, true), excessiveError)
+
+  local first = raw().__constructionAdditions[1]
+  local second = util.deepCopy(first)
+  second.transf[13] = 300
+  local multiple, multipleError = proposalCodec.normalise(
+    raw(nil, nil, { first, second }), "company:1", options)
+  equal(multiple, nil)
+  truthy(tostring(multipleError):find("bounded change limit", 1, true), multipleError)
+
+  local modules = {}
+  for index = 1, 256 do
+    modules[100000 + index] = {
+      name = "asset/default.module", variant = 0, metadata = { ordinal = index },
+    }
+  end
+  local maximumModules, maximumModulesError = proposalCodec.normalise(
+    raw({ seed = 1, year = 1990, modules = modules }), "company:1", options)
+  truthy(maximumModules, maximumModulesError)
+  equal(#maximumModules.constructions[1].modules, 256)
+  modules[200000] = { name = "asset/default.module", variant = 0 }
+  local excessiveModules, excessiveModulesError = proposalCodec.normalise(
+    raw({ seed = 1, year = 1990, modules = modules }), "company:1", options)
+  equal(excessiveModules, nil)
+  truthy(tostring(excessiveModulesError):find("module limit", 1, true), excessiveModulesError)
+
+  local deep, cursor = {}, nil
+  cursor = deep
+  for _ = 1, proposalCodec.MAX_CONSTRUCTION_PARAM_DEPTH + 2 do
+    cursor.next = {}
+    cursor = cursor.next
+  end
+  cursor.value = 1
+  local tooDeep, depthError = proposalCodec.normalise(raw(deep), "company:1", options)
+  equal(tooDeep, nil)
+  truthy(tostring(depthError):find("depth limit", 1, true), depthError)
+
+  local cyclic = { seed = 1 }
+  cyclic.loop = cyclic
+  local cycleValue, cycleError = proposalCodec.normalise(raw(cyclic), "company:1", options)
+  equal(cycleValue, nil)
+  truthy(tostring(cycleError):find("contains a cycle", 1, true), cycleError)
+
+  local oversized = {}
+  for index = 1, proposalCodec.MAX_CONSTRUCTION_PARAM_VALUES do
+    oversized["value" .. tostring(index)] = index
+  end
+  local tooManyValues, valuesError = proposalCodec.normalise(raw(oversized), "company:1", options)
+  equal(tooManyValues, nil)
+  truthy(tostring(valuesError):find("value limit", 1, true), valuesError)
+end)
+
+test("every stock street and track carrier has a stable canonical resource path", function()
+  local resources = assert(dofile(
+    project .. "/tests/fixtures/stock_network_construction_resources.lua"))
+  equal(#resources.street, 35)
+  equal(#resources.track, 2)
+  equal(#resources.bridge, 6)
+  equal(#resources.tunnel, 3)
+  local seen = {}
+  for _, carrier in ipairs({ "street", "track" }) do
+    for index, name in ipairs(resources[carrier]) do
+      truthy(not seen[carrier .. ":" .. name], "duplicate stock carrier " .. carrier .. ":" .. name)
+      seen[carrier .. ":" .. name] = true
+      local raw = linearProposal(-1, -2, -3, carrier, index - 1, false)
+      local transaction, transactionError = proposalCodec.normalise(raw, "company:1", {
+        resourceName = function(kind, resourceIndex)
+          if kind == carrier and resourceIndex == index - 1 then return name end
+        end,
+        requireResourceName = true,
+      })
+      truthy(transaction, carrier .. ":" .. name .. ": " .. tostring(transactionError))
+      equal(transaction.edges[1].resource.name, name)
+      local portable, portableError = proposalCodec.validatePortable(transaction)
+      truthy(portable, carrier .. ":" .. name .. ": " .. tostring(portableError))
+    end
+  end
+  for _, structure in ipairs({ "bridge", "tunnel" }) do
+    for _, name in ipairs(resources[structure]) do
+      truthy(type(name) == "string" and name:match("^[a-z0-9_/-]+%.lua$"),
+        "invalid stock " .. structure .. " resource: " .. tostring(name))
+    end
+  end
+end)
 
 test("proposal codec removes temporary local IDs and is deterministic across peers", function()
   local first, firstError = proposalCodec.normalise(
@@ -2712,6 +2992,34 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
   local assetSpec = assert(proposalCodec.materialiseConstruction(assetTx))
   equal(assetSpec.params.modules[910000].variant, 2)
   equal(assetSpec.params.modules[910000].metadata.capacity.passenger, 5)
+
+  -- ConstructionEntity stores the stock headquarters marker outside params.
+  -- Losing it produces a visually correct but semantically inert building.
+  -- Keep schema 7 backward-compatible by deriving the marker from the pinned
+  -- stock resource, while rejecting contradictory GUI projections.
+  local headquarters = util.deepCopy(asset)
+  headquarters.__constructionAdditions[1].fileName = "asset/headquarter.con"
+  headquarters.__constructionAdditions[1].params = { size = 0, seed = 11, year = 1990 }
+  headquarters.__constructionAdditions[1].headquarters = true
+  local headquartersTx, headquartersError = proposalCodec.normalise(
+    headquarters, "company:1")
+  truthy(headquartersTx, headquartersError)
+  equal(headquartersTx.constructions[1].kind, "construction")
+  local headquartersSpec = assert(proposalCodec.materialiseConstruction(headquartersTx))
+  equal(headquartersSpec.fileName, "asset/headquarter.con")
+  equal(headquartersSpec.headquarters, true)
+
+  local inertHeadquarters = util.deepCopy(headquarters)
+  inertHeadquarters.__constructionAdditions[1].headquarters = false
+  local inertValue, inertError = proposalCodec.normalise(inertHeadquarters, "company:1")
+  equal(inertValue, nil)
+  truthy(tostring(inertError):find("headquarters marker contradicts", 1, true), inertError)
+
+  local forgedHeadquarters = util.deepCopy(asset)
+  forgedHeadquarters.__constructionAdditions[1].headquarters = true
+  local forgedValue, forgedError = proposalCodec.normalise(forgedHeadquarters, "company:1")
+  equal(forgedValue, nil)
+  truthy(tostring(forgedError):find("headquarters marker contradicts", 1, true), forgedError)
 
   local upgrade = util.deepCopy(asset)
   upgrade.__observedCost = 250
@@ -7151,6 +7459,68 @@ test("GUI replay work index does not sort an unchanged idle history", function()
   equal(index.candidates(container, issued)[1], "proposal:0",
     "new replay work did not preserve sorted selection")
   equal(index.status().rebuilds, 3)
+end)
+
+test("authored calendar arithmetic is leap-safe and settlement deterministic", function()
+  local leap = assert(calendarModel.addDays({ year = 2000, month = 2, day = 28 }, 2))
+  equal(leap.year, 2000); equal(leap.month, 3); equal(leap.day, 1)
+  local ordinary = assert(calendarModel.addDays({ year = 1900, month = 2, day = 28 }, 1))
+  equal(ordinary.month, 3); equal(ordinary.day, 1)
+  local state = assert(calendarModel.initialise({
+    calendarStartDate = { year = 1990, month = 1, day = 1 },
+    calendarMillisPerDay = 2000,
+  }, "network"))
+  local nextState, payload = assert(calendarModel.prepareSettlement(state, 1, true, 300))
+  equal(payload.advancedDays, 150)
+  equal(nextState.elapsedDays, 150)
+  local verified = assert(calendarModel.verifySettlement(state, {
+    scheduled = true, results = { epoch = 1 }, calendar = payload,
+  }, 300))
+  equal(verified.currentDate.year, nextState.currentDate.year)
+  payload.elapsedDays = payload.elapsedDays + 1
+  local invalid, invalidError = calendarModel.verifySettlement(state, {
+    scheduled = true, results = { epoch = 1 }, calendar = payload,
+  }, 300)
+  equal(invalid, nil)
+  truthy(tostring(invalidError):find("diverges", 1, true), invalidError)
+end)
+
+test("calendar runtime issues one authorized native date and verifies readback", function()
+  local nativeDate = { year = 1990, month = 1, day = 1 }
+  local current = {
+    networkMode = "network",
+    economy = { scheduler = { epochSeconds = 300 } },
+    world = { calendar = assert(calendarModel.initialise({
+      calendarStartDate = nativeDate, calendarMillisPerDay = 2000,
+    }, "network")) },
+    probes = {},
+  }
+  local authorized, commands = {}, {}
+  local runtime = calendarRuntimeModule.new({
+    getState = function() return current end,
+    clockSnapshot = function() return { date = util.deepCopy(nativeDate) } end,
+    commandFactory = function(name)
+      if name == "setDate" then return function(date) return { date = date } end end
+    end,
+    dateFactory = function(date) return util.deepCopy(date) end,
+    authorizeCommand = function(tag) authorized[#authorized + 1] = tag; return true end,
+    sendCommand = function(command, callback)
+      commands[#commands + 1] = command
+      nativeDate = util.deepCopy(command.date)
+      callback(command, true)
+      return true
+    end,
+  })
+  local _, payload = assert(calendarModel.prepareSettlement(
+    current.world.calendar, 1, true, 300))
+  local ok = assert(runtime.applySettlement({
+    scheduled = true, results = { epoch = 1 }, calendar = payload,
+  }))
+  truthy(ok)
+  equal(authorized[1], 26)
+  equal(#commands, 1)
+  equal(current.world.calendar.elapsedDays, 150)
+  equal(current.probes.authoredCalendar.nativeVerified, true)
 end)
 
 test("engine active-record indexes sleep after proving an idle queue", function()

@@ -45,6 +45,7 @@ end
 
 local M = {}
 local sendAction
+local commandFactory
 local airMovementState
 local waterMovementState
 
@@ -53,6 +54,251 @@ local function marker(event, values)
   for key, value in pairs(values or {}) do payload[key] = value end
   local ok, encoded = pcall(json.encode, payload)
   print("[TPF2MP-CONSOLE-PROBE] " .. (ok and encoded or tostring(event)))
+end
+
+local function calendarSnapshot()
+  local interface = game and game.interface or {}
+  local result = {}
+  if type(interface.getMillisPerDay) == "function" then
+    local ok, value = pcall(interface.getMillisPerDay)
+    result.millisPerDay = ok and tonumber(value) or nil
+    if not ok then result.millisPerDayError = tostring(value) end
+  end
+  if type(interface.getGameTime) == "function" then
+    local ok, value = pcall(interface.getGameTime)
+    local date = ok and value and value.date or nil
+    if date then
+      result.date = {
+        year = tonumber(date.year), month = tonumber(date.month), day = tonumber(date.day),
+      }
+    elseif not ok then result.gameTimeError = tostring(value) end
+  end
+  return result
+end
+
+-- Prove the supported synchronous date API and its immediate readback in a
+-- disposable world. Network authority is exercised separately by the exact
+-- hook integration; this probe deliberately restores the original date so it
+-- leaves no persistent world mutation behind.
+function M.runCalendarTest()
+  local interface = game and game.interface or {}
+  local offsetDate = interface.getDateFromNowPlusOffsetDays
+  local offsetAvailable = type(offsetDate) == "function" or type(offsetDate) == "table"
+    or type(offsetDate) == "userdata"
+  local setDate, setDateSource = commandFactory and commandFactory("setDate") or nil, nil
+  if commandFactory then setDate, setDateSource = commandFactory("setDate") end
+  local sendCommand = api and api.cmd and api.cmd.sendCommand
+  local sendAvailable = type(sendCommand) == "function" or type(sendCommand) == "table"
+    or type(sendCommand) == "userdata"
+  if not setDate or not offsetAvailable or not sendAvailable then
+    marker("calendar-complete", {
+      success = false, error = "supported calendar API is unavailable",
+      before = calendarSnapshot(), setDateType = type(setDate), setDateSource = setDateSource,
+      offsetDateType = type(offsetDate), sendCommandType = type(sendCommand),
+    })
+    return false
+  end
+  local before = calendarSnapshot()
+  local original = before.date
+  if not original or not original.year or not original.month or not original.day then
+    marker("calendar-complete", {
+      success = false, error = "native date readback is unavailable", before = before,
+    })
+    return false
+  end
+  local targetOk, target = pcall(offsetDate, 31)
+  if not targetOk or (type(target) ~= "table" and type(target) ~= "userdata") then
+    marker("calendar-complete", {
+      success = false, error = tostring(target), before = before,
+    })
+    return false
+  end
+  local day, month, year = tonumber(target[1]), tonumber(target[2]), tonumber(target[3])
+  local diagnostics = {}
+  local gameTimeOk, gameTime = pcall(interface.getGameTime)
+  local nativeDate = gameTimeOk and gameTime and gameTime.date or nil
+  diagnostics.nativeDateType = type(nativeDate)
+  diagnostics.apiDateType = type(api and api.type and api.type.Date)
+  diagnostics.apiDateNewType = type(api and api.type and api.type.Date
+    and api.type.Date.new)
+  local dateValue
+  local candidates = {}
+  local function candidate(label, fn)
+    local ok, value = pcall(fn)
+    local entry = { success = ok == true, valueType = type(value) }
+    if not ok then entry.error = tostring(value) end
+    if ok and value ~= nil then
+      local fieldsOk, fields = pcall(function()
+        return { day = tonumber(value.day), month = tonumber(value.month), year = tonumber(value.year) }
+      end)
+      entry.fields = fieldsOk and fields or nil
+      if not fieldsOk then entry.fieldError = tostring(fields) end
+      -- Build 35924 exposes Date.new(year, month, day), but the resulting
+      -- boost::gregorian::date userdata intentionally has no Lua field
+      -- accessors. Constructor success is enough here; the command's native
+      -- date readback below proves its contents.
+      if label == "new-year-month-day" and type(value) == "userdata"
+        and not dateValue then dateValue = value
+      elseif fieldsOk and fields.day == day and fields.month == month
+        and fields.year == year and type(value) == "userdata"
+        and not dateValue then dateValue = value end
+    end
+    candidates[label] = entry
+  end
+  local dateType = api and api.type and api.type.Date
+  local dateNew = dateType and dateType.new
+  if type(dateNew) == "function" or type(dateNew) == "table" or type(dateNew) == "userdata" then
+    candidate("new-year-month-day", function() return dateNew(year, month, day) end)
+    candidate("new-day-month-year", function() return dateNew(day, month, year) end)
+    candidate("new-table-fields", function()
+      return dateNew({ year = year, month = month, day = day })
+    end)
+    candidate("new-table-array", function() return dateNew({ day, month, year }) end)
+    candidate("new-default-write", function()
+      local value = dateNew()
+      value.year, value.month, value.day = year, month, day
+      return value
+    end)
+  end
+  if nativeDate ~= nil then
+    candidate("native-date-write", function()
+      nativeDate.year, nativeDate.month, nativeDate.day = year, month, day
+      return nativeDate
+    end)
+  end
+  diagnostics.candidates = candidates
+  if not dateValue then
+    marker("calendar-complete", {
+      success = false, error = "could not construct a target type.Date",
+      before = before, target = { day = day, month = month, year = year },
+      setDateSource = setDateSource, diagnostics = diagnostics,
+    })
+    return false
+  end
+  local commandOk, commandOrError = pcall(setDate, dateValue)
+  if not commandOk then
+    marker("calendar-complete", {
+      success = false, error = tostring(commandOrError), before = before,
+      target = { day = day, month = month, year = year }, setDateSource = setDateSource,
+      diagnostics = diagnostics,
+    })
+    return false
+  end
+  local sendOk, sendError = pcall(sendCommand, commandOrError, function(_, success)
+    local advanced = calendarSnapshot()
+    local matches = success == true and advanced.date
+      and advanced.date.day == day and advanced.date.month == month
+      and advanced.date.year == year
+    local restoreTarget
+    local restoreCandidates = {
+      function() return dateNew(original.year, original.month, original.day) end,
+      function() return dateNew(original.day, original.month, original.year) end,
+    }
+    for _, make in ipairs(restoreCandidates) do
+      if not restoreTarget and dateNew then
+        local ok, value = pcall(make)
+        local fieldsOk, fields = false, nil
+        if ok then
+          fieldsOk, fields = pcall(function()
+            return { day = tonumber(value.day), month = tonumber(value.month), year = tonumber(value.year) }
+          end)
+        end
+        if ok and type(value) == "userdata" and make == restoreCandidates[1] then
+          restoreTarget = value
+        elseif fieldsOk and fields.day == original.day and fields.month == original.month
+          and fields.year == original.year then restoreTarget = value end
+      end
+    end
+    if not restoreTarget and nativeDate ~= nil then
+      local restoredNativeOk = pcall(function()
+        nativeDate.year, nativeDate.month, nativeDate.day =
+          original.year, original.month, original.day
+      end)
+      if restoredNativeOk then restoreTarget = nativeDate end
+    end
+    local restoreCommandOk, restoreCommandOrError = false, "could not construct restore date"
+    if restoreTarget ~= nil then
+      restoreCommandOk, restoreCommandOrError = pcall(setDate, restoreTarget)
+    end
+    if not restoreCommandOk then
+      marker("calendar-complete", {
+        success = false, before = before, advanced = advanced,
+        error = tostring(restoreCommandOrError), stage = "restore-command",
+      })
+      return
+    end
+    local restoreSendOk, restoreSendError = pcall(
+      sendCommand, restoreCommandOrError, function(_, restoreSuccess)
+        local restored = calendarSnapshot()
+        local restoredMatches = restoreSuccess == true and restored.date
+          and restored.date.day == original.day and restored.date.month == original.month
+          and restored.date.year == original.year
+        marker("calendar-complete", {
+          success = matches == true and restoredMatches == true,
+          before = before, target = { day = day, month = month, year = year },
+          advanced = advanced, restored = restored, setDateSource = setDateSource,
+          restoredMatches = restoredMatches == true,
+        })
+      end)
+    if not restoreSendOk then
+      marker("calendar-complete", {
+        success = false, before = before, advanced = advanced,
+        error = tostring(restoreSendError), stage = "restore-send",
+      })
+    end
+  end)
+  if not sendOk then
+    marker("calendar-complete", {
+      success = false, error = tostring(sendError), before = before, stage = "advance-send",
+    })
+    return false
+  end
+  return true
+end
+
+-- Keep the console command used by unattended validation deliberately short.
+-- The hidden-input helper has a finite text budget, and truncating a long
+-- inline callback can make the probe fail before Lua is ever invoked.  Pause
+-- first so native time cannot advance between the set and restore callbacks.
+function M.runPausedCalendarTest()
+  local makeSpeed = api and api.cmd and api.cmd.make and api.cmd.make.setGameSpeed
+  local sendCommand = api and api.cmd and api.cmd.sendCommand
+  if (type(makeSpeed) ~= "function" and type(makeSpeed) ~= "table"
+      and type(makeSpeed) ~= "userdata")
+      or (type(sendCommand) ~= "function" and type(sendCommand) ~= "table"
+        and type(sendCommand) ~= "userdata") then
+    marker("calendar-complete", {
+      success = false, error = "supported pause command is unavailable",
+      before = calendarSnapshot(),
+    })
+    return false
+  end
+  local commandOk, commandOrError = pcall(makeSpeed, 0)
+  if not commandOk then
+    marker("calendar-complete", {
+      success = false, error = tostring(commandOrError), stage = "pause-command",
+      before = calendarSnapshot(),
+    })
+    return false
+  end
+  local sendOk, sendError = pcall(sendCommand, commandOrError, function(_, success)
+    if success ~= true then
+      marker("calendar-complete", {
+        success = false, error = "native pause command was rejected", stage = "pause-apply",
+        before = calendarSnapshot(),
+      })
+      return
+    end
+    M.runCalendarTest()
+  end)
+  if not sendOk then
+    marker("calendar-complete", {
+      success = false, error = tostring(sendError), stage = "pause-send",
+      before = calendarSnapshot(),
+    })
+    return false
+  end
+  return true
 end
 
 local function available(value)
@@ -97,7 +343,7 @@ local function probeProductionStationGroup(groupId, stationIndex)
   return result
 end
 
-local function commandFactory(name)
+commandFactory = function(name)
   local public = api and api.cmd and api.cmd.make and api.cmd.make[name]
   if type(public) == "function" or type(public) == "table" or type(public) == "userdata" then
     return public, "public"
@@ -1863,7 +2109,9 @@ local facilityComponents = {
   depot = "VEHICLE_DEPOT",
   station = "STATION",
   stationGroup = "STATION_GROUP",
+  node = "BASE_NODE",
   track = "BASE_EDGE_TRACK",
+  street = "BASE_EDGE_STREET",
 }
 
 local function facilitySnapshot()
@@ -2117,9 +2365,12 @@ local function constructionDetails(ids)
     local ok, component = pcall(api.engine.getComponent, entity, componentType.CONSTRUCTION)
     if ok and component then
       local fileOk, fileName = pcall(function() return component.fileName end)
+      local headquartersOk, headquarters = pcall(function() return component.headquarters end)
       result[#result + 1] = {
         entity = entity,
         fileName = fileOk and tostring(fileName or "") or "",
+        headquartersReadable = headquartersOk and type(headquarters) == "boolean",
+        headquarters = headquartersOk and type(headquarters) == "boolean" and headquarters or nil,
         owner = ownerOf(entity),
       }
     end
@@ -2634,6 +2885,384 @@ local function removeFacility(facility, completed)
       error = commandError or afterError,
     })
   end)
+end
+
+-- Public construction families do not all materialise under the same ECS
+-- root.  Keep this probe independent of the narrower custody helper above:
+-- junctions and buoys own street-edge entities, and those edges must disappear
+-- with the root for removal to count as successful.
+local function allFacilityIds(delta)
+  local ids, seen = {}, {}
+  for name in pairs(facilityComponents) do
+    for _, entity in ipairs(delta[name] or {}) do
+      if not seen[entity] then
+        seen[entity] = true
+        ids[#ids + 1] = entity
+      end
+    end
+  end
+  table.sort(ids)
+  return ids
+end
+
+local constructionEdgeCases = {
+  { kind = "asset_builder", rootKind = "asset", required = { asset = 1 },
+    forbidden = { construction = true } },
+  -- These two content files advertise ASSET_DEFAULT, but their persistent
+  -- ground-face output makes Build 35924 create a CONSTRUCTION root.  This is
+  -- live-observed behavior, not a filename convention.
+  { kind = "field_decoration", rootKind = "construction",
+    required = { construction = 1 }, forbidden = { asset = true } },
+  { kind = "ground_texture", rootKind = "construction",
+    required = { construction = 1 }, forbidden = { asset = true } },
+  -- buildConstruction can prove that the stock ASSET_TRACK resource remains
+  -- accepted and removable.  Track snapping itself still needs a real GUI
+  -- placement because the helper deliberately has no cursor/edge context.
+  { kind = "track_asset", rootKind = "asset", required = { asset = 1 },
+    forbidden = { construction = true }, semanticLimit = "track snapping requires GUI placement" },
+  -- STREET_CONSTRUCTION and WATER_WAYPOINT resources are transient builders:
+  -- Build 35924 retains their generated edge graph but no construction root.
+  { kind = "roundabout", rootless = true,
+    required = { street = 4, node = 4 }, forbidden = { asset = true, construction = true },
+    ownershipLimit = "legacy buildConstruction assigns only its returned edge; GUI replay carries every edge owner" },
+  { kind = "t_interchange", rootless = true,
+    required = { street = 16, node = 16 }, forbidden = { asset = true, construction = true },
+    ownershipLimit = "legacy buildConstruction assigns only its returned edge; GUI replay carries every edge owner" },
+  -- WATER_WAYPOINT is the hybrid: unlike junction templates it retains a
+  -- construction root as well as its generated water-street graph.
+  { kind = "buoy", rootKind = "construction", water = true,
+    required = { construction = 1, street = 1, node = 2 }, forbidden = { asset = true } },
+}
+
+local function edgeCaseShape(spec, delta)
+  local reasons = {}
+  local roots = spec.rootKind and (delta[spec.rootKind] or {}) or {}
+  if not spec.rootless and #roots ~= 1 then
+    reasons[#reasons + 1] = "expected exactly one " .. tostring(spec.rootKind) .. " root"
+  end
+  for name, minimum in pairs(spec.required or {}) do
+    if #(delta[name] or {}) < minimum then
+      reasons[#reasons + 1] = name .. " delta below " .. tostring(minimum)
+    end
+  end
+  for name in pairs(spec.forbidden or {}) do
+    if #(delta[name] or {}) > 0 then reasons[#reasons + 1] = "unexpected " .. name .. " delta" end
+  end
+  return #reasons == 0, reasons, not spec.rootless and #roots == 1 and roots[1] or nil
+end
+
+local function edgeCaseOwnerOk(ids, root, expectedOwner)
+  if root and tonumber(ownerOf(root)) ~= tonumber(expectedOwner) then return false end
+  local details = ownerDetails(ids)
+  if not root and #details == 0 then return false end
+  for _, detail in ipairs(details) do
+    if tonumber(detail.owner) ~= tonumber(expectedOwner) then return false end
+  end
+  return true
+end
+
+local runConstructionEdgeCaseSequence
+
+local function finishConstructionEdgeCases(results)
+  local success = #results == 1 + #constructionEdgeCases
+  for _, result in ipairs(results) do
+    if result.success ~= true then success = false end
+  end
+  marker("construction-edge-cases-complete", {
+    success = success,
+    expectedCases = 1 + #constructionEdgeCases,
+    completedCases = #results,
+    cases = results,
+    excludedNativeHelperCases = {{
+      kind = "cloverleaf",
+      reason = "legacy buildConstruction enters a critical placement state; expanded 52-edge GUI replay is tested offline",
+    }},
+  })
+end
+
+local function recordRemovedEdgeCase(spec, index, position, delta, shapeOk, shapeReasons,
+    root, ownerOk, details, results, nextCase)
+  local facility = {
+    kind = spec.kind,
+    index = index,
+    rootKind = spec.rootKind,
+    constructionId = root,
+    delta = delta,
+    ids = allFacilityIds(delta),
+  }
+  removeFacility(facility, function(removeOk, removal)
+    local streetRemovalOk = not (spec.required and spec.required.street)
+      or #(removal.removed and removal.removed.street or {}) >= spec.required.street
+    local success = shapeOk and ownerOk and removeOk and streetRemovalOk
+    local result = {
+      kind = spec.kind,
+      success = success,
+      candidate = index,
+      x = position[1], y = position[2],
+      rootKind = spec.rootKind,
+      root = root,
+      delta = delta,
+      shapeVerified = shapeOk,
+      shapeReasons = shapeReasons,
+      ownershipVerified = ownerOk,
+      removalVerified = removeOk,
+      streetRemovalVerified = streetRemovalOk,
+      removal = removal,
+      details = details,
+      semanticLimit = spec.semanticLimit,
+    }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    nextCase(success)
+  end)
+end
+
+local function recordRemovedEdgeGraph(spec, index, position, delta, shapeOk, shapeReasons,
+    ownerOk, results, nextCase)
+  local before, beforeError = facilitySnapshot()
+  if not before then
+    local result = { kind = spec.kind, success = false, candidate = index,
+      shapeVerified = shapeOk, shapeReasons = shapeReasons,
+      ownershipVerified = ownerOk, error = beforeError }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    nextCase(false)
+    return
+  end
+  local proposal = api.type.SimpleProposal.new()
+  for edgeIndex, entity in ipairs(delta.street or {}) do
+    proposal.streetProposal.edgesToRemove[edgeIndex] = entity
+  end
+  for nodeIndex, entity in ipairs(delta.node or {}) do
+    proposal.streetProposal.nodesToRemove[nodeIndex] = entity
+  end
+  local commandOk, command = pcall(commandFactory("buildProposal"), proposal, nil, false)
+  if not commandOk then
+    local result = { kind = spec.kind, success = false, candidate = index,
+      delta = delta, shapeVerified = shapeOk, shapeReasons = shapeReasons,
+      ownershipVerified = ownerOk, error = tostring(command) }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    nextCase(false)
+    return
+  end
+  api.cmd.sendCommand(command, function(commandResult, commandSuccess)
+    local after, afterError = facilitySnapshot()
+    local removed = after and facilityDelta(before, after) or {}
+    local remaining = {}
+    if after then
+      for _, entity in ipairs(allFacilityIds(delta)) do
+        if facilityContains(after, entity) then remaining[#remaining + 1] = entity end
+      end
+    end
+    local removalOk = commandSuccess == true and after ~= nil and #remaining == 0
+      and #(removed.street or {}) >= #(delta.street or {})
+      and #(removed.node or {}) >= #(delta.node or {})
+    local success = shapeOk and (ownerOk or spec.ownershipLimit ~= nil) and removalOk
+    local result = {
+      kind = spec.kind,
+      success = success,
+      candidate = index,
+      x = position[1], y = position[2],
+      rootless = true,
+      delta = delta,
+      shapeVerified = shapeOk,
+      shapeReasons = shapeReasons,
+      ownershipVerified = ownerOk,
+      ownershipLimit = spec.ownershipLimit,
+      owners = ownerDetails(allFacilityIds(delta)),
+      removalVerified = removalOk,
+      removed = removed,
+      remaining = remaining,
+      resultIds = resultIds(commandResult),
+      error = afterError,
+    }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    nextCase(success)
+  end)
+end
+
+local function constructionEdgePlacements(spec)
+  if not spec.water then return candidates end
+  local sampled, result = waterPlacementCandidates(), {}
+  for index = 1, math.min(80, #sampled) do result[index] = sampled[index] end
+  return result
+end
+
+local function tryConstructionEdgeCase(caseIndex, candidateIndex, results)
+  local spec = constructionEdgeCases[caseIndex]
+  if not spec then finishConstructionEdgeCases(results); return end
+  local placements = constructionEdgePlacements(spec)
+  if candidateIndex > #placements then
+    local result = { kind = spec.kind, success = false, error = "no construction candidate succeeded" }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    runConstructionEdgeCaseSequence(caseIndex + 1, results)
+    return
+  end
+  local position = placements[candidateIndex]
+  local before, beforeError = facilitySnapshot()
+  if not before then
+    local result = { kind = spec.kind, success = false, error = beforeError }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    runConstructionEdgeCaseSequence(caseIndex + 1, results)
+    return
+  end
+  sendActionAsync({
+    type = "probe.build_construction",
+    kind = spec.kind,
+    x = position[1], y = position[2],
+    localOnly = true,
+  }, function(commandSuccess, commandResult, commandError)
+    local after, afterError = facilitySnapshot()
+    local delta = after and facilityDelta(after, before) or {}
+    local ids = allFacilityIds(delta)
+    if not commandSuccess or not after or #ids == 0 then
+      marker("construction-edge-case-attempt", {
+        kind = spec.kind, candidate = candidateIndex,
+        x = position[1], y = position[2],
+        success = false, commandSuccess = commandSuccess,
+        resultIds = resultIds(commandResult), delta = delta,
+        error = commandError or afterError or "no observable construction delta",
+      })
+      tryConstructionEdgeCase(caseIndex, candidateIndex + 1, results)
+      return
+    end
+    local shapeOk, shapeReasons, root = edgeCaseShape(spec, delta)
+    if not root and not spec.rootless then
+      local result = {
+        kind = spec.kind, success = false, candidate = candidateIndex,
+        x = position[1], y = position[2], delta = delta,
+        shapeVerified = false, shapeReasons = shapeReasons,
+        error = "partial construction has no removable root",
+      }
+      results[#results + 1] = result
+      marker("construction-edge-case-result", result)
+      finishConstructionEdgeCases(results)
+      return
+    end
+    local expectedOwner = game.interface.getPlayer()
+    local ownerOk = edgeCaseOwnerOk(ids, root, expectedOwner)
+    local details = spec.rootless and ownerDetails(ids) or spec.rootKind == "construction"
+      and constructionDetails(delta.construction) or interfaceEntityDetails(delta.asset)
+    if spec.rootless then
+      recordRemovedEdgeGraph(spec, candidateIndex, position, delta, shapeOk, shapeReasons,
+        ownerOk, results, function()
+          runConstructionEdgeCaseSequence(caseIndex + 1, results)
+        end)
+      return
+    end
+    recordRemovedEdgeCase(spec, candidateIndex, position, delta, shapeOk, shapeReasons,
+      root, ownerOk, details, results, function()
+        runConstructionEdgeCaseSequence(caseIndex + 1, results)
+      end)
+  end)
+end
+
+runConstructionEdgeCaseSequence = function(caseIndex, results)
+  tryConstructionEdgeCase(caseIndex, 1, results)
+end
+
+local function tryExactHeadquarters(index, results)
+  if index > #candidates then
+    local result = { kind = "headquarters", success = false,
+      error = "no exact headquarters candidate succeeded" }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    runConstructionEdgeCaseSequence(1, results)
+    return
+  end
+  local x, y = candidates[index][1], candidates[index][2]
+  local z = terrainHeight(api.type.Vec2f.new(x, y), x, y)
+  if z == nil then tryExactHeadquarters(index + 1, results); return end
+  local before, beforeError = facilitySnapshot()
+  if not before then
+    local result = { kind = "headquarters", success = false, error = beforeError }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    runConstructionEdgeCaseSequence(1, results)
+    return
+  end
+  local proposal = api.type.SimpleProposal.new()
+  local construction = api.type.SimpleProposal.ConstructionEntity.new()
+  construction.fileName = "asset/headquarter.con"
+  construction.params = { size = 0, paramX = 0, paramY = 0, seed = index, year = 1850 }
+  construction.transf = api.type.Mat4f.new(
+    api.type.Vec4f.new(1, 0, 0, 0), api.type.Vec4f.new(0, 1, 0, 0),
+    api.type.Vec4f.new(0, 0, 1, 0), api.type.Vec4f.new(x, y, z, 1))
+  construction.name = "TPF2MP exact headquarters probe"
+  construction.playerEntity = game.interface.getPlayer()
+  construction.headquarters = true
+  proposal.constructionsToAdd[1] = construction
+  local commandOk, command = pcall(commandFactory("buildProposal"), proposal, nil, false)
+  if not commandOk then
+    local result = { kind = "headquarters", success = false, error = tostring(command) }
+    results[#results + 1] = result
+    marker("construction-edge-case-result", result)
+    runConstructionEdgeCaseSequence(1, results)
+    return
+  end
+  api.cmd.sendCommand(command, function(commandResult, success)
+    local after, afterError = facilitySnapshot()
+    local delta = after and facilityDelta(after, before) or {}
+    local ids = allFacilityIds(delta)
+    if success ~= true or not after or #ids == 0 then
+      marker("construction-edge-case-attempt", {
+        kind = "headquarters", candidate = index, x = x, y = y,
+        success = false, commandSuccess = success == true,
+        resultIds = resultIds(commandResult), delta = delta,
+        error = afterError or "no observable construction delta",
+      })
+      tryExactHeadquarters(index + 1, results)
+      return
+    end
+    local spec = { kind = "headquarters", rootKind = "construction",
+      required = { construction = 1 }, forbidden = { asset = true } }
+    local shapeOk, shapeReasons, root = edgeCaseShape(spec, delta)
+    local details = constructionDetails(delta.construction)
+    local fileOk = #details == 1 and details[1].fileName == "asset/headquarter.con"
+    local flagOk = #details == 1 and (not details[1].headquartersReadable
+      or details[1].headquarters == true)
+    shapeOk = shapeOk and fileOk and flagOk
+    if not fileOk then shapeReasons[#shapeReasons + 1] = "headquarters filename was not retained" end
+    if not flagOk then shapeReasons[#shapeReasons + 1] = "native headquarters marker is false" end
+    if not root then
+      local result = { kind = "headquarters", success = false, candidate = index,
+        x = x, y = y, delta = delta, details = details,
+        shapeVerified = false, shapeReasons = shapeReasons,
+        error = "partial headquarters has no removable root" }
+      results[#results + 1] = result
+      marker("construction-edge-case-result", result)
+      finishConstructionEdgeCases(results)
+      return
+    end
+    local ownerOk = edgeCaseOwnerOk(ids, root, game.interface.getPlayer())
+    recordRemovedEdgeCase(spec, index, { x, y }, delta, shapeOk, shapeReasons,
+      root, ownerOk, details, results, function()
+        runConstructionEdgeCaseSequence(1, results)
+      end)
+  end)
+end
+
+function M.runConstructionEdgeCaseTest()
+  M.capabilities()
+  local componentType = api and api.type and api.type.ComponentType
+  if not (commandFactory("buildProposal") and commandFactory("sendScriptEvent")
+    and api and api.cmd and available(api.cmd.sendCommand)
+    and api.engine and api.engine.getComponent and api.engine.forEachEntityWithComponent
+    and api.type and api.type.SimpleProposal and api.type.SimpleProposal.ConstructionEntity
+    and api.type.Mat4f and api.type.Vec4f and api.type.Vec2f
+    and componentType and componentType.CONSTRUCTION and componentType.BASE_EDGE_STREET
+    and terrainHeightAvailable()) then
+    marker("construction-edge-cases-complete", {
+      success = false, error = "required construction edge-case API is unavailable",
+    })
+    return false
+  end
+  tryExactHeadquarters(1, {})
+  return true
 end
 
 local function runFacilityMutations(depot, station, cargoStation, completed)

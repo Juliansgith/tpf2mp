@@ -1430,6 +1430,11 @@ def validate_action(action: Any) -> dict[str, Any]:
             raise ProtocolError("economy.settle requires host-computed results")
         if "scheduled" in action and not isinstance(action.get("scheduled"), bool):
             raise ProtocolError("economy.settle requires a scheduled boolean")
+        if "calendar" in action:
+            # Imported lazily: calendar_model uses ProtocolError from this
+            # module, while the wire validator owns the call boundary.
+            from .calendar_model import validate_payload
+            validate_payload(action.get("calendar"))
         boundary = action.get("boundaryGameTimeSeconds")
         if boundary is not None and (
             isinstance(boundary, bool) or not isinstance(boundary, int) or boundary < 0
@@ -1483,6 +1488,8 @@ def validate_action(action: Any) -> dict[str, Any]:
                 or rules[field] < 0
             ):
                 raise ProtocolError(f"match.initialise rules require non-negative integer {field}")
+        from .calendar_model import validate_match_rules
+        validate_match_rules(rules)
         if "startingCash" in rules and (
             not isinstance(rules.get("startingCash"), int)
             or isinstance(rules.get("startingCash"), bool)

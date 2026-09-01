@@ -7,7 +7,7 @@ local proposalCodec = require "tpf2_mp/proposal_codec"
 local validationStationModule = require "tpf2_mp/validation_construction_slices"
 local validationClockModule = require "tpf2_mp/validation_clock"
 local validationContentGate = require "tpf2_mp/validation_content_gate"
-local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
+local townDevelopmentValidationModule = require "tpf2_mp/validation_authored_world"
 
 local M = {}
 
@@ -350,7 +350,7 @@ function M.new(deps)
   end
 
   local townDevelopmentValidation = townDevelopmentValidationModule.new({
-    getState = getState,
+    getState = getState, config = config,
     transition = validationTransition,
     check = validationCheck,
     submit = networkValidationSubmit,
@@ -363,8 +363,7 @@ function M.new(deps)
     resourceName = proposalResourceName,
     finish = function(boundarySeq)
       state.probes.structural = world.structuralSnapshot(state.canonical, state.world, state.companies)
-      if config().townDevelopment then townDevelopmentValidation.begin(boundarySeq)
-      else networkValidationBeginSoak(boundarySeq) end
+      townDevelopmentValidation.begin(boundarySeq)
     end,
   })
 
@@ -460,6 +459,7 @@ function M.new(deps)
       validationCheck("initial-structural-snapshot", state.probes.structural
         and type(state.probes.structural.digest) == "string", state.probes.structural)
       validation.values.initialStructuralDigest = state.probes.structural.digest
+      townDevelopmentValidation.captureInitial()
       validationTransition("wait-for-initial-checkpoint")
   
     elseif stage == "wait-for-initial-checkpoint" then

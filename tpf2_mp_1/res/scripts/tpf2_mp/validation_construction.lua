@@ -269,6 +269,65 @@ function M.spec(kind, currentYear, edited)
         or "asset/default_multi_bench_old.con",
       params = { paramX = 0, paramY = 0, seed = 0, year = currentYear },
     }
+  elseif kind == "headquarters" then
+    return {
+      fileName = "asset/headquarter.con",
+      params = { size = 0, paramX = 0, paramY = 0, seed = 0, year = currentYear },
+    }
+  elseif kind == "asset_builder" then
+    return {
+      fileName = "asset/asset_builder.con",
+      params = {
+        asset = 4, terrainAlignment = 1,
+        paramX = 0, paramY = 0, seed = 0, year = currentYear,
+      },
+    }
+  elseif kind == "field_decoration" then
+    return {
+      fileName = "asset/field_decoration.con",
+      params = {
+        type = 0, sizeX = 0, sizeY = 0,
+        path1 = 0, path2 = 0, path3 = 0, path4 = 0,
+        paramX = 0, paramY = 0, seed = 0, year = currentYear,
+      },
+    }
+  elseif kind == "ground_texture" then
+    return {
+      fileName = "asset/ground_texture_builder.con",
+      params = {
+        tex = 1, border = 0, strokeType = 0, size = 2, shape = 0,
+        terrainAlignment = 1, paramX = 0, paramY = 0,
+        seed = 0, year = currentYear,
+      },
+    }
+  elseif kind == "track_asset" then
+    return {
+      fileName = "asset/track_multi_sound_insulation_10m.con",
+      params = { paramX = 0, paramY = 0, seed = 0, year = currentYear },
+    }
+  elseif kind == "roundabout" then
+    local availableYear = math.max(1960, tonumber(currentYear) or 1960)
+    return {
+      fileName = "street/roundabout.con",
+      params = { streetType = 0, radius = 1, seed = 0, year = availableYear },
+    }
+  elseif kind == "t_interchange" then
+    local availableYear = math.max(1960, tonumber(currentYear) or 1960)
+    return {
+      fileName = "street/t_interchange.con",
+      params = { streetType2 = 0, scale = 0, seed = 0, year = availableYear },
+    }
+  elseif kind == "cloverleaf" then
+    local availableYear = math.max(1960, tonumber(currentYear) or 1960)
+    return {
+      fileName = "street/cloverleaf_interchange.con",
+      params = { streetType2 = 0, scale = 0, seed = 0, year = availableYear },
+    }
+  elseif kind == "buoy" then
+    return {
+      fileName = "waterway/buoys_waypoint_era_c_2.con",
+      params = { paramX = 0, paramY = 0, seed = 0, year = math.max(1990, currentYear) },
+    }
   end
   return nil
 end

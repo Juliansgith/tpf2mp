@@ -77,6 +77,15 @@ Domain modules under `res/scripts/tpf2_mp`:
   diagnostics.
 - `economy_public_view.lua` builds the display-only local-ID map and exact
   purchase/upkeep/service/company figures used by the standard-UI projection.
+- `match_rules.lua` normalizes host-observed world defaults into the portable
+  ordered match rule set. `calendar_model.lua` owns Gregorian day arithmetic,
+  residual milliseconds, migration, and the digest projection. The authored
+  calendar advances only inside a scheduled `economy.settle`; manual/debug
+  settlement cannot move it. `calendar_runtime.lua` verifies that payload and
+  applies one native-authorized `SetDate` read back immediately on each peer.
+  The independent native recurring calendar remains frozen, so unlock dates
+  cannot drift without also failing deterministic settlement replay or the
+  next core checkpoint.
 - `economy_demo.lua` contains developer-only seeded-market fixtures and has no
   production authority.
 - `passenger_presentation.lua` owns exact passenger endpoint queues, per-train
