@@ -33,7 +33,13 @@ $arguments = @(
     'fingerprint', '--game-exe', $game, '--mod-dir', $mod,
     '--companion-dir', $companionSource, '--extra', (Join-Path $bundle 'bin\native'), '--output', $output
 )
-if ($SavePath) { $arguments += @('--save', (Resolve-Tpf2mpFullPath $SavePath)) }
+if ($SavePath) {
+    $resolvedSave = Resolve-Tpf2mpFullPath $SavePath
+    $arguments += @(
+        '--save', $resolvedSave, '--active-mod-save', $resolvedSave,
+        '--content-cache', (Join-Path $env:LOCALAPPDATA 'TPF2MP\cache\active-content-v1.json')
+    )
+}
 & $companion @arguments
 if ($LASTEXITCODE -ne 0) { throw "Manifest generation failed with exit code $LASTEXITCODE" }
 Write-Host "Match manifest written: $output"

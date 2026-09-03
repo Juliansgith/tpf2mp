@@ -1,6 +1,6 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.43.4-alpha` is a restricted two-player competitive build for the
+TPF2MP `0.43.5-alpha` is a restricted two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
 trust each other. Its preferred transport is the TPF2MP secure relay: both
 players make outbound WSS connections, so neither player opens a port. Direct
@@ -50,7 +50,10 @@ See [DISTRIBUTION_AND_UPDATES.md](DISTRIBUTION_AND_UPDATES.md).
 4. Player 1 clicks **HOST + LAUNCH GAME**. After Host reaches the title screen,
    Player 2 clicks **JOIN + LAUNCH GAME**. Join receives `.sav`, `.sav.lua`, and
    optional `.jpg` through the relay, verifies every SHA-256, installs `.sav`
-   last, fingerprints the resulting world, and launches it automatically.
+   last, fingerprints the resulting world, and launches it automatically. The
+   preflight also reads the save's exact active-mod/DLC order and hashes every
+   installed simulation-bearing dependency. A missing, reordered, wrong-version,
+   or locally different dependency is named and rejected before authority opens.
 5. In each game's title screen, click **MULTIPLAYER**. Do not load the save
    through the ordinary Load Game button.
 6. Open the in-game Multiplayer panel and select **Alpha Status**. Begin only

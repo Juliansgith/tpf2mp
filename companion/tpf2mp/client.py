@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Any, Mapping
 
 from .bridge import GameBridge
 from .anchor_io import AnchorRequestStore
@@ -9,6 +10,7 @@ from .industry_content import IndustryContentCoordinator
 from .protocol import ProtocolError
 from .client_session import run_client_session
 from .restore_plan_exchange import RestorePlanExchange
+from .active_content import compact_content_inventory
 
 class CommitClient:
     def __init__(
@@ -17,11 +19,13 @@ class CommitClient:
         host: str,
         port: int,
         match_fingerprint: str | None = None,
+        match_content_inventory: Mapping[str, Any] | None = None,
     ) -> None:
         self.bridge = bridge
         self.host = host
         self.port = port
         self.match_fingerprint = match_fingerprint
+        self.match_content_inventory = compact_content_inventory(match_content_inventory)
         self.stop = threading.Event()
         self.status = "starting"
         self.connected = False
@@ -62,7 +66,11 @@ class CommitClient:
                 "lastError": self.last_error,
                 "retryAttempts": self.retry_attempts,
                 "retryDelaySeconds": self.retry_delay_seconds,
-                "matchFingerprint": self.match_fingerprint, "pausedHeartbeatRequired": anchor.get("pausedHeartbeatRequired", True) is True,
+                "matchFingerprint": self.match_fingerprint,
+                "activeContentDigest": self.match_content_inventory and self.match_content_inventory["digest"],
+                "activeContentCount": len(self.match_content_inventory["mods"])
+                if self.match_content_inventory else None,
+                "pausedHeartbeatRequired": anchor.get("pausedHeartbeatRequired", True) is True,
                 "anchorReady": anchor.get("ready") is True,
                 "anchorReceiptReady": anchor.get("receiptReady", anchor.get("ready")) is True,
                 "anchorBoundarySeq": anchor.get("boundarySeq"),
@@ -95,6 +103,11 @@ class CommitClient:
     def run(self, poll_seconds: float = 0.1, retry_seconds: float = 2.0) -> None:
         print(f"TPF2MP client peer={self.bridge.peer} session={self.bridge.session} bridge={self.bridge.root}")
         print(f"match fingerprint={self.match_fingerprint or 'UNVERIFIED'}")
+        if self.match_content_inventory:
+            print(
+                f"active content verified={len(self.match_content_inventory['mods'])} "
+                f"digest={self.match_content_inventory['digest']}"
+            )
         self._write_status("connecting")
         try:
             while not self.stop.is_set():

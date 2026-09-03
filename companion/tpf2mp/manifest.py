@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from .active_content import build_active_content_inventory
 from .protocol import PROTOCOL_VERSION, canonical_json
 
 IGNORED_PARTS = {"__pycache__", ".git", ".pytest_cache"}
@@ -50,6 +51,8 @@ def build_manifest(
     companion_directory: Path | str,
     save_file: Path | str | None = None,
     extras: Iterable[Path | str] = (),
+    active_mod_save: Path | str | None = None,
+    content_cache: Path | str | None = None,
 ) -> dict[str, Any]:
     game_executable = Path(game_executable).expanduser().resolve()
     mod_directory = Path(mod_directory).expanduser().resolve()
@@ -76,6 +79,14 @@ def build_manifest(
             save_component["script_state_sha256"] = hash_file(sidecar)
             save_component["script_state_size"] = sidecar.stat().st_size
         components["starting_save"] = save_component
+    inventory_save = active_mod_save or save_file
+    if inventory_save:
+        components["active_content"] = build_active_content_inventory(
+            inventory_save,
+            game_executable,
+            mod_directory,
+            cache_path=content_cache,
+        )
     extra_values = []
     for index, item in enumerate(extras, 1):
         path = Path(item).expanduser().resolve()
@@ -88,7 +99,7 @@ def build_manifest(
         components["extras"] = extra_values
 
     core = {
-        "format": 1,
+        "format": 2,
         "protocol": PROTOCOL_VERSION,
         "components": components,
     }

@@ -199,12 +199,24 @@ $fingerprintArgs = @(
     '--companion-dir', $companionSource, '--extra', $native.Root,
     '--extra', $matchContentProfile, '--output', $manifest
 )
-if ($StartingSave -and -not $restorePlanData) { $fingerprintArgs += @('--save', $StartingSave) }
+if ($StartingSave) {
+    # Restore peers legitimately have different native save bytes, but they
+    # must still prove the same ordered active mods/DLC and installed content.
+    $fingerprintArgs += @(
+        '--active-mod-save', $StartingSave,
+        '--content-cache', (Join-Path $env:LOCALAPPDATA 'TPF2MP\cache\active-content-v1.json')
+    )
+    if (-not $restorePlanData) { $fingerprintArgs += @('--save', $StartingSave) }
+}
 if ($restorePlanPath) { $fingerprintArgs += @('--extra', $restorePlanPath) }
 $invokeFingerprint = @($companion.Prefix) + $fingerprintArgs
 & $companion.FilePath @invokeFingerprint
 if ($LASTEXITCODE -ne 0) { throw "Match fingerprint generation failed with exit code $LASTEXITCODE" }
-$fingerprint = [string](Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).fingerprint
+$manifestData = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
+$fingerprint = [string]$manifestData.fingerprint
+$activeContentDigest = if ($manifestData.components.active_content) {
+    [string]$manifestData.components.active_content.digest
+} else { $null }
 
 $launcherConfig = Write-Tpf2mpLauncherConfig -Session $safeSession -Peer $peer -BridgePath $bridge `
     -AgentMode $AgentMode -TownDevelopment $townDevelopmentEnabled
@@ -339,6 +351,9 @@ try {
     if ($companionStatus.session -ne $safeSession -or $companionStatus.peer -ne $peer `
         -or $companionStatus.matchFingerprint -ne $fingerprint) {
         throw 'Companion readiness status does not match the requested session, peer, and fingerprint.'
+    }
+    if ($activeContentDigest -and [string]$companionStatus.activeContentDigest -cne $activeContentDigest) {
+        throw 'Companion readiness status did not attest the starting save active mod/DLC inventory.'
     }
     if ($saveSyncPort) {
         $saveSyncReady = $null

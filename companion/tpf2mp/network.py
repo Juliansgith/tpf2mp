@@ -39,6 +39,7 @@ from .protocol import (
     validate_envelope,
 )
 from .client import CommitClient
+from .active_content import compact_content_inventory
 from .transport import ConnectedPeer, send as _send
 HOST_AUTHORITY_ACTIONS = {
     "match.initialise",
@@ -76,12 +77,14 @@ class CommitHost(HostIntentMixin):
         saved_match_auto: bool = False,
         automatic_recovery_interval: float = 15 * 60,
         automatic_recovery_timeout: float = 3 * 60,
+        match_content_inventory: Mapping[str, Any] | None = None,
     ) -> None:
         self.bridge = bridge
         self.bind = bind
         self.port = port
         self.audit = AuditLog(audit_path)
         self.match_fingerprint = match_fingerprint
+        self.match_content_inventory = compact_content_inventory(match_content_inventory)
         self.stop = threading.Event()
         self.order_lock = threading.RLock()
         self.peers_lock = threading.Lock()

@@ -64,6 +64,9 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         "clockHealthSamplesNotAudited": host.clock_health_not_audited,
         "pausedHeartbeatRequired": host.clock_effective_speed == 0,
         "matchFingerprint": host.match_fingerprint,
+        "activeContentDigest": host.match_content_inventory and host.match_content_inventory["digest"],
+        "activeContentCount": len(host.match_content_inventory["mods"])
+        if host.match_content_inventory else None,
         "anchorReceiptReady": receipt_readiness["ready"],
         "anchorReceiptReasons": receipt_readiness["reasons"],
         "mobilityOutcomes": dict(host.mobility_outcomes),

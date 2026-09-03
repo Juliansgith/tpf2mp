@@ -5,6 +5,7 @@ import threading
 from typing import Any
 
 from .bridge import AuditUnavailable
+from .active_content import describe_content_mismatch
 from .protocol import PROTOCOL_VERSION, ProtocolError, sign, validate_envelope
 from .transport import ConnectedPeer, read_frame, send
 
@@ -25,9 +26,33 @@ def serve_peer(host: Any, conn: socket.socket, address: tuple[str, int]) -> None
             raise ProtocolError("client peer id is empty or conflicts with host")
         if peer_name not in host.required_peers:
             raise ProtocolError(f"peer {peer_name} is not in the pinned match roster")
-        if host.match_fingerprint \
-                and greeting.get("match_fingerprint") != host.match_fingerprint:
-            raise ProtocolError("match fingerprint differs from the host")
+        fingerprint_differs = host.match_fingerprint \
+            and greeting.get("match_fingerprint") != host.match_fingerprint
+        content_reason = ""
+        peer_content = greeting.get("active_content")
+        if host.match_content_inventory is not None:
+            if peer_content is None:
+                content_reason = "peer did not provide its active mod/DLC inventory"
+            else:
+                try:
+                    content_reason = describe_content_mismatch(
+                        host.match_content_inventory, peer_content
+                    )
+                except ProtocolError as exc:
+                    content_reason = str(exc)
+        if fingerprint_differs or content_reason:
+            reason = "active mod/DLC compatibility check failed: " + content_reason \
+                if content_reason else "match fingerprint differs from the host"
+            send(conn, sign({
+                "protocol": PROTOCOL_VERSION,
+                "session": host.bridge.session,
+                "kind": "hello_reject",
+                "peer": host.bridge.peer,
+                "reason": reason,
+                "match_fingerprint": host.match_fingerprint,
+                "active_content": host.match_content_inventory,
+            }), threading.Lock())
+            raise ProtocolError(reason)
         connected = ConnectedPeer(peer_name, conn, threading.Lock())
         with host.peers_lock:
             old = host.peers.pop(peer_name, None)
@@ -52,6 +77,7 @@ def serve_peer(host: Any, conn: socket.socket, address: tuple[str, int]) -> None
             "next_seq": host.next_seq,
             "replay_from_seq": last_commit + 1,
             "match_fingerprint": host.match_fingerprint,
+            "active_content": host.match_content_inventory,
         }), connected.send_lock)
 
         replayed_through = last_commit

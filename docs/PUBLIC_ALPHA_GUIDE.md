@@ -1,6 +1,6 @@
 # TPF2MP public alpha guide
 
-This guide is for the two-player `0.43.4-alpha` release. It supports the
+This guide is for the two-player `0.43.5-alpha` release. It supports the
 Windows x64 Transport Fever 2 **Build 35924** only. This is an early alpha:
 use a disposable or backed-up save and expect bugs.
 
@@ -11,11 +11,16 @@ use a disposable or backed-up save and expect bugs.
 2. Close Transport Fever 2, then run `INSTALL_TPF2MP.cmd`.
 3. Accept the optional desktop shortcut if wanted.
 4. Open **TPF2MP Multiplayer** and confirm that it reports
-   `0.43.4-alpha` and a compatible native hook.
+   `0.43.5-alpha` and a compatible native hook.
 
 For the first test, enable only TPF2MP. Later tests may use identical
 data-only mods on both computers, with the same versions and load order.
-Arbitrary script or executable mods are not supported yet.
+The launcher extracts that ordered list (including auto-activated Urban Games
+DLC) from the synchronized save, verifies every dependency exists, and compares
+simulation-bearing file digests before enabling authority. It reports the
+specific missing, extra, reordered, wrong-version, or differing mod when the
+check fails. Passing this identity check does not make arbitrary script or
+executable mods supported; their runtime behavior still needs qualification.
 
 Player 2 does **not** need a copy of Player 1's starting save. The launcher
 transfers and verifies the `.sav`, `.sav.lua`, and preview automatically.
@@ -174,7 +179,7 @@ start a new world.
 Please paste this template:
 
 ```text
-TPF2MP version: 0.43.4-alpha
+TPF2MP version: 0.43.5-alpha
 Support/session ID: mp-________________
 Player: P1/Host or P2/Join
 Approximate local time and timezone:

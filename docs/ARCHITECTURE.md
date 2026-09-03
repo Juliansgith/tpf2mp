@@ -325,6 +325,13 @@ captured table reference would therefore mutate stale state after loading.
   `passenger_feeder_live_report.py` add only their domain proof ladders; they
   must not fork their own definitions of physical or checkpoint consensus.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
+- `native_mod_table.py` reads only the bounded native-save header needed to
+  obtain the ordered active-mod/DLC table. `active_content.py` resolves official
+  DLC, game/local mods, Workshop IDs, and the installed TPF2MP alias; hashes
+  logical load-bearing content with a local performance cache; and produces
+  path-free mismatch diagnoses. `manifest.py` binds that inventory into format-2 match
+  fingerprints. The socket hello carries only its compact IDs, versions, and
+  digests so a rejected peer receives an actionable reason before authority.
 - `client.py` owns client connection/retry and bridge forwarding.
 - `anchor.py` owns the host's quiescent-boundary predicate and receipt truth;
   `anchor_io.py` owns peer-local native-save requests, hashes, persistent

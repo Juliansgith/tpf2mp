@@ -27,6 +27,11 @@ def run_host(host: Any, poll_seconds: float = 0.1) -> None:
         f"bridge={host.bridge.root}"
     )
     print(f"match fingerprint={host.match_fingerprint or 'UNVERIFIED'}")
+    if host.match_content_inventory:
+        print(
+            f"active content verified={len(host.match_content_inventory['mods'])} "
+            f"digest={host.match_content_inventory['digest']}"
+        )
     host._write_status("running")
     next_status = next_anchor_poll = next_content_poll = time.monotonic()
     try:

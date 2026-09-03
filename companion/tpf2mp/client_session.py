@@ -6,6 +6,7 @@ import time
 from typing import Any
 
 from .anchor_io import validate_anchor_state
+from .active_content import describe_content_mismatch
 from .protocol import ProtocolError, hello, validate_envelope
 from .transport import read_frame, send
 
@@ -18,17 +19,40 @@ def run_client_session(client: Any, poll_seconds: float) -> None:
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     reader = sock.makefile("rb")
     send_lock = threading.Lock()
-    send(sock, hello(
-        client.bridge.session, client.bridge.peer, client._last_commit(),
-        client.match_fingerprint,
-    ), send_lock)
-    acknowledgement = read_frame(reader)
-    validate_envelope(acknowledgement, client.bridge.session)
-    if acknowledgement.get("kind") != "hello_ack":
-        raise ProtocolError("host did not acknowledge handshake")
-    if client.match_fingerprint \
-            and acknowledgement.get("match_fingerprint") != client.match_fingerprint:
-        raise ProtocolError("host acknowledged a different match fingerprint")
+    try:
+        send(sock, hello(
+            client.bridge.session, client.bridge.peer, client._last_commit(),
+            client.match_fingerprint,
+            client.match_content_inventory,
+        ), send_lock)
+        acknowledgement = read_frame(reader)
+        validate_envelope(acknowledgement, client.bridge.session)
+        if acknowledgement.get("kind") == "hello_reject":
+            reason = acknowledgement.get("reason")
+            raise ProtocolError(
+                str(reason) if isinstance(reason, str) and reason
+                else "host rejected the multiplayer compatibility check"
+            )
+        if acknowledgement.get("kind") != "hello_ack":
+            raise ProtocolError("host did not acknowledge handshake")
+        host_content = acknowledgement.get("active_content")
+        if client.match_content_inventory is not None:
+            if host_content is None:
+                raise ProtocolError(
+                    "host did not provide its active mod/DLC inventory"
+                )
+            detail = describe_content_mismatch(
+                host_content, client.match_content_inventory
+            )
+            if detail:
+                raise ProtocolError("active mod/DLC compatibility check failed: " + detail)
+        if client.match_fingerprint \
+                and acknowledgement.get("match_fingerprint") != client.match_fingerprint:
+            raise ProtocolError("host acknowledged a different match fingerprint")
+    except BaseException:
+        reader.close()
+        sock.close()
+        raise
     client.socket_connected = True
     client.connected = False
     client.synchronized = False

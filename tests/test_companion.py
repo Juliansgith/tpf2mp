@@ -6,17 +6,27 @@ import io
 import json
 import os
 import socket
+import struct
 import tempfile
 import threading
 import time
 import unittest
+import zipfile
 import zlib
 from contextlib import redirect_stdout
 from unittest import mock
 from pathlib import Path
 
+import zstandard
+
 from tpf2mp.bridge import AuditLog, AuditUnavailable, GameBridge, atomic_write
 from tpf2mp.anchor_io import AnchorRequestStore, anchor_state_message, validate_anchor_state
+from tpf2mp.active_content import (
+    ActiveContentError,
+    build_active_content_inventory,
+    describe_content_mismatch,
+    read_active_mods,
+)
 from tpf2mp.completion_validation import (
     operation_completion_result_digest,
     proposal_completion_result_digest,
@@ -4489,6 +4499,31 @@ class CheckpointTests(unittest.TestCase):
 
 
 class ManifestTests(unittest.TestCase):
+    @staticmethod
+    def _native_save(path: Path, mods: list[dict]) -> None:
+        payload = bytearray(b"tf**")
+        payload.extend(struct.pack("<I", 340))
+        payload.extend(struct.pack("<7I", *range(7)))
+        payload.extend(struct.pack("<I", len(mods)))
+
+        def string(value: str) -> None:
+            encoded = value.encode("utf-8")
+            payload.extend(struct.pack("<I", len(encoded)))
+            payload.extend(encoded)
+
+        for mod in mods:
+            string(mod["id"])
+            payload.extend(struct.pack(
+                "<4I", mod.get("majorVersion", 1), mod.get("minorVersion", 0), 0, 0
+            ))
+            string(mod.get("name", mod["id"]))
+            string("")
+            payload.extend(struct.pack("<I", 0))  # tags
+            payload.extend(struct.pack("<I", 0))  # authors
+            payload.extend(struct.pack("<I", 0))  # parameters
+            payload.extend(struct.pack("<2I", 0, 0))
+        path.write_bytes(zstandard.ZstdCompressor().compress(bytes(payload)))
+
     def test_content_fingerprint_is_deterministic_and_sensitive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -4509,6 +4544,128 @@ class ManifestTests(unittest.TestCase):
             (mod / "mod.lua").write_text("return 2\n", encoding="utf-8")
             changed = build_manifest(game, mod, companion)
             self.assertNotEqual(first["fingerprint"], changed["fingerprint"])
+
+    def test_native_save_active_content_is_resolved_hashed_and_ordered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game_root = root / "steamapps" / "common" / "Transport Fever 2"
+            game = game_root / "TransportFever2.exe"
+            local_mods = root / "userdata" / "local" / "mods"
+            installed = local_mods / "tpf2_mp_1"
+            legacy = game_root / "mods" / "urbangames_legacy_vehicle_pack_1"
+            deluxe = game_root / "dlcs" / "urbangames_deluxe_pack_1"
+            workshop = root / "steamapps" / "workshop" / "content" / "1066780" / "12345"
+            companion = root / "companion"
+            for path in (installed, legacy, deluxe, workshop, companion):
+                path.mkdir(parents=True)
+                (path / "mod.lua").write_text(f"return {{ name = {path.name!r} }}\n", encoding="utf-8")
+            game.write_bytes(b"game")
+            save = root / "world.sav"
+            mods = [
+                {"id": "_urbangames_deluxe_pack", "minorVersion": 2},
+                {"id": "urbangames_legacy_vehicle_pack"},
+                {"id": "*12345", "minorVersion": 7},
+                {"id": "!tpf2_mp"},
+            ]
+            self._native_save(save, mods)
+            parsed = read_active_mods(save)
+            self.assertEqual(parsed["saveVersion"], 340)
+            self.assertEqual([item["id"] for item in parsed["mods"]], [
+                "_urbangames_deluxe_pack", "urbangames_legacy_vehicle_pack",
+                "*12345", "!tpf2_mp",
+            ])
+
+            inventory = build_active_content_inventory(save, game, installed)
+            self.assertEqual([item["sourceKind"] for item in inventory["mods"]], [
+                "dlc", "mod", "workshop", "mod",
+            ])
+            self.assertTrue(all(len(item["contentSha256"]) == 64 for item in inventory["mods"]))
+            manifest = build_manifest(
+                game, installed, companion, save_file=save, active_mod_save=save
+            )
+            self.assertEqual(manifest["format"], 2)
+            self.assertEqual(
+                manifest["components"]["active_content"]["digest"], inventory["digest"]
+            )
+            restore_manifest = build_manifest(
+                game, installed, companion, active_mod_save=save
+            )
+            self.assertNotIn("starting_save", restore_manifest["components"])
+            self.assertEqual(
+                restore_manifest["components"]["active_content"]["digest"], inventory["digest"]
+            )
+
+    def test_active_content_ignores_media_but_detects_scripts_and_zip_repacking(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game_root = root / "steamapps" / "common" / "Transport Fever 2"
+            game = game_root / "TransportFever2.exe"
+            installed = root / "userdata" / "mods" / "tpf2_mp_1"
+            installed.mkdir(parents=True)
+            game_root.mkdir(parents=True)
+            game.write_bytes(b"game")
+            (installed / "mod.lua").write_text("return { version = 1 }\n", encoding="utf-8")
+            archive = installed / "resources.zip"
+
+            def write_archive(comment: bytes) -> None:
+                with zipfile.ZipFile(archive, "w") as value:
+                    value.comment = comment
+                    value.writestr("res/construction/station.con", "return { tracks = 2 }\n")
+                    value.writestr("res/textures/icon.png", b"cosmetic")
+
+            write_archive(b"first package")
+            save = root / "world.sav"
+            self._native_save(save, [{"id": "!tpf2_mp"}])
+            first = build_active_content_inventory(save, game, installed)
+            (installed / "preview.png").write_bytes(b"different pixels")
+            write_archive(b"repacked without logical changes")
+            second = build_active_content_inventory(save, game, installed)
+            self.assertEqual(first["digest"], second["digest"])
+            (installed / "mod.lua").write_text("return { version = 2 }\n", encoding="utf-8")
+            third = build_active_content_inventory(save, game, installed)
+            self.assertNotEqual(second["digest"], third["digest"])
+
+    def test_missing_required_mod_fails_before_launch_with_its_id(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game = root / "steamapps" / "common" / "Transport Fever 2" / "TransportFever2.exe"
+            installed = root / "userdata" / "mods" / "tpf2_mp_1"
+            game.parent.mkdir(parents=True)
+            installed.mkdir(parents=True)
+            game.write_bytes(b"game")
+            (installed / "mod.lua").write_text("return {}\n", encoding="utf-8")
+            save = root / "world.sav"
+            self._native_save(save, [{"id": "*999999"}, {"id": "!tpf2_mp"}])
+            with self.assertRaisesRegex(ActiveContentError, r"\*999999.*not installed"):
+                build_active_content_inventory(save, game, installed)
+            self._native_save(save, [{"id": "../outside"}])
+            with self.assertRaisesRegex(ActiveContentError, "unsafe active mod"):
+                build_active_content_inventory(save, game, installed)
+
+    def test_content_mismatch_diagnostics_cover_absence_version_files_and_order(self) -> None:
+        def inventory(items: list[tuple[str, int, str]], digest: str) -> dict:
+            return {
+                "schemaVersion": 1,
+                "digest": digest * 64,
+                "mods": [{
+                    "id": mod_id, "majorVersion": 1, "minorVersion": minor,
+                    "contentSha256": content * 64,
+                } for mod_id, minor, content in items],
+            }
+
+        host = inventory([("a", 0, "a"), ("b", 0, "b")], "a")
+        self.assertIn("missing", describe_content_mismatch(
+            host, inventory([("a", 0, "a")], "b")
+        ))
+        self.assertIn("version differs", describe_content_mismatch(
+            host, inventory([("a", 0, "a"), ("b", 2, "b")], "b")
+        ))
+        self.assertIn("installed files differ", describe_content_mismatch(
+            host, inventory([("a", 0, "a"), ("b", 0, "c")], "b")
+        ))
+        self.assertIn("load order differs", describe_content_mismatch(
+            host, inventory([("b", 0, "b"), ("a", 0, "a")], "b")
+        ))
 
 
 class ResearchReportTests(unittest.TestCase):
@@ -7007,6 +7164,57 @@ class SaveSyncTests(unittest.TestCase):
 
 
 class NetworkIntegrationTests(unittest.TestCase):
+    def test_handshake_reports_the_specific_missing_active_mod(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "content-mismatch"
+            host_bridge = GameBridge(root / "host", session, "player1")
+            client_bridge = GameBridge(root / "client", session, "player2")
+            port = available_port()
+
+            def inventory(mods: list[str], digest_character: str) -> dict:
+                return {
+                    "schemaVersion": 1,
+                    "digest": digest_character * 64,
+                    "mods": [{
+                        "id": mod_id,
+                        "majorVersion": 1,
+                        "minorVersion": 0,
+                        "contentSha256": "c" * 64,
+                    } for mod_id in mods],
+                }
+
+            host = CommitHost(
+                host_bridge, "127.0.0.1", port, root / "audit.ndjson",
+                "a" * 64,
+                match_content_inventory=inventory(["!tpf2_mp", "*12345"], "a"),
+            )
+            client = CommitClient(
+                client_bridge, "127.0.0.1", port, "a" * 64,
+                inventory(["!tpf2_mp"], "b"),
+            )
+            host_thread = threading.Thread(
+                target=host.run, kwargs={"poll_seconds": 0.01}, daemon=True,
+            )
+            client_thread = threading.Thread(
+                target=client.run,
+                kwargs={"poll_seconds": 0.01, "retry_seconds": 0.05},
+                daemon=True,
+            )
+            host_thread.start()
+            client_thread.start()
+            try:
+                self.assertTrue(wait_for(
+                    lambda: client.last_error is not None and "*12345" in client.last_error
+                ))
+                self.assertIn("missing required active content", client.last_error or "")
+                self.assertNotIn("player2", host.peers)
+            finally:
+                client.stop.set()
+                host.stop.set()
+                client_thread.join(2)
+                host_thread.join(2)
+
     @staticmethod
     def _settlement_intent(session: str, local_seq: int) -> dict:
         return sign({

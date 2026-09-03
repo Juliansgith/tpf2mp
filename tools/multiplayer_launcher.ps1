@@ -244,7 +244,7 @@ $lanLabel.Size = New-Object Drawing.Size(764, 22)
 $settingsPanel.Controls.Add($lanLabel)
 
 $hint = New-Object Windows.Forms.Label
-$hint.Text = 'Host selects a save and launches first. Join copies the session/address/port, clicks SYNC FROM HOST, then launches. The normal fingerprint still rejects any mismatch.'
+$hint.Text = 'Host selects a save and launches first. Join syncs that save, then launches. Preflight names any missing or different active mod/DLC before authority.'
 $hint.ForeColor = $muted
 $hint.Location = New-Object Drawing.Point(18, 178)
 $hint.Size = New-Object Drawing.Size(764, 40)

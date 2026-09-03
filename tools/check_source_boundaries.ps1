@@ -236,6 +236,8 @@ $budgets = [ordered]@{
     'companion\tpf2mp\freight_live_report.py' = 260
     'companion\tpf2mp\passenger_feeder_live_report.py' = 500
     'companion\tpf2mp\protocol.py' = 1670
+    'companion\tpf2mp\active_content.py' = 360
+    'companion\tpf2mp\native_mod_table.py' = 160
     'companion\tpf2mp\freight_action_protocol.py' = 130
     'companion\tpf2mp\transport_network.py' = 430
     'companion\tpf2mp\reconnect.py' = 210
@@ -405,6 +407,9 @@ foreach ($launcherPath in @('tools\run_localhost_live_validation.ps1', 'tools\st
     if (-not $launcherSource.Contains('-RequirePersistentMenuPump')) {
         throw "$launcherPath no longer fails closed when its persistent paused-world pump is unavailable."
     }
+    if (-not $launcherSource.Contains("'--active-mod-save'")) {
+        throw "$launcherPath no longer binds the starting save's active mod/DLC inventory."
+    }
 }
 $liveLauncher = Get-Content -LiteralPath `
     (Join-Path $root 'tools\run_localhost_live_validation.ps1') -Raw
@@ -502,6 +507,10 @@ if (-not $protocolSource.Contains('from .aboard_milestone_protocol import')) {
 }
 if (-not $protocolSource.Contains('from .recovery_receipt_protocol import')) {
     throw 'Companion protocol no longer composes its recovery-receipt wire boundary.'
+}
+$manifestSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\manifest.py') -Raw
+if (-not $manifestSource.Contains('from .active_content import build_active_content_inventory')) {
+    throw 'Match manifests no longer compose the active mod/DLC content inventory.'
 }
 $restoreSource = Get-Content -LiteralPath (Join-Path $root 'companion\tpf2mp\restore.py') -Raw
 foreach ($module in @('from .native_save import', 'from .restore_plan import')) {

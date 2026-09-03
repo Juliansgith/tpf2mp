@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Current release: `0.43.4-alpha`
+Current release: `0.43.5-alpha`
 
 Last reviewed: 2026-09-01
 
@@ -31,7 +31,9 @@ companies through a temporary native turn desk.
 
 ### Session and world authority
 
-- byte-pinned starting-save transfer and independent match fingerprints;
+- byte-pinned starting-save transfer and independent format-2 match
+  fingerprints that attest the save's ordered active mods/DLC, declared
+  versions, and installed simulation-bearing content;
 - canonical IDs for pre-existing and newly created entities despite divergent
   local native IDs;
 - host-ordered intent sequencing, bounded FIFO deferral, reconnect backlog
@@ -138,7 +140,7 @@ and [practical geometry qualification](../investigation/PRACTICAL_TRACK_AND_STAT
 
 ## Release position
 
-`0.43.4-alpha` is suitable for external trusted-tester feedback. The next
+`0.43.5-alpha` is suitable for external trusted-tester feedback. The next
 evidence priority is a multi-hour physical two-computer relay match exercising
 dense construction, several simultaneous vehicles, passenger transfers,
 positive freight, reconnect, and receipt-bound restore. The machine-checkable

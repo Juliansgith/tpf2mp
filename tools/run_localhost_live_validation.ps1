@@ -37,6 +37,7 @@ param(
     [switch]$RequireFreightIndustryBootstrap,
     [switch]$KeepGamesOpen,
     [ValidateSet('Balanced', 'Native')][string]$LocalhostPerformanceProfile = 'Balanced',
+    [string[]]$ExtraActiveMod = @(),
     [string]$EvidenceTag
 )
 
@@ -93,6 +94,20 @@ if (-not $Session) { $Session = 'localhost-' + (Get-Date -Format 'yyyyMMdd-HHmms
 if ($Session -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') { throw "Unsafe session name: $Session" }
 if ($EvidenceTag -and $EvidenceTag -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
     throw "Unsafe evidence tag: $EvidenceTag"
+}
+$extraActiveMods = @($ExtraActiveMod | ForEach-Object { [string]$_ } | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_)
+})
+foreach ($modId in $extraActiveMods) {
+    if ($modId -notmatch '^[A-Za-z0-9_!.-]{1,128}$') {
+        throw "Unsafe extra active mod id: $modId"
+    }
+    if ($modId -in @('tpf2_mp', '!tpf2_mp')) {
+        throw 'TPF2MP is already activated by the localhost harness and cannot be listed as an extra mod.'
+    }
+}
+if (@($extraActiveMods | Select-Object -Unique).Count -ne $extraActiveMods.Count) {
+    throw 'ExtraActiveMod contains a duplicate mod id.'
 }
 
 $game = Find-Tpf2mpGameExecutable $GameExecutable
@@ -213,6 +228,7 @@ $processPolicies = @{}
 $windowLayout = $null
 $automaticRestoreCapture = $null
 $postBootstrapSoakEvidence = $null
+$extraModRoots = @()
 
 function Set-LocalhostValidationSettings([string]$Path) {
     $content = [IO.File]::ReadAllText($Path)
@@ -224,11 +240,13 @@ function Set-LocalhostValidationSettings([string]$Path) {
     $close = [regex]::Match($tail, '(?m)^' + [regex]::Escape($indent) + '\},[ \t]*\r?$')
     if (-not $close.Success) { throw 'Could not locate the end of activeMods in settings.lua' }
     $end = $start.Index + $start.Length + $close.Index + $close.Length
-    $replacement = @(
-        "${indent}activeMods = {"
-        "${indent}`t{ `"!tpf2_mp`", 1, },"
-        "${indent}},"
-    ) -join $newline
+    $activeModLines = @("${indent}activeMods = {")
+    foreach ($modId in $extraActiveMods) {
+        $activeModLines += "${indent}`t{ `"$modId`", 1, },"
+    }
+    $activeModLines += "${indent}`t{ `"!tpf2_mp`", 1, },"
+    $activeModLines += "${indent}},"
+    $replacement = $activeModLines -join $newline
     $updated = $content.Substring(0, $start.Index) + $replacement + $content.Substring($end)
     $updated = [regex]::Replace(
         $updated,
@@ -1439,7 +1457,26 @@ try {
         '--companion-dir', $fingerprintSource, '--extra', $nativeRoot,
         '--extra', $matchContentProfilePath, '--output', $manifestPath
     )
-    if ($startingSaveCopy) { $fingerprintArguments += @('--save', $startingSaveCopy) }
+    foreach ($modId in $extraActiveMods) {
+        $candidateRoots = @(@(
+                (Join-Path (Join-Path $gameRoot 'mods') $modId),
+                (Join-Path (Join-Path $gameRoot 'mods') ($modId + '_1')),
+                (Join-Path $mods $modId),
+                (Join-Path $mods ($modId + '_1'))
+            ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -Unique)
+        if ($candidateRoots.Count -ne 1) {
+            throw "Extra active mod '$modId' must resolve to exactly one installed mod directory; found $($candidateRoots.Count)."
+        }
+        $resolvedModRoot = Resolve-Tpf2mpFullPath $candidateRoots[0]
+        $extraModRoots += $resolvedModRoot
+        $fingerprintArguments += @('--extra', $resolvedModRoot)
+    }
+    if ($startingSaveCopy) {
+        $fingerprintArguments += @(
+            '--save', $startingSaveCopy, '--active-mod-save', $startingSaveCopy,
+            '--content-cache', (Join-Path $env:LOCALAPPDATA 'TPF2MP\cache\active-content-v1.json')
+        )
+    }
     if ($restorePlanPath) { $fingerprintArguments += @('--extra', $restorePlanPath) }
     Invoke-Companion -Arguments $fingerprintArguments
 
@@ -2313,6 +2350,8 @@ $runStatus = [ordered]@{
     automaticRestoreCapture = $automaticRestoreCapture
     interactiveMinutes = $InteractiveMinutes
     localhostPerformanceProfile = $LocalhostPerformanceProfile
+    extraActiveMods = $extraActiveMods
+    extraActiveModRoots = $extraModRoots
     processPolicies = $processPolicies
     windowLayout = $windowLayout
     operationalCaptureLab = $OperationalCaptureLab.IsPresent

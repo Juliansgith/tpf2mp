@@ -8,7 +8,7 @@ systems to Transport Fever 2. It contains two related modes:
 2. a restricted same-area network alpha in which two independent game
    processes replay supported actions and verify their results.
 
-Current release: `0.43.4-alpha`
+Current release: `0.43.5-alpha`
 
 Supported executable: Transport Fever 2 Build 35924, Windows x64
 
@@ -62,9 +62,11 @@ Leave **Use secure relay** enabled unless using a trusted LAN/private VPN.
 3. Both players click **MULTIPLAYER** on the Transport Fever 2 title screen.
 4. Begin only when both in-game Alpha Status panels report `READY`.
 
-Both computers must run the same TPF2MP version, exact supported game build,
-and compatible enabled content. Mixed versions are rejected. The complete
-player flow, saving, recovery, and bug-report instructions are in the
+Both computers must run the same TPF2MP version and exact supported game build.
+The launcher reads the starting save's ordered active-mod/DLC table, verifies
+that every dependency exists locally, hashes its simulation-bearing files, and
+refuses authority when a dependency, version, load-order position, or content
+digest differs. The complete player flow, saving, recovery, and bug-report instructions are in the
 [public alpha guide](docs/PUBLIC_ALPHA_GUIDE.md).
 
 ## Authority model
@@ -86,7 +88,7 @@ route-phase drift but is not continuous coordinate lockstep.
 
 ## Current evidence
 
-The `0.43.4-alpha` qualification includes:
+The `0.43.5-alpha` qualification includes:
 
 - a 604.9-second populated two-process run with 1,168 samples;
 - ten converged checkpoints, four station releases, zero vehicle faults, and
@@ -113,7 +115,7 @@ Run the complete source gate from a PowerShell prompt:
 Build and transactionally verify a clean release bundle:
 
 ```powershell
-.\tools\package_release.ps1 -Version 0.43.4-alpha
+.\tools\package_release.ps1 -Version 0.43.5-alpha
 ```
 
 Publishing requires a clean commit, matching manifest, SHA-256 sidecar, release
@@ -121,8 +123,8 @@ notes, and explicit confirmation:
 
 ```powershell
 .\tools\publish_github_release.ps1 `
-  -Version 0.43.4-alpha `
-  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.43.4-alpha.md `
+  -Version 0.43.5-alpha `
+  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.43.5-alpha.md `
   -ConfirmPublish
 ```
 

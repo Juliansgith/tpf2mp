@@ -134,6 +134,14 @@ def parser() -> argparse.ArgumentParser:
     fingerprint.add_argument("--mod-dir", type=Path, required=True)
     fingerprint.add_argument("--companion-dir", type=Path, required=True)
     fingerprint.add_argument("--save", type=Path)
+    fingerprint.add_argument(
+        "--active-mod-save", type=Path,
+        help="read and attest the ordered active-mod/DLC table from this native save",
+    )
+    fingerprint.add_argument(
+        "--content-cache", type=Path,
+        help="optional local cache for active-content file hashes",
+    )
     fingerprint.add_argument("--extra", type=Path, action="append", default=[])
     fingerprint.add_argument("--output", type=Path, required=True)
 
@@ -230,7 +238,12 @@ def main(argv: list[str] | None = None) -> int:
             bridge_path = args.bridge or default_bridge(args.peer)
             game_bridge = GameBridge(bridge_path, args.session, args.peer)
             audit = args.audit or (game_bridge.audit_dir / f"{args.session}.ndjson")
-            fingerprint = load_manifest(args.manifest)["fingerprint"] if args.manifest else None
+            loaded_manifest = load_manifest(args.manifest) if args.manifest else None
+            fingerprint = loaded_manifest["fingerprint"] if loaded_manifest else None
+            content_inventory = (
+                loaded_manifest.get("components", {}).get("active_content")
+                if loaded_manifest else None
+            )
             restore_plan = verify_restore_plan(json.loads(
                 args.restore_plan.read_text(encoding="utf-8-sig")
             )) if args.restore_plan else None
@@ -267,14 +280,23 @@ def main(argv: list[str] | None = None) -> int:
                     saved_match_auto=args.saved_match_auto,
                     automatic_recovery_interval=args.automatic_recovery_interval,
                     automatic_recovery_timeout=args.automatic_recovery_timeout,
+                    match_content_inventory=content_inventory,
                 ).run()
             finally:
                 if save_sync is not None:
                     save_sync.close()
         elif args.command == "client":
             bridge_path = args.bridge or default_bridge(args.peer)
-            fingerprint = load_manifest(args.manifest)["fingerprint"] if args.manifest else None
-            CommitClient(GameBridge(bridge_path, args.session, args.peer), args.host, args.port, fingerprint).run()
+            loaded_manifest = load_manifest(args.manifest) if args.manifest else None
+            fingerprint = loaded_manifest["fingerprint"] if loaded_manifest else None
+            content_inventory = (
+                loaded_manifest.get("components", {}).get("active_content")
+                if loaded_manifest else None
+            )
+            CommitClient(
+                GameBridge(bridge_path, args.session, args.peer), args.host, args.port,
+                fingerprint, content_inventory,
+            ).run()
         elif args.command == "save-sync-receive":
             receipt = receive_save(
                 args.host,
@@ -317,10 +339,16 @@ def main(argv: list[str] | None = None) -> int:
                 args.companion_dir,
                 save_file=args.save,
                 extras=args.extra,
+                active_mod_save=args.active_mod_save,
+                content_cache=args.content_cache,
             )
             write_manifest(args.output, manifest)
             print(f"manifest={args.output.resolve()}")
             print(f"fingerprint={manifest['fingerprint']}")
+            active_content = manifest.get("components", {}).get("active_content")
+            if active_content:
+                print(f"active_content_digest={active_content['digest']}")
+                print(f"active_content_mods={len(active_content['mods'])}")
         elif args.command == "research-report":
             bridge_path = args.bridge or default_bridge(args.peer)
             report = write_report(bridge_path, args.session, args.output)

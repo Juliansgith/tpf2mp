@@ -82,7 +82,6 @@ MAX_OPERATION_VEHICLE_BATCH = 256
 class ProtocolError(ValueError):
     pass
 
-
 def _normalise(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
         return value
@@ -1755,12 +1754,11 @@ def validate_action(action: Any) -> dict[str, Any]:
                 )
     return action
 
-
 def hello(
     session: str,
     peer: str,
     last_commit_seq: int = 0,
-    match_fingerprint: str | None = None,
+    match_fingerprint: str | None = None, active_content: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     return sign(
         {
@@ -1768,7 +1766,7 @@ def hello(
             "session": session,
             "kind": "hello",
             "peer": peer,
-            "last_commit_seq": int(last_commit_seq),
-            "match_fingerprint": match_fingerprint,
+            "last_commit_seq": int(last_commit_seq), "match_fingerprint": match_fingerprint,
+            "active_content": dict(active_content) if active_content is not None else None,
         }
     )

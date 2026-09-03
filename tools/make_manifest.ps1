@@ -23,7 +23,12 @@ $arguments = @(
     '--companion-dir', (Join-Path $projectRoot 'companion\tpf2mp'),
     '--output', $OutputPath
 )
-if ($SavePath) { $arguments += @('--save', $SavePath) }
+if ($SavePath) {
+    $arguments += @(
+        '--save', $SavePath, '--active-mod-save', $SavePath,
+        '--content-cache', (Join-Path $env:LOCALAPPDATA 'TPF2MP\cache\active-content-v1.json')
+    )
+}
 foreach ($path in $ExtraPath) { $arguments += @('--extra', $path) }
 & $python @arguments
 exit $LASTEXITCODE
