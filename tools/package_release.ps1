@@ -216,6 +216,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'LAUNCH_TPF2MP.cmd') -Destination
 Copy-Item -LiteralPath (Join-Path $projectRoot 'relay-config.json') -Destination (Join-Path $releaseRoot 'relay-config.json')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') `
     -Destination (Join-Path $releaseRoot 'README.md')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination (Join-Path $releaseRoot 'LICENSE')
 Copy-ReleaseTree (Join-Path $projectRoot 'docs') (Join-Path $releaseRoot 'docs')
 Copy-ReleaseTree (Join-Path $projectRoot 'investigation') (Join-Path $releaseRoot 'investigation')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'native\README.md') -Destination (Join-Path $releaseRoot 'docs\NATIVE_HOOK.md')

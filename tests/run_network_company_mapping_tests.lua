@@ -50,18 +50,21 @@ tpf2mp_native_authorize_command = function() end
 tpf2mp_native_revoke_command = function() end
 tpf2mp_native_arm_build_correlation = function() end
 tpf2mp_native_take_suppressed_build = function() return nil end
+tpf2mp_native_take_build_factory_capture = function() return nil end
 tpf2mp_native_status = function()
   return {
-    hookVersion = "0.19.0",
+    hookVersion = "0.20.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
       enabled = true,
       buildProposalVisitor = true,
+      makeBuildProposal = true,
+      commandListAdd = true,
       authorityCommandVisitors = 31,
     },
     gates = {
-      buildProposal = { enabled = buildGateEnabled, tagMismatches = 0,
+      buildProposal = { enabled = buildGateEnabled, tagMismatches = 0, factoryCapture = { dropped = 0 },
         suppressedQueue = { queued = 0, captured = 0, consumed = 0, dropped = 0 } },
       commandVisitors = {
         enabled = commandGateEnabled,
@@ -1398,6 +1401,7 @@ for index = 1, 384 do
       tangent0 = { x = 4, y = 0, z = 0 },
       tangent1 = { x = 4, y = 0, z = 0 },
       type = 0, typeIndex = 0,
+      bus = false, tramTrackType = 0,
       resource = { index = 10, name = "airport/airport_runway_medium.lua" },
       private = true, logicalOwnerCid = "company:2",
     }
@@ -1449,7 +1453,7 @@ airportBuildFixture = {
   end,
 }
 local airportDelta = {
-  schemaVersion = 1,
+  schemaVersion = 2,
   added = {
     construction = { airportBuildFixture.construction },
     station = { airportBuildFixture.station },
@@ -1459,6 +1463,21 @@ local airportDelta = {
   },
   removed = {
     construction = {}, station = {}, station_group = {}, depot = {},
+    asset = {}, edge_object = {}, node = {}, edge = {},
+  },
+  identities = {
+    construction = { [tostring(airportBuildFixture.construction)] = {
+      fingerprint = "11111111", topologyFingerprint = "22222222",
+    } },
+    station = { [tostring(airportBuildFixture.station)] = {
+      fingerprint = "33333333",
+    } },
+    station_group = { [tostring(airportBuildFixture.stationGroup)] = {
+      fingerprint = "44444444",
+    } },
+    depot = { [tostring(airportBuildFixture.depot)] = {
+      fingerprint = "55555555",
+    } },
     asset = {}, edge_object = {}, node = {}, edge = {},
   },
 }
@@ -1528,7 +1547,13 @@ assert(airportState.world.logicalOwners["20000"] == "company:2"
     and airportState.world.logicalOwners["22383"] == "company:2",
   "airport roots or runway endpoints escaped Company 2 custody")
 assert(airportState.canonical.byCanonical[
-    canonical.resolveCanonical(airportState.canonical, "depot", 20003)].metadata.nativeReadUnsafe == true,
+    canonical.resolveCanonical(airportState.canonical, "depot", 20003)].metadata.nativeReadUnsafe == true
+    and airportState.canonical.byCanonical[
+      canonical.resolveCanonical(airportState.canonical, "depot", 20003)
+    ].metadata.fingerprint == "55555555"
+    and airportState.canonical.byCanonical[
+      canonical.resolveCanonical(airportState.canonical, "depot", 20003)
+    ].metadata.portableRebind == true,
   "fresh airport depot was not protected from unsafe background native reads")
 writeConsensus(40, airportRecord, -5000000)
 script.update()

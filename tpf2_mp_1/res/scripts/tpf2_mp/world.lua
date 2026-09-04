@@ -12,8 +12,10 @@ local lineReadingModule = require "tpf2_mp/world_line_reading"
 local industryReadingModule = require "tpf2_mp/world_industry_reading"
 local industryResourceFacts = require "tpf2_mp/industry_resource_facts"
 local identityModule = require "tpf2_mp/world_identity"
+local topologyRuntimeModule = require "tpf2_mp/world_topology_runtime"
 local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 local vehicleRestorePhase = require "tpf2_mp/world_vehicle_restore_phase"
+local nativeFingerprintModule = require "tpf2_mp/world_native_fingerprint"
 
 local M = {}
 
@@ -667,9 +669,19 @@ local identity = identityModule.new({
   listKind = listKind,
   baseEdge = function(id) return component(id, api.type.ComponentType.BASE_EDGE) end,
 })
-M.findPreExistingLocal = identity.findPreExistingLocal
+local topology = topologyRuntimeModule.new({
+  component = component, getApi = function() return api end,
+  positionOf = resolvedPositionOfEntity, stableName = componentNameOf,
+  ownerOf = M.ownerOf, listKind = listKind,
+  fingerprint = M.fingerprint, entityExists = M.entityExists, kindOf = M.kindOf,
+  findIdentityLocal = identity.findPreExistingLocal,
+})
+M.topologyFingerprint = topology.fingerprint
+M.topologyNeighbourFingerprint = topology.neighbourFingerprint
+M.findPreExistingLocal = topology.find
 M.identifyExisting = identity.identifyExisting
-M.resolvePreExisting = identity.resolvePreExisting
+M.resolvePreExisting = topology.resolve
+M.expectedConstructionTopologyFingerprint = topology.expectedConstructionFingerprint
 
 function M.bindExisting(registry, id, kind, metadata, fingerprintOverride)
   kind = kind or M.kindOf(id)
@@ -686,6 +698,7 @@ function M.bindExisting(registry, id, kind, metadata, fingerprintOverride)
   local bindingMetadata = util.deepCopy(metadata or { name = nameOf(id) })
   bindingMetadata.fingerprint = fingerprint
   bindingMetadata.duplicateOrdinal = ordinal
+  topology.decorate(bindingMetadata, id, kind, registry, bindingMetadata.owner)
   local ok, err = canonical.bind(registry, cid, kind, id, bindingMetadata)
   if not ok then return nil, err end
   return cid
@@ -965,11 +978,11 @@ local function ensureEntityBinding(registry, id, kind, eventId, slot, ownerCid, 
     return cid, false, err
   end
   local cid = canonical.createdId(kind, eventId, slot)
-  local bound, err = canonical.bind(registry, cid, kind, id, {
+  local bound, err = canonical.bind(registry, cid, kind, id, topology.decorate({
     name = nameOf(id),
     fingerprint = M.fingerprint(id, kind),
     owner = ownerCid,
-  })
+  }, id, kind, registry, ownerCid))
   return bound and cid or nil, false, err
 end
 
@@ -1507,6 +1520,23 @@ M.accumulateDevelopment = corridorBindingModule.accumulateDevelopment
 M.TOWN_DEVELOPMENT = corridorBindingModule.TOWN_DEVELOPMENT
 
 M.townCapacity = townCapacity
+
+local nativeFingerprint = nativeFingerprintModule.new({
+  entityExists = M.entityExists, fingerprint = M.fingerprint,
+  topologyFingerprint = M.topologyFingerprint,
+  listTowns = M.listTowns, listIndustries = M.listIndustries,
+  townCapacity = townCapacity, listKind = listKind,
+  kindOf = M.kindOf, ownerOf = M.ownerOf,
+  resolveCanonical = canonical.resolveCanonical,
+  vehicleLine = function(vehicleId, registry)
+    local transportVehicle = component(
+      vehicleId, api.type.ComponentType.TRANSPORT_VEHICLE)
+    local lineId = tonumber(safeComponentField(transportVehicle, "line"))
+    if not lineId or lineId < 0 then return nil end
+    return canonical.resolveCanonical(registry, "line", lineId) or "unbound-line"
+  end,
+})
+M.nativeFingerprint = nativeFingerprint.sample
 
 function M.freezeAutonomy(worldState, freeze)
   local result = { freeze = freeze and true or false, towns = 0, industries = 0, errors = {} }

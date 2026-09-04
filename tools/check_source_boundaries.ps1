@@ -41,6 +41,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\active_record_index.lua' = 45
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_collateral_runtime.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_derived_station_runtime.lua' = 100
+    'tpf2_mp_1\res\scripts\tpf2_mp\construction_generated_topology.lua' = 240
     'tpf2_mp_1\res\scripts\tpf2_mp\network_finance_housekeeping.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\network_intent_runtime.lua' = 480
     'tpf2_mp_1\res\scripts\tpf2_mp\network_origin_capture_runtime.lua' = 180
@@ -68,7 +69,9 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_content_gate.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\validation_town_development.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\operational_capture_runtime.lua' = 220
-    'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1450
+    # This remains the GUI integration boundary; early native BuildProposal
+    # correlation adds wiring only, while its parsing lives in a small module.
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_event_runtime.lua' = 1460
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_capture_runtime.lua' = 340
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_correlation.lua' = 340
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_gate_sampler.lua' = 110
@@ -134,6 +137,7 @@ $budgets = [ordered]@{
     'companion\tpf2mp\restore_plan_exchange.py' = 120
     'companion\tpf2mp\local_restore.py' = 150
     'tools\run_latest_local_restore_acceptance.ps1' = 120
+    'tools\run_construction_corpus.ps1' = 190
     'tools\start_relay_network_session.ps1' = 300
     'tools\relay_failed_launch_cleanup.ps1' = 50
     'tools\relay_diagnostic_process.ps1' = 180
@@ -166,8 +170,12 @@ $budgets = [ordered]@{
     'companion\tpf2mp\synchronization.py' = 700
     'companion\tpf2mp\vehicle_barrier.py' = 390
     'companion\tpf2mp\paused_deadline.py' = 210
-    'native\src\hook_dll.cpp' = 1320
+    # The DLL remains the MinHook/Lua registration boundary. Early proposal
+    # detour state and decoding live in native_build_hook_bridge/capture.
+    'native\src\hook_dll.cpp' = 1350
+    'native\src\native_build_hook_bridge.cpp' = 150
     'native\src\native_build_correlation.cpp' = 100
+    'tests\run_construction_corpus_tests.lua' = 260
     'tools\verify_build_transition_gate.ps1' = 180
     'native\src\native_async_bridge.cpp' = 450
     'native\src\native_command_codec.cpp' = 350
@@ -176,15 +184,17 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
     'tpf2_mp_1\res\scripts\tpf2_mp\world_vehicle_restore_phase.lua' = 110
-    'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua' = 280
+    'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua' = 285
     'tpf2_mp_1\res\scripts\tpf2_mp\capture_public_view.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\performance_runtime.lua' = 130
     'tpf2_mp_1\res\scripts\tpf2_mp\network_pump_runtime.lua' = 130
     'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_heartbeat.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\native_observation_telemetry.lua' = 70
+    'tpf2_mp_1\res\scripts\tpf2_mp\native_fingerprint_runtime.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\research_report.lua' = 150
     'tpf2_mp_1\res\scripts\tpf2_mp\state_success_normalization.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\world_identity.lua' = 200
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_topology_runtime.lua' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_station_reading.lua' = 120
@@ -257,6 +267,8 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\engine_background_runtime.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\economy_clock_policy.lua' = 30
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_work_scheduler.lua' = 30
+    'tpf2_mp_1\res\scripts\tpf2_mp\proposal_binding_metadata.lua' = 40
+    'tpf2_mp_1\res\scripts\tpf2_mp\proposal_stock_station_template.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_verification_runtime.lua' = 210
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_delta_attestation.lua' = 170
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_proposal_result_capture.lua' = 80
@@ -275,6 +287,8 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_connection_replay.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\construction_collateral_replay.lua' = 80
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_native_capture_scheduler.lua' = 90
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_event_queue_runtime.lua' = 230
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_gate_sample_codec.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\checkpoint_retention.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\network_bootstrap_policy.lua' = 30
     'tpf2_mp_1\res\scripts\tpf2_mp\network_pump_errors.lua' = 30
@@ -314,6 +328,8 @@ $guiCapture = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_capture.lua') -Raw
 $guiBuildRuntime = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_capture_runtime.lua') -Raw
+$guiBuildRuntime += Get-Content -LiteralPath `
+    (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_build_event_queue_runtime.lua') -Raw
 $exactOwnershipSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\construction_exact_ownership.lua') -Raw
 $exactTopologySource = Get-Content -LiteralPath `
@@ -365,7 +381,7 @@ foreach ($nativeCorrelationBoundary in @(
     'tpf2mp_native_arm_build_correlation',
     'tpf2mp_native_take_suppressed_build',
     'g_suppressed_builds.Capture',
-    'tpf2mp native hook 0.19.0'
+    'tpf2mp native hook 0.20.0'
 )) {
     if (-not $nativeHookSource.Contains($nativeCorrelationBoundary)) {
         throw "Native BuildProposal correlation boundary is missing: $nativeCorrelationBoundary"

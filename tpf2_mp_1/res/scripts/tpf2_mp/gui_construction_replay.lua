@@ -44,7 +44,7 @@ function M.rejectOrFallback(record, proposalId, errorValue, queueResult, reject)
     return
   end
   local staged = record.replayPath == "staged-gui-build-proposal"
-  if not staged and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+  if not staged and proposalCodec.isConstructionSchema(record.transaction.schemaVersion)
       and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
     queueResult({ proposalId = proposalId, success = false,
       fallbackHelper = true, worldUnchanged = true, error = tostring(errorValue) })

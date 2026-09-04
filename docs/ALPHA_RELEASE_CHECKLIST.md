@@ -101,7 +101,7 @@ correlation gate:
 .\tools\verify_build_transition_gate.ps1 -Session <name>
 ```
 
-It must report hook `0.19.0`, no dropped/pending native build events, no stale
+It must report hook `0.20.0`, no dropped/pending native build events, no stale
 or ambiguous capture, increasing unique generations/tokens, both-peer input,
 construction/track/street/edge-object/bulldozer coverage, and one matching
 agreed checkpoint.

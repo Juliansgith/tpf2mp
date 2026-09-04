@@ -57,8 +57,8 @@ foreach ($peer in @('player1', 'player2')) {
         }
     })
 
-    if (-not $native -or $native.hookVersion -ne '0.19.0' -or $native.active -ne $true) {
-        $failures.Add("$peer is not running active native hook 0.19.0")
+    if (-not $native -or $native.hookVersion -ne '0.20.0' -or $native.active -ne $true) {
+        $failures.Add("$peer is not running active native hook 0.20.0")
     }
     $buildGate = if ($native -and $native.gates) { $native.gates.buildProposal } else { $null }
     $buildQueue = if ($buildGate -and $buildGate.PSObject.Properties['suppressedQueue']) {

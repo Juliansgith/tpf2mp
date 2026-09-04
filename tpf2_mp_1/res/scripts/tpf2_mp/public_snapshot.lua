@@ -99,6 +99,9 @@ function M.new(env)
       passengerMilestone = util.deepCopy(currentState().probes.passengerMilestone),
       lastError = currentState().probes.lastError,
       structuralDigest = structural and structural.digest or nil,
+      nativeFingerprint = util.deepCopy(currentState().probes.nativeFingerprint),
+      nativeFingerprintScheduler = util.deepCopy(
+        currentState().probes.nativeFingerprintScheduler),
       worldManifestDigest = currentState().probes.worldManifest and currentState().probes.worldManifest.digest or nil,
       worldManifest = currentState().probes.worldManifest and {
         total = currentState().probes.worldManifest.total,

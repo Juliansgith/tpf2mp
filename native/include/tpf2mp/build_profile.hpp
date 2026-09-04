@@ -29,6 +29,48 @@ struct CommandVisitor {
 
 inline constexpr std::uint32_t kCommandVisitorTableRva = 0x030B10C0;
 inline constexpr std::size_t kCommandVisitorCount = 37;
+
+// The earliest common native boundary for every BuildProposal command.  At
+// this point r8 still points at the complete, pre-mutation
+// construction_builder_util::Proposal.  The returned 0x38-byte Command is
+// subsequently handed to CommandList::Add.  Both addresses and byte strings
+// are pinned to the exact executable above; they are deliberately not used on
+// an unknown build.
+inline constexpr std::uint32_t kMakeBuildProposalRva = 0x009DC750;
+inline constexpr std::uint32_t kCommandListAddRva = 0x009D2A00;
+
+// Build 35924 construction_builder_util::Proposal / StreetProposal layout.
+// The four transport vectors and construction linkage were established by
+// factory-entry differential captures, then cross-checked against the public
+// Lua proposal projection.  These constants are kept together so a future
+// executable profile cannot silently reuse an old in-memory layout.
+inline constexpr std::size_t kProposalAddedNodesOffset = 0x000;
+inline constexpr std::size_t kProposalAddedEdgesOffset = 0x018;
+inline constexpr std::size_t kProposalRemovedNodesOffset = 0x030;
+inline constexpr std::size_t kProposalRemovedEdgesOffset = 0x048;
+inline constexpr std::size_t kProposalEdgeObjectsRemoveOffset = 0x0E0;
+inline constexpr std::size_t kProposalEdgeObjectsAddOffset = 0x0F8;
+inline constexpr std::size_t kProposalFrozenNodeIndicesOffset = 0x170;
+inline constexpr std::size_t kProposalSegmentTagsOffset = 0x1C8;
+inline constexpr std::size_t kProposalConstructionsRemoveOffset = 0x1E0;
+inline constexpr std::size_t kProposalConstructionsAddOffset = 0x1F8;
+inline constexpr std::size_t kProposalMinimumReadableSize = 0x210;
+inline constexpr std::size_t kProposalNodeRecordSize = 0x18;
+inline constexpr std::size_t kProposalEdgeRecordSize = 0x78;
+inline constexpr std::size_t kProposalEdgeObjectRecordSize = 0x100;
+inline constexpr std::size_t kProposalConstructionRecordSize = 0x8E0;
+// ConstructionEntity's exact Mat4f is copied as four 16-byte blocks by the
+// pinned element-copy routine at RVA 0x003DFD60.  Capturing it here prevents a
+// post-click GUI ghost from moving a correlated construction before relay.
+inline constexpr std::size_t kProposalConstructionTransformOffset = 0x728;
+inline constexpr std::size_t kProposalConstructionFrozenNodesOffset = 0x768;
+inline constexpr std::size_t kProposalConstructionSegmentsBeforeOffset = 0x780;
+inline constexpr std::size_t kProposalNativeStringSize = 0x20;
+inline constexpr std::size_t kMaximumProposalNodes = 16'384;
+inline constexpr std::size_t kMaximumProposalEdges = 16'384;
+inline constexpr std::size_t kMaximumProposalEdgeObjects = 4'096;
+inline constexpr std::size_t kMaximumProposalConstructions = 1'024;
+inline constexpr std::size_t kMaximumProposalIndices = 32'768;
 // SetGameSpeedVisitor at RVA 0x009D57C0 loads the requested engine speed with
 // `mov r8d, dword ptr [rdx]`. The visitor receives rdx as command_data.
 inline constexpr std::size_t kSetGameSpeedValueOffset = 0;
@@ -232,8 +274,19 @@ inline constexpr std::array<std::uint8_t, 56> kApplyCommand{
 inline constexpr std::array<std::uint8_t, 16> kBuildProposalVisitorThunk{
     0xE9, 0xDB, 0x09, 0x00, 0x00, 0xCC, 0xCC, 0xCC,
     0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC};
+inline constexpr std::array<std::uint8_t, 32> kMakeBuildProposal{
+    0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
+    0x56, 0x41, 0x57, 0x48, 0x8D, 0xAC, 0x24, 0x50,
+    0xEA, 0xFF, 0xFF, 0xB8, 0xB0, 0x16, 0x00, 0x00,
+    0xE8, 0xF3, 0x73, 0x21, 0x02, 0x48, 0x2B, 0xE0};
+inline constexpr std::array<std::uint8_t, 34> kCommandListAdd{
+    0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41,
+    0x55, 0x41, 0x56, 0x41, 0x57, 0x48, 0x8D, 0x6C,
+    0x24, 0x88, 0x48, 0x81, 0xEC, 0x78, 0x01, 0x00,
+    0x00, 0x48, 0xC7, 0x44, 0x24, 0x48, 0xFE, 0xFF,
+    0xFF, 0xFF};
 
-inline constexpr std::array<Signature, 16> kSignatures{{
+inline constexpr std::array<Signature, 18> kSignatures{{
     {"luaB_print", 0x00074F70, kLuaPrint.data(), kLuaPrint.size()},
     {"lua_setfield", 0x000721A0, kLuaSetField.data(), kLuaSetField.size()},
     {"SetupCommandInterface", 0x00D042E0, kSetupCommandInterface.data(), kSetupCommandInterface.size()},
@@ -251,6 +304,10 @@ inline constexpr std::array<Signature, 16> kSignatures{{
     {"ApplyCommand", 0x009DA290, kApplyCommand.data(), kApplyCommand.size()},
     {"BuildProposalVisitor", 0x009D6440, kBuildProposalVisitorThunk.data(),
      kBuildProposalVisitorThunk.size()},
+    {"make_cmd::BuildProposal", kMakeBuildProposalRva, kMakeBuildProposal.data(),
+     kMakeBuildProposal.size()},
+    {"CommandList::Add", kCommandListAddRva, kCommandListAdd.data(),
+     kCommandListAdd.size()},
 }};
 
 inline constexpr Signature kLuaToLStringSignature{

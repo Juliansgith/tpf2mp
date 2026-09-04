@@ -443,6 +443,13 @@ function M.new(cfg, versions)
         lastError = nil,
       },
       structural = nil,
+      nativeFingerprint = nil,
+      nativeFingerprintScheduler = {
+        nextTick = cfg.nativeFingerprintTicks or 1800,
+        submitted = 0,
+        deferred = 0,
+        lastError = nil,
+      },
       worldManifest = nil,
       ownership = nil,
       lastResearch = nil,
@@ -792,6 +799,12 @@ function M.migrate(saved, context)
   saved.probes.nativeHook = saved.probes.nativeHook or { available = false }
   saved.probes.worldManifest = saved.probes.worldManifest or nil
   saved.probes.mobilityHistory = saved.probes.mobilityHistory or {}
+  saved.probes.nativeFingerprintScheduler = saved.probes.nativeFingerprintScheduler or {
+    nextTick = cfg.nativeFingerprintTicks or 1800,
+    submitted = 0,
+    deferred = 0,
+    lastError = nil,
+  }
   saved.probes.vehicleSync = saved.probes.vehicleSync or util.deepCopy(defaults.probes.vehicleSync)
   for key, value in pairs(defaults.probes.vehicleSync) do
     if saved.probes.vehicleSync[key] == nil then

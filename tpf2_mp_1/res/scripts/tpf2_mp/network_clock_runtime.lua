@@ -4,6 +4,7 @@ local heartbeatModule = require "tpf2_mp/network_clock_heartbeat"
 local world = require "tpf2_mp/world"
 local operationClockHoldModule = require "tpf2_mp/network_operation_clock_hold"
 local manualBootstrapModule = require "tpf2_mp/network_manual_bootstrap_runtime"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 local M = {}
 function M.new(deps)
   assert(type(deps) == "table", "network clock runtime dependencies are required")
@@ -22,13 +23,7 @@ function M.new(deps)
   local commandFactory = deps.commandFactory or util.commandFactory
   local sendCommand = deps.sendCommand or util.sendCommand
   local authorizeCommand = deps.authorizeCommand or function(tag)
-    local authorize = rawget(_G, "tpf2mp_native_authorize_command")
-    if type(authorize) ~= "function" then
-      return false, "native command authorization is unavailable"
-    end
-    local called, accepted, err = pcall(authorize, tostring(tag))
-    if not called or accepted == false then return false, tostring(err or accepted) end
-    return true
+    return nativeCommandAuthority.authorize(tag, true)
   end
   local emit = deps.emit or function(kind, payload, tick)
     return bridge.emit(getState().bridge, kind, payload, tick)

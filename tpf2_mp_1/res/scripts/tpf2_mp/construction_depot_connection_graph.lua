@@ -109,6 +109,9 @@ function M.build(record, codec)
   local physicalSlotByOriginal, reindexError = reindexRetainedNodes(nodes)
   if not physicalSlotByOriginal then return nil, nil, reindexError end
   local delta = vector(repair.helperExternalPosition, repair.helperInternalPosition, -1)
+  local sourceInternal = finitePosition(repair.sourceInternalPosition)
+    and repair.sourceInternalPosition or repair.helperInternalPosition
+  local sourceCorrection = vector(sourceInternal, repair.helperInternalPosition, -1)
   local edges, shifted = {}, 0
   for _, source in ipairs(transaction.edges or {}) do
     local edge = util.deepCopy(source)
@@ -117,13 +120,13 @@ function M.build(record, codec)
     if first and second then return nil, nil, "depot connection edge loops through its internal node" end
     if first then
       edge.node0 = { cid = EXTERNAL_CID }
-      edge.tangent0 = vector(source.tangent0, delta, -1)
-      edge.tangent1 = vector(source.tangent1, delta, -1)
+      edge.tangent0 = vector(vector(source.tangent0, delta, -1), sourceCorrection, 1)
+      edge.tangent1 = vector(vector(source.tangent1, delta, -1), sourceCorrection, 1)
       shifted = shifted + 1
     elseif second then
       edge.node1 = { cid = EXTERNAL_CID }
-      edge.tangent0 = vector(source.tangent0, delta, 1)
-      edge.tangent1 = vector(source.tangent1, delta, 1)
+      edge.tangent0 = vector(vector(source.tangent0, delta, 1), sourceCorrection, -1)
+      edge.tangent1 = vector(vector(source.tangent1, delta, 1), sourceCorrection, -1)
       shifted = shifted + 1
     end
     local firstOk, firstError = remapNodeReference(edge.node0, physicalSlotByOriginal)

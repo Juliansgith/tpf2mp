@@ -5,7 +5,10 @@ if not constructionMaterializerOk then
   constructionProposalMaterializer = require "tpf2_mp_probe/construction_proposal_materializer"
 end
 local hash = require "tpf2_mp/hash"
+local createdMatcher = require "tpf2_mp/proposal_created_matcher"
+local M = require "tpf2_mp/proposal_schema"
 local stationLayout = require "tpf2_mp/proposal_station_layout"
+local stockStationTemplate = require "tpf2_mp/proposal_stock_station_template"
 local util = require "tpf2_mp/util"
 
 -- Canonical, pointer-free BuildProposal vertical slice.  The native proposal
@@ -13,25 +16,15 @@ local util = require "tpf2_mp/util"
 -- may cross the network unchanged.  This module currently supports the
 -- physical core measured on Build 35924: street/track edges and their nodes,
 -- including live-proven topology-preserving upgrades and automated
--- removal-only bulldozer proposals. Schema 5 adds
--- canonical edge objects (signals/waypoints), while schema 7 adds portable
+-- removal-only bulldozer proposals. Schema 5 added canonical edge objects
+-- (signals/waypoints), while schema 7 added portable
 -- construction build/upgrade/remove records, including ASSET_DEFAULT roots
--- that have ASSET_GROUP but no CONSTRUCTION component. Every data-driven resource is
--- addressed by repository name; native entity and repository ids stay local.
-local M = {
-  SCHEMA_VERSION = 5,
-  CONSTRUCTION_SCHEMA_VERSION = 7,
-  MAX_NODES = 256,
-  MAX_EDGES = 256,
-  MAX_EDGE_OBJECTS = 256,
-  MAX_CONSTRUCTION_NODES = 1024,
-  MAX_CONSTRUCTION_EDGES = 1024,
-  MAX_REMOVALS = 512,
-  MAX_CONSTRUCTIONS = 1,
-  MAX_CONSTRUCTION_COLLATERAL = 64,
-  MAX_CONSTRUCTION_PARAM_VALUES = 8192,
-  MAX_CONSTRUCTION_PARAM_DEPTH = 16,
-}
+-- that have ASSET_GROUP but no CONSTRUCTION component. Schemas 6 and 8 retain
+-- the street-specific bus-lane and tram-track selections that are independent
+-- of the street resource itself. Every data-driven resource is addressed by
+-- repository name; native entity and repository ids stay local.
+local constructionSchema = M.isConstructionSchema
+local streetFeaturesSchema = M.hasStreetFeatures
 
 local function safeField(value, key)
   local valueType = type(value)
@@ -603,6 +596,8 @@ local function stockStationModules(params, cargo, head)
   end
   return result
 end
+
+M.stockStationTemplate = stockStationTemplate.new(stockStationModules, stationLayout)
 
 local function matchStockStationModules(moduleEntries, params)
   for _, cargo in ipairs({ false, true }) do
@@ -1329,7 +1324,7 @@ local function contentView(transaction)
     edgeObjects = util.deepCopy(transaction.edgeObjects or { add = {}, retain = {}, remove = {} }),
     remove = util.deepCopy(transaction.remove or {}),
   }
-  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
+  if constructionSchema(transaction.schemaVersion) then
     result.constructions = util.deepCopy(transaction.constructions or {})
   end
   return result
@@ -1438,6 +1433,22 @@ function M.normalise(root, companyCid, options)
         return nil, catenaryError or "track edge has no catenary selection"
       end
       edge.catenary = catenary
+    else
+      local tramTrackType = integer(safeField(carrierComponent, "tramTrackType"))
+      -- Build 35924 names this native BaseEdgeStreet member `hasBus`.
+      -- `bus` is our pointer-free wire spelling and may be present in test or
+      -- already-projected tables, but writing it back to userdata aborts GUI
+      -- replay before sendCommand can produce a callback.
+      local bus = safeField(carrierComponent, "hasBus")
+      if bus == nil then bus = safeField(carrierComponent, "bus") end
+      if tramTrackType == nil then
+        return nil, "street edge has no tram-track selection"
+      end
+      if type(bus) ~= "boolean" then
+        return nil, "street edge has no bus-lane selection"
+      end
+      edge.tramTrackType = tramTrackType
+      edge.bus = bus
     end
     edges[#edges + 1] = edge
   end
@@ -1535,7 +1546,9 @@ end
 function M.validate(transaction)
   if type(transaction) ~= "table" then return false, "proposal transaction must be an object" end
   if transaction.schemaVersion ~= M.SCHEMA_VERSION
-    and transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION then
+    and transaction.schemaVersion ~= M.LEGACY_SCHEMA_VERSION
+    and transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION
+    and transaction.schemaVersion ~= M.LEGACY_CONSTRUCTION_SCHEMA_VERSION then
     return false, "unsupported proposal schemaVersion"
   end
   if type(transaction.companyCid) ~= "string" or not transaction.companyCid:match("^company:%d+$") then
@@ -1544,9 +1557,9 @@ function M.validate(transaction)
   if integer(transaction.cost) == nil or math.abs(transaction.cost) > 1000000000000 then
     return false, "invalid proposal quoted cost"
   end
-  local nodeLimit = transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
+  local nodeLimit = constructionSchema(transaction.schemaVersion)
     and M.MAX_CONSTRUCTION_NODES or M.MAX_NODES
-  local edgeLimit = transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
+  local edgeLimit = constructionSchema(transaction.schemaVersion)
     and M.MAX_CONSTRUCTION_EDGES or M.MAX_EDGES
   if type(transaction.nodes) ~= "table" or #transaction.nodes > nodeLimit
     or not exactList(transaction.nodes, #transaction.nodes) then
@@ -1571,6 +1584,19 @@ function M.validate(transaction)
     end
     edgeSlots[edge.slot] = true
     if edge.carrier ~= "street" and edge.carrier ~= "track" then return false, "invalid edge carrier" end
+    local edgeFields = {
+      "slot", "carrier", "node0", "node1", "tangent0", "tangent1",
+      "type", "typeIndex", "resource", "logicalOwnerCid", "private",
+    }
+    if edge.carrier == "track" then
+      edgeFields[#edgeFields + 1] = "catenary"
+    elseif streetFeaturesSchema(transaction.schemaVersion) then
+      edgeFields[#edgeFields + 1] = "bus"
+      edgeFields[#edgeFields + 1] = "tramTrackType"
+    end
+    if not exactFields(edge, edgeFields) then
+      return false, "proposal edge has unknown or missing fields"
+    end
     local ok, err = validateReference(edge.node0, nodeSlots)
     if not ok then return false, err end
     ok, err = validateReference(edge.node1, nodeSlots)
@@ -1586,6 +1612,16 @@ function M.validate(transaction)
     if edge.logicalOwnerCid ~= transaction.companyCid then return false, "edge logical owner differs from transaction company" end
     if type(edge.private) ~= "boolean" then return false, "edge private flag must be boolean" end
     if edge.carrier == "track" and type(edge.catenary) ~= "boolean" then return false, "track catenary must be boolean" end
+    if streetFeaturesSchema(transaction.schemaVersion) and edge.carrier == "street" then
+      if type(edge.bus) ~= "boolean" then return false, "street bus-lane flag must be boolean" end
+      if integer(edge.tramTrackType) == nil
+        or edge.tramTrackType < M.TRAM_TRACK_NONE
+        or edge.tramTrackType > M.TRAM_TRACK_ELECTRIC then
+        return false, "street tram-track type is outside [0,2]"
+      end
+    elseif edge.bus ~= nil or edge.tramTrackType ~= nil then
+      return false, "legacy proposal cannot carry street feature fields"
+    end
   end
   local edgeObjects = transaction.edgeObjects
   if type(edgeObjects) ~= "table" or not exactFields(edgeObjects, { "add", "retain", "remove" })
@@ -1681,22 +1717,22 @@ function M.validate(transaction)
     end
     previousNodeCid = cid
   end
-  if transaction.schemaVersion == M.SCHEMA_VERSION then
-    if transaction.constructions ~= nil then return false, "schema 5 proposal cannot contain constructions" end
+  if not constructionSchema(transaction.schemaVersion) then
+    if transaction.constructions ~= nil then return false, "non-construction proposal cannot contain constructions" end
     if #transaction.edges == 0 and #remove.edges == 0 and #remove.nodes == 0
       and #edgeObjects.add == 0 and #edgeObjects.remove == 0 then
-      return false, "schema 5 proposal contains no world change"
+      return false, "proposal contains no world change"
     end
   else
     if not exactList(transaction.constructions, 1) then
-      return false, "schema 7 proposal requires one construction change"
+      return false, "construction proposal requires one construction change"
     end
     local construction = transaction.constructions[1]
     if not exactFields(construction, {
       "slot", "mode", "adapter", "kind", "sourceCid", "fileName",
       "transform", "params", "modules", "collateral",
     }) or construction.slot ~= "construction:1" then
-      return false, "invalid schema 7 construction record"
+      return false, "invalid construction record"
     end
     if construction.mode ~= "build" and construction.mode ~= "upgrade" and construction.mode ~= "remove" then
       return false, "invalid construction change mode"
@@ -1841,7 +1877,7 @@ end
 -- native GUI BuildProposal and must never be split into helper calls.
 function M.isTopologyConstructionRemoval(transaction)
   if type(transaction) ~= "table"
-    or transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION then return false end
+    or not constructionSchema(transaction.schemaVersion) then return false end
   local construction = type(transaction.constructions) == "table"
     and transaction.constructions[1] or nil
   if type(construction) ~= "table" or construction.mode ~= "remove" then return false end
@@ -1866,7 +1902,7 @@ end
 -- there need not be a replacement edge or node. Keep this predicate narrow so
 -- replacement proposals may still reuse an input entity id for a new output.
 function M.isRemovalOnly(transaction)
-  if type(transaction) ~= "table" or transaction.schemaVersion ~= M.SCHEMA_VERSION then
+  if type(transaction) ~= "table" or constructionSchema(transaction.schemaVersion) then
     return false
   end
   local objects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
@@ -1895,7 +1931,7 @@ function M.validatePortable(transaction)
       return false, "proposal edge_object:" .. tostring(index) .. " has no stable model filename"
     end
   end
-  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
+  if constructionSchema(transaction.schemaVersion) then
     local construction = transaction.constructions[1]
     -- Build 35924's buildConstruction helper receives only
     -- filename/params/transform, so it cannot reproduce a captured existing
@@ -1960,7 +1996,7 @@ function M.preflightResources(transaction, gameApi)
     if modelIndex == nil then return nil, modelError end
     resolved.edgeObjects[index] = modelIndex
   end
-  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
+  if constructionSchema(transaction.schemaVersion) then
     local construction = transaction.constructions[1]
     if construction.mode ~= "remove" then
       if not (gameApi.res.constructionRep and gameApi.res.constructionRep.find ~= nil) then
@@ -2038,7 +2074,7 @@ function M.materialise(transaction, options)
     and gameApi.type.BaseEdgeTrack and gameApi.res) then
     return nil, "BuildProposal materialisation API is unavailable"
   end
-  local construction = transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION
+  local construction = constructionSchema(transaction.schemaVersion)
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
   local nativeGeneratedTopology = type(construction) == "table" and construction.mode == "build"
   if #transaction.edgeObjects.add > 0 then
@@ -2148,6 +2184,10 @@ function M.materialise(transaction, options)
       value.type = 0
       value.streetEdge = gameApi.type.BaseEdgeStreet.new()
       value.streetEdge.streetType = selectedResource
+      if streetFeaturesSchema(transaction.schemaVersion) then
+        value.streetEdge.hasBus = edge.bus
+        value.streetEdge.tramTrackType = edge.tramTrackType
+      end
     else
       value.type = 1
       value.trackEdge = gameApi.type.BaseEdgeTrack.new()
@@ -2194,7 +2234,7 @@ function M.materialise(transaction, options)
     proposal.streetProposal.edgeObjectsToRemove[index] = localId
   end
   local constructionMaterialisation
-  if transaction.schemaVersion == M.CONSTRUCTION_SCHEMA_VERSION then
+  if constructionSchema(transaction.schemaVersion) then
     local spec, specError = M.materialiseConstruction(transaction, { exactProposal = true })
     if not spec then return nil, specError end
     local applied, applyError = constructionProposalMaterializer.apply(proposal, spec, {
@@ -2292,7 +2332,7 @@ function M.materialiseConstruction(transaction, options)
   options = options or {}
   local valid, validationError = M.validate(transaction)
   if not valid then return nil, validationError end
-  if transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION then
+  if not constructionSchema(transaction.schemaVersion) then
     return nil, "proposal is not a construction transaction"
   end
   local source = transaction.constructions[1]
@@ -2345,139 +2385,13 @@ function M.materialiseConstruction(transaction, options)
   }
 end
 
-local function squaredDistance(a, b)
-  local dx, dy, dz = a.x - b.x, a.y - b.y, a.z - b.z
-  return dx * dx + dy * dy + dz * dz
-end
-
 -- Bind committed output IDs by stable geometry, never by creation order.  The
 -- callback's result entity vector is empty for live-proven street/track builds
 -- on Build 35924, so callers enumerate before/after component sets and pass
 -- their inspected records here.
 function M.matchCreated(transaction, createdNodes, createdEdges, tolerance, resolveNodePosition, resolveLocal)
-  local valid, validationError = M.validate(transaction)
-  if not valid then return nil, validationError end
-  tolerance = finite(tolerance) or 0.35
-  local limit = tolerance * tolerance
-  local result = {
-    nodes = {}, edges = {}, edgeObjects = {},
-    unmatchedNodes = {}, unmatchedEdges = {}, unmatchedEdgeObjects = {},
-  }
-  local usedNodes, usedEdges = {}, {}
-  for _, expected in ipairs(transaction.nodes) do
-    local matches = {}
-    for _, observed in ipairs(createdNodes or {}) do
-      if not usedNodes[observed.localId] and type(observed.position) == "table"
-        and squaredDistance(expected.position, observed.position) <= limit then
-        matches[#matches + 1] = observed
-      end
-    end
-    if #matches ~= 1 then return nil, "node output slot " .. expected.slot .. " did not have one geometric match" end
-    usedNodes[matches[1].localId] = true
-    result.nodes[expected.slot] = matches[1].localId
-  end
-  local expectedNodePositions = {}
-  for _, node in ipairs(transaction.nodes) do expectedNodePositions[node.slot] = node.position end
-  local function expectedPosition(reference)
-    if reference.slot then return expectedNodePositions[reference.slot] end
-    if reference.cid and type(resolveNodePosition) == "function" then
-      local ok, position = pcall(resolveNodePosition, reference.cid)
-      if ok then return position end
-    end
-    return nil
-  end
-  for _, expected in ipairs(transaction.edges) do
-    local expected0 = expectedPosition(expected.node0)
-    local expected1 = expectedPosition(expected.node1)
-    if not expected0 or not expected1 then
-      return nil, "edge output slot " .. expected.slot .. " has an unresolved endpoint position"
-    end
-    local matches = {}
-    for _, observed in ipairs(createdEdges or {}) do
-      if not usedEdges[observed.localId] and observed.carrier == expected.carrier then
-        local resourceMatches = observed.resourceIndex == nil
-          or tonumber(observed.resourceIndex) == tonumber(expected.resource and expected.resource.index)
-        local catenaryMatches = expected.carrier ~= "track" or observed.catenary == nil
-          or observed.catenary == expected.catenary
-        local observed0, observed1 = observed.node0Position, observed.node1Position
-        local direct = expected0 and expected1 and observed0 and observed1
-          and squaredDistance(expected0, observed0) <= limit and squaredDistance(expected1, observed1) <= limit
-        local reversed = expected0 and expected1 and observed0 and observed1
-          and squaredDistance(expected0, observed1) <= limit and squaredDistance(expected1, observed0) <= limit
-        if resourceMatches and catenaryMatches and (direct or reversed) then matches[#matches + 1] = observed end
-      end
-    end
-    if #matches ~= 1 then return nil, "edge output slot " .. expected.slot .. " did not have one geometric match" end
-    usedEdges[matches[1].localId] = true
-    result.edges[expected.slot] = matches[1].localId
-  end
-  for _, observed in ipairs(createdNodes or {}) do
-    if not usedNodes[observed.localId] then result.unmatchedNodes[#result.unmatchedNodes + 1] = observed.localId end
-  end
-  for _, observed in ipairs(createdEdges or {}) do
-    if not usedEdges[observed.localId] then result.unmatchedEdges[#result.unmatchedEdges + 1] = observed.localId end
-  end
-  local usedObjects = {}
-  for _, retained in ipairs(transaction.edgeObjects and transaction.edgeObjects.retain or {}) do
-    local expectedEdgeId = retained.edge.slot and result.edges[retained.edge.slot] or nil
-    if not expectedEdgeId then return nil, "retained edge object has an unresolved edge" end
-    local retainedId
-    if type(resolveLocal) == "function" then
-      local ok, value = pcall(resolveLocal, retained.cid)
-      if ok then retainedId = integer(value) end
-    end
-    if retainedId == nil then
-      return nil, "retained edge object is not mapped locally: " .. tostring(retained.cid)
-    end
-    local found = false
-    for _, candidate in ipairs(createdEdges or {}) do
-      if candidate.localId == expectedEdgeId then
-        for _, object in ipairs(candidate.objects or {}) do
-          if integer(object.localId) == retainedId and integer(object.category) == retained.category then
-            found = true
-            usedObjects[retainedId] = true
-            break
-          end
-        end
-      end
-      if found then break end
-    end
-    if not found then
-      return nil, "retained edge object was not preserved on its replacement edge"
-    end
-  end
-  for _, expected in ipairs(transaction.edgeObjects and transaction.edgeObjects.add or {}) do
-    local expectedEdgeId = expected.edge.slot and result.edges[expected.edge.slot] or nil
-    if not expectedEdgeId then
-      return nil, "edge-object output slot " .. expected.slot .. " has an unresolved edge"
-    end
-    local observedEdge
-    for _, candidate in ipairs(createdEdges or {}) do
-      if candidate.localId == expectedEdgeId then observedEdge = candidate; break end
-    end
-    local matches = {}
-    for _, object in ipairs(observedEdge and observedEdge.objects or {}) do
-      if not usedObjects[object.localId] and integer(object.category) == expected.category then
-        matches[#matches + 1] = object
-      end
-    end
-    if #matches ~= 1 then
-      return nil, "edge-object output slot " .. expected.slot .. " did not have one edge/category match"
-    end
-    usedObjects[matches[1].localId] = true
-    result.edgeObjects[expected.slot] = matches[1].localId
-  end
-  for _, observed in ipairs(createdEdges or {}) do
-    for _, object in ipairs(observed.objects or {}) do
-      if not usedObjects[object.localId] then
-        result.unmatchedEdgeObjects[#result.unmatchedEdgeObjects + 1] = object.localId
-      end
-    end
-  end
-  table.sort(result.unmatchedNodes)
-  table.sort(result.unmatchedEdges)
-  table.sort(result.unmatchedEdgeObjects)
-  return result
+  return createdMatcher.match(transaction, createdNodes, createdEdges, tolerance,
+    resolveNodePosition, resolveLocal, M.validate)
 end
 
 return M

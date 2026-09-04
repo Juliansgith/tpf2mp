@@ -164,6 +164,7 @@ function M.new(env)
       or actionType == "economy.seed_demo" or actionType == "economy.settle"
       or actionType == "match.finish" or actionType == "probe.mobility"
       or actionType == "probe.structural"
+      or actionType == "probe.native_fingerprint"
       or actionType == "recovery.resume" or actionType == "recovery.continue"
       or actionType == "town.develop"
       or actionType == "vehicle.sync_release"
@@ -222,6 +223,8 @@ function M.new(env)
     local firstRetainedSeq = #items > 0 and items[1].seq or nextEventSeq
     local lastEventSeq = nextEventSeq - 1
     local structuralDigest = currentState().probes.structural and currentState().probes.structural.digest or nil
+    local nativeFingerprint = type(env.nativeFingerprint) == "function"
+      and env.nativeFingerprint() or nil
     -- Keep a compact decomposition beside the aggregate probe.  It is not
     -- convergence material; it lets a failed cross-peer comparison identify
     -- whether topology, vehicles, towns, or a native aggregate was unstable
@@ -277,6 +280,8 @@ function M.new(env)
       financialDigest = hash.value(financial),
       structuralDigest = structuralDigest,
       structuralParts = structuralParts,
+      nativeFingerprint = nativeFingerprint,
+      nativeFingerprintDigest = nativeFingerprint and nativeFingerprint.digest or nil,
       worldManifestDigest = worldManifestDigest,
       eventCursor = eventCursor,
     }
@@ -293,6 +298,9 @@ function M.new(env)
       financialDigest = payload.financialDigest,
     }
     if structuralDigest then convergenceView.structuralDigest = structuralDigest end
+    if nativeFingerprint and nativeFingerprint.digest then
+      convergenceView.nativeFingerprintDigest = nativeFingerprint.digest
+    end
     if worldManifestDigest then convergenceView.worldManifestDigest = worldManifestDigest end
     payload.convergenceKey = hash.value(convergenceView)
     payload.checkpointDigest = hash.value(payload)

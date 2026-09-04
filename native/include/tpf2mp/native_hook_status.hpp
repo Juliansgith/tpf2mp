@@ -2,6 +2,7 @@
 
 #include "tpf2mp/native_command_codec.hpp"
 #include "tpf2mp/native_common.hpp"
+#include "tpf2mp/native_build_capture.hpp"
 
 #include <Windows.h>
 
@@ -56,6 +57,8 @@ struct HookFlags {
   bool command_list_swap_created{};
   bool apply_command_created{};
   bool build_proposal_visitor_created{};
+  bool make_build_proposal_created{};
+  bool command_list_add_created{};
   std::uint64_t authority_command_visitors_created{};
   bool enabled{};
 };
@@ -113,6 +116,7 @@ struct HookStatusView {
   std::uint64_t suppressed_build_last_generation{};
   std::uint64_t suppressed_build_armed_correlation{};
   std::uint64_t suppressed_build_last_correlation{};
+  const native_build::BuildCaptureStats& build_factory_capture;
 
   bool command_gate_enabled{};
   std::uint64_t command_gate_tag_mismatches{};

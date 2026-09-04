@@ -36,8 +36,13 @@ function M.sample(pending, frame, deps)
     local afterWorld, captureError = deps.captureWorld(
       deps.componentTypes(), pending.issuerPlayerId, pending.nativeOwnerPlayerId, true)
     if not afterWorld then return nil, tostring(captureError) end
-    constructionDelta = constructionDeltaAttestation.encode(
-      constructionDeltaAttestation.fromWorlds(pending.beforeWorld, afterWorld))
+    local delta = constructionDeltaAttestation.fromWorlds(
+      pending.beforeWorld, afterWorld)
+    constructionDeltaAttestation.captureIdentities(delta, function(kind, id)
+      if type(deps.captureOutputIdentity) ~= "function" then return nil end
+      return deps.captureOutputIdentity(kind, id, pending.companyCid)
+    end)
+    constructionDelta = constructionDeltaAttestation.encode(delta)
   end
   return {
     proposalId = pending.proposalId, success = true,

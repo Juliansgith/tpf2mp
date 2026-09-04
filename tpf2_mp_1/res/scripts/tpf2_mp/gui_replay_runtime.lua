@@ -6,11 +6,14 @@ local replayQuarantine = require "tpf2_mp/gui_replay_quarantine"
 local proposalRejectionSnapshot = require "tpf2_mp/gui_proposal_rejection_snapshot"
 local replayWorkIndex = require "tpf2_mp/gui_replay_work_index"
 local proposalResultCapture = require "tpf2_mp/gui_proposal_result_capture"
+local proposalCaptureQueue = require "tpf2_mp/gui_proposal_capture_queue"
 local originOperationRecovery = require "tpf2_mp/gui_origin_operation_recovery"
 local lineSelection = require "tpf2_mp/gui_line_selection"
 local buildCommandFactory = require "tpf2_mp/gui_build_command_factory"
 local derivedStation = require "tpf2_mp/proposal_derived_station_runtime"
 local constructionReplay = require "tpf2_mp/gui_construction_replay"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
+local depotRepairDiagnostic = require "tpf2_mp/gui_depot_repair_diagnostic"
 
 local M = {}
 
@@ -183,29 +186,21 @@ function M.new(deps)
   end
 
   local function processPendingProposalCaptures()
-    for index = #gui.pendingProposalCaptures, 1, -1 do
-      local pending = gui.pendingProposalCaptures[index]
-      local payload, captureError = proposalResultCapture.sample(pending, gui.frames, {
+    local payload = proposalCaptureQueue.takeSettled(
+      gui.pendingProposalCaptures, gui.frames, {
         balanceOf = balanceOf, captureWorld = proposalWorld.capture,
         componentTypes = function() return api.type and api.type.ComponentType or {} end,
+        world = world,
       })
-      if captureError then
-        payload = { proposalId = pending.proposalId, success = false,
-          error = captureError, worldUnchanged = false }
-      end
-      if payload then
-        queueGuiProposalResult(payload)
-        table.remove(gui.pendingProposalCaptures, index)
-        return true
-      end
-    end
-    return false
+    if not payload then return false end
+    queueGuiProposalResult(payload)
+    return true
   end
   
   local function guiOwnsProposal(record)
     local transaction = type(record) == "table" and record.transaction or nil
     if type(transaction) ~= "table"
-      or transaction.schemaVersion ~= proposalCodec.CONSTRUCTION_SCHEMA_VERSION then return true end
+      or not proposalCodec.isConstructionSchema(transaction.schemaVersion) then return true end
     return constructionReplay.owns(record)
       or proposalCodec.isTopologyConstructionRemoval(transaction)
   end
@@ -243,16 +238,27 @@ function M.new(deps)
         end
         local issuerBalanceBefore = balanceOf(issuerPlayerId)
         local nativeOwnerBalanceBefore = balanceOf(nativePlayerId)
-        local proposal, replayMaterialisation = constructionReplay.materialise(
-          record, localRefs, nativePlayerId, api)
+        -- Native proposal objects are typed userdata.  A field-name or ABI
+        -- mismatch in a future game build must become a clean, unchanged-world
+        -- rejection; otherwise the proposal stays queued forever and both
+        -- peers wait for a callback that can never arrive.
+        local materialiseOk, proposal, replayMaterialisation = pcall(
+          constructionReplay.materialise, record, localRefs, nativePlayerId, api)
+        if not materialiseOk then
+          rejectGuiProposal(proposalId,
+            "proposal materialisation failed: " .. tostring(proposal), true)
+          return true
+        end
         if not proposal then
           constructionReplay.rejectOrFallback(record, proposalId, replayMaterialisation,
             queueGuiProposalResult, rejectGuiProposal)
           return true
         end
-        local proposalTransaction = replayMaterialisation.transaction
-        local materialisation = replayMaterialisation.materialisation
+        local proposalTransaction, materialisation, replayLocalRefs = replayMaterialisation.transaction,
+          replayMaterialisation.materialisation, replayMaterialisation.localRefs or localRefs
         local helperConnection = constructionReplay.isHelperConnection(record)
+        if helperConnection then depotRepairDiagnostic.emit(
+          deps.diagnosticLog, proposalId, replayMaterialisation.repairGeometry) end
         local factory = util.commandFactory("buildProposal")
         if not (factory and api and api.cmd and type(api.cmd.sendCommand) == "function") then
           rejectGuiProposal(proposalId, "GUI BuildProposal API is unavailable", true)
@@ -264,7 +270,7 @@ function M.new(deps)
           or derivedStation.requiresCapture(proposalTransaction, state.canonical)
         local beforeWorld, worldCaptureError = proposalWorld.capture(
           types, issuerPlayerId, nativePlayerId, captureEntityDelta,
-          proposalTransaction, localRefs, { omitConstructionCollateral =
+          proposalTransaction, replayLocalRefs, { omitConstructionCollateral =
             record.replayPath == "staged-gui-build-proposal" })
         if not beforeWorld then
           rejectGuiProposal(proposalId, worldCaptureError, true)
@@ -274,7 +280,7 @@ function M.new(deps)
         local beforeNodes = beforeWorld.sets.nodes
         local commandOrError, commandError = buildCommandFactory.make(
           factory, proposal, proposalTransaction, materialisation, safeField)
-        if not commandOrError then rejectGuiProposal(proposalId, commandError, true); return true end
+        if not commandOrError then constructionReplay.rejectOrFallback(record, proposalId, commandError, queueGuiProposalResult, rejectGuiProposal); return true end
         if state.networkMode == "network" then
           local authorize = rawget(_G, "tpf2mp_native_authorize_build")
           if type(authorize) ~= "function" then
@@ -317,6 +323,7 @@ function M.new(deps)
               lastNativeOwnerBalance = balanceOf(nativePlayerId),
               stableFrames = 0,
               beforeWorld = beforeWorld,
+              companyCid = record.transaction.companyCid,
               exactConstruction = exactConstruction,
               captureEntityDelta = captureEntityDelta,
               repairExpectedNodes = replayMaterialisation.expectedNodes,
@@ -351,8 +358,7 @@ function M.new(deps)
   end
 
   local function revokeNativeCommandAuthorization(tag)
-    local revoke = rawget(_G, "tpf2mp_native_revoke_command")
-    if type(revoke) == "function" then pcall(revoke, tostring(tag)) end
+    nativeCommandAuthority.revoke(tag, true)
   end
   
   local function operationResultEntity(command, outputKind, beforeSet)
@@ -505,14 +511,9 @@ function M.new(deps)
             local commandOk, commandOrError = gui.invokeOperationFactory(spec.factory, args or {})
             if not commandOk then failBatch(commandOrError); return end
             if state.networkMode == "network" then
-              local authorize = rawget(_G, "tpf2mp_native_authorize_command")
-              if type(authorize) ~= "function" then
-                failBatch("network operation requires GUI-state native command authorization")
-                return
-              end
-              local called, authorized, authorizeError = pcall(authorize, tostring(spec.tag))
-              if not called or authorized == false then
-                failBatch(authorizeError or authorized)
+              local authorized, authorizeError = nativeCommandAuthority.authorize(spec.tag, true)
+              if not authorized then
+                failBatch(authorizeError)
                 return
               end
             end
@@ -569,19 +570,11 @@ function M.new(deps)
           return true
         end
         if state.networkMode == "network" then
-          local authorize = rawget(_G, "tpf2mp_native_authorize_command")
-          if type(authorize) ~= "function" then
+          local authorized, authorizeError = nativeCommandAuthority.authorize(spec.tag, true)
+          if not authorized then
             queueGuiOperationResult({
               operationId = operationId, success = false,
-              error = "network operation requires GUI-state native command authorization",
-            })
-            return true
-          end
-          local called, authorized, authorizeError = pcall(authorize, tostring(spec.tag))
-          if not called or authorized == false then
-            queueGuiOperationResult({
-              operationId = operationId, success = false,
-              error = tostring(authorizeError or authorized),
+              error = tostring(authorizeError),
             })
             return true
           end

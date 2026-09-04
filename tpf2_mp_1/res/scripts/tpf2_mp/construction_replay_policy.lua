@@ -7,7 +7,7 @@ local function exactBuildShape(record, codec)
   local construction = type(transaction) == "table"
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
   return type(transaction) == "table"
-    and transaction.schemaVersion == codec.CONSTRUCTION_SCHEMA_VERSION
+    and codec.isConstructionSchema(transaction.schemaVersion)
     and type(construction) == "table" and construction.mode == "build"
     -- Every fresh depot root stays on the Build 35924 context-helper-safe
     -- engine helper. Connected street depots receive a later topology-only

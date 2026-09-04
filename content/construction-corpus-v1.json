@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "buildProfile": "Transport Fever 2 Build 35924 (Windows x64)",
+  "description": "Fail-closed construction compatibility corpus. Static matrices prove portable capture/codec coverage; localhost slices prove ordered two-world replay and postconditions.",
+  "requiredCoverage": [
+    "long-track",
+    "curved-track",
+    "long-road",
+    "curved-road",
+    "slopes",
+    "bridges",
+    "tunnels",
+    "crossings",
+    "terrain-deformation",
+    "building-demolition",
+    "rail-station-all-menu-variants",
+    "street-station-all-menu-variants",
+    "air-station-all-menu-variants",
+    "water-station-all-menu-variants",
+    "depots",
+    "station-upgrades",
+    "station-modules",
+    "signals",
+    "waypoints",
+    "official-legacy-content",
+    "workshop-extension-contract"
+  ],
+  "physicalPostconditions": [
+    "both-worlds-equal",
+    "ownership-equal",
+    "finance-delta-equal",
+    "canonical-checkpoint-converged",
+    "native-fingerprint-converged"
+  ],
+  "matrices": [
+    {
+      "id": "stock-rail-station-menu",
+      "executor": "tests/run_construction_corpus_tests.lua",
+      "dimensions": {
+        "service": ["passenger", "cargo"],
+        "layout": ["through", "terminus"],
+        "lengthIndex": [0, 1, 2, 3, 4],
+        "trackCount": [1, 2, 3, 4, 5, 6, 7, 8],
+        "trackType": ["standard", "high-speed"],
+        "catenary": [false, true],
+        "orientationDegrees": [0, 90, 180, 270]
+      },
+      "expectedCases": 2560
+    },
+    {
+      "id": "stock-street-terminal-menu",
+      "executor": "tests/run_lua_tests.lua",
+      "dimensions": {
+        "templateIndex": [0, 1, 2, 3, 4, 5],
+        "platformLayout": [0, 1, 2, 3],
+        "lengthIndex": [0, 1, 2],
+        "tramTrack": [0, 1, 2]
+      },
+      "expectedCases": 216
+    },
+    {
+      "id": "stock-airport-menu",
+      "executor": "tests/run_lua_tests.lua",
+      "expectedCases": 60
+    },
+    {
+      "id": "stock-harbor-menu",
+      "executor": "tests/run_lua_tests.lua",
+      "expectedCases": 12
+    }
+  ],
+  "cases": [
+    {
+      "id": "generic-network-geometry",
+      "tier": "static",
+      "executor": {"kind": "lua", "path": "tests/run_construction_corpus_tests.lua"},
+      "coverage": ["long-track", "curved-track", "long-road", "curved-road", "slopes", "bridges", "tunnels"]
+    },
+    {
+      "id": "stock-resource-inventory",
+      "tier": "static",
+      "executor": {"kind": "lua", "path": "tests/run_lua_tests.lua"},
+      "coverage": ["bridges", "tunnels", "crossings", "depots", "station-upgrades", "station-modules"]
+    },
+    {
+      "id": "stock-station-matrices",
+      "tier": "static",
+      "executor": {"kind": "lua", "path": "tests/run_lua_tests.lua"},
+      "coverage": ["rail-station-all-menu-variants", "street-station-all-menu-variants", "air-station-all-menu-variants", "water-station-all-menu-variants"]
+    },
+    {
+      "id": "edge-object-codec",
+      "tier": "static",
+      "executor": {"kind": "lua", "path": "tests/run_lua_tests.lua"},
+      "coverage": ["signals", "waypoints"]
+    },
+    {
+      "id": "two-origin-core",
+      "tier": "localhost",
+      "executor": {"kind": "localhost-slice", "slice": "full"},
+      "coverage": ["long-track", "slopes", "crossings", "rail-station-all-menu-variants"],
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "connected-street-terminal",
+      "tier": "localhost",
+      "executor": {"kind": "localhost-slice", "slice": "connected-terminal"},
+      "coverage": ["terrain-deformation", "building-demolition", "street-station-all-menu-variants"],
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "connected-road-depot",
+      "tier": "localhost",
+      "executor": {"kind": "localhost-slice", "slice": "connected-road-depot"},
+      "coverage": ["depots", "terrain-deformation"],
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "connected-tram-depot",
+      "tier": "localhost",
+      "executor": {"kind": "localhost-slice", "slice": "connected-tram-depot"},
+      "coverage": ["depots", "station-modules"],
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "sequential-city-stations",
+      "tier": "localhost",
+      "executor": {"kind": "localhost-slice", "slice": "second-station"},
+      "coverage": ["building-demolition", "rail-station-all-menu-variants"],
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "air-lifecycle",
+      "tier": "localhost",
+      "executor": {"kind": "localhost-slice", "slice": "air-route"},
+      "coverage": ["air-station-all-menu-variants", "depots"],
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "tram-lifecycle",
+      "tier": "localhost",
+      "executor": {"kind": "localhost-slice", "slice": "tram-route"},
+      "coverage": ["street-station-all-menu-variants", "depots", "station-modules"],
+      "proofScope": "two terminals, connected electric tram route and stock depot, two curb stops, line creation, Typ1 purchase, and line assignment across two live game processes",
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "legacy-vehicle-content-overlay",
+      "tier": "localhost-optional",
+      "executor": {"kind": "localhost-slice", "slice": "full", "activeMods": ["urbangames_legacy_vehicle_pack_1"]},
+      "coverage": ["official-legacy-content"],
+      "postconditions": ["both-worlds-equal", "ownership-equal", "finance-delta-equal", "canonical-checkpoint-converged", "native-fingerprint-converged"]
+    },
+    {
+      "id": "workshop-construction-extension",
+      "tier": "external-optional",
+      "executor": {"kind": "extension-manifest"},
+      "coverage": ["workshop-extension-contract"]
+    }
+  ]
+}

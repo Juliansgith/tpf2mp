@@ -77,6 +77,7 @@ from tpf2mp.protocol import (
     FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION,
     MAX_PROPOSAL_OUTPUTS,
     OPERATION_SCHEMA_VERSION,
+    PROPOSAL_SCHEMA_VERSION,
     ProtocolError,
     canonical_json,
     checksum,
@@ -161,7 +162,7 @@ def available_port() -> int:
 
 def proposal_transaction(company: str = "company:2") -> dict:
     content = {
-        "schemaVersion": 5,
+        "schemaVersion": PROPOSAL_SCHEMA_VERSION,
         "companyCid": company,
         "cost": 25_000,
         "nodes": [
@@ -546,6 +547,7 @@ def consensus_checkpoint(
     *,
     autonomy_frozen: bool = False,
     financial_delta: int = 0,
+    native_category_overrides: dict[str, str] | None = None,
 ) -> dict:
     payload = CheckpointTests.checkpoint_payload()
     # Network consensus accepts only the current format.  The standalone
@@ -578,8 +580,7 @@ def consensus_checkpoint(
     payload["financial"]["companies"]["company:2"]["balance"] += financial_delta
     payload["financialDigest"] = checksum(payload["financial"])
     payload["eventCursor"]["lastCommitSeq"] = boundary_seq
-    payload["convergenceKey"] = checksum(
-        {
+    convergence = {
             "checkpointVersion": payload["checkpointVersion"],
             "stateVersion": payload["stateVersion"],
             "protocol": payload["protocol"],
@@ -590,8 +591,27 @@ def consensus_checkpoint(
             "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
             "coreDigest": payload["coreDigest"],
             "financialDigest": payload["financialDigest"],
+    }
+    if native_category_overrides is not None:
+        categories = {
+            "edges": "11111111", "constructions": "22222222",
+            "vehicles": "33333333", "autonomous": "44444444",
+            "other": "55555555",
         }
-    )
+        categories.update(native_category_overrides)
+        native = {
+            "schemaVersion": 1,
+            "categories": categories,
+            "counts": {
+                "edges": 2, "constructions": 1, "vehicles": 1,
+                "autonomous": 4, "other": 0,
+            },
+        }
+        native["digest"] = checksum(native)
+        payload["nativeFingerprint"] = native
+        payload["nativeFingerprintDigest"] = native["digest"]
+        convergence["nativeFingerprintDigest"] = native["digest"]
+    payload["convergenceKey"] = checksum(convergence)
     payload.pop("checkpointDigest", None)
     payload["checkpointDigest"] = checksum(payload)
     return {
@@ -916,7 +936,11 @@ class ProtocolTests(unittest.TestCase):
     def test_native_samples_are_host_ordered_and_have_no_client_payload(self) -> None:
         self.assertEqual(validate_action({"type": "probe.mobility"}), {"type": "probe.mobility"})
         self.assertEqual(validate_action({"type": "probe.structural"}), {"type": "probe.structural"})
-        for action_type in ("probe.mobility", "probe.structural"):
+        self.assertEqual(
+            validate_action({"type": "probe.native_fingerprint"}),
+            {"type": "probe.native_fingerprint"},
+        )
+        for action_type in ("probe.mobility", "probe.structural", "probe.native_fingerprint"):
             with self.assertRaises(ProtocolError):
                 validate_action({"type": action_type, "sampleKey": "forged"})
 
@@ -1236,6 +1260,8 @@ class ProtocolTests(unittest.TestCase):
             "carrier": "street",
             "resource": {"index": 1, "name": "standard/town_small.lua"},
             "private": False,
+            "bus": False,
+            "tramTrackType": 0,
         })
         snapped_street_edge.pop("catenary")
         snapped_street_edge["node1"] = {"cid": "node:pre:road-depot-approach"}
@@ -1527,6 +1553,8 @@ class ProtocolTests(unittest.TestCase):
                                             },
                                             "logicalOwnerCid": "company:1",
                                             "private": False,
+                                            "bus": False,
+                                            "tramTrackType": 0,
                                         }
                                         for index in range(1, 384)
                                     ]
@@ -3155,7 +3183,7 @@ class CheckpointTests(unittest.TestCase):
         core["canonical"] = payload["canonical"]
         core["vehicleSynchronization"] = payload["vehicleSynchronization"]
         payload["coreDigest"] = checksum(core)
-        payload["convergenceKey"] = checksum({
+        convergence = {
             "checkpointVersion": payload["checkpointVersion"],
             "stateVersion": payload["stateVersion"],
             "protocol": payload["protocol"],
@@ -3166,10 +3194,74 @@ class CheckpointTests(unittest.TestCase):
             "vehicleSynchronizationDigest": payload["vehicleSynchronizationDigest"],
             "coreDigest": payload["coreDigest"],
             "financialDigest": payload["financialDigest"],
-        })
+        }
+        for field in ("structuralDigest", "worldManifestDigest", "nativeFingerprintDigest"):
+            if field in payload:
+                convergence[field] = payload[field]
+        payload["convergenceKey"] = checksum(convergence)
         payload.pop("checkpointDigest", None)
         payload["checkpointDigest"] = checksum(payload)
         return payload
+
+    def test_checkpoint_binds_category_native_fingerprint(self) -> None:
+        payload = self.checkpoint_payload()
+        native = {
+            "schemaVersion": 2,
+            "categories": {
+                "edges": "11111111", "constructions": "22222222",
+                "vehicles": "33333333", "autonomous": "44444444",
+                "other": "55555555",
+            },
+            "counts": {
+                "edges": 2, "constructions": 1, "vehicles": 0,
+                "autonomous": 5, "other": 0,
+            },
+            "inventoryComplete": True,
+            "inventory": {
+                "counts": {
+                    "edges": {"node": 4, "edge": 2, "edge_object": 1},
+                    "constructions": {
+                        "construction": 1, "asset": 1, "station": 1,
+                        "station_group": 1, "depot": 0,
+                    },
+                    "vehicles": {"line": 1, "vehicle": 1},
+                },
+                "geometry": {"node": "66666666", "edge": "77777777"},
+            },
+        }
+        native["digest"] = checksum(native)
+        payload["nativeFingerprint"] = native
+        payload["nativeFingerprintDigest"] = native["digest"]
+        self.resign_checkpoint(payload)
+        self.assertEqual(
+            verify_checkpoint(payload)["nativeFingerprintDigest"], native["digest"]
+        )
+        payload["nativeFingerprint"]["categories"]["edges"] = "aaaaaaaa"
+        self.resign_checkpoint(payload)
+        with self.assertRaisesRegex(ProtocolError, "native fingerprint digest mismatch"):
+            verify_checkpoint(payload)
+
+        payload = self.checkpoint_payload()
+        cheap = {
+            "schemaVersion": 2,
+            "categories": native["categories"],
+            "counts": native["counts"],
+            "inventoryComplete": False,
+        }
+        cheap["digest"] = checksum(cheap)
+        payload["nativeFingerprint"] = cheap
+        payload["nativeFingerprintDigest"] = cheap["digest"]
+        self.resign_checkpoint(payload)
+        self.assertEqual(verify_checkpoint(payload)["nativeFingerprint"], cheap)
+        payload["nativeFingerprint"]["inventoryComplete"] = True
+        payload["nativeFingerprint"]["digest"] = checksum({
+            key: value for key, value in payload["nativeFingerprint"].items()
+            if key != "digest"
+        })
+        payload["nativeFingerprintDigest"] = payload["nativeFingerprint"]["digest"]
+        self.resign_checkpoint(payload)
+        with self.assertRaisesRegex(ProtocolError, "inventory state is invalid"):
+            verify_checkpoint(payload)
 
     @classmethod
     def populated_passenger_checkpoint(cls) -> dict:
@@ -9770,6 +9862,30 @@ class NetworkIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(tracker["status"], "faulted")
             self.assertEqual(host.session_fault, "checkpoint-convergence-key-mismatch")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "native-fingerprint-divergence"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, root / "audit.ndjson",
+                require_connected_peers=False,
+            )
+            tracker = host._track_checkpoint_boundary(9, "native-fingerprint-probe")
+            host.next_seq = 10
+            host._record_non_intent(consensus_checkpoint(
+                session, "player1", 1, 9, "native-fingerprint-probe",
+                native_category_overrides={},
+            ))
+            host._record_non_intent(consensus_checkpoint(
+                session, "player2", 1, 9, "native-fingerprint-probe",
+                native_category_overrides={"edges": "aaaaaaaa", "vehicles": "bbbbbbbb"},
+            ))
+            self.assertEqual(tracker["status"], "faulted")
+            self.assertEqual(
+                host.session_fault,
+                "native-fingerprint-diverged:edges,vehicles",
+            )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

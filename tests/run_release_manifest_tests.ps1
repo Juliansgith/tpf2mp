@@ -86,7 +86,7 @@ $baseline = [pscustomobject][ordered]@{
     supportedNativeBuild = [pscustomobject][ordered]@{
         game = 'Transport Fever 2 Build 35924 (Windows x64)'
         executableSha256 = '782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c'
-        hookVersion = '0.19.0'
+        hookVersion = '0.20.0'
     }
     files = $records
 }

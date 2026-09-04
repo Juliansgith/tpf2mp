@@ -11,6 +11,14 @@ from .aboard_milestone_protocol import AboardMilestoneError, validate as validat
 from .freight_action_protocol import validate_delivery_rows, validate_registration
 from .fault_recovery_protocol import validation_error as fault_recovery_validation_error
 from .line_registration_protocol import validate_metadata as validate_line_metadata
+from .proposal_schema import (
+    CONSTRUCTION_PROPOSAL_SCHEMA_VERSION, LEGACY_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
+    LEGACY_PROPOSAL_SCHEMA_VERSION, MAX_CONSTRUCTION_COLLATERAL, MAX_CONSTRUCTION_PROPOSAL_EDGES,
+    MAX_CONSTRUCTION_PROPOSAL_NODES, MAX_PROPOSAL_EDGE_OBJECTS, MAX_PROPOSAL_EDGES,
+    MAX_PROPOSAL_NODES, MAX_PROPOSAL_OUTPUTS, MAX_PROPOSAL_REMOVALS, MAX_STATION_MODULES,
+    PROPOSAL_SCHEMA_VERSION, construction_proposal_schema as _construction_proposal_schema,
+    SUPPORTED_PROPOSAL_SCHEMA_VERSIONS, street_feature_error as _street_feature_error, street_features_schema as _street_features_schema,
+)
 from .recovery_receipt_protocol import validation_error as receipt_validation_error
 from .vehicle_phase_proof import VehiclePhaseProofError, normalise as normalise_vehicle_phase_proof
 
@@ -28,6 +36,7 @@ NETWORK_ACTIONS = {
     "probe.run",
     "probe.mobility",
     "probe.structural",
+    "probe.native_fingerprint",
     "finance.toggle_neutralizer",
     "clock.request",
     "clock.set",
@@ -51,24 +60,6 @@ NETWORK_ACTIONS = {
     "operation.execute",
 }
 
-PROPOSAL_SCHEMA_VERSION = 5
-CONSTRUCTION_PROPOSAL_SCHEMA_VERSION = 7
-MAX_PROPOSAL_NODES = 256
-MAX_PROPOSAL_EDGES = 256
-MAX_PROPOSAL_EDGE_OBJECTS = 256
-MAX_CONSTRUCTION_PROPOSAL_NODES = 1024
-MAX_CONSTRUCTION_PROPOSAL_EDGES = 1024
-MAX_STATION_MODULES = 256
-MAX_PROPOSAL_REMOVALS = 512
-MAX_CONSTRUCTION_COLLATERAL = 64
-# A schema-7 construction can return one canonical output for every node, edge,
-# and edge object plus a bounded compound construction graph.
-MAX_PROPOSAL_OUTPUTS = (
-    MAX_CONSTRUCTION_PROPOSAL_NODES
-    + MAX_CONSTRUCTION_PROPOSAL_EDGES
-    + MAX_PROPOSAL_EDGE_OBJECTS
-    + 64
-)
 LEGACY_OPERATION_SCHEMA_VERSION = 1
 FLAT_ALTERNATIVE_OPERATION_SCHEMA_VERSION = 2
 STATION_TERMINAL_OPERATION_SCHEMA_VERSION, OPERATION_SCHEMA_VERSION = 3, 4
@@ -81,6 +72,7 @@ MAX_OPERATION_VEHICLE_BATCH = 256
 
 class ProtocolError(ValueError):
     pass
+
 
 def _normalise(value: Any) -> Any:
     if value is None or isinstance(value, (str, bool, int)):
@@ -546,11 +538,11 @@ def _validate_proposal_transaction_legacy(value: Any) -> dict[str, Any]:
     expected_root = {
         "schemaVersion", "companyCid", "cost", "nodes", "edges", "remove", "digest", "transactionId"
     }
-    if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION:
+    if _construction_proposal_schema(schema_version):
         expected_root.add("constructions")
     if set(value) != expected_root:
         raise ProtocolError("proposal transaction has unknown or missing fields")
-    if schema_version not in {PROPOSAL_SCHEMA_VERSION, CONSTRUCTION_PROPOSAL_SCHEMA_VERSION}:
+    if schema_version not in SUPPORTED_PROPOSAL_SCHEMA_VERSIONS:
         raise ProtocolError("unsupported proposal schemaVersion")
     company = value.get("companyCid")
     if not isinstance(company, str) or not company.startswith("company:") or not company[8:].isdigit():
@@ -561,12 +553,12 @@ def _validate_proposal_transaction_legacy(value: Any) -> dict[str, Any]:
     nodes, edges, remove = value.get("nodes"), value.get("edges"), value.get("remove")
     node_limit = (
         MAX_CONSTRUCTION_PROPOSAL_NODES
-        if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION
+        if _construction_proposal_schema(schema_version)
         else MAX_PROPOSAL_NODES
     )
     edge_limit = (
         MAX_CONSTRUCTION_PROPOSAL_EDGES
-        if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION
+        if _construction_proposal_schema(schema_version)
         else MAX_PROPOSAL_EDGES
     )
     # A pure track/street replacement (track type, catenary, or equivalent
@@ -602,6 +594,8 @@ def _validate_proposal_transaction_legacy(value: Any) -> dict[str, Any]:
         }
         if carrier == "track":
             expected_fields.add("catenary")
+        elif _street_features_schema(schema_version):
+            expected_fields.update({"bus", "tramTrackType"})
         if set(edge) != expected_fields:
             raise ProtocolError("proposal edge has unknown or missing fields")
         if edge.get("slot") != f"edge:{index}":
@@ -629,6 +623,9 @@ def _validate_proposal_transaction_legacy(value: Any) -> dict[str, Any]:
             raise ProtocolError("proposal edge private flag must be boolean")
         if carrier == "track" and not isinstance(edge.get("catenary"), bool):
             raise ProtocolError("proposal track catenary must be boolean")
+        if _street_features_schema(schema_version) and carrier == "street":
+            feature_error = _street_feature_error(edge, schema_version)
+            if feature_error: raise ProtocolError(feature_error)
 
     for kind in ("edges", "nodes"):
         values = remove[kind]
@@ -648,7 +645,7 @@ def _validate_proposal_transaction_legacy(value: Any) -> dict[str, Any]:
         if values != sorted(set(values)):
             raise ProtocolError(f"proposal {kind} removal list must be sorted and unique")
 
-    if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION:
+    if _construction_proposal_schema(schema_version):
         if lua_empty_nodes:
             raise ProtocolError("schema 4 station must contain a non-empty track graph")
         if any(remove[kind] not in ({}, []) for kind in ("edges", "nodes")):
@@ -735,7 +732,7 @@ def _validate_proposal_transaction_legacy(value: Any) -> dict[str, Any]:
         "edges": edges,
         "remove": remove,
     }
-    if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION:
+    if _construction_proposal_schema(schema_version):
         content["constructions"] = value["constructions"]
     expected_digest = checksum(content)
     if value.get("digest") != expected_digest:
@@ -845,13 +842,13 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ProtocolError("proposal.build transaction must be an object")
     schema_version = value.get("schemaVersion")
-    if schema_version not in {PROPOSAL_SCHEMA_VERSION, CONSTRUCTION_PROPOSAL_SCHEMA_VERSION}:
+    if schema_version not in SUPPORTED_PROPOSAL_SCHEMA_VERSIONS:
         raise ProtocolError("unsupported proposal schemaVersion")
     expected_root = {
         "schemaVersion", "companyCid", "cost", "nodes", "edges", "edgeObjects",
         "remove", "digest", "transactionId",
     }
-    if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION:
+    if _construction_proposal_schema(schema_version):
         expected_root.add("constructions")
     if set(value) != expected_root:
         raise ProtocolError("proposal transaction has unknown or missing fields")
@@ -864,12 +861,12 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
         raise ProtocolError("proposal quoted cost is outside the supported range")
     node_limit = (
         MAX_CONSTRUCTION_PROPOSAL_NODES
-        if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION
+        if _construction_proposal_schema(schema_version)
         else MAX_PROPOSAL_NODES
     )
     edge_limit = (
         MAX_CONSTRUCTION_PROPOSAL_EDGES
-        if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION
+        if _construction_proposal_schema(schema_version)
         else MAX_PROPOSAL_EDGES
     )
     nodes = _proposal_list(value.get("nodes"), "proposal nodes", node_limit)
@@ -896,6 +893,8 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
         }
         if carrier == "track":
             fields.add("catenary")
+        elif _street_features_schema(schema_version):
+            fields.update({"bus", "tramTrackType"})
         if set(edge) != fields:
             raise ProtocolError("proposal edge has unknown or missing fields")
         slot = f"edge:{index}"
@@ -923,6 +922,9 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
             raise ProtocolError("proposal edge ownership is invalid")
         if carrier == "track" and not isinstance(edge.get("catenary"), bool):
             raise ProtocolError("proposal track catenary must be boolean")
+        if _street_features_schema(schema_version) and carrier == "street":
+            feature_error = _street_feature_error(edge, schema_version)
+            if feature_error: raise ProtocolError(feature_error)
 
     remove = value.get("remove")
     if not isinstance(remove, dict) or set(remove) != {"edges", "nodes"}:
@@ -984,7 +986,7 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
     if object_removals != sorted(set(object_removals)) or retained_cids.intersection(object_removals):
         raise ProtocolError("proposal edge-object removals are duplicated, unsorted, or retained")
 
-    if schema_version == PROPOSAL_SCHEMA_VERSION:
+    if not _construction_proposal_schema(schema_version):
         if not edges and not removal_values["edges"] and not removal_values["nodes"] and not object_adds and not object_removals:
             raise ProtocolError("schema 5 proposal contains no world change")
     else:
@@ -1129,7 +1131,7 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
         "edgeObjects": edge_objects,
         "remove": remove,
     }
-    if schema_version == CONSTRUCTION_PROPOSAL_SCHEMA_VERSION:
+    if _construction_proposal_schema(schema_version):
         content["constructions"] = value["constructions"]
     expected_digest = checksum(content)
     if value.get("digest") != expected_digest:
@@ -1509,7 +1511,7 @@ def validate_action(action: Any) -> dict[str, Any]:
     if action_type == "match.finish":
         if not isinstance(action.get("winnerCid"), str) or not isinstance(action.get("reason"), str):
             raise ProtocolError("match.finish requires a canonical winnerCid and reason")
-    if action_type in {"probe.mobility", "probe.structural"} and set(action) - {"type"}:
+    if action_type in {"probe.mobility", "probe.structural", "probe.native_fingerprint"} and set(action) - {"type"}:
         raise ProtocolError(f"{action_type} has no client-supplied fields")
     if action_type == "clock.request":
         if set(action) != {"type", "requestedSpeed"}:

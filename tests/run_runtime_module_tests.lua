@@ -5,6 +5,7 @@ local runtimeConfig = require "tpf2_mp/runtime_config"
 local stateSchema = require "tpf2_mp/state_schema"
 local stateRetention = require "tpf2_mp/state_retention"
 local nativeHook = require "tpf2_mp/native_hook"
+local nativeCommandSafety = require "tpf2_mp/native_command_safety_registry"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
@@ -14,6 +15,7 @@ local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_scheduler"
 local guiClockCapturePolicyModule = require "tpf2_mp/gui_clock_capture_policy"
 local guiBuildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
+local guiEarlyBuildCaptureModule = require "tpf2_mp/gui_early_build_capture"
 local guiBuildCorrelationModule = require "tpf2_mp/gui_build_correlation"
 local guiConstructionSubmissionModule = require "tpf2_mp/gui_construction_submission"
 local guiProposalPredicatesModule = require "tpf2_mp/gui_proposal_predicates"
@@ -83,6 +85,127 @@ local canonicalModule = require "tpf2_mp/canonical"
 local worldModule = require "tpf2_mp/world"
 local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
+local jsonModule = require "tpf2_mp/json"
+local nativeFingerprintModule = require "tpf2_mp/world_native_fingerprint"
+local nativeFingerprintRuntimeModule = require "tpf2_mp/native_fingerprint_runtime"
+
+assert(nativeCommandSafety.assertComplete())
+assert(nativeCommandSafety.forTag(15).capturePoint
+  == "make_cmd::BuildProposal+CommandList::Add+visitor")
+
+do
+  local submitted = {}
+  local checkpoints, diagnostics = {}, {}
+  local state = {
+    tick = 10, initialized = true, networkMode = "network",
+    bridge = { peerId = "player1" }, match = { status = "running" }, probes = {},
+  }
+  local accept = true
+  local runtime = nativeFingerprintRuntimeModule.new({
+    getState = function() return state end,
+    submitIntent = function(action)
+      submitted[#submitted + 1] = action
+      return accept, accept and { local_seq = #submitted } or "busy"
+    end,
+    exportCheckpoint = function(sequence, reason)
+      checkpoints[#checkpoints + 1] = { sequence = sequence, reason = reason }
+      return true
+    end,
+    diagnosticLog = function(name, details)
+      diagnostics[#diagnostics + 1] = { name = name, details = details }
+    end,
+  })
+  assert(runtime.maintain({ nativeFingerprintTicks = 300 }) == false
+      and state.probes.nativeFingerprintScheduler.nextTick == 310,
+    "native fingerprint scheduler did not initialise without submitting")
+  state.tick = 310
+  assert(runtime.maintain({ nativeFingerprintTicks = 300 }) == true
+      and #submitted == 1 and submitted[1].type == "probe.native_fingerprint"
+      and state.probes.nativeFingerprintScheduler.nextTick == 610,
+    "native fingerprint scheduler did not submit at its ordered boundary")
+  state.tick, accept = 610, false
+  assert(runtime.maintain({ nativeFingerprintTicks = 300 }) == false
+      and state.probes.nativeFingerprintScheduler.deferred == 1
+      and state.probes.nativeFingerprintScheduler.nextTick == 730
+      and state.probes.nativeFingerprintScheduler.lastError == "busy",
+    "native fingerprint scheduler did not back off after a busy boundary")
+  state.bridge.peerId, state.tick = "player2", 730
+  assert(runtime.maintain({ nativeFingerprintTicks = 300 }) == false and #submitted == 2,
+    "a client peer scheduled an authoritative native fingerprint")
+  local rejected, rejection = nativeFingerprintRuntimeModule.normaliseOrderedProbe(
+    { type = "probe.native_fingerprint" }, state)
+  assert(rejected == nil and rejection:find("only the host", 1, true),
+    "a client peer normalised an authoritative native fingerprint")
+  state.bridge.peerId = "player1"
+  assert(nativeFingerprintRuntimeModule.isOrderedProbe("probe.native_fingerprint"))
+  local normalised = assert(nativeFingerprintRuntimeModule.normaliseOrderedProbe(
+    { type = "probe.native_fingerprint" }, state))
+  assert(normalised.type == "probe.native_fingerprint"
+      and runtime.afterCommit(normalised, true, 44) == true
+      and checkpoints[1].sequence == 44
+      and checkpoints[1].reason == "native-fingerprint-probe"
+      and #diagnostics == 0,
+    "native fingerprint commit did not export its physical checkpoint")
+  accept = true
+  state.tick = state.probes.nativeFingerprintScheduler.nextTick
+  for _ = 2, runtime.fullSampleEvery do
+    assert(runtime.maintain({ nativeFingerprintTicks = 300 }) == true)
+    state.tick = state.probes.nativeFingerprintScheduler.nextTick
+  end
+  assert(submitted[#submitted].type == "probe.structural",
+    "periodic cheap native sampling never escalated to a full structural probe")
+end
+
+do
+  local topology = { [11] = "edge-a", [12] = "construction-a" }
+  local inventory = {
+    node = { 41 }, edge = { 11 }, edge_object = {}, construction = { 12 },
+    asset = {}, station = {}, station_group = {}, depot = {}, line = {}, vehicle = {},
+  }
+  local sampler = nativeFingerprintModule.new({
+    entityExists = function(id) return topology[id] ~= nil end,
+    fingerprint = function(id, kind) return tostring(kind) .. ":" .. tostring(topology[id]) end,
+    topologyFingerprint = function(id) return topology[id] end,
+    listTowns = function() return { 21 } end,
+    listIndustries = function() return { 31 } end,
+    townCapacity = function() return 12, { 3, 4, 5 } end,
+    listKind = function(kind) return inventory[kind] end,
+    kindOf = function(id) return topology[id] and (id == 11 and "edge" or "construction") or "node" end,
+    ownerOf = function() return 7 end,
+  })
+  local registry = canonicalModule.newState()
+  assert(canonicalModule.bind(registry, "edge:event:test:1", "edge", 11,
+    { owner = "company:1" }))
+  assert(canonicalModule.bind(registry, "construction:event:test:1", "construction", 12,
+    { owner = "company:1" }))
+  local first = sampler.sample(registry, {
+    logicalOwners = { ["11"] = "company:1", ["12"] = "company:1" },
+  }, { ["company:1"] = { playerId = 7 } }, { fullInventory = true })
+  assert(first.schemaVersion == 2 and first.counts.edges == 1
+      and first.counts.constructions == 1 and first.counts.autonomous == 2
+      and first.inventoryComplete == true and first.inventory.counts.edges.node == 1,
+    "cheap native fingerprint omitted a required category")
+  local cheapBaseline = sampler.sample(registry, {
+    logicalOwners = { ["11"] = "company:1", ["12"] = "company:1" },
+  }, { ["company:1"] = { playerId = 7 } })
+  assert(cheapBaseline.inventoryComplete == false and cheapBaseline.inventory == nil,
+    "binding-focused checkpoint reused stale full-inventory evidence")
+  topology[11] = "edge-b"
+  local second = sampler.sample(registry, { logicalOwners = {} },
+    { ["company:1"] = { playerId = 7 } })
+  assert(cheapBaseline.digest ~= second.digest
+      and cheapBaseline.categories.edges ~= second.categories.edges
+      and cheapBaseline.categories.constructions == second.categories.constructions,
+    "cheap native fingerprint did not isolate edge drift")
+  inventory.node[#inventory.node + 1] = 42
+  local inventoryDrift = sampler.sample(registry, { logicalOwners = {} },
+    { ["company:1"] = { playerId = 7 } }, {
+    fullInventory = true,
+  })
+  assert(inventoryDrift.inventory.counts.edges.node == 2
+      and inventoryDrift.categories.edges ~= second.categories.edges,
+    "full native fingerprint did not detect an extra unbound topology entity")
+end
 
 do
   local invalidations = {}
@@ -607,6 +730,7 @@ do
   local transaction = assert(validationRoadDepotProposalModule.transaction("company:1"))
   local tramTransaction = assert(validationRoadDepotProposalModule.transaction("company:1", {
     fileName = "depot/tram_depot_era_a.con", params = { tramCatenary = 1 },
+    typeIndex = 0,
   }))
   assert(#transaction.nodes == 1 and #transaction.edges == 1
       and transaction.edges[1].node1.cid == "node:pre:410b0cf7"
@@ -615,11 +739,55 @@ do
       and constructionReplayState.requiresAtomic({ transaction = transaction }, proposalCodec)
       and tramTransaction.constructions[1].fileName == "depot/tram_depot_era_a.con"
       and tramTransaction.constructions[1].params.tramCatenary == 1
+      and tramTransaction.edges[1].typeIndex == 0
       and not constructionReplayState.isExact({ transaction = tramTransaction }, proposalCodec)
       and depotConnectionRepair.isRepairable({ transaction = tramTransaction })
       and constructionReplayState.requiresAtomic(
         { transaction = tramTransaction }, proposalCodec),
     "connected road/tram-depot fixtures lost their helper-repair atomic boundary")
+
+  local aligned = assert(validationRoadDepotProposalModule.transaction("company:1", {
+    fileName = "depot/tram_depot_era_a.con", params = { tramCatenary = 1 },
+    typeIndex = 0, connectNodeCid = "node:event:route:1",
+    connectionResourceIndex = 15,
+    connectionResourceName = "standard/country_small_new.lua",
+    connectPosition = { x = 100, y = 200, z = 15 },
+    connectTangent = { x = 50, y = 10, z = 2 },
+    connectionGap = 24,
+    terrainHeight = function() return 13 end,
+  }))
+  local alignedNode, alignedEdge = aligned.nodes[1], aligned.edges[1]
+  local alignedTransform = aligned.constructions[1].transform
+  local tangentLength = math.sqrt(alignedEdge.tangent0.x ^ 2 + alignedEdge.tangent0.y ^ 2)
+  local targetLength = math.sqrt(50 ^ 2 + 10 ^ 2)
+  local directionDot = (alignedEdge.tangent0.x * 50 + alignedEdge.tangent0.y * 10)
+    / (tangentLength * targetLength)
+  local xLength = math.sqrt(alignedTransform[1] ^ 2 + alignedTransform[2] ^ 2)
+  local yLength = math.sqrt(alignedTransform[5] ^ 2 + alignedTransform[6] ^ 2)
+  local basisDot = alignedTransform[1] * alignedTransform[5]
+    + alignedTransform[2] * alignedTransform[6]
+  assert(math.abs(alignedNode.position.x + alignedEdge.tangent0.x - 100) < 0.0001
+      and math.abs(alignedNode.position.y + alignedEdge.tangent0.y - 200) < 0.0001
+      and math.abs(alignedNode.position.z + alignedEdge.tangent0.z - 15) < 0.0001
+      and alignedNode.position.z == alignedTransform[15]
+      and directionDot >= 0.9999
+      and tangentLength > 36
+      and alignedEdge.resource.index == 15
+      and alignedEdge.resource.name == "standard/country_small_new.lua"
+      and math.abs(xLength - 1) < 0.0001 and math.abs(yLength - 1) < 0.0001
+      and math.abs(basisDot) < 0.0001,
+    "relocated tram depot did not preserve rigid transform and route alignment")
+  local invalidGap, invalidGapError = validationRoadDepotProposalModule.transaction(
+    "company:1", { connectionGap = 101 })
+  assert(invalidGap == nil and tostring(invalidGapError):find(
+      "gap is outside", 1, true),
+    "relocated depot accepted an unbounded connection gap")
+  local steep, steepError = validationRoadDepotProposalModule.transaction("company:1", {
+    connectPosition = { x = 100, y = 200, z = 15 },
+    connectTangent = { x = 1, y = 0, z = 1 },
+  })
+  assert(steep == nil and tostring(steepError):find("grade exceeds", 1, true),
+    "relocated depot accepted an unroutable target grade")
 
   local fakeApi = {
     type = {
@@ -668,7 +836,7 @@ do
         comp = { node0 = -10, node1 = -12,
           tangent0 = { x = 0, y = 1, z = 0 },
           tangent1 = { x = 0, y = 1, z = 0 }, type = 0, typeIndex = -1 },
-        streetEdge = { streetType = 29 } }},
+        streetEdge = { streetType = 29, hasBus = false, tramTrackType = 0 } }},
       edgeObjectsToAdd = {},
     }, toAdd = { { playerEntity = 101 } } } }
   end, proposal, transaction, materialisation, function(value, name) return value[name] end))
@@ -687,6 +855,8 @@ do
     localRefs = { ["node:pre:410b0cf7"] = 700 },
     constructionPending = { phase = "settling-build", deadlineTick = 30 },
   }
+  local terrainShiftedInternal = util.deepCopy(transaction.nodes[1].position)
+  terrainShiftedInternal.z = terrainShiftedInternal.z + 1
   local repairDeps = {
     candidateNodes = { 801, 802 }, candidateEdges = { 803 },
     counts = { construction = 1, depot = 1, edge_object = 0 },
@@ -694,13 +864,13 @@ do
     stableTicks = 2, pendingRescanTicks = 1, rootReady = true,
     inspectNodes = function()
       return {
-        { localId = 801, position = util.deepCopy(transaction.nodes[1].position) },
+        { localId = 801, position = util.deepCopy(terrainShiftedInternal) },
         { localId = 802, position = { x = -1080, y = -1040, z = 8.6015548706055 } },
       }
     end,
     inspectEdges = function()
       return {{ localId = 803, carrier = "street",
-        node0Position = util.deepCopy(transaction.nodes[1].position),
+        node0Position = util.deepCopy(terrainShiftedInternal),
         node1Position = { x = -1080, y = -1040, z = 8.6015548706055 } }}
     end,
     proposals = { queued = 1 },
@@ -714,12 +884,15 @@ do
     repairRecord, repairRecord.constructionPending, repairDeps)))
   assert(staged.stagedDepotConnection and repairRecord.status == "queued"
       and repairRecord.replayPath == "helper-depot-connection"
+      and repairRecord.constructionPending.depotConnectionRepair.sourceInternalPosition.z
+        == transaction.nodes[1].position.z
       and repairDeps.proposals.queued == 2,
-    "safe helper depot root did not enter topology-only GUI repair")
+    "terrain-shifted helper depot root did not enter topology-only GUI repair")
   local repairProposal, repairMetadata = assert(
     depotConnectionRepair.materialise(repairRecord, proposalCodec, fakeApi))
   assert(repairMetadata.transaction.schemaVersion == proposalCodec.SCHEMA_VERSION
       and #repairMetadata.transaction.nodes == 0
+      and repairMetadata.localRefs["node:repair:depot-external"] == 802
       and repairProposal.streetProposal.edgesToAdd[1].comp.node0 == 802
       and repairProposal.streetProposal.edgesToAdd[1].comp.node1 == 700
       and math.abs(repairProposal.streetProposal.edgesToAdd[1].comp.tangent0.x
@@ -841,17 +1014,21 @@ do
   repairRecord.companyCid = "company:1"
   local auxiliary = assert(depotAuxiliaryBinding.apply(
     auxiliaryState, repairRecord, {}, function() return 100 end))
-  assert(#auxiliary == 1 and auxiliary[1].kind == "edge"
-      and auxiliary[1].slot == "edge:helper:1"
-      and canonicalModule.resolveCanonical(auxiliaryState.canonical, "edge", 803)
+  assert(#auxiliary == 2 and auxiliary[1].kind == "node"
+      and auxiliary[1].slot == "node:helper:1"
+      and canonicalModule.resolveCanonical(auxiliaryState.canonical, "node", 802)
         == auxiliary[1].cid
+      and auxiliary[2].kind == "edge"
+      and auxiliary[2].slot == "edge:helper:1"
+      and canonicalModule.resolveCanonical(auxiliaryState.canonical, "edge", 803)
+        == auxiliary[2].cid
       and auxiliaryState.world.logicalOwners["803"] == "company:1"
       and auxiliaryState.world.pinnedCustody["803"].nativePlayerId == 100,
-    "helper depot entrance edge was not journaled as a private derived output")
+    "helper depot snap node and entrance edge were not journaled as derived outputs")
   local revision = auxiliaryState.canonical.revisions
   local rediscovered = worldModule.bindExisting(auxiliaryState.canonical, 803,
     "edge", { name = "late structural probe" }, "74991209")
-  assert(rediscovered == auxiliary[1].cid
+  assert(rediscovered == auxiliary[2].cid
       and auxiliaryState.canonical.revisions == revision,
     "structural discovery could rebind a checkpointed helper entrance edge")
 
@@ -880,6 +1057,7 @@ do
     { kind = "construction", slot = "construction:1" },
     { kind = "depot", slot = "depot:1" },
     { kind = "node", slot = "node:1" }, { kind = "edge", slot = "edge:1" },
+    { kind = "node", slot = "node:helper:1" },
     { kind = "edge", slot = "edge:helper:1" },
   }
   current.world.proposalConsensus = {
@@ -969,6 +1147,7 @@ do
     issuerBalanceBefore = 1000, nativeOwnerBalanceBefore = 1000,
     lastIssuerBalance = 1000, lastNativeOwnerBalance = 1000,
     stableFrames = 0, requireBalanceMutation = true, exactConstruction = true,
+    companyCid = "company:1",
     beforeWorld = before, createdEdgeIds = { 22 }, createdNodeIds = { 21 },
   }
   local deps = {
@@ -979,6 +1158,13 @@ do
       local sets = util.deepCopy(before.sets)
       sets.constructions[20], sets.nodes[21], sets.edges[22] = true, true, true
       return { sets = sets }
+    end,
+    captureOutputIdentity = function(kind, id, ownerCid)
+      assert(ownerCid == "company:1")
+      return {
+        fingerprint = kind == "construction" and "11111111" or "22222222",
+        topologyFingerprint = id == 20 and "33333333" or nil,
+      }
     end,
   }
   assert(guiProposalResultCapture.sample(pending, 1, deps) == nil,
@@ -998,7 +1184,10 @@ do
       and payload.settlementFrames == 5
       and type(payload.constructionDelta) == "string"
       and capturedDelta.added.construction[1] == 20
-      and capturedDelta.added.node[1] == 21,
+      and capturedDelta.added.node[1] == 21
+      and capturedDelta.identities.construction["20"].fingerprint == "11111111"
+      and capturedDelta.identities.construction["20"].topologyFingerprint == "33333333"
+      and next(capturedDelta.identities.node) == nil,
     "stable GUI construction result did not carry its exact component delta")
 end
 
@@ -1727,6 +1916,11 @@ do
   local after = { sets = util.deepCopy(before.sets) }
   after.sets.constructions[11], after.sets.nodes[20], after.sets.nodes[21] = true, nil, true
   local delta = constructionDeltaAttestation.fromWorlds(before, after)
+  constructionDeltaAttestation.captureIdentities(delta, function(kind, id)
+    if kind == "construction" and id == 11 then
+      return { fingerprint = "1234abcd", topologyFingerprint = "deadbeef" }
+    end
+  end)
   local accepted = assert(constructionDeltaAttestation.normalise(
     constructionDeltaAttestation.encode(delta), 16))
   local reconstructed = constructionDeltaAttestation.apply({
@@ -1734,6 +1928,8 @@ do
     asset = {}, edge_object = {}, node = { [20] = true }, edge = {},
   }, accepted)
   assert(accepted.added.construction[1] == 11 and accepted.removed.node[1] == 20
+      and accepted.identities.construction["11"].fingerprint == "1234abcd"
+      and accepted.identities.construction["11"].topologyFingerprint == "deadbeef"
       and reconstructed.construction[10] and reconstructed.construction[11]
       and reconstructed.node[21] and not reconstructed.node[20],
     "GUI construction delta did not validate and reconstruct its exact world sets")
@@ -1747,6 +1943,15 @@ do
   local keyedAccepted, keyedError = constructionDeltaAttestation.normalise(keyed, 16)
   assert(keyedAccepted == nil and tostring(keyedError):find("non-array key", 1, true),
     "keyed construction entity delta crossed the exact-array boundary")
+  local forgedIdentity = util.deepCopy(delta)
+  forgedIdentity.identities.station = {
+    ["999"] = { fingerprint = "1234abcd" },
+  }
+  local forgedAccepted, forgedError = constructionDeltaAttestation.normalise(
+    forgedIdentity, 16)
+  assert(forgedAccepted == nil
+      and tostring(forgedError):find("does not name an added output", 1, true),
+    "construction identity attestation named an entity outside its exact delta")
 end
 
 do
@@ -2158,6 +2363,22 @@ end
 do
   local originalResolvePreExisting = worldModule.resolvePreExisting
   worldModule.resolvePreExisting = function(registry, cid, kind, metadata)
+    local existing = canonicalModule.resolveLocal(registry, cid)
+    if existing ~= nil then
+      local ok, rebindError = canonicalModule.rebindLocal(registry, cid, 91, {
+        resolvedForProposal = metadata and metadata.resolvedForProposal,
+      })
+      if not ok then return nil, rebindError end
+      if metadata and metadata.worldState then
+        local owner = metadata.worldState.logicalOwners[tostring(existing)]
+        local custody = metadata.worldState.pinnedCustody[tostring(existing)]
+        metadata.worldState.logicalOwners[tostring(existing)] = nil
+        metadata.worldState.pinnedCustody[tostring(existing)] = nil
+        metadata.worldState.logicalOwners["91"] = owner
+        metadata.worldState.pinnedCustody["91"] = custody
+      end
+      return 91
+    end
     local ok, bindError = canonicalModule.bind(registry, cid, kind, 91, metadata)
     if not ok then return nil, bindError end
     return 91
@@ -2190,7 +2411,8 @@ do
     applyCommitted = function() return true end,
   })
   local cid = "edge:pre:rejected-road"
-  local localRefs, localInputs, bindError, newlyBoundCids, revisionBefore =
+  local localRefs, localInputs, bindError, newlyBoundCids, revisionBefore,
+    bindingRollback =
     runtime.preparation.bind({
       localRefs = { [cid] = 91 },
       referenceKinds = { [cid] = "edge" },
@@ -2204,6 +2426,7 @@ do
     transaction = { digest = "deadbeef" },
     localRefs = localRefs, localInputs = localInputs,
     newlyBoundCids = newlyBoundCids, canonicalRevisionBefore = revisionBefore,
+    bindingRollback = bindingRollback,
     constructionPending = { before = { construction = { [91] = true } } },
   }
   local accepted = runtime.finalise({
@@ -2216,6 +2439,46 @@ do
       and current.world.proposals.byId["rejected-proposal"].constructionPending == nil
       and hashModule.value(canonicalModule.digestView(current.canonical)) == preparedDigest,
     "verified native rejection did not restore PREPARE or release replay scratch state")
+
+  local staleCid = "edge:event:stale-proposal:1"
+  assert(canonicalModule.bind(current.canonical, staleCid, "edge", 90, {
+    owner = "company:1", topologyFingerprint = "portable-edge",
+  }))
+  current.world.logicalOwners["90"] = "company:1"
+  current.world.pinnedCustody["90"] = {
+    cid = staleCid, kind = "edge", logicalOwnerCid = "company:1",
+  }
+  local staleRevision = current.canonical.revisions
+  local reboundRefs, reboundInputs, reboundError, reboundNew, reboundRevision,
+    reboundRollback = runtime.preparation.bind({
+      localRefs = { [staleCid] = 91 },
+      referenceKinds = { [staleCid] = "edge" },
+      removal = { [staleCid] = true },
+    }, "rejected-rebind-proposal")
+  assert(reboundRefs and not reboundError
+      and canonicalModule.resolveLocal(current.canonical, staleCid) == 91
+      and current.world.logicalOwners["91"] == "company:1",
+    "proposal fixture did not exercise a transactional topology rebind")
+  current.world.proposals.byId["rejected-rebind-proposal"] = {
+    proposalId = "rejected-rebind-proposal", status = "queued",
+    transaction = { digest = "feedface" },
+    localRefs = reboundRefs, localInputs = reboundInputs,
+    newlyBoundCids = reboundNew, canonicalRevisionBefore = reboundRevision,
+    bindingRollback = reboundRollback,
+    constructionPending = { before = { construction = { [90] = true } } },
+  }
+  local reboundAccepted = runtime.finalise({
+    proposalId = "rejected-rebind-proposal", success = false,
+    worldUnchanged = true, error = "native BuildProposal rejected",
+  })
+  assert(reboundAccepted == false
+      and canonicalModule.resolveLocal(current.canonical, staleCid) == 90
+      and current.canonical.revisions == staleRevision
+      and current.world.logicalOwners["90"] == "company:1"
+      and current.world.logicalOwners["91"] == nil
+      and current.world.pinnedCustody["90"].cid == staleCid
+      and current.world.pinnedCustody["91"] == nil,
+    "failed proposal did not roll back a topology rebind and its custody atomically")
   worldModule.resolvePreExisting = originalResolvePreExisting
 end
 
@@ -2367,6 +2630,85 @@ end
 
 
 do
+  local semantic = {
+    streetProposal = {
+      nodesToAdd = { { entity = -1, comp = { position = { x = 99, y = 99, z = 99 } } } },
+      edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
+      edgeObjectsToAdd = { { entity = -5, edgeEntity = -2, param = 0.5 } },
+      edgeObjectsToRemove = { 52 },
+    },
+    constructionsToAdd = { {
+      fileName = "station/street/bus_station.con", params = { terminals = 2 },
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 999, 999, 999, 1 },
+    } },
+    __constructionAdditions = { {
+      fileName = "station/street/bus_station.con", params = { terminals = 2 },
+      transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 999, 999, 999, 1 },
+    } },
+    constructionsToRemove = { 700 }, __constructionRemovals = { 700 },
+  }
+  local capture = {
+    schemaVersion = 1, generation = 8, correlation = 9, valid = true,
+    factoryThread = 11, addThread = 12, withCost = true, ignoreErrors = false,
+    factoryCallerRva = 0x419F62, addCallerRva = 0x419F90,
+    callerType = "construction-builder",
+    addedNodes = { { e = -1, x = 10, y = 20, z = 3, f = 0, t = 0 } },
+    removedNodes = {},
+    addedEdges = { {
+      e = -2, n0 = -1, n1 = 44, t0 = { 20, 0, 0 }, t1 = { 20, 0, 0 },
+      carrier = 0, streetType = 4, tramTrackType = 1, w28 = 0, w2c = 0,
+      w50 = 0, f64 = 0, player = 7, owned = 1,
+    } },
+    removedEdges = {}, edgeObjectsToAdd = { -5 }, edgeObjectsToRemove = { 52 },
+    frozenNodeIndices = { 1 }, segmentTags = { "entrance" },
+    constructionsToRemove = { 700 },
+    constructionsToAdd = { {
+      fileName = "station/street/bus_station.con",
+      transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 20, 3, 1 },
+      frozenNodes = { -1 }, segmentsBefore = 0,
+    } },
+  }
+  local merged, mergeError = guiEarlyBuildCaptureModule.merge(semantic, capture)
+  assert(merged and mergeError == nil
+      and merged.streetProposal.nodesToAdd[1].comp.position.x == 10
+      and merged.streetProposal.edgesToAdd[1].comp.node1 == 44
+      and merged.nodesToAdd == nil
+      and merged.__constructionAdditions[1].transf[13] == 10
+      and merged.__constructionAdditions[1].params.terminals == 2
+      and merged.__nativeFactoryCapture.factoryThread == 11,
+    "pre-mutation native proposal did not replace nested topology and preserve semantics")
+  local wrongResource = util.deepCopy(semantic)
+  wrongResource.__constructionAdditions[1].fileName = "station/street/truck_station.con"
+  local rejected, resourceError = guiEarlyBuildCaptureModule.merge(wrongResource, capture)
+  assert(rejected == nil and resourceError:find("resource differs", 1, true),
+    "native/semantic construction mismatch was not rejected")
+  local missingObject = util.deepCopy(semantic)
+  missingObject.streetProposal.edgeObjectsToAdd = {}
+  local objectRejected, objectError = guiEarlyBuildCaptureModule.merge(missingObject, capture)
+  assert(objectRejected == nil and objectError:find("edge-object-add count", 1, true),
+    "native/semantic edge-object mismatch was not rejected")
+
+  local previousFactoryTake = rawget(_G, "tpf2mp_native_take_build_factory_capture")
+  local secondCapture = util.deepCopy(capture)
+  secondCapture.generation = capture.generation + 1
+  local nativeCaptures = { jsonModule.encode(capture), jsonModule.encode(secondCapture) }
+  tpf2mp_native_take_build_factory_capture = function()
+    if #nativeCaptures == 0 then return nil end
+    return table.remove(nativeCaptures, 1)
+  end
+  local earlyQueue = guiEarlyBuildCaptureModule.new()
+  local drained, drainError = earlyQueue.drain(4)
+  local firstQueued = earlyQueue.take(capture.correlation)
+  local secondQueued = earlyQueue.take(capture.correlation)
+  assert(drained == true and drainError == nil
+      and firstQueued and firstQueued.generation == capture.generation
+      and secondQueued and secondQueued.generation == secondCapture.generation
+      and earlyQueue.take(capture.correlation) == nil,
+    "same-correlation native factory captures were not retained in FIFO order")
+  tpf2mp_native_take_build_factory_capture = previousFactoryTake
+end
+
+do
   local previousSample = rawget(_G, "tpf2mp_native_build_gate_sample")
   local fullReads = 0
   local previousTake = rawget(_G, "tpf2mp_native_take_suppressed_build")
@@ -2389,6 +2731,19 @@ do
       and sample.armedCorrelation == 77 and fullReads == 0
       and sampler.status().fastSamples == 1,
     "constant-time native build-gate sample did not bypass full status")
+  tpf2mp_native_build_gate_sample = function() return "B3|1|44|0|45|1|0|78|1|0" end
+  -- The sampler deliberately caches the exported native function.  Build a
+  -- fresh instance to model loading the newer hook instead of mutating a live
+  -- DLL export beneath an existing runtime.
+  local captureSampler = guiBuildGateSamplerModule.new(function()
+    error("B3 fast sample unexpectedly used the full status path")
+  end)
+  local captured, captureSampleError, captureSample = captureSampler.sample()
+  assert(captured == 44 and captureSampleError == nil
+      and captureSample.sampleVersion == 3
+      and captureSample.factoryCaptureAvailable == true
+      and captureSample.factoryReady == 1 and captureSample.factoryDropped == 0,
+    "constant-time native build-gate sample did not advertise early factory capture")
   local events, eventError = sampler.drain(4)
   assert(eventError == nil and #events == 1 and events[1].generation == 43
       and events[1].correlation == 77 and events[1].tag == 15,
@@ -2465,7 +2820,7 @@ do
 
   local roadWithCollateralBuilding = {
     streetProposal = { edgesToAdd = { ["1"] = {
-      type = 0, streetEdge = { streetType = 0 },
+      type = 0, streetEdge = { streetType = 0, hasBus = false, tramTrackType = 0 },
     } } },
     __constructionRemovals = { ["1"] = {
       fileName = "building/residential/test.con",
@@ -2510,7 +2865,7 @@ do
     streetProposal = {
       edgesToAdd = {
         ["1"] = { type = 1, trackEdge = { trackType = 0 } },
-        ["2"] = { type = 0, streetEdge = { streetType = 0 } },
+        ["2"] = { type = 0, streetEdge = { streetType = 0, hasBus = false, tramTrackType = 0 } },
       },
       edgeObjectsToAdd = { ["1"] = {
         edgeEntity = 77, model = "railroad/signal_path_a.mdl",
@@ -6210,16 +6565,18 @@ end
 do
   local status = nativeHook.compactStatus({
     schemaVersion = 4,
-    hookVersion = "0.19.0",
+    hookVersion = "0.20.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
       enabled = true,
       buildProposalVisitor = true,
+      makeBuildProposal = true,
+      commandListAdd = true,
       authorityCommandVisitors = 31,
     },
     gates = {
-      buildProposal = { enabled = true, tagMismatches = 0, suppressedQueue = {
+      buildProposal = { enabled = true, tagMismatches = 0, factoryCapture = { dropped = 0 }, suppressedQueue = {
         queued = 0, captured = 2, consumed = 2, dropped = 0,
         lastGeneration = 2, armedCorrelation = 0, lastCorrelation = 4,
       } },
@@ -6239,7 +6596,7 @@ do
   status.hookVersion = "0.18.0"
   assert(nativeHook.validatedNetworkAuthority(status) == false,
     "counter-only legacy hook was accepted for network authority")
-  status.hookVersion = "0.19.0"
+  status.hookVersion = "0.20.0"
   status.gates.commandVisitors.tagMismatches = 1
   assert(nativeHook.validatedNetworkAuthority(status) == false,
     "ABI-mismatched native authority status was accepted")

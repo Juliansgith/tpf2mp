@@ -102,6 +102,9 @@ local function carrierCompatible(observed, expected)
   if expectedStreet ~= nil then
     return observedStreet ~= nil and scalar(field(observedStreet, "streetType"),
       field(expectedStreet, "streetType"))
+      and field(observedStreet, "hasBus") == field(expectedStreet, "hasBus")
+      and scalar(field(observedStreet, "tramTrackType"),
+        field(expectedStreet, "tramTrackType"))
   end
   if expectedTrack ~= nil then
     return observedTrack ~= nil and scalar(field(observedTrack, "trackType"),
@@ -145,9 +148,11 @@ local function rewriteEdge(observed, expected, nodeMap, disposableNodes,
   end
   local expectedStreet, expectedTrack = field(expected, "streetEdge"), field(expected, "trackEdge")
   if expectedStreet then
-    local ok, err = assign(field(observed, "streetEdge"), "streetType",
-      field(expectedStreet, "streetType"), "generated street type")
-    if not ok then return nil, err end
+    for _, name in ipairs({ "streetType", "hasBus", "tramTrackType" }) do
+      local ok, err = assign(field(observed, "streetEdge"), name,
+        field(expectedStreet, name), "generated street " .. name)
+      if not ok then return nil, err end
+    end
   elseif expectedTrack then
     for _, name in ipairs({ "trackType", "catenary" }) do
       local ok, err = assign(field(observed, "trackEdge"), name,

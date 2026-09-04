@@ -2,14 +2,18 @@
 
 Current release: `0.43.5-alpha`
 
-Last reviewed: 2026-09-01
+Last reviewed: 2026-09-04
 
 Supported game: Transport Fever 2 Build 35924, Windows x64
 
-Protocol identity: state schema `35`, checkpoint format `5`, edge proposal
+Released protocol identity: state schema `35`, checkpoint format `5`, edge proposal
 schema `5`, construction proposal schema `7`, operation schema `4`, passenger
 presentation schema `4`, cargo presentation schema `2`, freight-industry state
-schema `3`, native hook `0.19.0`.
+schema `3`, native hook `0.20.0`.
+
+Unreleased development after `0.43.5-alpha` advances edge proposal schema to
+`6` and construction proposal schema to `8`; state schema and native hook
+version remain unchanged.
 
 ## Executive status
 
@@ -45,6 +49,11 @@ companies through a temporary native turn desk.
 
 ### Construction
 
+- hybrid pre-mutation BuildProposal capture correlating native
+  `make_cmd::BuildProposal`, `CommandList::Add`, and tag-15 visitor evidence
+  with the bounded GUI semantic preview;
+- one generated safety registry for all 37 native command tags, mechanically
+  checked against installed visitors plus operation and proposal codec replay;
 - named vanilla and data-only-mod roads, tracks, bridges, tunnels, signals,
   waypoints, edge upgrades, and removals;
 - rail, road, tram, air, and water stations/terminals and depots;
@@ -54,6 +63,10 @@ companies through a temporary native turn desk.
   issuer-only finance, and immediate cleanup/rebuild;
 - explicit inventory coverage for all 52 stock non-building construction
   resources, 35 stock street resources, 2 tracks, 6 bridges, and 3 tunnels.
+- unique-only topology/geometry fallback rebinding with read-only discovery and
+  transactional rollback of canonical identity, ownership, and custody;
+- binding-focused native drift fingerprints after ordered work and periodic
+  full structural inventory probes for otherwise unbound residue.
 
 Practical native qualification covers approximately one-kilometre straight and
 curved rail, grades, a 900-metre tunnel, town-road crossings, combined building
@@ -126,6 +139,13 @@ See [the consolidated qualification](../investigation/ALPHA_QUALIFICATION_2026-0
 [construction qualification](../investigation/CONSTRUCTION_EDGE_CASE_QUALIFICATION_2026-09-01.md),
 and [practical geometry qualification](../investigation/PRACTICAL_TRACK_AND_STATION_GEOMETRY_2026-09-01.md).
 
+Unreleased 2026-09-04 evidence adds a fully connected two-process electric
+tram lifecycle: two terminals, route and curb stops, connected stock depot,
+line creation, Typ1 purchase, assignment, ten consensus barriers, twenty
+checkpoints, and matching final core/structure digests. The construction corpus
+also declares 2,848 static layout/geometry cases; this number describes codec
+coverage, not 2,848 live game placements.
+
 ## Not established
 
 - production readiness or long-term save compatibility guarantees;
@@ -134,6 +154,9 @@ and [practical geometry qualification](../investigation/PRACTICAL_TRACK_AND_STAT
 - macOS/Linux native-hook support or any game executable other than Build
   35924;
 - arbitrary executable/script-heavy mod compatibility;
+- independent native decoding of every construction parameter and terrain
+  vector (the correlated GUI semantic capture remains authoritative for those
+  fields);
 - continuous vehicle-coordinate lockstep or native-agent authority;
 - automatic repair after the two physical worlds have already diverged;
 - multi-hour, two-physical-computer load and latency certification.

@@ -21,6 +21,7 @@ local edgeOwnership = require "tpf2_mp/edge_ownership"
 local runtimeConfig = require "tpf2_mp/runtime_config"
 local stateSchema = require "tpf2_mp/state_schema"
 local nativeHook = require "tpf2_mp/native_hook"
+local nativeCommandSafety = require "tpf2_mp/native_command_safety_registry"
 local nativeObservationTelemetry = require "tpf2_mp/native_observation_telemetry"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
@@ -50,6 +51,7 @@ local vehicleSyncRuntimeModule = require "tpf2_mp/vehicle_sync_runtime"
 local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local guiEventRuntimeModule = require "tpf2_mp/gui_event_runtime"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local nativeFingerprintRuntimeModule = require "tpf2_mp/native_fingerprint_runtime"
 local checkpointRetention = require "tpf2_mp/checkpoint_retention"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local faultRecoveryRuntimeModule = require "tpf2_mp/fault_recovery_runtime"
@@ -116,6 +118,7 @@ local applyCommitted
 -- saves or core digests; each is canonicalized only when it reaches the head.
 local MAX_DEFERRED_NETWORK_INTENTS = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS
 local networkIntentController, networkClock, economyClock, calendarRuntime, vehicleSync
+local nativeFingerprintRuntime
 local freezeNetworkGame, freezeNetworkCalendar
 -- Automatic line registration is defined beside its handler but referenced by
 -- the operation runtime constructed earlier, and it submits intents through a
@@ -183,6 +186,9 @@ local checkpointRuntime = checkpointRuntimeModule.new({
   stateVersion = STATE_VERSION,
   checkpointVersion = CHECKPOINT_VERSION,
   eventRecordVersion = EVENT_RECORD_VERSION,
+  nativeFingerprint = function()
+    return nativeFingerprintRuntimeModule.refresh(state, world)
+  end,
 })
 local authoredDigest, coreDigest, digestPair = checkpointRuntime.authoredDigest, checkpointRuntime.coreDigest, checkpointRuntime.digestPair
 local trimEvents = checkpointRuntime.trimEvents
@@ -995,7 +1001,9 @@ local function inspectCreatedEdges(ids)
         node0Position = nodePosition(tonumber(base.node0)),
         node1Position = nodePosition(tonumber(base.node1)),
         resourceIndex = tonumber(track and track.trackType or street and street.streetType),
-        catenary = track and track.catenary or nil,
+        catenary = track and (track.catenary == true),
+        bus = street and (street.hasBus == true),
+        tramTrackType = street and tonumber(street.tramTrackType) or nil,
         objects = (function()
           local objects = {}
           local source = base.objects
@@ -1151,7 +1159,7 @@ handlers["proposal.construction_step"] = function(action)
   local proposalId = type(action) == "table" and tostring(action.proposalId or "") or ""
   local record = state.world.proposals.byId[proposalId]
   if not record or not record.transaction
-    or record.transaction.schemaVersion ~= proposalCodec.CONSTRUCTION_SCHEMA_VERSION then
+    or not proposalCodec.isConstructionSchema(record.transaction.schemaVersion) then
     return false, "construction proposal is unavailable locally"
   end
   if proposalCodec.isTopologyConstructionRemoval(record.transaction) then
@@ -1378,6 +1386,8 @@ handlers["network.checkpoint_outcome"] = function(action)
   record.canonicalDigest = tostring(action.canonicalDigest or "")
   record.financialDigest = tostring(action.financialDigest or record.financialDigest or "")
   record.structuralDigest = action.structuralDigest and tostring(action.structuralDigest) or nil
+  record.nativeFingerprintDigest = action.nativeFingerprintDigest
+    and tostring(action.nativeFingerprintDigest) or nil
   record.worldManifestDigest = action.worldManifestDigest
     and tostring(action.worldManifestDigest) or nil
   record.peers = util.deepCopy(type(action.peers) == "table" and action.peers or {})
@@ -1887,12 +1897,17 @@ end
 handlers["probe.structural"] = function()
   state.probes.structural = world.structuralSnapshot(
     state.canonical, state.world, state.companies)
+  nativeFingerprintRuntimeModule.refresh(state, world, true)
   return true, {
     digest = state.probes.structural.digest,
     townCount = #(state.probes.structural.towns or {}),
     vehicleCount = state.probes.structural.vehicleCount,
     constructionCount = state.probes.structural.constructionCount,
   }
+end
+
+handlers["probe.native_fingerprint"] = function()
+  return true, util.deepCopy(nativeFingerprintRuntimeModule.refresh(state, world, true))
 end
 
 handlers["probe.passenger_cosmetics"] = function()
@@ -2005,15 +2020,10 @@ handlers["native.command_authorize"] = function(action)
     return false, "manual consequential-command authorization is disabled in network mode"
   end
   local tag = util.integer(action.tag, -1)
-  local gatedTags = {
-    [0] = true, [1] = true, [2] = true, [3] = true, [4] = true, [5] = true,
-    [6] = true, [7] = true, [8] = true, [9] = true, [10] = true, [11] = true,
-    [12] = true, [13] = true, [14] = true, [16] = true, [17] = true,
-    [18] = true, [19] = true, [20] = true, [21] = true, [22] = true,
-    [23] = true, [24] = true, [25] = true,
-    [26] = true, [28] = true, [29] = true, [30] = true, [33] = true, [36] = true,
-  }
-  if not gatedTags[tag] then return false, "command tag is not covered by the authority visitor gate" end
+  local policy = nativeCommandSafety.forTag(tag)
+  if not policy or policy.visitorHook ~= true then
+    return false, "command tag is not covered by the authority visitor gate"
+  end
   local nativeFunction = rawget(_G, "tpf2mp_native_authorize_command")
   if type(nativeFunction) ~= "function" then
     return false, "tpf2mp_native_authorize_command is unavailable"
@@ -2675,16 +2685,8 @@ local function normaliseForNetwork(action)
     local valid, developmentError = authoredFollowupRuntime.validateTownBatch(state, copy.batch, true)
     if not valid then return nil, developmentError end
     copy = { type = "town.develop", batch = util.deepCopy(copy.batch) }
-  elseif copy.type == "probe.mobility" or copy.type == "probe.structural" then
-    if state.bridge.peerId ~= "player1" then
-      return nil, "only the host peer can request an ordered native-world sample"
-    end
-    for key in pairs(copy) do
-      if key ~= "type" then
-        return nil, tostring(copy.type) .. " has an unknown field: " .. tostring(key)
-      end
-    end
-    copy = { type = copy.type }
+  elseif nativeFingerprintRuntimeModule.isOrderedProbe(copy.type) then
+    return nativeFingerprintRuntimeModule.normaliseOrderedProbe(copy, state)
   end
   return copy
 end
@@ -2821,16 +2823,7 @@ applyCommitted = function(action, actor, commitSeq)
         error = tostring(checkpointError),
       })
     end
-  elseif success and action.type == "probe.structural" and authoritySeq then
-    local checkpointed, checkpointError = exportCheckpointBarrier(
-      authoritySeq, "structural-probe")
-    if not checkpointed then
-      diagnosticLog("checkpoint-barrier-error", {
-        tick = state.tick,
-        boundarySeq = authoritySeq,
-        error = tostring(checkpointError),
-      })
-    end
+  elseif nativeFingerprintRuntime.afterCommit(action, success, authoritySeq) then
   else
     if not faultRecoveryRuntime.afterCommit(action, success, authoritySeq, exportCheckpointBarrier, diagnosticLog)
       and not aboardMilestoneIntegration.afterCommit(state, action, success, authoritySeq,
@@ -2889,6 +2882,12 @@ submitIntent = networkIntentController.submit
 local processDeferredNetworkIntent = networkIntentController.processDeferred
 local consumeBridge = networkIntentController.consume
 local networkPendingBarrierReason = networkIntentController.pendingBarrierReason
+nativeFingerprintRuntime = nativeFingerprintRuntimeModule.new({
+  getState = function() return state end,
+  submitIntent = submitIntent,
+  exportCheckpoint = exportCheckpointBarrier,
+  diagnosticLog = diagnosticLog,
+})
 
 networkClock = networkClockRuntimeModule.new({
   getState = function() return state end,
@@ -3338,6 +3337,7 @@ local script = {
       and state.tick % cfg.networkBridgeStride == 0 then
       pumpNetworkBridge(true)
     end
+    nativeFingerprintRuntime.maintain(cfg)
   end,
   save = function()
     -- Native saves may be requested independently of our recovery boundary.

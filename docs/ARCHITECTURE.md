@@ -15,7 +15,7 @@ Each Transport Fever 2 process contains two isolated Lua states:
 The companion process orders intents, coordinates all-peer prepare/physical/
 checkpoint barriers, and distributes commits. The native DLL observes or gates
 exact Build 35924 command visitors before an unsupported local mutation can
-escape host authority. Hook `0.19.0` also owns the bounded bridge worker: the
+escape host authority. Hook `0.20.0` also owns the bounded bridge worker: the
 game Lua thread signs and validates protocol envelopes but performs no numbered
 bridge file I/O when the exact hook is active. The native worker transports
 opaque bytes only; it never reads engine entities or applies commands.
@@ -156,7 +156,20 @@ Domain modules under `res/scripts/tpf2_mp`:
   builds the stock/production/transport view without exposing local IDs.
 - `edge_ownership.lua` owns private/public edge custody rules.
 - `proposal_codec.lua` validates and materializes portable construction/edge
-  transactions.
+  transactions. `proposal_schema.lua` is the shared proposal-version seam.
+  `proposal_binding_runtime.lua` performs accepted-transaction-only canonical
+  binding/rebinding and can restore canonical reverse maps, logical owners,
+  and pinned custody atomically after a rejected physical result.
+  `proposal_construction_output_binding.lua` binds compound roots/children and
+  `construction_delta_identity.lua` owns their compact GUI identity attestation.
+- `world_topology_descriptor.lua` produces portable resource/geometry/owner/
+  neighbour descriptors; `topology_fingerprint_rebind.lua` resolves only a
+  unique compatible local object; and `world_topology_runtime.lua` keeps
+  PREPARE discovery read-only while reserving mutation for the rollback journal.
+- `world_native_fingerprint.lua` supplies the category-separated,
+  binding-focused native fingerprint used at ordinary checkpoints.
+  `native_fingerprint_runtime.lua` schedules an ordered sample and escalates
+  every tenth sample to the full whole-world structural inventory.
 - `operation_codec.lua` validates and materializes line and vehicle operation
   schema 4. A bounded stock multi-selection sale is one sorted canonical
   transaction even though the public engine replay primitive remains scalar.
@@ -202,7 +215,11 @@ Runtime-controller modules:
   pass, keeping rejected peer-local input out of the canonical digest.
 - `proposal_runtime.lua` owns proposal prepare/build/finalize, construction
   stabilization, canonical output binding, physical completion, and finance
-  normalization. `construction_depot_connection_graph.lua` owns the derived
+  normalization. `construction_generated_topology.lua` admits only isolated,
+  input-free helper fallbacks, produces an ID-free two-peer attestation for
+  resource-generated airport/terminal graphs, and binds every generated graph
+  child inside the same authored finalisation event so later probes stay
+  read-only with respect to those objects. `construction_depot_connection_graph.lua` owns the derived
   helper-to-road repair graph and reindexes retained node slots before native
   replay; original-to-physical slot mapping is carried back into canonical
   output matching. `network_finance_housekeeping.lua` owns the adaptive cadence
@@ -287,6 +304,14 @@ GUI/native-adapter modules:
   the stock `gameInfo.layout` and the parent of the pause menu's quit button.
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer
   installation, bounded build/line/speed/vehicle capture, and GUI callback lifecycle.
+- `gui_early_build_capture.lua` correlates the pointer-free native proposal
+  captured at `make_cmd::BuildProposal`, `CommandList::Add`, and the tag-15
+  visitor with the same GUI preview. Native topology is authoritative while
+  bounded GUI semantics retain construction parameters, edge-object models,
+  quoted cost, and terrain/alignment fields not independently decoded by the
+  pinned native layout.
+- `gui_proposal_capture_queue.lua` owns delayed result settlement and captures
+  portable identities for exact compound outputs while they are safe to read.
 - `gui_line_command_codec.lua` strictly decodes the pointer-free native line
   envelope, including primary terminals and typed `{station, terminal}`
   alternative-platform selections.
@@ -298,6 +323,8 @@ GUI/native-adapter modules:
   materialization, callback correlation, and result delivery to the engine.
 - `native_hook.lua` parses native status and validates the fail-closed authority
   boundary exposed by the DLL.
+- `native_command_safety_registry.lua` is generated from the single 37-tag
+  command registry and is checked against operation and proposal codecs.
 
 Controllers receive a `getState` callback instead of retaining the initial state
 table. Transport Fever can replace the saved table through `script.load`; a
@@ -453,6 +480,13 @@ captured table reference would therefore mutate stale state after loading.
   exact-profile pointer-free vehicle scalar decoder and V2 encoder.
 - `native_hook_status.cpp` owns the stable native status JSON schema and formats
   a lock-protected view supplied by the hook.
+- `native_build_capture.cpp` decodes the pointer-free geometric/topological
+  BuildProposal projection at factory entry. `native_build_hook_bridge.cpp`
+  correlates the factory result with `CommandList::Add` and the suppressed
+  visitor without exporting native pointers.
+- `native_command_safety.generated.hpp` is generated from
+  `content/native-command-safety-v1.json`; detours consume its suppression and
+  pass-through policy as compile-time constants.
 - `injector.cpp` owns exact-profile verification and DLL injection.
 - `hook_dll.cpp` owns hook installation, visitor gates, capture queues, Lua
   bindings, and the synchronized native state presented to the support modules.
@@ -538,7 +572,10 @@ Vehicle work should follow this path:
 runtime-module boundaries, engine persistence, company mapping, hot-seat,
 GUI/native capture, 1,024-event randomized long replay, first-fault bundle
 fixtures, PowerShell syntax, launcher smoke tests, Python protocol/network
-tests, and cross-language checkpoint replay.
+tests, cross-language checkpoint replay, the generated 37-tag command registry,
+and the 2,848-case static construction corpus. Static corpus coverage and live
+physical proof are reported as separate tiers; see
+`CONSTRUCTION_AUTHORITY.md`.
 
 Native changes additionally require `tools/build_native_hook.ps1`. Release-tree
 or installer changes require `tools/package_release.ps1`, which performs an

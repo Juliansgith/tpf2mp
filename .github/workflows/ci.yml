@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Automated code gate (Lua, Python, PowerShell)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      # The game embeds Lua 5.1 and the suites are written against it. Hosted
+      # runners ship no Lua, so build the stock interpreter once and cache it.
+      - name: Restore Lua 5.1.5 interpreter
+        id: lua-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\lua51
+          key: lua-5.1.5-msvc-${{ runner.os }}-${{ hashFiles('tools/ci/build_lua51.ps1') }}
+
+      - name: Build Lua 5.1.5 interpreter
+        if: steps.lua-cache.outputs.cache-hit != 'true'
+        run: .\tools\ci\build_lua51.ps1 -OutputDirectory "$env:RUNNER_TEMP\lua51"
+
+      - name: Install companion package and test runner
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .\companion pytest
+
+      - name: Run the automated code gate
+        env:
+          TPF2MP_LUA: ${{ runner.temp }}\lua51\lua.exe
+        run: |
+          $env:TPF2MP_PYTHON = (Get-Command python -CommandType Application | Select-Object -First 1).Source
+          .\tools\run_tests.ps1
+
+      - name: Python companion unit tests
+        run: python -m pytest tests -q
+
+  native:
+    name: Native hook build (MSVC x64)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S native -B native/build-ci -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build native/build-ci --config Release --parallel
+
+      # CTest covers the pinned-profile catalog and the DLL refusing to arm in
+      # a process that is not the pinned game. Signature validation against the
+      # real Build 35924 executable needs the game and stays a local gate
+      # (tools/build_native_hook.ps1).
+      - name: Test
+        run: ctest --test-dir native/build-ci -C Release --output-on-failure
+
+      - name: Upload native artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tpf2mp-native-release
+          path: |
+            native/build-ci/Release/tpf2mp_hook_build35924.dll
+            native/build-ci/Release/tpf2mp_injector.exe
+          if-no-files-found: error

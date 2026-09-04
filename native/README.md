@@ -11,7 +11,7 @@ injector. It supports exactly the locally installed Transport Fever 2 Build
 - machine: `AMD64`
 
 The injector and DLL both validate that complete profile. The DLL additionally
-requires 17 unique code signatures at their pinned locations, verifies the
+requires 19 unique code signatures at their pinned locations, verifies the
 same bytes in memory, and checks 31 selected entries in the 37-command visitor
 table before MinHook is initialized. A mismatch produces a `rejected` status
 and no game hook is enabled.
@@ -20,7 +20,8 @@ and no game hook is enabled.
 
 The DLL observes the high-level command-interface setup routine, `lua_setfield`
 binding registration, Lua's base `print` function, `CommandList::Swap`,
-`ApplyCommand`, the tag-15 `BuildProposal` visitor, and 23 additional
+`ApplyCommand`, `make_cmd::BuildProposal`, `CommandList::Add`, the tag-15
+`BuildProposal` visitor, and 23 additional
 consequential-command visitors plus eight autonomous town/industry visitors.
 When sol2 registers
 `api.cmd.sendCommand`, the DLL preserves the original closure without modifying
@@ -43,7 +44,7 @@ mod prefers `api.cmd.make.*` and uses the mirror only as a same-state fallback.
 
 The native command observers decode the `Command`/variant discriminator,
 classify all 37 tags, pair queued commands with their `ApplyCommand` result, and
-record direct applies which bypass `CommandList::Swap`. Hook 0.19.0 retains this
+record direct applies which bypass `CommandList::Swap`. Hook 0.20.0 retains this
 accounting path and adds pinned scalar capture for suppressed SetLine,
 BuyVehicle, lifecycle controls, and ReplaceVehicle plus a complete bounded
 SellVehicle vector before mutation. Reference run
@@ -81,8 +82,12 @@ globals:
 - `tpf2mp_native_take_suppressed_build()` consumes the oldest pointer-free
   `S1|generation|correlation|tag` event. Its 64-entry FIFO faults with a sticky
   `F1` record and discards the ambiguous prefix on overflow;
+- `tpf2mp_native_take_build_factory_capture()` returns the oldest bounded,
+  pointer-free proposal whose factory command was observed by
+  `CommandList::Add` and whose command-data pointer reached the suppressed
+  tag-15 visitor;
 - `tpf2mp_native_build_gate_sample()` returns the versioned constant-size
-  `B2|enabled|suppressed|tagMismatches|lastGeneration|queued|dropped|armedCorrelation`
+  `B3|enabled|suppressed|tagMismatches|lastGeneration|queued|dropped|armedCorrelation|factoryReady|factoryDropped`
   sample used by render-cadence proposal capture without serializing complete
   hook history;
 - `tpf2mp_native_enable_command_gate()` enables rejection for 31 selected tags;
@@ -141,19 +146,23 @@ development (23). The other five have no gameplay authorization path. A helper
 revokes an unused token if Lua command submission throws before reaching the
 visitor, so an unrelated later command cannot inherit it.
 
-The DLL itself deliberately does not understand semantic proposal payloads.
-Prototype 0.21 implements road/track/node plus named edge-object codec schema 5
-and portable construction codec schema 7, canonical translation, GUI-state
-reconstruction, geometric/compound output binding, supported private-ownership
-correction, peer-local company mapping, and two-peer physical completion plus
-canonical-account checkpoint consensus in Lua/Python above this layer. The
-proposal carries the builder's quoted cost; state schema 19 treats native
-wallets as reconciled peer-local caches while making shared-save pre-existing
-ownership canonical rather than peer-local. Signal add/remove and the engine
-primitives for depot/station/asset build, station edit, custody, and removal now
-also have single-process live receipts; full ordinary-UI two-process coverage
-is still the next authority gate. The
-combined stack passed a one-machine canonical
+The DLL now decodes a bounded, pointer-free geometric/topological proposal at
+`make_cmd::BuildProposal` entry, before queueing or simulation mutation. It
+captures nodes, edges/tangents, carrier/resource and ownership scalars,
+removals, edge-object entity lists, frozen indices, segment tags, construction
+resource names/transforms, factory options, and caller/thread evidence. The
+same native command must then pass `CommandList::Add` and the suppressed
+visitor correlation before Lua can consume it. Construction parameter trees,
+edge-object model semantics, quoted cost, and remaining terrain/alignment
+semantics still come from the correlated bounded GUI projection; they are not
+claimed as independently native-decoded fields.
+
+Unreleased development implements road/track/node plus named edge-object codec
+schema 6 and portable construction codec schema 8, canonical translation,
+GUI-state reconstruction, geometric/compound output binding, unique-only
+topology fallback, supported private-ownership correction, peer-local company
+mapping, and two-peer physical completion plus canonical-account checkpoint
+consensus in Lua/Python above this layer. The combined stack passed a one-machine canonical
 electrified-track replay in `runtime/live-validation/20260802-075533` and a
 bidirectional two-real-process localhost replay/checkpoint/600-tick-soak run in
 `runtime/localhost-live/localhost-20260802-175636`.
@@ -167,9 +176,10 @@ paused and autonomy-frozen, so it does not establish running-simulation
 lockstep. See
 `investigation/POPULATED_NETWORK_RECOVERY_AND_MENU_2026-08-03.md`.
 
-It is still not finished simultaneous construction multiplayer: the human
-vanilla-UI capture path has not been proven between two computers, and
-unsupported proposal categories have no codec. A commit acknowledgement is
+Simultaneous construction remains deliberately bounded rather than universal:
+supported vanilla-UI capture has been exercised across localhost and physical
+two-computer relay sessions, while opaque/script-heavy proposal categories
+remain unavailable. A commit acknowledgement is
 provisional: the host blocks dependent work until both pinned peers report the
 same canonical physical result, then emits an ordered success outcome or faults
 the session closed. Success then opens an all-peer format-2 checkpoint barrier
@@ -201,8 +211,8 @@ Accordingly, the hook is useful now for:
 
 - proving command-interface and per-state capability anchors;
 - observing mod-issued command calls without changing their semantics;
-- capturing an original Lua `BuildProposal` envelope before issue when the mod
-  opts into the callback;
+- capturing the native BuildProposal topology at factory entry and correlating
+  it with the queued command, suppressed visitor, and GUI semantic preview;
 - observing all queued and direct native command applies by exact tag;
 - suppressing or one-shot-authorizing a disposable BuildProposal before mutation;
 - suppressing or tag-authorizing selected speed, line, vehicle, terrain, date,
@@ -215,13 +225,15 @@ Accordingly, the hook is useful now for:
 - enforcing the pre-mutation boundary used by the canonical road/track replay
   slice.
 
-It does not make network construction authoritative by itself.
+It does not make every possible network construction authoritative by itself.
 The earlier factory-negative probe was corrected: `api.cmd.make.*` factories
 are callable tables in Build 35924, and documented road and track proposals
 succeeded. The mod now supplies remote/canonical reconstruction for the bounded
-schema-3 slice, fail-closed all-peer completion consensus, and checksummed
-restart planning from the latest agreed checkpoint. Broad semantic capture,
-two-computer human usability, and automatic save recovery remain open.
+schema-6/schema-8 slice, fail-closed all-peer completion consensus, and
+checksummed restart planning from the latest agreed checkpoint. Hybrid
+native/GUI capture, two-computer relay use, and automatic paired save recovery
+are implemented; multi-hour certification and arbitrary scripted-content
+compatibility remain open.
 
 ## Build and verify
 
@@ -275,6 +287,10 @@ world while this component is experimental.
 - `src/injector.cpp`: exact-profile verification and remote `LoadLibraryW`.
 - `src/hook_dll.cpp`: fail-closed Lua/command hooks, timelines, mirrors,
   BuildProposal gate, and 31-tag consequential/autonomy command gate.
+- `src/native_build_capture.cpp`: bounded Build 35924 proposal-layout decoder.
+- `src/native_build_hook_bridge.cpp`: factory/Add/visitor correlation queue.
+- `include/tpf2mp/native_command_safety.generated.hpp`: generated 37-tag
+  suppression, UI-result, replay, ownership, cost, and postcondition policy.
 - `tests/`: profile and fail-closed-load tests.
 - `third_party/minhook`: official MinHook v1.3.4 at commit
   `c3fcafdc10146beb5919319d0683e44e3c30d537`, BSD-2-Clause.

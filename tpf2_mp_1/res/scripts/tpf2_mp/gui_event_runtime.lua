@@ -17,6 +17,7 @@ local proposalPredicates = require "tpf2_mp/gui_proposal_predicates"
 local buildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
 local buildCorrelationModule = require "tpf2_mp/gui_build_correlation"
 local guiBuildCaptureRuntimeModule = require "tpf2_mp/gui_build_capture_runtime"
+local guiEarlyBuildCaptureModule = require "tpf2_mp/gui_early_build_capture"
 local guiClockCapturePolicyModule = require "tpf2_mp/gui_clock_capture_policy"
 local M = {}
 function M.new(deps)
@@ -256,6 +257,8 @@ function M.new(deps)
     maximumAgeFrames = 600,
     clearConstructionCache = clearConstructionPreviewCache,
   })
+  local earlyBuildCapture = guiEarlyBuildCaptureModule.new()
+  gui.nativeEarlyBuildCapture = earlyBuildCapture.status()
   gui.invalidateBuildCorrelation = function(reason, flags)
     local previousCorrelation = gui.buildCorrelation and gui.buildCorrelation.activeCorrelation or nil
     buildCorrelation.invalidate(reason, flags)
@@ -365,6 +368,9 @@ function M.new(deps)
           toolGeneration = pending.toolGeneration,
           actionFamily = pending.family,
           nativeSuppressionGeneration = pending.nativeSuppressionGeneration,
+          nativeFactoryGeneration = pending.nativeFactoryGeneration,
+          nativeFactoryCallerType = pending.nativeFactoryCallerType,
+          nativeFactoryCaptureError = pending.nativeFactoryCaptureError,
           previewAgeFrames = math.max(0, gui.frames - (pending.frame or gui.frames)),
           suppressionWaitFrames = math.max(0,
             gui.frames - (pending.suppressionDetectedFrame or gui.frames)),
@@ -429,6 +435,7 @@ function M.new(deps)
     gui = gui,
     sampler = buildGateSampler,
     correlation = buildCorrelation,
+    earlyCapture = earlyBuildCapture,
     queueCapture = queueNetworkProposalCapture,
     captureFailure = nativeBuildCaptureFailure,
     renderGui = renderGui,

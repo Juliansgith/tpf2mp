@@ -236,6 +236,9 @@ function M.read(options)
         or source.operationalSampleTicks, 120)),
     networkSoakTicks = math.max(60, util.integer(
       readEnvironment("TPF2MP_NETWORK_SOAK_TICKS") or source.networkSoakTicks, 300)),
+    nativeFingerprintTicks = math.max(300, util.integer(
+      readEnvironment("TPF2MP_NATIVE_FINGERPRINT_TICKS")
+        or source.nativeFingerprintTicks, 1800)),
     networkClockRunTicks = math.max(30, util.integer(
       readEnvironment("TPF2MP_NETWORK_CLOCK_RUN_TICKS")
         or source.networkClockRunTicks, 30)),

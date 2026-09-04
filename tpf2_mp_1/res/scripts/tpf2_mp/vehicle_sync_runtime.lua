@@ -5,6 +5,7 @@ local world = require "tpf2_mp/world"
 local vehicleSyncState = require "tpf2_mp/vehicle_sync_state"
 local vehicleSyncPassengers = require "tpf2_mp/vehicle_sync_passengers"
 local vehicleSyncReleaseRuntime = require "tpf2_mp/vehicle_sync_release_runtime"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 local M, disabledSchedule = {}, vehicleSyncState.disabledSchedule
 
 M.digestView = vehicleSyncState.digestView
@@ -29,13 +30,7 @@ function M.new(deps)
   local commandFactory = deps.commandFactory or util.commandFactory
   local sendCommand = deps.sendCommand or util.sendCommand
   local authorizeCommand = deps.authorizeCommand or function(tag)
-    local authorize = rawget(_G, "tpf2mp_native_authorize_command")
-    if type(authorize) ~= "function" then
-      return false, "native command authorization is unavailable"
-    end
-    local called, accepted, err = pcall(authorize, tostring(tag))
-    if not called or accepted == false then return false, tostring(err or accepted) end
-    return true
+    return nativeCommandAuthority.authorize(tag, true)
   end
   local emit = deps.emit or function(kind, payload, tick)
     return bridge.emit(getState().bridge, kind, payload, tick)

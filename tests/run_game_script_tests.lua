@@ -28,18 +28,21 @@ tpf2mp_native_authorize_command = function(tag) authorizedCommandTags[#authorize
 tpf2mp_native_revoke_command = function() end
 tpf2mp_native_arm_build_correlation = function() end
 tpf2mp_native_take_suppressed_build = function() return nil end
+tpf2mp_native_take_build_factory_capture = function() return nil end
 tpf2mp_native_status = function()
   return {
-    hookVersion = "0.19.0",
+    hookVersion = "0.20.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
       enabled = true,
       buildProposalVisitor = true,
+      makeBuildProposal = true,
+      commandListAdd = true,
       authorityCommandVisitors = 31,
     },
     gates = {
-      buildProposal = { enabled = buildGateEnabled, tagMismatches = 0,
+      buildProposal = { enabled = buildGateEnabled, tagMismatches = 0, factoryCapture = { dropped = 0 },
         suppressedQueue = { queued = 0, captured = 0, consumed = 0, dropped = 0 } },
       commandVisitors = {
         enabled = commandGateEnabled,

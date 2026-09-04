@@ -28,6 +28,71 @@ SUPPORTED_CHECKPOINT_VERSIONS = {1, 2, 3, 4, CHECKPOINT_VERSION}
 EVENT_RECORD_VERSION = 1
 
 
+def _validate_native_fingerprint(value: Any, expected_digest: Any) -> dict[str, Any]:
+    fingerprint = _mapping(value, "checkpoint native fingerprint")
+    schema = fingerprint.get("schemaVersion")
+    required = {"schemaVersion", "categories", "counts", "digest"}
+    optional: set[str] = set()
+    if schema == 2:
+        required.add("inventoryComplete")
+        optional.add("inventory")
+    if schema not in {1, 2} or not required <= set(fingerprint) \
+            or set(fingerprint) - required - optional:
+        raise ProtocolError("checkpoint native fingerprint header is invalid")
+    categories = _mapping(fingerprint.get("categories"), "native fingerprint categories")
+    counts = _mapping(fingerprint.get("counts"), "native fingerprint counts")
+    expected = {"edges", "constructions", "vehicles", "autonomous", "other"}
+    if set(categories) != expected or set(counts) != expected:
+        raise ProtocolError("checkpoint native fingerprint categories are incomplete")
+    for name, digest in categories.items():
+        if not isinstance(digest, str) or len(digest) != 8 \
+                or any(character not in "0123456789abcdef" for character in digest):
+            raise ProtocolError(f"native fingerprint {name} digest is invalid")
+    for name, count in counts.items():
+        if _positive_int(count, f"native fingerprint {name} count") > 10_000_000:
+            raise ProtocolError("native fingerprint entity count is too large")
+    if schema == 2:
+        complete = fingerprint.get("inventoryComplete")
+        if not isinstance(complete, bool) or complete != ("inventory" in fingerprint):
+            raise ProtocolError("checkpoint native fingerprint inventory state is invalid")
+        if complete:
+            inventory = _mapping(fingerprint["inventory"], "native fingerprint inventory")
+            if set(inventory) != {"counts", "geometry"}:
+                raise ProtocolError("native fingerprint inventory fields are invalid")
+            inventory_counts = _mapping(inventory["counts"], "native fingerprint inventory counts")
+            expected_inventory = {
+                "edges": {"node", "edge", "edge_object"},
+                "constructions": {"construction", "asset", "station", "station_group", "depot"},
+                "vehicles": {"line", "vehicle"},
+            }
+            if set(inventory_counts) != set(expected_inventory):
+                raise ProtocolError("native fingerprint inventory categories are incomplete")
+            for category, fields in expected_inventory.items():
+                values = _mapping(
+                    inventory_counts[category],
+                    f"native fingerprint {category} inventory",
+                )
+                if set(values) != fields:
+                    raise ProtocolError("native fingerprint inventory kinds are incomplete")
+                for kind, count in values.items():
+                    if _positive_int(count, f"native fingerprint {kind} inventory count") \
+                            > 10_000_000:
+                        raise ProtocolError("native fingerprint inventory count is too large")
+            geometry = _mapping(inventory["geometry"], "native fingerprint inventory geometry")
+            if set(geometry) != {"node", "edge"}:
+                raise ProtocolError("native fingerprint inventory geometry is incomplete")
+            for kind, digest in geometry.items():
+                if not isinstance(digest, str) or len(digest) != 8 \
+                        or any(character not in "0123456789abcdef" for character in digest):
+                    raise ProtocolError(f"native fingerprint {kind} inventory digest is invalid")
+    digest_view = dict(fingerprint)
+    claimed = digest_view.pop("digest", None)
+    actual = checksum(digest_view)
+    if claimed != actual or expected_digest != actual:
+        raise ProtocolError("checkpoint native fingerprint digest mismatch")
+    return fingerprint
+
+
 def _mapping(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ProtocolError(f"{name} is not an object")
@@ -553,6 +618,13 @@ def verify_checkpoint(payload: Mapping[str, Any]) -> dict[str, Any]:
         ]
     if "structuralDigest" in checkpoint:
         convergence_view["structuralDigest"] = checkpoint["structuralDigest"]
+    if "nativeFingerprint" in checkpoint or "nativeFingerprintDigest" in checkpoint:
+        if "nativeFingerprint" not in checkpoint or "nativeFingerprintDigest" not in checkpoint:
+            raise ProtocolError("checkpoint native fingerprint is incomplete")
+        native_fingerprint = _validate_native_fingerprint(
+            checkpoint["nativeFingerprint"], checkpoint["nativeFingerprintDigest"]
+        )
+        convergence_view["nativeFingerprintDigest"] = native_fingerprint["digest"]
     if "worldManifestDigest" in checkpoint:
         manifest_digest = checkpoint["worldManifestDigest"]
         if not isinstance(manifest_digest, str) or len(manifest_digest) != 8:

@@ -148,6 +148,11 @@ local function signature(gameApi, id, kind)
     if street then
       value.carrier = "street"
       value.resource = resourceIdentity(safeField(street, "streetType"))
+      value.bus = safeField(street, "hasBus") == true
+      value.tramTrackType = integer(safeField(street, "tramTrackType"))
+      if value.tramTrackType == nil then
+        return nil, "BASE_EDGE_STREET tram-track type is unavailable"
+      end
     elseif track then
       value.carrier = "track"
       value.resource = resourceIdentity(safeField(track, "trackType"))

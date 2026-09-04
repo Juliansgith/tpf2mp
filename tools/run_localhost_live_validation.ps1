@@ -7,7 +7,7 @@ param(
     [ValidateRange(120, 3600)][int]$TimeoutSeconds = 900,
     [ValidateRange(30, 600)][int]$ConsensusTimeoutSeconds = 180,
     [ValidateSet('full', 'connected-terminal', 'connected-road-depot', 'connected-tram-depot',
-        'second-station')]
+        'second-station', 'air-route', 'tram-route')]
     [string]$ValidationSlice = 'full',
     [string]$GameExecutable,
     [string]$LocalModsPath,
@@ -359,11 +359,29 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
     # Build 35924's Vulkan/UI startup can enter its Internal error path when
     # created minimized, while a hidden window has no targetable main handle.
     # Use an ordinary window; the exact-PID helper may foreground it briefly.
-    $started = Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle Normal -PassThru `
-        -ArgumentList @('--script', $bootstrapRelative)
-    $policy = Set-Tpf2mpLocalhostProcessPolicy $started $Peer $LocalhostPerformanceProfile
-    if ($policy) { $script:processPolicies[$Peer] = $policy }
-    return $started
+    for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $started = Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle Normal -PassThru `
+            -ArgumentList @('--script', $bootstrapRelative)
+        try {
+            $policy = Set-Tpf2mpLocalhostProcessPolicy $started $Peer $LocalhostPerformanceProfile
+            if ($policy) { $script:processPolicies[$Peer] = $policy }
+            return $started
+        }
+        catch {
+            try { $started.Refresh() } catch { }
+            $earlyExit = $started.HasExited
+            if (-not $earlyExit -or $attempt -ge 2) { throw }
+            $exitCode = $started.ExitCode
+            $attemptLog = Join-Path $runRoot ("$Peer-launch-attempt-$attempt-shared-stdout.txt")
+            if (Test-Path -LiteralPath $sharedLog -PathType Leaf) {
+                Copy-Item -LiteralPath $sharedLog -Destination $attemptLog -Force -ErrorAction SilentlyContinue
+            }
+            Write-Warning ("$Peer renderer exited with code $exitCode during pre-world startup; " +
+                "retrying once after the shared Transport Fever cache settles.")
+            Initialize-Tpf2mpMenuBridge -BridgePath $BridgePath | Out-Null
+            Start-Sleep -Seconds 3
+        }
+    }
 }
 
 function Set-LocalhostLabWindowLayout {
@@ -1752,7 +1770,7 @@ try {
                 throw "Native status is missing for PID $($gameProcess.Id)"
             }
             $native = Get-Content -LiteralPath $nativePath -Raw | ConvertFrom-Json
-            if ($native.hookVersion -ne '0.19.0' `
+            if ($native.hookVersion -ne '0.20.0' `
                 -or $native.active -ne $true -or $native.hooks.enabled -ne $true `
                 -or $native.gates.buildProposal.enabled -ne $true `
                 -or $native.gates.commandVisitors.enabled -ne $true `
@@ -1875,6 +1893,8 @@ try {
         'connected-road-depot' = 'connected-road-depot-bus-checkpoint-consensus'
         'connected-tram-depot' = 'connected-tram-depot-created-complete-graph'
         'second-station' = 'second-station-collateral-retired'
+        'air-route' = 'air-route-vehicle-assigned'
+        'tram-route' = 'tram-route-vehicle-assigned'
     }[$ValidationSlice]
     if ($sliceProofCheck) {
         foreach ($peer in @('player1', 'player2')) {

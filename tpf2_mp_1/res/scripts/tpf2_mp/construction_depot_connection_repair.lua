@@ -67,16 +67,52 @@ local function internalNode(transaction, construction)
   return ranked[1].node
 end
 
-local function findObservedNode(expected, observed)
+local function constructionOrigin(construction)
+  local transform = type(construction) == "table" and construction.transform or nil
+  if type(transform) ~= "table" then return nil end
+  local position = {
+    x = tonumber(transform[13]), y = tonumber(transform[14]), z = tonumber(transform[15]),
+  }
+  return position.x and position.y and position.z and position or nil
+end
+
+local function findObservedNode(expected, observed, construction)
   local matches = {}
   for _, node in ipairs(observed or {}) do
     local distance = squaredDistance(expected.position, node.position)
     if distance and distance <= 0.25 then matches[#matches + 1] = node end
   end
+  if #matches == 1 then return matches[1] end
+  if #matches > 1 then
+    return nil, "helper depot exposed ambiguous construction-internal nodes"
+  end
+
+  -- Construction helpers derive their internal snap node from the root
+  -- transform, not from our separately captured edge height. On uneven land
+  -- those two z values may legitimately differ. Recover only when the helper
+  -- shell is otherwise exact and one nearby node is uniquely closest to the
+  -- construction origin; the bounded expected-position check keeps this from
+  -- turning into a permissive nearest-object search.
+  local origin = constructionOrigin(construction)
+  local ranked = {}
+  for _, node in ipairs(observed or {}) do
+    local expectedDistance = squaredDistance(expected.position, node.position)
+    local originDistance = origin and squaredDistance(origin, node.position) or nil
+    if expectedDistance and expectedDistance <= 16 and originDistance then
+      ranked[#ranked + 1] = { node = node, distance = originDistance }
+    end
+  end
+  table.sort(ranked, function(a, b)
+    if a.distance ~= b.distance then return a.distance < b.distance end
+    return tonumber(a.node.localId) < tonumber(b.node.localId)
+  end)
+  if #ranked == 1 or (ranked[2]
+      and ranked[2].distance - ranked[1].distance > 0.01) then
+    return ranked[1].node
+  end
   if #matches ~= 1 then
     return nil, "helper depot did not expose one construction-internal node"
   end
-  return matches[1]
 end
 
 local function edgeTouches(edge, position)
@@ -108,7 +144,8 @@ function M.stage(record, pending, deps)
   end
   local expectedInternal, internalError = internalNode(transaction, construction)
   if not expectedInternal then return nil, internalError end
-  local observedInternal, observedError = findObservedNode(expectedInternal, nodes)
+  local observedInternal, observedError = findObservedNode(
+    expectedInternal, nodes, construction)
   if not observedInternal then return nil, observedError end
   if not edgeTouches(edges[1], observedInternal.position) then
     return nil, "helper depot edge is detached from its construction-internal node"
@@ -132,6 +169,7 @@ function M.stage(record, pending, deps)
   pending.depotConnectionRepair = {
     internalNodeSlot = expectedInternal.slot,
     internalNodeId = tonumber(observedInternal.localId),
+    sourceInternalPosition = util.deepCopy(expectedInternal.position),
     helperInternalPosition = util.deepCopy(observedInternal.position),
     helperExternalPosition = util.deepCopy((function()
       for _, node in ipairs(nodes) do
@@ -175,11 +213,25 @@ function M.materialise(record, codec, apiValue)
     resolveLocal = function(cid) return localRefs[cid] end,
   })
   if not proposal then return nil, materialisation end
+  local repair = record.constructionPending.depotConnectionRepair
+  local sourceEdge, derivedEdge = record.transaction.edges[1], result.edges[1]
   return proposal, {
     transaction = result,
     materialisation = materialisation,
+    -- The derived repair graph introduces a synthetic canonical reference for
+    -- the helper-owned external snap node.  Keep the graph-specific mapping
+    -- with the materialisation so the pre-issue topology guard attests the
+    -- same live node that codec.materialise resolved above.
+    localRefs = localRefs,
     expectedNodes = #(result.nodes or {}),
     expectedEdges = #(result.edges or {}),
+    repairGeometry = {
+      sourceInternalPosition = util.deepCopy(repair.sourceInternalPosition),
+      helperInternalPosition = util.deepCopy(repair.helperInternalPosition),
+      helperExternalPosition = util.deepCopy(repair.helperExternalPosition),
+      sourceTangent = sourceEdge and util.deepCopy(sourceEdge.tangent0) or nil,
+      derivedTangent = derivedEdge and util.deepCopy(derivedEdge.tangent0) or nil,
+    },
   }
 end
 

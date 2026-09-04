@@ -1,8 +1,10 @@
 #include "tpf2mp/native_common.hpp"
 #include "tpf2mp/native_async_bridge.hpp"
 #include "tpf2mp/native_binding_catalog.hpp"
+#include "tpf2mp/native_build_capture.hpp"
 #include "tpf2mp/native_build_correlation.hpp"
 #include "tpf2mp/native_command_codec.hpp"
+#include "tpf2mp/native_command_safety.generated.hpp"
 #include "tpf2mp/native_hook_status.hpp"
 #include "tpf2mp/native_launcher_barrier.hpp"
 
@@ -132,7 +134,10 @@ int main(int argc, char** argv) {
     std::cerr << "native Lua binding catalog is invalid\n";
     return 1;
   }
-  static_assert(tpf2mp::profile::kSignatures.size() == 16);
+  static_assert(tpf2mp::profile::kSignatures.size() == 18);
+  static_assert(tpf2mp::profile::kMakeBuildProposalRva == 0x009DC750);
+  static_assert(tpf2mp::profile::kProposalConstructionTransformOffset == 0x728);
+  static_assert(tpf2mp::profile::kCommandListAddRva == 0x009D2A00);
   static_assert(tpf2mp::profile::kAuthorityCommandVisitors.size() == 31);
   static_assert(tpf2mp::profile::kSetGameSpeedValueOffset == 0);
   static_assert(tpf2mp::profile::kSetGameSpeedMinimum == 0);
@@ -187,6 +192,40 @@ int main(int argc, char** argv) {
       tpf2mp::native_command::CommandTypeName(99) != "unknown") {
     std::cerr << "native command tag names are invalid\n";
     return 1;
+  }
+  for (std::size_t tag = 0;
+       tag < tpf2mp::native_command::kCommandSafetyRegistry.size(); ++tag) {
+    const auto& policy = tpf2mp::native_command::kCommandSafetyRegistry[tag];
+    if (policy.tag != tag || policy.name != tpf2mp::native_command::CommandTypeName(
+                                            static_cast<int>(tag)) ||
+        policy.capture_point.empty() || policy.replay.empty() ||
+        (policy.visitor_hook && !policy.suppression_safe &&
+         !policy.optimistic_pass_through)) {
+      std::cerr << "generated native command safety registry is invalid at tag "
+                << tag << "\n";
+      return 1;
+    }
+  }
+  for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
+    if (!tpf2mp::native_command::kCommandSafetyRegistry[visitor.tag].visitor_hook) {
+      std::cerr << "native visitor bypasses the command safety registry\n";
+      return 1;
+    }
+  }
+  for (const auto& policy : tpf2mp::native_command::kCommandSafetyRegistry) {
+    if (!policy.visitor_hook) continue;
+    // BuildProposal has its dedicated typed detour and pre-mutation factory
+    // correlation rather than the generic authority-visitor table.
+    if (policy.tag == 15) continue;
+    const auto declared = std::find_if(
+        tpf2mp::profile::kAuthorityCommandVisitors.begin(),
+        tpf2mp::profile::kAuthorityCommandVisitors.end(),
+        [&policy](const auto& visitor) { return visitor.tag == policy.tag; });
+    if (declared == tpf2mp::profile::kAuthorityCommandVisitors.end()) {
+      std::cerr << "registry declares an uninstalled native visitor at tag "
+                << policy.tag << "\n";
+      return 1;
+    }
   }
   std::array<std::uint8_t, tpf2mp::profile::kDeleteLineMinimumSize> delete_command{};
   const std::int32_t expected_line = 42;
@@ -514,6 +553,148 @@ int main(int argc, char** argv) {
     std::cerr << "native build correlation token parser is invalid\n";
     return 1;
   }
+  std::array<std::uint8_t, tpf2mp::profile::kProposalMinimumReadableSize>
+      native_proposal{};
+  std::array<std::uint8_t, tpf2mp::profile::kProposalNodeRecordSize> captured_node{};
+  std::array<std::uint8_t, tpf2mp::profile::kProposalEdgeRecordSize> captured_edge{};
+  std::array<std::uint8_t, tpf2mp::profile::kProposalConstructionRecordSize>
+      captured_construction{};
+  const float node_x = 12.5F, node_y = -4.25F, node_z = 7.0F;
+  const std::uint32_t node_flags = 0x7F00;
+  const std::int32_t node_type = 1, node_entity = -3;
+  std::memcpy(captured_node.data() + 0x00, &node_x, sizeof(node_x));
+  std::memcpy(captured_node.data() + 0x04, &node_y, sizeof(node_y));
+  std::memcpy(captured_node.data() + 0x08, &node_z, sizeof(node_z));
+  std::memcpy(captured_node.data() + 0x0C, &node_flags, sizeof(node_flags));
+  std::memcpy(captured_node.data() + 0x10, &node_type, sizeof(node_type));
+  std::memcpy(captured_node.data() + 0x14, &node_entity, sizeof(node_entity));
+  const std::int32_t edge_entity = -4, edge_node0 = -3, edge_node1 = 9;
+  const float tangent = 2.5F;
+  const std::int32_t carrier = 1, track_type = 2, player = 7;
+  const std::uint32_t edge_flags = 1, player_owned = 1;
+  std::memcpy(captured_edge.data() + 0x00, &edge_entity, sizeof(edge_entity));
+  std::memcpy(captured_edge.data() + 0x08, &edge_node0, sizeof(edge_node0));
+  std::memcpy(captured_edge.data() + 0x0C, &edge_node1, sizeof(edge_node1));
+  std::memcpy(captured_edge.data() + 0x10, &tangent, sizeof(tangent));
+  std::memcpy(captured_edge.data() + 0x20, &tangent, sizeof(tangent));
+  std::memcpy(captured_edge.data() + 0x48, &carrier, sizeof(carrier));
+  std::memcpy(captured_edge.data() + 0x60, &track_type, sizeof(track_type));
+  std::memcpy(captured_edge.data() + 0x64, &edge_flags, sizeof(edge_flags));
+  std::memcpy(captured_edge.data() + 0x70, &player, sizeof(player));
+  std::memcpy(captured_edge.data() + 0x74, &player_owned, sizeof(player_owned));
+  constexpr char construction_name[] = "station.con";
+  const std::uint64_t construction_name_size = sizeof(construction_name) - 1;
+  const std::uint64_t construction_name_capacity = 15;
+  std::memcpy(captured_construction.data(), construction_name,
+              construction_name_size);
+  std::memcpy(captured_construction.data() + 0x10, &construction_name_size,
+              sizeof(construction_name_size));
+  std::memcpy(captured_construction.data() + 0x18, &construction_name_capacity,
+              sizeof(construction_name_capacity));
+  const std::array<float, 16> construction_transform{
+      1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 125, -20, 3, 1};
+  std::memcpy(captured_construction.data() +
+                  tpf2mp::profile::kProposalConstructionTransformOffset,
+              construction_transform.data(), sizeof(construction_transform));
+  const tpf2mp::native_command::NativeVectorLayout captured_node_layout{
+      captured_node.data(), captured_node.data() + captured_node.size(),
+      captured_node.data() + captured_node.size()};
+  const tpf2mp::native_command::NativeVectorLayout captured_edge_layout{
+      captured_edge.data(), captured_edge.data() + captured_edge.size(),
+      captured_edge.data() + captured_edge.size()};
+  const tpf2mp::native_command::NativeVectorLayout captured_construction_layout{
+      captured_construction.data(),
+      captured_construction.data() + captured_construction.size(),
+      captured_construction.data() + captured_construction.size()};
+  std::memcpy(native_proposal.data() + tpf2mp::profile::kProposalAddedNodesOffset,
+              &captured_node_layout, sizeof(captured_node_layout));
+  std::memcpy(native_proposal.data() + tpf2mp::profile::kProposalAddedEdgesOffset,
+              &captured_edge_layout, sizeof(captured_edge_layout));
+  std::memcpy(native_proposal.data() +
+                  tpf2mp::profile::kProposalConstructionsAddOffset,
+              &captured_construction_layout, sizeof(captured_construction_layout));
+  tpf2mp::native_build::BuildFactoryCaptureQueue factory_queue(4, 2);
+  auto factory_capture = factory_queue.Decode(
+      native_proposal.data(), 707, 0x459E97, 11, true, false);
+  std::array<std::uint8_t, sizeof(void*)> command{};
+  const void* command_data = native_proposal.data();
+  std::memcpy(command.data(), &command_data, sizeof(command_data));
+  factory_queue.Commit(std::move(factory_capture), command.data(), command_data);
+  factory_queue.ObserveAdd(command.data(), 0x459EB7, 12);
+  if (!factory_queue.PromoteSuppressed(command_data)) {
+    std::cerr << "native BuildProposal factory/Add/visitor correlation failed\n";
+    return 1;
+  }
+  const auto encoded_factory_capture = factory_queue.TakeEncoded();
+  if (!encoded_factory_capture ||
+      encoded_factory_capture->find("\"correlation\":707") == std::string::npos ||
+      encoded_factory_capture->find("\"callerType\":\"street-builder\"") ==
+          std::string::npos ||
+      encoded_factory_capture->find("\"e\":-3,\"x\":12.5") == std::string::npos ||
+      encoded_factory_capture->find("\"trackType\":2") == std::string::npos ||
+      encoded_factory_capture->find("\"fileName\":\"station.con\"") ==
+          std::string::npos ||
+      encoded_factory_capture->find(
+          "\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,125,-20,3,1]") ==
+          std::string::npos ||
+      factory_queue.stats().decoded != 1 || factory_queue.stats().add_matches != 1 ||
+      factory_queue.stats().suppressed_matches != 1 ||
+      factory_queue.stats().consumed != 1) {
+    std::cerr << "pre-mutation native BuildProposal capture is invalid\n";
+    return 1;
+  }
+  {
+    tpf2mp::native_build::BuildFactoryCaptureQueue lifecycle_queue(1, 2);
+    tpf2mp::native_build::BuildFactoryCapture first{};
+    first.valid = true;
+    first.correlation = 801;
+    int first_command = 1;
+    int first_data = 2;
+    lifecycle_queue.Commit(std::move(first), &first_command, &first_data);
+    tpf2mp::native_build::BuildFactoryCapture second{};
+    second.valid = true;
+    second.correlation = 802;
+    int second_command = 3;
+    int second_data = 4;
+    lifecycle_queue.Commit(std::move(second), &second_command, &second_data);
+    if (lifecycle_queue.stats().orphaned != 1 ||
+        lifecycle_queue.stats().dropped != 0 || lifecycle_queue.has_ready()) {
+      std::cerr << "pending factory-capture retirement became a sticky evidence fault\n";
+      return 1;
+    }
+    lifecycle_queue.ObserveAdd(&second_command, 0x100, 4);
+    if (!lifecycle_queue.DiscardObserved(&second_data) ||
+        lifecycle_queue.stats().retired != 1 ||
+        lifecycle_queue.stats().pending != 0 || lifecycle_queue.has_ready()) {
+      std::cerr << "authorized factory capture was not retired cleanly\n";
+      return 1;
+    }
+  }
+  {
+    tpf2mp::native_build::BuildFactoryCaptureQueue reuse_queue(4, 2);
+    int reused_command = 1;
+    int reused_data = 2;
+    tpf2mp::native_build::BuildFactoryCapture stale{};
+    stale.valid = true;
+    stale.correlation = 901;
+    reuse_queue.Commit(std::move(stale), &reused_command, &reused_data);
+    tpf2mp::native_build::BuildFactoryCapture newest{};
+    newest.valid = true;
+    newest.correlation = 902;
+    reuse_queue.Commit(std::move(newest), &reused_command, &reused_data);
+    reuse_queue.ObserveAdd(&reused_command, 0x200, 5);
+    if (!reuse_queue.PromoteSuppressed(&reused_data)) {
+      std::cerr << "reused command-data pointer did not correlate\n";
+      return 1;
+    }
+    const auto newest_encoded = reuse_queue.TakeEncoded();
+    if (!newest_encoded ||
+        newest_encoded->find("\"correlation\":902") == std::string::npos ||
+        reuse_queue.stats().orphaned != 1) {
+      std::cerr << "reused command-data pointer selected stale capture\n";
+      return 1;
+    }
+  }
   const std::string status_stage = "test";
   const std::string status_error;
   const std::filesystem::path status_dll = L"test.dll";
@@ -523,6 +704,7 @@ int main(int argc, char** argv) {
   tpf2mp::native_command::TagCounts status_tags{};
   std::deque<tpf2mp::native_status::CompletedNativeCommand> status_events;
   std::map<void*, tpf2mp::native_status::LuaStateObservation> status_states;
+  const tpf2mp::native_build::BuildCaptureStats status_build_capture{};
   const auto status_json = tpf2mp::native_status::SerializeHookStatus(
       tpf2mp::native_status::HookStatusView{
           .process_id = 7,
@@ -543,6 +725,7 @@ int main(int argc, char** argv) {
            .suppressed_build_last_generation = 9,
            .suppressed_build_armed_correlation = 44,
            .suppressed_build_last_correlation = 43,
+          .build_factory_capture = status_build_capture,
           .command_gate_authorizations = status_tags,
           .command_gate_allowed = status_tags,
           .command_gate_suppressed = status_tags,
@@ -551,7 +734,7 @@ int main(int argc, char** argv) {
           .states = status_states,
       });
   if (status_json.find("\"schemaVersion\":1") == std::string::npos ||
-      status_json.find("\"hookVersion\":\"0.19.0\"") == std::string::npos ||
+      status_json.find("\"hookVersion\":\"0.20.0\"") == std::string::npos ||
       status_json.find("\"processId\":7") == std::string::npos ||
       status_json.find("\"stage\":\"test\"") == std::string::npos ||
       status_json.find("\"lastGeneration\":9") == std::string::npos ||

@@ -1,10 +1,6 @@
-local M = {}
+local sampleCodec = require "tpf2_mp/gui_build_gate_sample_codec"
 
-local function nonNegativeInteger(value)
-  local number = tonumber(value)
-  if not number or number < 0 or number ~= math.floor(number) then return nil end
-  return number
-end
+local M = {}
 
 function M.new(fullStatus)
   assert(type(fullStatus) == "function", "full native-status fallback is required")
@@ -24,32 +20,14 @@ function M.new(fullStatus)
       stats.invalidSamples = stats.invalidSamples + 1
       return false, tostring(raw)
     end
-    local version, enabled, suppressed, mismatches, generation, queued, dropped, armed
-    if type(raw) == "string" then
-      enabled, suppressed, mismatches, generation, queued, dropped, armed =
-        raw:match("^B2|([01])|(%d+)|(%d+)|(%d+)|(%d+)|(%d+)|(%d+)$")
-      if enabled then version = 2 else
-        enabled, suppressed, mismatches = raw:match("^B1|([01])|(%d+)|(%d+)$")
-        if enabled then version = 1; stats.legacySamples = stats.legacySamples + 1 end
-      end
-    end
-    suppressed, mismatches = nonNegativeInteger(suppressed), nonNegativeInteger(mismatches)
-    if not enabled or suppressed == nil or mismatches == nil then
+    local decoded, decodeError, legacy = sampleCodec.decode(raw)
+    if not decoded then
       stats.invalidSamples = stats.invalidSamples + 1
-      return false, "native build-gate sample is invalid"
+      return false, decodeError
     end
+    if legacy then stats.legacySamples = stats.legacySamples + 1 end
     stats.fastSamples = stats.fastSamples + 1
-    return {
-      enabled = enabled == "1",
-      suppressed = suppressed,
-      tagMismatches = mismatches,
-      sampleVersion = version,
-      lastGeneration = nonNegativeInteger(generation),
-      queued = nonNegativeInteger(queued),
-      dropped = nonNegativeInteger(dropped),
-      armedCorrelation = nonNegativeInteger(armed),
-      source = "native-fast-sample",
-    }
+    return decoded
   end
 
   local function sample()
@@ -63,6 +41,11 @@ function M.new(fullStatus)
       if type(gate.suppressedQueue) == "table" then
         gate.correlationQueueAvailable = true
         gate.dropped = gate.dropped or gate.suppressedQueue.dropped
+      end
+      if type(gate.factoryCapture) == "table" then
+        gate.factoryCaptureAvailable = true
+        gate.factoryReady = gate.factoryCapture.ready
+        gate.factoryDropped = gate.factoryCapture.dropped
       end
     end
     if gate.enabled ~= true then return nil, "native BuildProposal gate is disabled" end
@@ -96,8 +79,7 @@ function M.new(fullStatus)
         return nil, fault .. " (dropped " .. tostring(dropped) .. ")"
       end
       local generation, correlation, tag = raw:match("^S1|(%d+)|(%d+)|(-?%d+)$")
-      generation, correlation, tag = nonNegativeInteger(generation),
-        nonNegativeInteger(correlation), tonumber(tag)
+      generation, correlation, tag = tonumber(generation), tonumber(correlation), tonumber(tag)
       if generation == nil or correlation == nil or tag == nil or tag ~= math.floor(tag) then
         stats.invalidSamples = stats.invalidSamples + 1
         return nil, "native suppressed-build event is invalid"

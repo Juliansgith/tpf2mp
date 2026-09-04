@@ -1,5 +1,6 @@
 local util = require "tpf2_mp/util"
 local calendarModel = require "tpf2_mp/calendar_model"
+local nativeCommandAuthority = require "tpf2_mp/native_command_authority"
 
 local M = {}
 
@@ -10,11 +11,7 @@ function M.new(deps)
   local commandFactory = deps.commandFactory or util.commandFactory
   local sendCommand = deps.sendCommand or util.sendCommand
   local authorizeCommand = deps.authorizeCommand or function(tag)
-    local authorize = rawget(_G, "tpf2mp_native_authorize_command")
-    if type(authorize) ~= "function" then return false, "native command authorization is unavailable" end
-    local called, accepted, err = pcall(authorize, tostring(tag))
-    if not called or accepted == false then return false, tostring(err or accepted) end
-    return true
+    return nativeCommandAuthority.authorize(tag, true)
   end
   local dateFactory = deps.dateFactory or function(date)
     local constructor = api and api.type and api.type.Date and api.type.Date.new

@@ -49,6 +49,7 @@ HOST_AUTHORITY_ACTIONS = {
     "economy.settle",
     "probe.mobility",
     "probe.structural",
+    "probe.native_fingerprint",
     "finance.toggle_neutralizer",
     "town.develop",
     "freight.industry_bootstrap",
@@ -1028,6 +1029,11 @@ class CommitHost(HostIntentMixin):
         structural_digests = {
             item["structuralDigest"] for item in checkpoints.values() if item.get("structuralDigest")
         }
+        native_fingerprint_digests = {
+            item["nativeFingerprintDigest"]
+            for item in checkpoints.values()
+            if item.get("nativeFingerprintDigest")
+        }
         world_manifest_digests = {
             item["worldManifestDigest"]
             for item in checkpoints.values()
@@ -1049,6 +1055,8 @@ class CommitHost(HostIntentMixin):
             action["proposalId"] = tracker["proposalId"]
         if len(structural_digests) == 1:
             action["structuralDigest"] = next(iter(structural_digests))
+        if len(native_fingerprint_digests) == 1:
+            action["nativeFingerprintDigest"] = next(iter(native_fingerprint_digests))
         if len(world_manifest_digests) == 1:
             action["worldManifestDigest"] = next(iter(world_manifest_digests))
         if not success:
@@ -1110,6 +1118,24 @@ class CommitHost(HostIntentMixin):
         # newer schema digest; consensus on its convergence key proves both
         # peers migrated to the same authored state.
         if len({item["convergenceKey"] for item in selected}) != 1:
+            native_digests = {
+                item.get("nativeFingerprintDigest") for item in selected
+                if item.get("nativeFingerprintDigest")
+            }
+            if len(native_digests) > 1:
+                changed: list[str] = []
+                for name in ("edges", "constructions", "vehicles", "autonomous", "other"):
+                    values = {
+                        item.get("nativeFingerprint", {}).get("categories", {}).get(name)
+                        for item in selected
+                    }
+                    if len(values) > 1:
+                        changed.append(name)
+                suffix = ",".join(changed) if changed else "aggregate"
+                self._emit_checkpoint_outcome_locked(
+                    tracker, False, f"native-fingerprint-diverged:{suffix}"
+                )
+                return
             self._emit_checkpoint_outcome_locked(
                 tracker, False, "checkpoint-convergence-key-mismatch"
             )

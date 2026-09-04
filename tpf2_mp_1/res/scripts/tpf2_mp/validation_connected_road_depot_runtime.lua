@@ -7,12 +7,12 @@ local function completeOutputs(outputs)
   local wanted = {
     ["construction:construction:1"] = true, ["depot:depot:1"] = true,
     ["edge:edge:1"] = true, ["node:node:1"] = true,
-    ["edge:edge:helper:1"] = true,
+    ["edge:edge:helper:1"] = true, ["node:node:helper:1"] = true,
   }
   for _, item in ipairs(outputs or {}) do
     wanted[tostring(item.kind) .. ":" .. tostring(item.slot)] = nil
   end
-  return #(outputs or {}) == 5 and next(wanted) == nil
+  return #(outputs or {}) == 6 and next(wanted) == nil
 end
 
 function M.new(deps)
@@ -33,10 +33,10 @@ function M.new(deps)
 
   local function begin()
     local state = getState()
-    state.validation.values[key .. "ConsensusBefore"] =
-      state.world.proposalConsensus.completed or 0
-    state.validation.values[key .. "FailuresBefore"] =
-      state.world.proposalConsensus.failed or 0
+    state.validation.values[key .. "ConsensusBefore"] = state.world.proposalConsensus.completed or 0
+    state.validation.values[key .. "FailuresBefore"] = state.world.proposalConsensus.failed or 0
+    state.validation.values[key .. "RejectionsBefore"] =
+      state.world.proposalConsensus.rejected or 0
     if state.bridge.peerId == "player1" then
       local transaction, transactionError = fixture.transaction("company:1", fixtureOptions)
       check(checkPrefix .. "-transaction-valid", transaction ~= nil, {
@@ -54,9 +54,11 @@ function M.new(deps)
     if stage == "wait-for-" .. stagePrefix .. "-consensus" then
       local before = state.validation.values[key .. "ConsensusBefore"] or 0
       local failuresBefore = state.validation.values[key .. "FailuresBefore"] or 0
+      local rejectionsBefore = state.validation.values[key .. "RejectionsBefore"] or 0
       local consensus = state.world.proposalConsensus
       if (consensus.completed or 0) <= before
-        and (consensus.failed or 0) <= failuresBefore then return true end
+        and (consensus.failed or 0) <= failuresBefore
+        and (consensus.rejected or 0) <= rejectionsBefore then return true end
       local outcome = consensus.lastOutcome
       local record = outcome and state.world.proposals.byId[outcome.proposalId] or nil
       local result = record and record.result or nil
@@ -69,6 +71,8 @@ function M.new(deps)
       for _, output in ipairs(result and result.outputs or {}) do
         if output.kind == "depot" then
           state.validation.values[key .. "Cid"] = output.cid
+        elseif output.kind == "node" and output.slot == "node:helper:1" then
+          state.validation.values[key .. "HelperNodeCid"] = output.cid
         end
       end
       state.validation.values[key .. "ProposalId"] =
@@ -86,7 +90,8 @@ function M.new(deps)
         agreed.success == true, agreed)
       if deps.afterCheckpoint then
         deps.afterCheckpoint(state.validation.values[key .. "Cid"],
-          "company:1", agreed.boundarySeq)
+          "company:1", agreed.boundarySeq,
+          state.validation.values[key .. "HelperNodeCid"])
       else
         purchase.begin(state.validation.values[key .. "Cid"], "company:1")
       end

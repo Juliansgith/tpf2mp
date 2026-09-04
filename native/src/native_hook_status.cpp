@@ -15,7 +15,7 @@ std::string SerializeHookStatus(const HookStatusView& status) {
   std::ostringstream output;
   output << "{\"schemaVersion\":1"
          << ",\"component\":\"tpf2mp-native-hook\""
-         << ",\"hookVersion\":\"0.19.0\""
+         << ",\"hookVersion\":\"0.20.0\""
          << ",\"profile\":\"" << tpf2mp::JsonEscape(std::string(tpf2mp::profile::kProfileName)) << "\""
          << ",\"processId\":" << status.process_id
          << ",\"stage\":\"" << tpf2mp::JsonEscape(status.stage) << "\""
@@ -51,6 +51,10 @@ std::string SerializeHookStatus(const HookStatusView& status) {
          << ",\"applyCommand\":" << (status.hooks.apply_command_created ? "true" : "false")
          << ",\"buildProposalVisitor\":"
          << (status.hooks.build_proposal_visitor_created ? "true" : "false")
+         << ",\"makeBuildProposal\":"
+         << (status.hooks.make_build_proposal_created ? "true" : "false")
+         << ",\"commandListAdd\":"
+         << (status.hooks.command_list_add_created ? "true" : "false")
          << ",\"authorityCommandVisitors\":"
          << status.hooks.authority_command_visitors_created
          << ",\"sendCommandWrapping\":true"
@@ -151,6 +155,26 @@ std::string SerializeHookStatus(const HookStatusView& status) {
          << ",\"lastGeneration\":" << status.suppressed_build_last_generation
          << ",\"armedCorrelation\":" << status.suppressed_build_armed_correlation
          << ",\"lastCorrelation\":" << status.suppressed_build_last_correlation
+         << '}'
+         << ",\"factoryCapture\":{"
+         << "\"factoryCalls\":" << status.build_factory_capture.factory_calls
+         << ",\"decoded\":" << status.build_factory_capture.decoded
+         << ",\"invalid\":" << status.build_factory_capture.invalid
+         << ",\"addMatches\":" << status.build_factory_capture.add_matches
+         << ",\"addMisses\":" << status.build_factory_capture.add_misses
+         << ",\"suppressedMatches\":" << status.build_factory_capture.suppressed_matches
+         << ",\"suppressedMisses\":" << status.build_factory_capture.suppressed_misses
+         << ",\"consumed\":" << status.build_factory_capture.consumed
+         << ",\"retired\":" << status.build_factory_capture.retired
+         << ",\"orphaned\":" << status.build_factory_capture.orphaned
+         << ",\"dropped\":" << status.build_factory_capture.dropped
+         << ",\"pending\":" << status.build_factory_capture.pending
+         << ",\"ready\":" << status.build_factory_capture.ready
+         << ",\"lastGeneration\":" << status.build_factory_capture.last_generation
+         << ",\"lastCorrelation\":" << status.build_factory_capture.last_correlation
+         << ",\"lastFactoryCallerRva\":"
+         << status.build_factory_capture.last_factory_caller_rva
+         << ",\"lastAddCallerRva\":" << status.build_factory_capture.last_add_caller_rva
          << '}'
          << "},\"commandVisitors\":{"
          << "\"enabled\":" << (status.command_gate_enabled ? "true" : "false")

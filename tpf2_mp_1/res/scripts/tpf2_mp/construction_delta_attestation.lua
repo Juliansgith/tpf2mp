@@ -1,4 +1,5 @@
 local util = require "tpf2_mp/util"
+local deltaIdentity = require "tpf2_mp/construction_delta_identity"
 
 local M = {}
 
@@ -54,7 +55,7 @@ function M.captureDescriptors(types, expanded)
 end
 
 function M.fromWorlds(beforeWorld, afterWorld)
-  local delta = { schemaVersion = 1, added = {}, removed = {} }
+  local delta = { schemaVersion = 2, added = {}, removed = {}, identities = {} }
   local before, after = beforeWorld.sets or {}, afterWorld.sets or {}
   for _, mapping in ipairs(MAPPINGS) do
     delta.added[mapping.kind] = util.setDifference(after[mapping.set], before[mapping.set])
@@ -63,21 +64,38 @@ function M.fromWorlds(beforeWorld, afterWorld)
   return delta
 end
 
+-- Fresh STATION/DEPOT child components are unsafe to inspect later from the
+-- engine game-script state on Build 35924. Capture their portable identity in
+-- the GUI state after the native callback has settled, while the exact local
+-- output delta is still known. A failed optional read does not invalidate the
+-- physical result; it merely leaves that child fail-closed on future rebind.
+function M.captureIdentities(delta, capture)
+  return deltaIdentity.capture(delta, capture, MAPPINGS)
+end
+
 function M.encode(delta)
-  local rows = { "v1" }
+  local rows = { "v2" }
   for _, mapping in ipairs(MAPPINGS) do
     rows[#rows + 1] = mapping.kind .. ":"
       .. table.concat(delta.added[mapping.kind] or {}, ",") .. ":"
       .. table.concat(delta.removed[mapping.kind] or {}, ",")
   end
+  deltaIdentity.appendEncoded(rows, delta, MAPPINGS)
   return table.concat(rows, "|")
 end
 
 local function decode(value)
   local rows = {}
   for row in string.gmatch(value .. "|", "(.-)|") do rows[#rows + 1] = row end
-  if rows[1] ~= "v1" or #rows ~= #MAPPINGS + 1 then return nil end
-  local result = { schemaVersion = 1, added = {}, removed = {} }
+  local version = rows[1]
+  if (version ~= "v1" and version ~= "v2")
+      or #rows ~= (version == "v2" and #MAPPINGS * 2 + 1 or #MAPPINGS + 1) then
+    return nil
+  end
+  local result = {
+    schemaVersion = version == "v2" and 2 or 1,
+    added = {}, removed = {}, identities = {},
+  }
   local function ids(encoded)
     local values = {}
     for id in string.gmatch(encoded, "[^,]+") do values[#values + 1] = id end
@@ -88,17 +106,22 @@ local function decode(value)
     if kind ~= mapping.kind then return nil end
     result.added[kind], result.removed[kind] = ids(added), ids(removed)
   end
+  if version == "v2" then
+    if not deltaIdentity.decodeRows(rows, MAPPINGS, result) then return nil end
+  end
   return result
 end
 
 function M.normalise(value, limit)
   if type(value) == "string" then value = decode(value) end
-  if type(value) ~= "table" or value.schemaVersion ~= 1
+  if type(value) ~= "table" or (value.schemaVersion ~= 1 and value.schemaVersion ~= 2)
     or type(value.added) ~= "table" or type(value.removed) ~= "table" then
     return nil, "exact construction delta attestation is missing or malformed"
   end
   limit = math.max(1, math.floor(tonumber(limit) or 1))
-  local result = { schemaVersion = 1, added = {}, removed = {} }
+  local result = {
+    schemaVersion = value.schemaVersion, added = {}, removed = {}, identities = {},
+  }
   for _, mapping in ipairs(MAPPINGS) do
     local added, addError = normaliseIds(value.added[mapping.kind], limit,
       "added " .. mapping.kind)
@@ -112,6 +135,10 @@ function M.normalise(value, limit)
       if seen[id] then return nil, mapping.kind .. " is both added and removed" end
     end
     result.added[mapping.kind], result.removed[mapping.kind] = added, removed
+    local identities, identityError = deltaIdentity.normaliseKind(
+      value.identities, mapping.kind, added)
+    if not identities then return nil, identityError end
+    result.identities[mapping.kind] = identities
   end
   return result
 end

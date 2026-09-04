@@ -52,6 +52,8 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         and host.last_agreed_checkpoint.get("boundarySeq"),
         "lastAgreedCheckpointReason": host.last_agreed_checkpoint
         and host.last_agreed_checkpoint.get("reason"),
+        "lastNativeFingerprintDigest": host.last_agreed_checkpoint
+        and host.last_agreed_checkpoint.get("nativeFingerprintDigest"),
         "checkpointCounts": checkpoint_counts,
         "sessionFault": host.session_fault,
         "faultRecovery": fault_recovery,

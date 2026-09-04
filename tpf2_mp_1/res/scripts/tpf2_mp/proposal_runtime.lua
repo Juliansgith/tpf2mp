@@ -17,8 +17,11 @@ local activeRecordIndex = require "tpf2_mp/active_record_index"
 local proposalWorkScheduler = require "tpf2_mp/proposal_work_scheduler"
 local constructionVerificationModule = require "tpf2_mp/construction_verification_runtime"
 local constructionReplayState, constructionDeltaAttestation = require "tpf2_mp/construction_replay_state", require "tpf2_mp/construction_delta_attestation"
-local constructionOutputOrder = require "tpf2_mp/construction_output_order"
 local derivedStation = require "tpf2_mp/proposal_derived_station_runtime"
+local generatedTopology = require "tpf2_mp/construction_generated_topology"
+local constructionOutputOrder = require "tpf2_mp/construction_output_order"
+local bindingMetadata = require "tpf2_mp/proposal_binding_metadata"
+local constructionOutputBinding = require "tpf2_mp/proposal_construction_output_binding"
 
 local M = {}
 
@@ -72,8 +75,7 @@ function M.new(deps)
       and type(record.pendingFinance) == "table"
   end)
   local constructionWork = activeRecordIndex.new(function(record)
-    return type(record) == "table" and type(record.transaction) == "table"
-      and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+    return type(record) == "table" and type(record.transaction) == "table" and proposalCodec.isConstructionSchema(record.transaction.schemaVersion)
       and not proposalCodec.isTopologyConstructionRemoval(record.transaction)
       and ((record.status == "queued" and not constructionReplayState.guiOwns(record))
         or (record.status == "building-construction" and record.constructionPending))
@@ -188,13 +190,14 @@ function M.new(deps)
       local localId = matched.nodes[node.slot]
       local cid = canonical.createdId("node", eventId, index)
       local nodeOwnerCid = privateNodeSlots[node.slot] and transaction.companyCid or nil
-      local ok, err = canonical.bind(state.canonical, cid, "node", localId, {
+      local ok, err = canonical.bind(state.canonical, cid, "node", localId,
+        bindingMetadata.decorate({
         owner = nodeOwnerCid,
         private = nodeOwnerCid ~= nil,
         proposalDigest = transaction.digest,
         outputSlot = node.slot,
         position = util.deepCopy(node.position),
-      })
+      }, localId, "node", state, world, nodeOwnerCid))
       if not ok then rollback(); return nil, err end
       bound[#bound + 1] = { kind = "node", cid = cid, localId = localId, slot = node.slot }
       if nodeOwnerCid then
@@ -205,13 +208,15 @@ function M.new(deps)
     for index, edge in ipairs(transaction.edges) do
       local localId = matched.edges[edge.slot]
       local cid = canonical.createdId("edge", eventId, index)
-      local ok, err = canonical.bind(state.canonical, cid, "edge", localId, {
+      local edgeOwnerCid = edge.private and transaction.companyCid or nil
+      local ok, err = canonical.bind(state.canonical, cid, "edge", localId,
+        bindingMetadata.decorate({
         owner = edge.private and transaction.companyCid or nil,
         carrier = edge.carrier,
         private = edge.private,
         proposalDigest = transaction.digest,
         outputSlot = edge.slot,
-      })
+      }, localId, "edge", state, world, edgeOwnerCid))
       if not ok then rollback(); return nil, err end
       bound[#bound + 1] = { kind = "edge", cid = cid, localId = localId, slot = edge.slot }
       if edge.private then
@@ -231,14 +236,16 @@ function M.new(deps)
       local localId = matched.edgeObjects and matched.edgeObjects[object.slot] or nil
       if not localId then rollback(); return nil, "edge-object output was not matched: " .. object.slot end
       local cid = canonical.createdId("edge_object", eventId, index)
-      local ok, err = canonical.bind(state.canonical, cid, "edge_object", localId, {
+      local objectOwnerCid = object.private and transaction.companyCid or nil
+      local ok, err = canonical.bind(state.canonical, cid, "edge_object", localId,
+        bindingMetadata.decorate({
         owner = object.private and transaction.companyCid or nil,
         private = object.private,
         model = object.model,
         category = object.category,
         proposalDigest = transaction.digest,
         outputSlot = object.slot,
-      })
+      }, localId, "edge_object", state, world, objectOwnerCid))
       if not ok then rollback(); return nil, err end
       bound[#bound + 1] = { kind = "edge_object", cid = cid, localId = localId, slot = object.slot }
       if object.private then
@@ -406,19 +413,21 @@ function M.new(deps)
       if not resources then return nil, resourceError end
     end
   
-    local inspected = { localRefs = {}, referenceKinds = {}, removal = {}, referenceCount = 0 }
+    local inspected = {
+      localRefs = {}, referenceKinds = {}, removal = {}, resolutions = {},
+      referenceCount = 0,
+    }
     local function resolve(cid, kind, isRemoval)
-      local localId = canonical.resolveLocal(state.canonical, cid)
-      local resolution = "bound"
+      -- Even an existing local mapping must pass its portable identity check.
+      -- Saves and native replacement commands can reuse entity IDs, so blindly
+      -- trusting a stale binding could authorize an unrelated object.
+      local localId, findError, findDetails = world.findPreExistingLocal(
+        state.canonical, cid, kind, { worldState = state.world })
       if localId == nil then
-        local findError
-        localId, findError = world.findPreExistingLocal(state.canonical, cid, kind)
-        if localId == nil then
-          return nil, "canonical " .. kind .. " is not mapped locally: "
-            .. tostring(cid) .. " (" .. tostring(findError) .. ")"
-        end
-        resolution = "geometric"
+        return nil, "canonical " .. kind .. " is not mapped locally: "
+          .. tostring(cid) .. " (" .. tostring(findError) .. ")"
       end
+      local resolution = findDetails and findDetails.source or "bound"
       local existingKind = inspected.referenceKinds[cid]
       if existingKind and existingKind ~= kind then
         return nil, "canonical proposal reference changes kind: " .. tostring(cid)
@@ -427,6 +436,7 @@ function M.new(deps)
       inspected.localRefs[cid] = localId
       inspected.referenceKinds[cid] = kind
       inspected.removal[cid] = inspected.removal[cid] == true or isRemoval == true
+      inspected.resolutions[cid] = util.deepCopy(findDetails or { source = resolution })
       inspected[cid] = resolution
       return localId
     end
@@ -457,7 +467,7 @@ function M.new(deps)
         object.cid, "edge_object", false, "proposal cannot carry a rival edge object ")
       if err then return nil, err end
     end
-    if transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION then
+    if proposalCodec.isConstructionSchema(transaction.schemaVersion) then
       local construction = transaction.constructions and transaction.constructions[1]
       if construction and construction.mode ~= "build" then
         local sourceKind = construction.kind == "asset" and "asset" or "construction"
@@ -527,7 +537,8 @@ function M.new(deps)
     if util.tableCount(state.world.proposals.byId) >= 32 then return false, "too many in-flight proposal transactions" end
     if state.world.proposals.byId[eventId] then return false, "duplicate canonical proposal event" end
   
-    local localRefs, localInputs, bindError, newlyBoundCids, canonicalRevisionBefore =
+    local localRefs, localInputs, bindError, newlyBoundCids, canonicalRevisionBefore,
+      bindingRollback =
       proposalPreparation.bind(inspected, eventId)
     if not localRefs then return false, bindError end
     proposalPreparation.pending[transaction.digest] = nil
@@ -547,6 +558,7 @@ function M.new(deps)
       localRefs = localRefs,
       newlyBoundCids = newlyBoundCids,
       canonicalRevisionBefore = canonicalRevisionBefore,
+      bindingRollback = bindingRollback,
       issuerPlayerId = issuerPlayerId,
       nativeOwnerPlayerId = nativeOwnerPlayerId,
       -- Compatibility alias for version <= 9 saves/research readers.
@@ -602,6 +614,7 @@ function M.new(deps)
     record.pendingFinance = nil
     record.newlyBoundCids = nil
     record.canonicalRevisionBefore = nil
+    record.bindingRollback = nil
     state.world.proposals.applied = (state.world.proposals.applied or 0) + 1
     state.probes.capture.proposalReplayCount = (state.probes.capture.proposalReplayCount or 0) + 1
     state.probes.capture.lastProposalReplay = {
@@ -813,85 +826,6 @@ function M.new(deps)
     componentKinds = constructionVerification.componentKinds,
   }
   
-  local function bindConstructionOutputs(record, existing, delta, pending)
-    local bound = existing or {}
-    local construction = record.transaction.constructions[1]
-    local rootEntity = pending and tonumber(pending.rootEntity) or nil
-    local rootKind = construction.kind == "asset" and "asset" or "construction"
-    if construction.mode == "upgrade" then
-      if not rootEntity then return nil, "upgraded construction root is unavailable" end
-      local cid = construction.sourceCid
-      local ok, bindError = canonical.bind(state.canonical, cid, rootKind, rootEntity, {
-        owner = record.companyCid,
-        private = true,
-        proposalDigest = record.transaction.digest,
-        outputSlot = construction.slot,
-        upgraded = true,
-      })
-      if not ok then return nil, bindError end
-      state.world.logicalOwners[tostring(rootEntity)] = record.companyCid
-      state.world.pinnedCustody[tostring(rootEntity)] = {
-        cid = cid, kind = rootKind, logicalOwnerCid = record.companyCid,
-        nativePlayerId = world.ownerOf(rootEntity) or record.nativeOwnerPlayerId,
-        requestedPlayerId = state.companies[record.companyCid].playerId,
-        reason = "canonical-construction-upgrade",
-      }
-      bound[#bound + 1] = {
-        kind = rootKind, cid = cid, localId = rootEntity, slot = construction.slot,
-      }
-    end
-    for _, descriptor in ipairs({
-      { kind = "construction", values = delta.construction },
-      { kind = "station", values = delta.station },
-      { kind = "station_group", values = delta.station_group },
-      { kind = "depot", values = delta.depot },
-      { kind = "asset", values = delta.asset },
-    }) do
-      local values = {}
-      for _, localId in ipairs(descriptor.values or {}) do
-        if not (construction.mode == "upgrade" and descriptor.kind == rootKind
-          and tonumber(localId) == rootEntity) then values[#values + 1] = localId end
-      end
-      local rows, rowsError = constructionOutputOrder.rows(descriptor.kind, values, {
-        exact = pending.guiDelta ~= nil, proposalDigest = record.transaction.digest,
-        fingerprint = world.fingerprint,
-      })
-      if not rows then return nil, rowsError end
-      for index, row in ipairs(rows) do
-        local localId = row.localId
-        local slot = descriptor.kind .. ":" .. tostring(index)
-        local cid = canonical.createdId(descriptor.kind, record.eventId, index)
-        local ok, bindError = canonical.bind(state.canonical, cid, descriptor.kind, localId, {
-          owner = record.companyCid,
-          private = true,
-          proposalDigest = record.transaction.digest,
-          outputSlot = slot,
-          fingerprint = row.fingerprint,
-          -- Build 35924 exposes the generated IDs to the GUI immediately, but
-          -- touching some of their freshly created native components from the
-          -- engine game-script thread terminates that script environment.  The
-          -- GUI delta and proposal-derived fingerprint are the authoritative
-          -- attestation for exact replay; background probes must not re-enter
-          -- those component userdata just to rediscover the same identity.
-          nativeReadUnsafe = pending.guiDelta ~= nil,
-        })
-        if not ok then return nil, bindError end
-        state.world.logicalOwners[tostring(localId)] = record.companyCid
-        state.world.pinnedCustody[tostring(localId)] = {
-          cid = cid,
-          kind = descriptor.kind,
-          logicalOwnerCid = record.companyCid,
-          nativePlayerId = pending.guiDelta and record.nativeOwnerPlayerId
-            or world.ownerOf(localId) or record.nativeOwnerPlayerId,
-          requestedPlayerId = state.companies[record.companyCid].playerId,
-          reason = "canonical-construction-replay",
-        }
-        bound[#bound + 1] = { kind = descriptor.kind, cid = cid, localId = localId, slot = slot }
-      end
-    end
-    return bound
-  end
-  
   local function normaliseConstructionDebit(record)
     local company = state.companies[record.companyCid]
     if not company then return nil, "proposal company is unavailable" end
@@ -1098,14 +1032,15 @@ function M.new(deps)
           canonical.unbindCanonical(state.canonical, old.cid)
           state.world.logicalOwners[tostring(old.localId)] = nil
           state.world.pinnedCustody[tostring(old.localId)] = nil
-          local ok, bindError = canonical.bind(state.canonical, old.cid, kind, new.localId, {
+          local ok, bindError = canonical.bind(state.canonical, old.cid, kind, new.localId,
+            bindingMetadata.decorate({
             owner = record.companyCid,
             private = true,
             proposalDigest = record.transaction.digest,
             outputSlot = kind .. ":preserved:" .. tostring(index),
             fingerprint = new.fingerprint,
             upgraded = true,
-          })
+          }, new.localId, kind, state, world, record.companyCid))
           if not ok then return nil, bindError end
           state.world.logicalOwners[tostring(new.localId)] = record.companyCid
           state.world.pinnedCustody[tostring(new.localId)] = {
@@ -1191,6 +1126,9 @@ function M.new(deps)
     local expectedNodes, expectedEdges = #(record.transaction.nodes or {}), #(record.transaction.edges or {}); expectedNodes, expectedEdges = depotConnectionRepair.expectedCounts(record, proposalCodec, expectedNodes, expectedEdges)
     local candidateNodes = proposalPreparation.construction.topologyCandidates("node", record, added, after)
     local candidateEdges = proposalPreparation.construction.topologyCandidates("edge", record, added, after); candidateNodes, candidateEdges = depotConnectionRepair.canonicalCandidates(record, candidateNodes, candidateEdges)
+    local generatedGraph = generatedTopology.eligible(record, proposalCodec)
+    if generatedGraph and rootSet[pending.rootEntity] ~= true
+      and #(added[rootKind] or {}) == 1 then pending.rootEntity = added[rootKind][1] end
     local depotHandled, depotProgress, depotError =
       depotConnectionRepair.advance(record, pending, {
         candidateNodes = added.node or {}, candidateEdges = added.edge or {},
@@ -1209,7 +1147,9 @@ function M.new(deps)
       if depotProgress.stagedDepotConnection then constructionWork.invalidate() end
       return true, depotProgress
     end
-    local ready = #candidateNodes == expectedNodes and #candidateEdges == expectedEdges
+    local ready = generatedGraph
+      or (#candidateNodes == expectedNodes and #candidateEdges == expectedEdges)
+    if generatedGraph then ready = generatedTopology.deltaReady(counts, removedCounts) end
     local upgradeChanged = true
     local pendingRemovalInputs, pendingRemovalKinds =
       constructionVerification.inputsPendingInSnapshot(record.localInputs, after)
@@ -1266,9 +1206,12 @@ function M.new(deps)
       pending.lastReadySignature = nil
       pending.stableSinceTick = nil
     end
+    local requiredStableTicks = generatedGraph
+      and generatedTopology.STABLE_TICKS or CONSTRUCTION_STABLE_TICKS
     local stable = pending.guiDelta and ready or (ready and state.tick
-      - util.integer(pending.stableSinceTick, state.tick) >= CONSTRUCTION_STABLE_TICKS)
+      - util.integer(pending.stableSinceTick, state.tick) >= requiredStableTicks)
     if not ready or not stable then
+      if pending.verificationScans == 20 then print(string.format("[TPF2MP] construction-settle-slow path=%s generated=%s ready=%s kind=%s root=%s/%s/%s add=%d/%d/%d/%d/%d/%d/%d/%d remove=%d/%d/%d/%d/%d/%d/%d/%d inputs=%d", tostring(record.replayPath), tostring(generatedGraph), tostring(ready), tostring(pending.spec.kind), tostring(pending.rootEntity), tostring(rootSet[pending.rootEntity]), tostring(beforeRootSet[pending.rootEntity]), counts.node, counts.edge, counts.edge_object, counts.construction, counts.station, counts.station_group, counts.depot, counts.asset, removedCounts.node, removedCounts.edge, removedCounts.edge_object, removedCounts.construction, removedCounts.station, removedCounts.station_group, removedCounts.depot, removedCounts.asset, pendingRemovalInputs)) end
       if not pending.guiDelta and state.tick < pending.deadlineTick then
         pending.nextVerificationTick = state.tick
           + (ready and CONSTRUCTION_VERIFY_INTERVAL_TICKS or CONSTRUCTION_PENDING_RESCAN_TICKS)
@@ -1283,6 +1226,7 @@ function M.new(deps)
         mode = mode, counts = counts, removedCounts = removedCounts,
         expected = {
           node = expectedNodes, edge = expectedEdges, kind = pending.spec.kind,
+          generatedTopology = generatedGraph or nil,
           upgradeChanged = mode == "upgrade" and upgradeChanged or nil,
           pendingRemovalInputs = mode ~= "upgrade" and pendingRemovalInputs or nil,
           pendingRemovalKinds = mode ~= "upgrade" and pendingRemovalKinds or nil,
@@ -1292,9 +1236,19 @@ function M.new(deps)
     local unexpectedRemoval = proposalPreparation.construction.unexpectedTopologyRemoval(record, removed)
     if unexpectedRemoval then return proposalFailure(record, unexpectedRemoval) end
   
+    local generatedTopologyAttestation
+    if generatedGraph then
+      generatedTopologyAttestation, unexpectedRemoval = generatedTopology.attestState(
+        candidateNodes, candidateEdges, added.edge_object or {}, removed.asset,
+        state, canonical, world, inspectCreatedEdges)
+      if not generatedTopologyAttestation then
+        return proposalFailure(record, tostring(unexpectedRemoval))
+      end
+    end
+
     local matched = { nodes = {}, edges = {}, edgeObjects = {},
       unmatchedNodes = {}, unmatchedEdges = {}, unmatchedEdgeObjects = {} }
-    if mode ~= "remove" then
+    if mode ~= "remove" and not generatedGraph then
       local matchError
       local function resolvePosition(cid)
         local localId = canonical.resolveLocal(state.canonical, cid); return localId and nodePosition(localId) or nil
@@ -1337,10 +1291,20 @@ function M.new(deps)
       if graphBound then
         for _, item in ipairs(preservedBound) do graphBound[#graphBound + 1] = item end
         bound = graphBound
-        bound, bindError = bindConstructionOutputs(record, bound, mutableAdded, pending)
+        bound, bindError = constructionOutputBinding.bind(
+          state, record, bound, mutableAdded, pending, world)
+        if bound and not bindError and generatedGraph then
+          local generatedBound
+          generatedBound, bindError = generatedTopology.bindState(record,
+            candidateNodes, candidateEdges, added.edge_object or {},
+            state, canonical, world)
+          if generatedBound then
+            for _, item in ipairs(generatedBound) do bound[#bound + 1] = item end
+          end
+        end
         if bound and not bindError then
           bound, bindError = depotAuxiliaryBinding.apply(
-            state, record, bound, world.ownerOf)
+            state, record, bound, world.ownerOf, world)
         end
       end
     end
@@ -1364,6 +1328,7 @@ function M.new(deps)
       constructionKind = pending.spec.kind,
       constructionMode = mode,
       constructionReplayPath = record.replayPath or "engine-helper",
+      generatedTopology = generatedTopologyAttestation,
       outputs = {},
     }
     for _, item in ipairs(bound) do
@@ -1381,8 +1346,7 @@ function M.new(deps)
   local function processCanonicalConstructionProposals()
     for _, proposalId in ipairs(constructionWork.candidates(state.world.proposals)) do
       local record = state.world.proposals.byId[proposalId]
-      if type(record) == "table" and record.transaction
-        and record.transaction.schemaVersion == proposalCodec.CONSTRUCTION_SCHEMA_VERSION
+      if type(record) == "table" and record.transaction and proposalCodec.isConstructionSchema(record.transaction.schemaVersion)
         and not proposalCodec.isTopologyConstructionRemoval(record.transaction) then
         if (record.status == "queued" and not constructionReplayState.guiOwns(record))
           or (record.status == "building-construction" and record.constructionPending) then

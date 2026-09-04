@@ -3,11 +3,34 @@ param()
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$lua = 'C:\Program Files (x86)\Lua\5.1\lua.exe'
-$python = 'C:\Users\Sepgi\AppData\Local\Programs\Python\Python310\python.exe'
-
-if (-not (Test-Path -LiteralPath $lua)) { throw "Lua 5.1 not found at $lua" }
-if (-not (Test-Path -LiteralPath $python)) { throw "Python not found at $python" }
+# Interpreters resolve from an explicit TPF2MP_LUA / TPF2MP_PYTHON override
+# (continuous integration sets both), then the first matching command on PATH,
+# then the historical development-machine paths. The Lua suites are written
+# against the 5.1 runtime the game embeds, so any other major version is refused.
+function Resolve-GateInterpreter {
+    param([string]$Override, [string[]]$CommandNames, [string]$LegacyPath, [string]$Label)
+    if ($Override) {
+        if (Test-Path -LiteralPath $Override -PathType Leaf) { return (Get-Item -LiteralPath $Override).FullName }
+        throw "$Label override does not exist: $Override"
+    }
+    foreach ($name in $CommandNames) {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($command -and (Test-Path -LiteralPath $command.Source -PathType Leaf)) { return $command.Source }
+    }
+    if (Test-Path -LiteralPath $LegacyPath -PathType Leaf) { return $LegacyPath }
+    throw "$Label interpreter not found; set TPF2MP_$($Label.ToUpperInvariant()) or install it on PATH"
+}
+$lua = Resolve-GateInterpreter -Override $env:TPF2MP_LUA -CommandNames @('lua5.1', 'lua51', 'lua') `
+    -LegacyPath 'C:\Program Files (x86)\Lua\5.1\lua.exe' -Label 'Lua'
+$python = Resolve-GateInterpreter -Override $env:TPF2MP_PYTHON -CommandNames @('python') `
+    -LegacyPath 'C:\Users\Sepgi\AppData\Local\Programs\Python\Python310\python.exe' -Label 'Python'
+# Lua 5.1 prints its banner on stderr; merge inside cmd so the stop-on-error
+# preference above never sees a native stderr stream.
+$luaVersion = [string](& cmd.exe /c "`"$lua`" -v 2>&1")
+if ($luaVersion -notmatch 'Lua 5\.1') { throw "Lua 5.1 is required for the test gate; $lua reported: $luaVersion" }
+Write-Host "Gate interpreters: $lua ($luaVersion); $python"
+& $lua (Join-Path $projectRoot 'tests\run_interpreter_fidelity_tests.lua')
+if ($LASTEXITCODE -ne 0) { throw "Lua interpreter number formatting differs from the game runtime (exit code $LASTEXITCODE)" }
 
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ("tpf2mp-tests-" + [guid]::NewGuid().ToString('N'))
 $gameOutbox = Join-Path $temporary 'game_outbox'
@@ -32,6 +55,13 @@ New-Item -ItemType Directory -Force -Path $gameOutbox, $gameInbox, $mainOutbox, 
 New-Item -ItemType Directory -Force -Path $industryContent, $industryState | Out-Null
 
 try {
+    & $python (Join-Path $projectRoot 'tools\generate_command_safety_registry.py') --check
+    if ($LASTEXITCODE -ne 0) { throw "Native command-safety registry generation check failed with exit code $LASTEXITCODE" }
+
+    & $python (Join-Path $projectRoot 'tools\validate_construction_corpus.py') `
+        --project-root $projectRoot --check
+    if ($LASTEXITCODE -ne 0) { throw "Construction corpus manifest check failed with exit code $LASTEXITCODE" }
+
     & (Join-Path $projectRoot 'tools\check_documentation.ps1') -ProjectRoot $projectRoot
     if (-not $?) { throw 'Documentation integrity checks failed' }
 
@@ -49,8 +79,14 @@ try {
     & $lua (Join-Path $projectRoot 'tests\run_lua_tests.lua') $projectRoot $temporary
     if ($LASTEXITCODE -ne 0) { throw "Lua tests failed with exit code $LASTEXITCODE" }
 
+    & $lua (Join-Path $projectRoot 'tests\run_construction_corpus_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Construction corpus tests failed with exit code $LASTEXITCODE" }
+
     & $lua (Join-Path $projectRoot 'tests\run_transport_network_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Transport-network tests failed with exit code $LASTEXITCODE" }
+
+    & $lua (Join-Path $projectRoot 'tests\run_transport_lifecycle_validation_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Transport-lifecycle validation tests failed with exit code $LASTEXITCODE" }
 
     & $lua (Join-Path $projectRoot 'tests\run_alpha_readiness_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Alpha-readiness tests failed with exit code $LASTEXITCODE" }
@@ -454,7 +490,7 @@ return { ["tpf2_mp.lua"] = { companies = {
         throw 'Native injector diagnostics leaked into the status-path return pipeline.'
     }
     $expectedNativeVersion = Get-Tpf2mpExpectedNativeHookVersion $projectRoot
-    if ($expectedNativeVersion -ne '0.19.0') {
+    if ($expectedNativeVersion -ne '0.20.0') {
         throw "Source native hook version discovery returned '$expectedNativeVersion'."
     }
     $fakeHook = Join-Path $temporary 'fake-hook.dll'
@@ -464,7 +500,7 @@ return { ["tpf2_mp.lua"] = { companies = {
     $versionedStatusPath = Join-Path $nativeStatusDirectory 'status-424243.json'
     [pscustomobject]@{
         processId = 424243
-        hookVersion = '0.19.0'
+        hookVersion = '0.20.0'
         dllPath = $fakeHook
         active = $true
         stage = 'active'
@@ -472,7 +508,7 @@ return { ["tpf2_mp.lua"] = { companies = {
     $versionedNative = [pscustomobject]@{
         Injector = $fakeInjector
         Hook = $fakeHook
-        ExpectedHookVersion = '0.19.0'
+        ExpectedHookVersion = '0.20.0'
     }
     $versionedResult = @(Add-Tpf2mpNativeHook `
         -GameProcess ([pscustomobject]@{ Id = 424243 }) -NativePaths $versionedNative)
@@ -491,7 +527,7 @@ return { ["tpf2_mp.lua"] = { companies = {
         [void](Add-Tpf2mpNativeHook `
             -GameProcess ([pscustomobject]@{ Id = 424243 }) -NativePaths $versionedNative)
     }
-    catch { $mismatchRejected = $_.Exception.Message -match 'requires 0\.19\.0.+reported 0\.17\.0' }
+    catch { $mismatchRejected = $_.Exception.Message -match 'requires 0\.20\.0.+reported 0\.17\.0' }
     Remove-Item -LiteralPath $versionedStatusPath -Force -ErrorAction SilentlyContinue
     if (-not $mismatchRejected) {
         throw 'A stale native hook was not rejected before world loading.'

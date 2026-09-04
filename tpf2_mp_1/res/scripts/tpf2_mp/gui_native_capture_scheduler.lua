@@ -22,7 +22,7 @@ function M.new(deps)
     if not ok then return nil, tostring(raw) end
     if raw == nil then return 0 end
     local value = tonumber(raw)
-    if not value or value ~= math.floor(value) or value < 0 or value > 15 then
+    if not value or value ~= math.floor(value) or value < 0 or value > 31 then
       return nil, "native suppressed-command pending mask is invalid"
     end
     return value
@@ -71,7 +71,7 @@ function M.new(deps)
       local ok, result = run("native vehicle capture", deps.vehicle)
       work = work or (ok and result == true)
     end
-    if legacy or math.floor((mask or 0) / 8) % 2 == 1 or buildPending then
+    if legacy or math.floor((mask or 0) / 8) % 4 ~= 0 or buildPending then
       local ok, result = run("native build capture", buildCapture)
       work = work or (ok and result == true)
     end

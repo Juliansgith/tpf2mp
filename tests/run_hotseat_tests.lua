@@ -608,6 +608,10 @@ local guardedState = script.save()
 local guardedNodeCid = assert(canonical.resolveCanonical(guardedState.canonical, "node", 301))
 guardedState.world.logicalOwners["301"] = "company:1"
 guardedState.canonical.byCanonical[guardedNodeCid].metadata.owner = "company:1"
+-- This fixture authors a custody transition directly instead of going through
+-- the runtime ownership path; invalidate the old public-node attestation too.
+guardedState.canonical.byCanonical[guardedNodeCid].metadata.topologyFingerprint = nil
+guardedState.canonical.byCanonical[guardedNodeCid].metadata.topologyNeighbourFingerprint = nil
 script.load(guardedState)
 local guardedProposalCount = require("tpf2_mp/util").tableCount(script.save().world.proposals.byId)
 local rivalAttach = {

@@ -51,6 +51,9 @@ local validationConstruction = require "tpf2_mp/validation_construction"
 local performanceRuntime = require "tpf2_mp/performance_runtime"
 local guiReplayWorkIndex = require "tpf2_mp/gui_replay_work_index"
 local activeRecordIndex = require "tpf2_mp/active_record_index"
+local topologyRebindModule = require "tpf2_mp/topology_fingerprint_rebind"
+local topologyDescriptorModule = require "tpf2_mp/world_topology_descriptor"
+local nativeCommandSafety = require "tpf2_mp/native_command_safety_registry"
 
 local tests, passed = {}, 0
 
@@ -79,6 +82,138 @@ test("canonical JSON and cross-language checksum", function()
   equal(decoded.b, 2)
 end)
 
+test("operation codec command tags are governed by the safety registry", function()
+  local operationKinds = {
+    "line.create", "line.delete", "line.update", "vehicle.assign",
+    "vehicle.reverse", "vehicle.stop", "vehicle.maintenance", "vehicle.depart",
+    "vehicle.send_to_depot", "vehicle.sell", "vehicle.sell_batch", "vehicle.buy",
+    "vehicle.replace", "entity.color", "entity.name", "vehicle.manual_departure",
+  }
+  for _, kind in ipairs(operationKinds) do
+    local spec = assert(operationCodec.spec(kind), "missing operation codec spec for " .. kind)
+    local policy = assert(nativeCommandSafety.forTag(spec.tag),
+      "missing command policy for operation " .. kind)
+    local expectedReplay = "operation." .. kind
+    if kind == "vehicle.depart" then expectedReplay = "vehicle_sync_runtime.release" end
+    if kind == "vehicle.sell" then expectedReplay = "operation.vehicle.sell_batch" end
+    equal(policy.replay, expectedReplay,
+      "operation codec bypasses registry replay contract for " .. kind)
+  end
+end)
+
+test("construction codec is governed by the BuildProposal safety policy", function()
+  local policy = assert(nativeCommandSafety.forTag(15),
+    "BuildProposal has no command safety policy")
+  equal(policy.capturePoint, "make_cmd::BuildProposal+CommandList::Add+visitor")
+  equal(policy.replay, "proposal_runtime.apply")
+  equal(policy.ownership, "proposal-access-policy")
+  equal(policy.cost, "authoritative-quoted-cost")
+  truthy(policy.visitorHook and policy.suppressionSafe
+      and not policy.optimisticPassThrough,
+    "BuildProposal registry policy no longer matches its fail-closed codec boundary")
+  local required = {}
+  for _, value in ipairs(policy.postconditions) do required[value] = true end
+  for _, value in ipairs({
+    "geometry-fingerprint-equal", "construction-fingerprint-equal",
+    "ownership-equal", "balance-delta-equal",
+  }) do
+    truthy(required[value], "BuildProposal registry lost postcondition " .. value)
+  end
+end)
+
+test("topology fallback rebinds exactly one portable match and rejects ambiguity", function()
+  local alive = { [101] = true, [102] = true }
+  local topology = { [101] = "topology-a", [102] = "topology-b" }
+  local ordinary = { [101] = "ordinary-a", [102] = "ordinary-b" }
+  local resolver = topologyRebindModule.new({
+    listKind = function(kind) return kind == "edge" and { 101, 102 } or nil end,
+    fingerprint = function(id) return ordinary[id] end,
+    topologyFingerprint = function(id) return topology[id] end,
+    entityExists = function(id) return alive[id] == true end,
+    kindOf = function(id) return alive[id] and "edge" or "unknown" end,
+  })
+  local registry = canonical.newState()
+  assert(canonical.bind(registry, "edge:event:test:1", "edge", 99, {
+    fingerprint = "ordinary-a", topologyFingerprint = "topology-a", owner = "company:1",
+  }))
+  local worldState = {
+    logicalOwners = { ["99"] = "company:1" },
+    pinnedCustody = { ["99"] = { cid = "edge:event:test:1" } },
+  }
+  local inspectedId, inspectedError, inspectedDetail = resolver.resolve(
+    registry, "edge:event:test:1", "edge", {
+      worldState = worldState, mutate = false,
+    })
+  equal(inspectedId, 101, inspectedError)
+  truthy(inspectedDetail.rebindNeeded and not inspectedDetail.mutated)
+  equal(canonical.resolveLocal(registry, "edge:event:test:1"), 99,
+    "read-only topology discovery mutated the canonical binding")
+  equal(worldState.logicalOwners["99"], "company:1")
+  equal(worldState.logicalOwners["101"], nil,
+    "read-only topology discovery moved logical custody")
+  local localId, resolveError, detail = resolver.resolve(
+    registry, "edge:event:test:1", "edge", { worldState = worldState })
+  equal(localId, 101, resolveError)
+  equal(detail.source, "topology-fallback")
+  equal(canonical.resolveLocal(registry, "edge:event:test:1"), 101)
+  equal(worldState.logicalOwners["101"], "company:1")
+  truthy(worldState.pinnedCustody["101"])
+  equal(worldState.logicalOwners["99"], nil)
+
+  local staleRegistry = canonical.newState()
+  assert(canonical.bind(staleRegistry, "edge:event:stale:1", "edge", 101, {
+    topologyFingerprint = "topology-b",
+  }))
+  local rebound, reboundError, reboundDetails = resolver.resolve(
+    staleRegistry, "edge:event:stale:1", "edge")
+  equal(rebound, 102, reboundError)
+  equal(reboundDetails.source, "topology-fallback")
+  equal(canonical.resolveLocal(staleRegistry, "edge:event:stale:1"), 102)
+
+  local ambiguousRegistry = canonical.newState()
+  assert(canonical.bind(ambiguousRegistry, "edge:event:ambiguous:1", "edge", 98, {
+    topologyFingerprint = "topology-a",
+  }))
+  topology[102] = "topology-a"
+  local ambiguous, ambiguity = resolver.resolve(
+    ambiguousRegistry, "edge:event:ambiguous:1", "edge")
+  equal(ambiguous, nil)
+  truthy(tostring(ambiguity):find("ambiguous", 1, true))
+
+  topology[102] = "topology-b"
+  local occupied = canonical.newState()
+  assert(canonical.bind(occupied, "edge:event:target:1", "edge", 97, {
+    topologyFingerprint = "topology-a",
+  }))
+  assert(canonical.bind(occupied, "edge:event:other:1", "edge", 101, {}))
+  local unavailable, unavailableError = resolver.resolve(
+    occupied, "edge:event:target:1", "edge")
+  equal(unavailable, nil)
+  truthy(tostring(unavailableError):find("no local edge", 1, true))
+end)
+
+test("construction proposal identity matches the loaded native descriptor", function()
+  local transform = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 12.25, -4.5, 2, 1 }
+  local params = { terminals = 2, nested = { true, 17 } }
+  local descriptor = topologyDescriptorModule.new({
+    component = function(id, kind)
+      if id == 73 and kind == "CONSTRUCTION" then
+        return { fileName = "station/street/bus_station.con", transf = transform, params = params }
+      end
+    end,
+    getApi = function() return { type = { ComponentType = { CONSTRUCTION = "CONSTRUCTION" } } } end,
+    positionOf = function() return nil end,
+    stableName = function() return "" end,
+    ownerCid = function() return "company:1" end,
+  })
+  local observed = assert(descriptor.fingerprint(73, "construction"))
+  local expected = assert(topologyDescriptorModule.expectedConstructionFingerprint({
+    fileName = "station/street/bus_station.con", transform = transform, params = params,
+  }, "company:1"))
+  equal(observed, expected,
+    "proposal-derived construction topology identity differs from loaded-world identity")
+end)
+
 test("pinned GUI geometry evidence retains crossings, bridges, and dense city stations", function()
   local evidence = assert(dofile(project .. "/tests/fixtures/practical_geometry_evidence.lua"))
   local crossing = assert(evidence.crossing and evidence.crossing.transaction)
@@ -87,7 +222,11 @@ test("pinned GUI geometry evidence retains crossings, bridges, and dense city st
   local replayableCrossing = util.deepCopy(crossing)
   replayableCrossing.digest = proposalCodec.digest(replayableCrossing)
   replayableCrossing.transactionId = "proposal:" .. replayableCrossing.digest
-  equal(replayableCrossing.digest, "aa7ad9d8",
+  -- Pinned under a correctly rounded %.17g, which is what the game's Universal
+  -- CRT and the Python companion produce. Lua for Windows (MSVCR80) renders two
+  -- fixture coordinates one ulp-digit differently and yields aa7ad9d8; the gate
+  -- refuses that interpreter in run_interpreter_fidelity_tests.lua.
+  equal(replayableCrossing.digest, "ad51d9d8",
     "road-crossing projection changed under the current canonical codec")
   local valid, validationError = proposalCodec.validate(replayableCrossing)
   truthy(valid, validationError)
@@ -954,7 +1093,7 @@ local function linearProposal(edgeId, node0Id, node1Id, carrier, resourceIndex, 
   local carrierField = carrier == "track" and "trackEdge" or "streetEdge"
   local carrierData = carrier == "track"
     and { trackType = resourceIndex, catenary = catenary == true }
-    or { streetType = resourceIndex }
+    or { streetType = resourceIndex, hasBus = false, tramTrackType = 0 }
   local edge = {
     entity = edgeId,
     type = carrier == "track" and 1 or 0,
@@ -1147,7 +1286,7 @@ test("a stock cloverleaf-sized transient construction replays as a pure owned ed
         tangent1 = { x = second.x - first.x, y = second.y - first.y, z = 0 },
         type = 0, typeIndex = 0,
       },
-      streetEdge = { streetType = 7 },
+      streetEdge = { streetType = 7, hasBus = false, tramTrackType = 0 },
       playerOwned = { player = 100 },
     }
   end
@@ -1984,6 +2123,10 @@ test("proposal codec materialises and geometrically binds live-proven linear edg
   equal(proposal.streetProposal.nodesToAdd[2].entity, -3)
   equal(proposal.streetProposal.edgesToAdd[1].comp.node0, -2)
   equal(proposal.streetProposal.edgesToAdd[1].streetEdge.streetType, 4)
+  equal(proposal.streetProposal.edgesToAdd[1].streetEdge.hasBus, false)
+  equal(proposal.streetProposal.edgesToAdd[1].streetEdge.tramTrackType, 0)
+  equal(proposal.streetProposal.edgesToAdd[1].streetEdge.bus, nil,
+    "wire bus spelling leaked into the native BaseEdgeStreet userdata")
   equal(tx.edges[1].private, false)
   equal(metadata.digest, tx.digest)
 
@@ -2086,7 +2229,7 @@ test("construction collateral stages demolition before exact connected replay", 
       tangent0 = { x = 40, y = 10, z = 0 }, tangent1 = { x = 38, y = 12, z = 0 },
       type = 0, typeIndex = -1,
     },
-    streetEdge = { streetType = 4 },
+    streetEdge = { streetType = 4, hasBus = false, tramTrackType = 0 },
   }
   raw.streetProposal.edgesToAdd[3] = {
     entity = -5, type = 0,
@@ -2095,7 +2238,7 @@ test("construction collateral stages demolition before exact connected replay", 
       tangent0 = { x = 25, y = 8, z = 0 }, tangent1 = { x = 24, y = 9, z = 0 },
       type = 0, typeIndex = -1,
     },
-    streetEdge = { streetType = 4 },
+    streetEdge = { streetType = 4, hasBus = false, tramTrackType = 0 },
   }
   raw.streetProposal.edgesToRemove = { 77 }
   raw.__constructionAdditions = { {
@@ -2225,7 +2368,7 @@ test("construction collateral stages demolition before exact connected replay", 
             tangent1 = { x = 79, y = 0, z = 1 },
             type = 0, typeIndex = 0,
           },
-          streetEdge = { streetType = 4 },
+          streetEdge = { streetType = 4, hasBus = false, tramTrackType = 0 },
         }},
         edgeObjectsToAdd = {},
       },
@@ -2870,7 +3013,7 @@ test("proposal codec carries portable depots, arbitrary constructions, upgrades,
                       tangent0 = { x = 4, y = 0, z = 0 },
                       tangent1 = { x = 4, y = 0, z = 0 }, type = 0, typeIndex = 0,
                     },
-                    streetEdge = { streetType = 10 },
+                    streetEdge = { streetType = 10, hasBus = false, tramTrackType = 0 },
                   }
                 end
               end

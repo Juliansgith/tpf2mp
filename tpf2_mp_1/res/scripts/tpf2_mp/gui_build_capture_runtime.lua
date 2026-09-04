@@ -1,9 +1,12 @@
+local eventQueueRuntimeModule = require "tpf2_mp/gui_build_event_queue_runtime"
+
 local M = {}
 
 function M.new(deps)
   local gui = assert(deps.gui, "GUI state is required")
   local sampler = assert(deps.sampler, "build-gate sampler is required")
   local correlation = assert(deps.correlation, "build correlation runtime is required")
+  local earlyCapture = deps.earlyCapture
   local queueCapture = assert(deps.queueCapture, "build queue callback is required")
   local captureFailure = assert(deps.captureFailure, "build failure callback is required")
   local renderGui = assert(deps.renderGui, "render callback is required")
@@ -28,6 +31,11 @@ function M.new(deps)
     return queueCapture(pending)
   end
   gui.finishSuppressedNativeBuildCapture = finishSuppressedNativeBuildCapture
+  local eventQueueRuntime = eventQueueRuntimeModule.new({
+    gui = gui, correlation = correlation, earlyCapture = earlyCapture,
+    drainEvents = drainSuppressedBuildEvents, captureFailure = captureFailure,
+    finish = finishSuppressedNativeBuildCapture,
+  })
 
   local function process(force)
     local snapshotState = gui.snapshot or {}
@@ -52,110 +60,8 @@ function M.new(deps)
       end
       return false
     end
-    -- Merely exporting the take function is not proof that this sample carries
-    -- generation events: hook 0.18 compatibility fixtures expose B1 counters.
-    -- Switch paths only when the native sample/status explicitly advertises
-    -- the correlation queue, otherwise a valid legacy counter delta would be
-    -- swallowed by an empty event read.
-    local eventQueueReady = gateSample and (gateSample.sampleVersion == 2
-      or gateSample.correlationQueueAvailable == true)
-    local nativeEvents, eventError = nil, "unavailable"
-    if eventQueueReady then
-      nativeEvents, eventError = drainSuppressedBuildEvents(64)
-    end
-    if nativeEvents ~= nil then
-      local dropped = tonumber(gateSample and gateSample.dropped) or 0
-      if dropped > 0 then
-        return captureFailure(
-          "native BuildProposal correlation queue previously overflowed; restart the multiplayer session",
-          { dropped = dropped }
-        )
-      end
-      gui.buildGateSuppressedSeen = current
-      for _, event in ipairs(nativeEvents) do
-        local lastGeneration = tonumber(gui.buildGateLastGenerationSeen) or 0
-        if event.generation <= lastGeneration then
-          return captureFailure(
-            "native BuildProposal suppression generation was replayed or reordered",
-            { generation = event.generation, previousGeneration = lastGeneration }
-          )
-        end
-        gui.buildGateLastGenerationSeen = event.generation
-        local pending = correlation.lookup(event.correlation)
-        local valid, validationError = correlation.validatePending(
-          pending, event, snapshotState.activeCompanyCid
-        )
-        if not valid then
-          return captureFailure(validationError, {
-            generation = event.generation,
-            correlationId = event.correlation,
-            armedCorrelation = gateSample and gateSample.armedCorrelation or nil,
-          })
-        end
-        local waiting = gui.pendingNetworkBuildSuppression
-        if waiting then
-          local sameCorrelation = tonumber(waiting.correlationId) == tonumber(event.correlation)
-          local constructionBatch = sameCorrelation and (waiting.suppressedCalls or 1) < 16
-            and gui.proposalSnapshotHasConstructionChange(waiting.pending.proposalSnapshot)
-          if not constructionBatch then
-            return captureFailure(
-              "suppressed native builds crossed correlation boundaries before settlement",
-              {
-                generation = event.generation,
-                correlationId = event.correlation,
-                waitingCorrelationId = waiting.correlationId,
-              }
-            )
-          end
-          waiting.suppressedCalls = (waiting.suppressedCalls or 1) + 1
-          waiting.pending.suppressedCalls = waiting.suppressedCalls
-          waiting.lastGeneration = event.generation
-          gui.nativeBuildCapture.coalescedConstructionSuppressions =
-            (gui.nativeBuildCapture.coalescedConstructionSuppressions or 0) + 1
-        else
-          pending.suppressionDetectedFrame = gui.frames
-          pending.suppressed = current
-          pending.suppressedCalls = 1
-          pending.nativeSuppressionGeneration = event.generation
-          gui.pendingNetworkBuildSuppression = {
-            pending = pending,
-            detectedFrame = gui.frames,
-            suppressed = current,
-            suppressedCalls = 1,
-            correlationId = event.correlation,
-            firstGeneration = event.generation,
-            lastGeneration = event.generation,
-          }
-        end
-        if gui.pendingNetworkBuildPreview
-          and tonumber(gui.pendingNetworkBuildPreview.correlationId) == tonumber(event.correlation) then
-          gui.pendingNetworkBuildPreview = nil
-        end
-        if gui.pendingNetworkBuildExact
-          and tonumber(gui.pendingNetworkBuildExact.correlationId) == tonumber(event.correlation) then
-          gui.pendingNetworkBuildExact = nil
-        end
-        gui.nativeBuildCapture.correlatedNativeEvents =
-          (gui.nativeBuildCapture.correlatedNativeEvents or 0) + 1
-      end
-      local waiting = gui.pendingNetworkBuildSuppression
-      if waiting then
-        local upgraded = correlation.lookup(waiting.correlationId)
-        if upgraded and upgraded.exact == true then
-          upgraded.suppressionDetectedFrame = waiting.detectedFrame
-          upgraded.suppressed = waiting.suppressed
-          upgraded.suppressedCalls = waiting.suppressedCalls
-          upgraded.nativeSuppressionGeneration = waiting.firstGeneration
-          waiting.pending = upgraded
-        end
-      end
-      return finishSuppressedNativeBuildCapture()
-    elseif eventError ~= "unavailable" then
-      return captureFailure(
-        "cannot read the native suppressed-build correlation queue",
-        { error = tostring(eventError) }
-      )
-    end
+    local handled, eventResult = eventQueueRuntime.process(current, gateSample, snapshotState)
+    if handled then return eventResult end
 
     -- Compatibility path for hook 0.18 and the pure-Lua harness. A counter
     -- cannot disambiguate reordered previews; supported releases use S1 above.

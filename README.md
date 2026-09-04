@@ -112,6 +112,17 @@ Run the complete source gate from a PowerShell prompt:
 .\tools\run_tests.ps1
 ```
 
+The same gate runs in GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
+on every push and pull request. The Windows runner builds its own Lua 5.1.5
+with `tools/ci/build_lua51.ps1`; `TPF2MP_LUA` and `TPF2MP_PYTHON` override the
+interpreters the gate uses. The gate first checks that the interpreter formats
+numbers like the game's C runtime: canonical digests hash `%.17g` text, and the
+MSVCR80-linked Lua for Windows misrounds ties, so it is refused with build
+instructions rather than allowed to pin wrong digests. A second job configures,
+builds, and CTests the native hook with MSVC. Signature validation against the
+real Build 35924 executable needs the game and remains a local step of the
+release build.
+
 Build and transactionally verify a clean release bundle:
 
 ```powershell
@@ -142,12 +153,24 @@ performs an isolated install/verify/uninstall round trip. See
 - `tools/` — launch, validation, evidence, packaging, and distribution scripts;
 - `docs/` — maintained guides, architecture, status, design, and release notes;
 - `investigation/` — dated evidence and reverse-engineering reports;
-- `runtime/` — ignored generated sessions, binaries, saves, and live evidence.
+- `runtime/` — ignored generated sessions, binaries, saves, and live evidence;
+- `.github/workflows/` — continuous integration: the automated code gate and
+  the native hook build on every push and pull request;
+- `LICENSE` — MIT license; third-party notices live in
+  [docs/THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md).
 
 Start at the [documentation index](docs/README.md). The
 [architecture](docs/ARCHITECTURE.md) defines module and authority boundaries,
 and the [alpha release checklist](docs/ALPHA_RELEASE_CHECKLIST.md) defines the
 remaining human acceptance run.
+
+## License
+
+TPF2MP is released under the [MIT License](LICENSE). Vendored and build-time
+third-party components, and the boundary with the game itself, are listed in
+[docs/THIRD_PARTY_NOTICES.md](docs/THIRD_PARTY_NOTICES.md). Transport Fever 2
+is not redistributed, and this project is not affiliated with or endorsed by
+Urban Games.
 
 ## Explicit limits
 

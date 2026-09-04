@@ -240,7 +240,7 @@ exact order, waiting for READY only where stated):
 
       .\tools\verify_build_transition_gate.ps1 -Session <session-name>
 
-[ ] Require Passed=True, hook 0.19.0, zero rejected/dropped/pending build
+[ ] Require Passed=True, hook 0.20.0, zero rejected/dropped/pending build
     correlations, and construction/track/street/edge-object/bulldozer coverage.
 
 

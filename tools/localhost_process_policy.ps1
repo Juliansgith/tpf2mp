@@ -59,21 +59,47 @@ function Set-Tpf2mpLocalhostProcessPolicy(
     [ValidateSet('Balanced', 'Native')][string]$Profile = 'Balanced'
 ) {
     if (-not $Process -or $Profile -eq 'Native') { return $null }
-    $Process.Refresh()
-    if ($Process.HasExited) { throw "$Peer process exited before its localhost policy was applied." }
     $mask = Get-Tpf2mpLocalhostAffinityMask $Peer
-    if ($null -ne $mask -and $mask -ne 0) {
-        $Process.ProcessorAffinity = [intptr][int64]$mask
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) { throw "$Peer process exited before its localhost policy was applied." }
+        if ($null -ne $mask -and $mask -ne 0) {
+            $Process.ProcessorAffinity = [intptr][int64]$mask
+        }
+        $Process.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
     }
-    $Process.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
+    catch {
+        # A renderer can disappear between Refresh(), ProcessorAffinity, and
+        # PriorityClass. Preserve that launch failure as the primary diagnostic
+        # instead of reporting a misleading property-set exception.
+        try { $Process.Refresh() } catch { }
+        if ($Process.HasExited) {
+            throw "$Peer process exited while its localhost policy was being applied (exit code $($Process.ExitCode))."
+        }
+        throw
+    }
     $powerThrottlingDisabled = Disable-Tpf2mpProcessPowerThrottling $Process
+    try {
+        $Process.Refresh()
+        if ($Process.HasExited) {
+            throw "$Peer process exited while its localhost policy was being verified (exit code $($Process.ExitCode))."
+        }
+        $priority = [string]$Process.PriorityClass
+    }
+    catch {
+        try { $Process.Refresh() } catch { }
+        if ($Process.HasExited) {
+            throw "$Peer process exited while its localhost policy was being verified (exit code $($Process.ExitCode))."
+        }
+        throw
+    }
     return [pscustomobject]@{
         peer = $Peer
         pid = $Process.Id
         profile = $Profile
         logicalProcessors = [Environment]::ProcessorCount
         affinityMask = if ($null -ne $mask) { '0x{0:x}' -f $mask } else { $null }
-        priority = [string]$Process.PriorityClass
+        priority = $priority
         powerThrottlingDisabled = $powerThrottlingDisabled
     }
 }

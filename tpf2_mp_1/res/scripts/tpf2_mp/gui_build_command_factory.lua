@@ -6,7 +6,7 @@ local M = {}
 
 local function hasConstructionCollateral(transaction)
   if type(transaction) ~= "table"
-    or transaction.schemaVersion ~= proposalCodec.CONSTRUCTION_SCHEMA_VERSION then return false end
+    or not proposalCodec.isConstructionSchema(transaction.schemaVersion) then return false end
   local construction = type(transaction.constructions) == "table"
     and transaction.constructions[1] or nil
   return type(construction) == "table" and construction.mode == "build"

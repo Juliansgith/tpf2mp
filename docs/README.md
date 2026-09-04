@@ -27,6 +27,7 @@ excluded from Git.
 ## Engineering
 
 - [Architecture](ARCHITECTURE.md)
+- [Construction authority](CONSTRUCTION_AUTHORITY.md)
 - [Prototype status](PROTOTYPE_STATUS.md)
 - [Remaining work](REMAINING_FROM_BRIEF.md)
 - [Alpha release checklist](ALPHA_RELEASE_CHECKLIST.md)
@@ -36,6 +37,11 @@ excluded from Git.
 - [Competitive multiplayer concept](COMPETITIVE_MULTIPLAYER_CONCEPT.md)
 - [Competitive multiplayer technical plan](COMPETITIVE_MULTIPLAYER_TECHNICAL_PLAN.md)
 - [Multiplayer Companies audit](MULTIPLAYER_COMPANIES_AUDIT.md)
+
+## Legal
+
+- [License](../LICENSE) (MIT)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## Releases
 

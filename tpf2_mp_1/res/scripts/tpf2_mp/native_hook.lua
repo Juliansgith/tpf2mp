@@ -28,6 +28,8 @@ function M.compactStatus(payload)
   local buildGate = type(gates.buildProposal) == "table" and gates.buildProposal or {}
   local suppressedBuilds = type(buildGate.suppressedQueue) == "table"
     and buildGate.suppressedQueue or {}
+  local factoryCapture = type(buildGate.factoryCapture) == "table"
+    and buildGate.factoryCapture or {}
   local commandGate = type(gates.commandVisitors) == "table" and gates.commandVisitors or {}
   local commandList = type(payload.commandList) == "table" and payload.commandList or {}
   local applyCommand = type(payload.applyCommand) == "table" and payload.applyCommand or {}
@@ -88,6 +90,8 @@ function M.compactStatus(payload)
       commandListSwap = hooks.commandListSwap == true,
       applyCommand = hooks.applyCommand == true,
       buildProposalVisitor = hooks.buildProposalVisitor == true,
+      makeBuildProposal = hooks.makeBuildProposal == true,
+      commandListAdd = hooks.commandListAdd == true,
       authorityCommandVisitors = math.max(0, tonumber(hooks.authorityCommandVisitors) or 0),
       sendCommandWrapping = hooks.sendCommandWrapping == true,
     },
@@ -156,6 +160,19 @@ function M.compactStatus(payload)
           armedCorrelation = math.max(0, tonumber(suppressedBuilds.armedCorrelation) or 0),
           lastCorrelation = math.max(0, tonumber(suppressedBuilds.lastCorrelation) or 0),
         },
+        factoryCapture = {
+          factoryCalls = math.max(0, tonumber(factoryCapture.factoryCalls) or 0),
+          decoded = math.max(0, tonumber(factoryCapture.decoded) or 0),
+          invalid = math.max(0, tonumber(factoryCapture.invalid) or 0),
+          addMatches = math.max(0, tonumber(factoryCapture.addMatches) or 0),
+          addMisses = math.max(0, tonumber(factoryCapture.addMisses) or 0),
+          suppressedMatches = math.max(0, tonumber(factoryCapture.suppressedMatches) or 0),
+          suppressedMisses = math.max(0, tonumber(factoryCapture.suppressedMisses) or 0),
+          consumed = math.max(0, tonumber(factoryCapture.consumed) or 0),
+          dropped = math.max(0, tonumber(factoryCapture.dropped) or 0),
+          pending = math.max(0, tonumber(factoryCapture.pending) or 0),
+          ready = math.max(0, tonumber(factoryCapture.ready) or 0),
+        },
       },
       commandVisitors = {
         enabled = commandGate.enabled == true,
@@ -199,19 +216,24 @@ function M.validatedNetworkAuthority(nativeStatus)
     and nativeGates.buildProposal or {}
   local commandStatus = type(nativeGates.commandVisitors) == "table"
     and nativeGates.commandVisitors or {}
+  local factoryStatus = type(buildStatus.factoryCapture) == "table"
+    and buildStatus.factoryCapture or {}
   local nativeValidation = type(nativeStatus.validation) == "table"
     and nativeStatus.validation or {}
   local nativeHooks = type(nativeStatus.hooks) == "table" and nativeStatus.hooks or {}
   local ready = nativeStatus.available == true
-    and nativeStatus.hookVersion == "0.19.0"
+    and nativeStatus.hookVersion == "0.20.0"
     and nativeStatus.active == true
     and nativeValidation.valid == true
     and nativeHooks.enabled == true
     and nativeHooks.buildProposalVisitor == true
+    and nativeHooks.makeBuildProposal == true
+    and nativeHooks.commandListAdd == true
     and (tonumber(nativeHooks.authorityCommandVisitors) or 0) == 31
     and buildStatus.enabled == true
     and buildStatus.correlationQueueAvailable == true
     and (tonumber(buildStatus.suppressedQueue and buildStatus.suppressedQueue.dropped) or 0) == 0
+    and (tonumber(factoryStatus.dropped) or 0) == 0
     and (tonumber(buildStatus.tagMismatches) or 0) == 0
     and commandStatus.enabled == true
     and (tonumber(commandStatus.hooked) or 0) == 31
@@ -219,6 +241,8 @@ function M.validatedNetworkAuthority(nativeStatus)
   return ready, {
     buildGateEnabled = buildStatus.enabled == true,
     buildCorrelationQueue = buildStatus.correlationQueueAvailable == true,
+    earlyBuildCapture = nativeHooks.makeBuildProposal == true
+      and nativeHooks.commandListAdd == true,
     commandGateEnabled = commandStatus.enabled == true,
     commandVisitors = tonumber(commandStatus.hooked) or 0,
   }
@@ -235,6 +259,7 @@ function M.configureAuthority(mode)
     required[#required + 1] = "tpf2mp_native_revoke_command"
     required[#required + 1] = "tpf2mp_native_arm_build_correlation"
     required[#required + 1] = "tpf2mp_native_take_suppressed_build"
+    required[#required + 1] = "tpf2mp_native_take_build_factory_capture"
   end
   local missing = {}
   for _, name in ipairs(required) do

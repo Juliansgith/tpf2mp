@@ -2,14 +2,15 @@
 #include "tpf2mp/native_async_bridge.hpp"
 #include "tpf2mp/native_binding_catalog.hpp"
 #include "tpf2mp/native_build_correlation.hpp"
+#include "tpf2mp/native_build_hook_bridge.hpp"
 #include "tpf2mp/native_command_codec.hpp"
+#include "tpf2mp/native_command_safety.generated.hpp"
 #include "tpf2mp/native_hook_status.hpp"
 #include "tpf2mp/native_launcher_barrier.hpp"
 
 #include <MinHook.h>
 
 #include <Windows.h>
-
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -234,15 +235,21 @@ void RequestStatusWrite() {
   }
 }
 
+tpf2mp::native_build_hook::GateSnapshot BuildCaptureGateSnapshot() {
+  StateLock lock;
+  return {.enabled = g_build_gate_enabled,
+          .correlation = g_suppressed_builds.armed_correlation()};
+}
+
 bool IsAuthorityCommandTag(const int tag) {
-  return std::any_of(
-      tpf2mp::profile::kAuthorityCommandVisitors.begin(),
-      tpf2mp::profile::kAuthorityCommandVisitors.end(),
-      [tag](const tpf2mp::profile::CommandVisitor& visitor) { return visitor.tag == tag; });
+  return tag >= 0 && static_cast<std::size_t>(tag) <
+                         tpf2mp::native_command::kCommandSafetyRegistry.size() &&
+         tpf2mp::native_command::kCommandSafetyRegistry[static_cast<std::size_t>(tag)].visitor_hook;
 }
 
 std::string StatusJson() {
   StateLock lock;
+  const auto build_factory_capture = tpf2mp::native_build_hook::Stats();
   return SerializeHookStatus(HookStatusView{
       .process_id = GetCurrentProcessId(),
       .stage = g_stage,
@@ -292,6 +299,7 @@ std::string StatusJson() {
       .suppressed_build_last_generation = g_suppressed_builds.last_generation(),
       .suppressed_build_armed_correlation = g_suppressed_builds.armed_correlation(),
       .suppressed_build_last_correlation = g_suppressed_builds.last_correlation(),
+      .build_factory_capture = build_factory_capture,
       .command_gate_enabled = g_command_gate_enabled,
       .command_gate_tag_mismatches = g_command_gate_tag_mismatches,
       .command_gate_authorizations = g_command_gate_authorizations,
@@ -363,6 +371,7 @@ int NativeEnableBuildGate(lua_State*) {
     g_build_gate_enabled = true;
     g_build_gate_authorizations = 0;
     g_suppressed_builds.ResetPending();
+    tpf2mp::native_build_hook::ResetPending();
   }
   RequestStatusWrite();
   return 0;
@@ -374,6 +383,7 @@ int NativeDisableBuildGate(lua_State*) {
     g_build_gate_enabled = false;
     g_build_gate_authorizations = 0;
     g_suppressed_builds.ResetPending();
+    tpf2mp::native_build_hook::ResetPending();
   }
   RequestStatusWrite();
   return 0;
@@ -402,6 +412,8 @@ int NativeBuildGateSample(lua_State* state) {
   std::size_t queued = 0;
   std::uint64_t dropped = 0;
   std::uint64_t armed_correlation = 0;
+  std::size_t factory_ready = 0;
+  std::uint64_t factory_dropped = 0;
   {
     StateLock lock;
     enabled = g_build_gate_enabled;
@@ -411,14 +423,19 @@ int NativeBuildGateSample(lua_State* state) {
     queued = g_suppressed_builds.queued();
     dropped = g_suppressed_builds.dropped();
     armed_correlation = g_suppressed_builds.armed_correlation();
+    const auto factory_stats = tpf2mp::native_build_hook::Stats();
+    factory_ready = factory_stats.ready;
+    factory_dropped = factory_stats.dropped;
   }
-  const std::string encoded = "B2|" + std::string(enabled ? "1" : "0") + "|" +
+  const std::string encoded = "B3|" + std::string(enabled ? "1" : "0") + "|" +
                               std::to_string(suppressed) + "|" +
                               std::to_string(tag_mismatches) + "|" +
                               std::to_string(last_generation) + "|" +
                               std::to_string(queued) + "|" +
                               std::to_string(dropped) + "|" +
-                              std::to_string(armed_correlation);
+                              std::to_string(armed_correlation) + "|" +
+                              std::to_string(factory_ready) + "|" +
+                              std::to_string(factory_dropped);
   g_lua_pushlstring(state, encoded.data(), encoded.size());
   return 1;
 }
@@ -444,6 +461,14 @@ int NativeTakeSuppressedBuildEvent(lua_State* state) {
     StateLock lock;
     encoded = g_suppressed_builds.TakeEncoded();
   }
+  if (!encoded.has_value()) return 0;
+  g_lua_pushlstring(state, encoded->data(), encoded->size());
+  RequestStatusWrite();
+  return 1;
+}
+
+int NativeTakeBuildFactoryCapture(lua_State* state) {
+  auto encoded = tpf2mp::native_build_hook::TakeEncoded();
   if (!encoded.has_value()) return 0;
   g_lua_pushlstring(state, encoded->data(), encoded->size());
   RequestStatusWrite();
@@ -591,6 +616,7 @@ int NativeSuppressedPendingMask(lua_State* state) {
     if (!g_suppressed_line_commands.empty() || g_suppressed_line_command_drops_reported < g_suppressed_line_command_dropped) mask |= 2;
     if (!g_suppressed_vehicle_commands.empty() || g_suppressed_vehicle_command_drops_reported < g_suppressed_vehicle_command_dropped) mask |= 4;
     if (g_suppressed_builds.has_pending()) mask |= 8;
+    if (tpf2mp::native_build_hook::Stats().ready > 0) mask |= 16;
   }
   if (mask == 0) return 0; const auto text = std::to_string(mask);
   g_lua_pushlstring(state, text.data(), text.size()); return 1;
@@ -618,6 +644,7 @@ void RegisterNativeApi(lua_State* state) {
   RegisterNativeFunction(state, "tpf2mp_native_disable_build_gate", NativeDisableBuildGate); RegisterNativeFunction(state, "tpf2mp_native_authorize_build", NativeAuthorizeBuild);
   RegisterNativeFunction(state, "tpf2mp_native_build_gate_sample", NativeBuildGateSample);
   RegisterNativeFunction(state, "tpf2mp_native_arm_build_correlation", NativeArmBuildCorrelation); RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_build", NativeTakeSuppressedBuildEvent);
+  RegisterNativeFunction(state, "tpf2mp_native_take_build_factory_capture", NativeTakeBuildFactoryCapture);
   RegisterNativeFunction(state, "tpf2mp_native_enable_command_gate", NativeEnableCommandGate); RegisterNativeFunction(state, "tpf2mp_native_disable_command_gate", NativeDisableCommandGate);
   RegisterNativeFunction(state, "tpf2mp_native_authorize_command", NativeAuthorizeCommand); RegisterNativeFunction(state, "tpf2mp_native_revoke_command", NativeRevokeCommand);
   RegisterNativeFunction(state, "tpf2mp_native_set_command_observer", NativeSetCommandObserver); RegisterNativeFunction(state, "tpf2mp_native_take_suppressed_game_speed", NativeTakeSuppressedGameSpeed);
@@ -923,6 +950,8 @@ void DetourApplyCommand(void* context, void* command) {
 }
 
 bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {
+  static_assert(tpf2mp::native_command::CommandSafetyPolicyFor<15>().visitor_hook);
+  static_assert(tpf2mp::native_command::CommandSafetyPolicyFor<15>().suppression_safe);
   bool suppress = false;
   {
     StateLock lock;
@@ -939,13 +968,19 @@ bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {
       if (tag_mismatch) {
         ++g_build_gate_suppressed;
         g_suppressed_builds.Capture(g_build_gate_last_tag);
+        tpf2mp::native_build_hook::PromoteSuppressed(build_proposal);
         suppress = true;
       } else if (g_build_gate_authorizations > 0) {
         --g_build_gate_authorizations;
         ++g_build_gate_allowed;
+        // Authorized replay must retire its early factory capture. Leaving it
+        // pending makes pointer reuse correlate a later player command with
+        // stale pre-mutation evidence.
+        tpf2mp::native_build_hook::DiscardObserved(build_proposal);
       } else {
         ++g_build_gate_suppressed;
         g_suppressed_builds.Capture(g_build_gate_last_tag);
+        tpf2mp::native_build_hook::PromoteSuppressed(build_proposal);
         suppress = true;
       }
     }
@@ -958,6 +993,9 @@ bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {
 template <std::size_t Tag>
 bool DetourAuthorityCommandVisitor(void* visitor_context, void* command_data) {
   static_assert(Tag < kNativeCommandTypeCount);
+  static_assert(tpf2mp::native_command::CommandSafetyPolicyFor<Tag>().visitor_hook);
+  static_assert(tpf2mp::native_command::CommandSafetyPolicyFor<Tag>().suppression_safe ||
+                tpf2mp::native_command::CommandSafetyPolicyFor<Tag>().optimistic_pass_through);
   bool suppress = false;
   bool gate_observed = false;
   bool optimistic_line_passthrough = false;
@@ -981,7 +1019,8 @@ bool DetourAuthorityCommandVisitor(void* visitor_context, void* command_data) {
         --g_command_gate_authorizations[Tag];
         ++g_command_gate_allowed[Tag];
       } else {
-        if constexpr ((Tag >= 3 && Tag <= 5) || Tag == 28 || Tag == 29) {
+        if constexpr (tpf2mp::native_command::CommandSafetyPolicyFor<Tag>()
+                          .optimistic_pass_through) {
           // Vanilla's Line Manager callback immediately dereferences the
           // command result (notably the entity created by New Line). Returning
           // false here does not merely reject the click: Build 35924 feeds an
@@ -1167,12 +1206,14 @@ bool ValidateAuthorityVisitorTable(HMODULE executable) {
 }
 
 bool InstallHooks(HMODULE executable) {
-  constexpr std::array<std::string_view, 17> required_signatures{
+  tpf2mp::native_build_hook::Configure(
+      executable, BuildCaptureGateSnapshot, RequestStatusWrite);
+  constexpr std::array<std::string_view, 19> required_signatures{
       "luaB_print",          "lua_setfield", "SetupCommandInterface", "lua_pushcclosure",
       "lua_pushvalue",       "lua_insert",   "lua_callk",              "lua_gettop",
       "lua_settop",          "lua_rawgeti",  "lua_rawseti",            "lua_rawset",
       "lua_pushlstring",     "lua_tolstring", "CommandList::Swap",      "ApplyCommand",
-      "BuildProposalVisitor",
+      "BuildProposalVisitor", "make_cmd::BuildProposal", "CommandList::Add",
   };
   for (const auto name : required_signatures) {
     if (ValidatedRva(name) == 0) {
@@ -1198,6 +1239,10 @@ bool InstallHooks(HMODULE executable) {
   const auto apply_command_target = AtRva<void*>(executable, ValidatedRva("ApplyCommand"));
   const auto build_proposal_visitor_target =
       AtRva<void*>(executable, ValidatedRva("BuildProposalVisitor"));
+  const auto make_build_proposal_target =
+      AtRva<void*>(executable, ValidatedRva("make_cmd::BuildProposal"));
+  const auto command_list_add_target =
+      AtRva<void*>(executable, ValidatedRva("CommandList::Add"));
   if (!CreateHook(print_target, reinterpret_cast<void*>(DetourLuaPrint),
                   reinterpret_cast<void**>(&g_original_print), g_hooks.lua_print_created, "luaB_print") ||
       !CreateHook(setfield_target, reinterpret_cast<void*>(DetourLuaSetField),
@@ -1214,7 +1259,15 @@ bool InstallHooks(HMODULE executable) {
       !CreateHook(build_proposal_visitor_target,
                   reinterpret_cast<void*>(DetourBuildProposalVisitor),
                   reinterpret_cast<void**>(&g_original_build_proposal_visitor),
-                  g_hooks.build_proposal_visitor_created, "BuildProposalVisitor")) {
+                  g_hooks.build_proposal_visitor_created, "BuildProposalVisitor") ||
+      !CreateHook(make_build_proposal_target,
+                  tpf2mp::native_build_hook::MakeBuildProposalDetour(),
+                  tpf2mp::native_build_hook::MakeBuildProposalOriginalStorage(),
+                  g_hooks.make_build_proposal_created, "make_cmd::BuildProposal") ||
+      !CreateHook(command_list_add_target,
+                  tpf2mp::native_build_hook::CommandListAddDetour(),
+                  tpf2mp::native_build_hook::CommandListAddOriginalStorage(),
+                  g_hooks.command_list_add_created, "CommandList::Add")) {
     MH_Uninitialize();
     return false;
   }
@@ -1252,6 +1305,8 @@ bool InstallHooks(HMODULE executable) {
   MH_QueueEnableHook(command_list_swap_target);
   MH_QueueEnableHook(apply_command_target);
   MH_QueueEnableHook(build_proposal_visitor_target);
+  MH_QueueEnableHook(make_build_proposal_target);
+  MH_QueueEnableHook(command_list_add_target);
   for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
     MH_QueueEnableHook(AtRva<void*>(executable, visitor.rva));
   }
@@ -1335,7 +1390,7 @@ DWORD WINAPI Worker(void*) {
 } // namespace
 
 extern "C" __declspec(dllexport) const char* TPF2MP_HookProfile() {
-  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.19.0";
+  return "Transport Fever 2 Build 35924 / tpf2mp native hook 0.20.0";
 }
 
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {

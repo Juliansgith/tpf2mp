@@ -1,6 +1,7 @@
 local stationModule = require "tpf2_mp/validation_station_proposal"
 local roadDepotModule = require "tpf2_mp/validation_connected_road_depot_runtime"
 local secondStationModule = require "tpf2_mp/validation_second_station_runtime"
+local transportSlicesModule = require "tpf2_mp/validation_transport_slices"
 
 local M = {}
 
@@ -18,6 +19,7 @@ function M.new(deps)
   }
   tramDeps.afterCheckpoint = function(_, _, boundarySeq) deps.finish(boundarySeq) end
   local tramDepot = roadDepotModule.new(tramDeps)
+  local transport = transportSlicesModule.new(deps)
   return {
     begin = station.begin,
     beginSlice = function(name)
@@ -25,11 +27,13 @@ function M.new(deps)
       if name == "connected-road-depot" then roadDepot.begin(); return true end
       if name == "connected-tram-depot" then tramDepot.begin(); return true end
       if name == "second-station" then secondStation.begin(); return true end
+      if transport.begin(name) then return true end
       return false
     end,
     maintain = function(stage)
       return roadDepot.maintain(stage) or tramDepot.maintain(stage)
-        or secondStation.maintain(stage) or station.maintain(stage)
+        or secondStation.maintain(stage) or transport.maintain(stage)
+        or station.maintain(stage)
     end,
   }
 end

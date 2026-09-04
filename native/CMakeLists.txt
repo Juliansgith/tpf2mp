@@ -23,6 +23,7 @@ target_link_libraries(tpf2mp_native_common PUBLIC bcrypt)
 add_library(tpf2mp_hook_support STATIC
   src/native_async_bridge.cpp
   src/native_binding_catalog.cpp
+  src/native_build_capture.cpp
   src/native_build_correlation.cpp
   src/native_command_codec.cpp
   src/native_vehicle_command_codec.cpp
@@ -35,6 +36,7 @@ target_compile_definitions(tpf2mp_hook_support PUBLIC UNICODE _UNICODE WIN32_LEA
 
 add_library(tpf2mp_hook SHARED
   src/hook_dll.cpp
+  src/native_build_hook_bridge.cpp
 )
 target_include_directories(tpf2mp_hook PRIVATE include)
 target_compile_definitions(tpf2mp_hook PRIVATE TPF2MP_HOOK_EXPORTS)

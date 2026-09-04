@@ -10,6 +10,7 @@ local nativeCommandObserver = nil
 local nativeBuildGate = {
   enabled = true, authorizations = 0, allowed = 0, suppressed = 0,
   suppressedQueue = { queued = 0, captured = 0, consumed = 0, dropped = 0 },
+  factoryCapture = { dropped = 0 },
 }
 local nativeBuildFastVersion = 1
 local nativeBuildGeneration = 0
@@ -31,12 +32,14 @@ tpf2mp_native_status = function()
   nativeStatusReads = nativeStatusReads + 1
   return {
     schemaVersion = 1,
-    hookVersion = "0.19.0",
+    hookVersion = "0.20.0",
     active = true,
     validation = { valid = true, signatures = {} },
     hooks = {
       enabled = true,
       buildProposalVisitor = true,
+      makeBuildProposal = true,
+      commandListAdd = true,
       authorityCommandVisitors = 31,
       sendCommandWrapping = true,
     },
@@ -73,6 +76,7 @@ tpf2mp_native_take_suppressed_build = function()
   if #nativeBuildEvents == 0 then return nil end
   return table.remove(nativeBuildEvents, 1)
 end
+tpf2mp_native_take_build_factory_capture = function() return nil end
 
 tpf2mp_native_set_command_observer = function(callback)
   assert(type(callback) == "function", "native observer setter did not receive a function")
@@ -592,7 +596,7 @@ local liveSignalSplit = script.guiHandleEvent(
     proposal = { streetProposal = {
       edgesToAdd = {
         { type = 1, trackEdge = { trackType = 0 } },
-        { type = 0, streetEdge = { streetType = 0 } },
+        { type = 0, streetEdge = { streetType = 0, hasBus = false, tramTrackType = 0 } },
       },
       edgeObjectsToAdd = {
         { edgeEntity = 700, category = 0, model = "railroad/signal_path_a.mdl" },
@@ -1900,6 +1904,44 @@ assert(replayRuntime.processProposalQueue() == true
     and sentEvents[#sentEvents].param.worldUnchanged == true,
   "unchanged native rejection was not attested for PREPARE-core rollback")
 api.cmd.sendCommand = successfulSendCommand
+
+-- A typed-userdata ABI mismatch must never strand a proposal before the
+-- native callback.  Convert the exception into an unchanged-world result so
+-- consensus can reject the prepared action and release the quarantine.
+proposalCodec.materialise = function()
+  error("unknown BaseEdgeStreet field 'bus'")
+end
+replayState.world.proposals.byId["gui-materialise-exception"] = {
+  proposalId = "gui-materialise-exception", status = "queued",
+  transaction = {
+    schemaVersion = proposalCodec.SCHEMA_VERSION,
+    digest = "materialise-exception",
+  },
+  localRefs = {}, nativeOwnerPlayerId = 100, issuerPlayerId = 100,
+}
+assert(issueQueuedReplay() == true,
+  "proposal materialisation exception did not enter guarded GUI replay")
+local materialiseExceptionResultCount = #sentEvents
+local materialiseExceptionResult
+for _ = 1, 8 do
+  replayGui.frames = replayGui.frames + 1
+  replayRuntime.processProposalQueue()
+  for index = materialiseExceptionResultCount + 1, #sentEvents do
+    local candidate = sentEvents[index]
+    if candidate.name == "proposal.result"
+        and candidate.param.proposalId == "gui-materialise-exception" then
+      materialiseExceptionResult = candidate
+      break
+    end
+  end
+  if materialiseExceptionResult then break end
+end
+assert(materialiseExceptionResult
+    and materialiseExceptionResult.param.success == false
+    and materialiseExceptionResult.param.worldUnchanged == true
+    and tostring(materialiseExceptionResult.param.error):find(
+      "proposal materialisation failed", 1, true),
+  "proposal materialisation exception did not fail closed with a result")
 proposalCodec.materialise = originalMaterialise
 api.cmd.make.buildProposal = originalBuildFactory
 rawset(_G, "tpf2mp_native_authorize_build", originalAuthorizeBuild)
