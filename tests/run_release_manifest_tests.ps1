@@ -6,6 +6,31 @@ param(
 
 $ErrorActionPreference = 'Stop'
 . (Join-Path $ProjectRoot 'tools\release_common.ps1')
+. (Join-Path $ProjectRoot 'tools\release_schema.ps1')
+
+# The codec imports its constants now. Packaging must read the shared module,
+# and must not accidentally report LEGACY_SCHEMA_VERSION as the current one.
+$schemaSourcePath = Join-Path $ProjectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_schema.lua'
+$schemaVersion = Get-Tpf2mpLuaSchemaConstant -Path $schemaSourcePath -Name 'SCHEMA_VERSION'
+if ($schemaVersion -ne 6) { throw 'Packaged edge schema must match the current shared Lua schema.' }
+$schemaFixture = Join-Path $TemporaryRoot 'release-schema.lua'
+[IO.File]::WriteAllText($schemaFixture, "local M = {`n LEGACY_SCHEMA_VERSION = 5,`n SCHEMA_VERSION = 6, -- current`n CONSTRUCTION_SCHEMA_VERSION = 8,`n}`nreturn M")
+if ((Get-Tpf2mpLuaSchemaConstant -Path $schemaFixture -Name 'SCHEMA_VERSION') -ne 6) {
+    throw 'Package schema discovery selected a legacy or construction constant.'
+}
+foreach ($invalidSchema in @(
+        "LEGACY_SCHEMA_VERSION = 5,",
+        "SCHEMA_VERSION = 6,`nSCHEMA_VERSION = 7,",
+        'SCHEMA_VERSION = 6 + 1,',
+        'SCHEMA_VERSION = 0,',
+        'SCHEMA_VERSION = 999999999999999999999,')) {
+    [IO.File]::WriteAllText($schemaFixture, $invalidSchema)
+    $schemaRejected = $false
+    try { Get-Tpf2mpLuaSchemaConstant -Path $schemaFixture -Name 'SCHEMA_VERSION' | Out-Null }
+    catch { $schemaRejected = $true }
+    if (-not $schemaRejected) { throw 'Package schema discovery accepted an invalid or ambiguous declaration.' }
+}
+Write-Host 'PASS package schema discovery follows shared constants and rejects legacy/ambiguous values'
 
 $bundle = Join-Path $TemporaryRoot 'release-manifest-fixture'
 $requiredFiles = @(

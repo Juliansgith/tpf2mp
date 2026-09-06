@@ -12,6 +12,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 . (Join-Path $PSScriptRoot 'release_common.ps1')
+. (Join-Path $PSScriptRoot 'release_schema.ps1')
 $game = Find-Tpf2mpGameExecutable $GameExecutable
 if (-not $game) { throw 'Transport Fever 2 executable was not discovered; pass -GameExecutable.' }
 if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') { throw "Unsafe release version: $Version" }
@@ -30,7 +31,7 @@ if ($sourceDirty -and -not $AllowDirtySource) {
 }
 $modSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\mod.lua') -Raw
 $scriptSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\config\game_script\tpf2_mp.lua') -Raw
-$proposalSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Raw
+$proposalSchemaPath = Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_schema.lua'
 $operationSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua') -Raw
 $passengerPresentationSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\passenger_presentation.lua') -Raw
 $cargoPresentationSource = Get-Content -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\cargo_presentation.lua') -Raw
@@ -44,8 +45,7 @@ if ($scriptSource -notmatch 'local\s+STATE_VERSION\s*=\s*(\d+)') { throw 'Could 
 $stateSchemaVersion = [int]$Matches[1]
 if ($scriptSource -notmatch 'local\s+CHECKPOINT_VERSION\s*=\s*(\d+)') { throw 'Could not derive the checkpoint schema version.' }
 $checkpointSchemaVersion = [int]$Matches[1]
-if ($proposalSource -notmatch 'SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the proposal schema version.' }
-$proposalSchemaVersion = [int]$Matches[1]
+$proposalSchemaVersion = Get-Tpf2mpLuaSchemaConstant -Path $proposalSchemaPath -Name 'SCHEMA_VERSION'
 if ($operationSource -notmatch 'SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the operation schema version.' }
 $operationSchemaVersion = [int]$Matches[1]
 if ($passengerPresentationSource -notmatch 'M\.SCHEMA_VERSION\s*=\s*(\d+)') { throw 'Could not derive the passenger-presentation schema version.' }
