@@ -58,7 +58,9 @@ jobs:
 
   native:
     name: Native hook build (MSVC x64)
-    runs-on: windows-latest
+    # Keep the runner aligned with the explicitly selected VS 2022 generator.
+    # windows-latest no longer guarantees that compiler installation.
+    runs-on: windows-2022
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
