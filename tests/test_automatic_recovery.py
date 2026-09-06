@@ -245,6 +245,50 @@ class AutomaticRecoveryTests(unittest.TestCase):
         self.assertIsNone(coordinator.current)
         self.assertEqual(coordinator.last["status"], "superseded")
 
+    def test_player_work_supersedes_automatic_preparation_and_scheduler_cancels(self) -> None:
+        host = FakeHost()
+        coordinator = AnchorPreparationCoordinator(host)
+        active = {
+            "preparationSeq": 7, "automatic": True, "status": "draining",
+            "checkpointBoundarySeq": None, "resumeSpeed": 3,
+        }
+        coordinator.current = active
+        host.anchor_preparation = coordinator
+        mono, wall = MutableClock(0), MutableClock(1000)
+        scheduler = self._scheduler(host, mono, wall)
+        host.automatic_recovery = scheduler
+
+        coordinator.before_commit(
+            {"type": "proposal.prepare"}, "player1", 17,
+        )
+        self.assertIs(coordinator.current, active)
+        self.assertEqual(coordinator.current["status"], "failed")
+        self.assertIn("gameplay superseded", coordinator.current["detail"])
+        self.assertEqual(host.actions[-2], {
+            "type": "recovery.cancel", "preparationSeq": 7,
+            "errorCode": "new ordered gameplay superseded automatic restore-point preparation",
+        })
+        self.assertEqual(host.actions[-1], {
+            "type": "clock.request", "requestedSpeed": 3,
+        })
+        status = scheduler.status()["automaticRecovery"]
+        self.assertEqual(status["status"], "scheduled")
+        self.assertEqual(status["nextDueInSeconds"], 10)
+        self.assertIsNone(status["preparationSeq"])
+
+    def test_player_work_remains_fenced_by_manual_preparation(self) -> None:
+        host = FakeHost()
+        coordinator = AnchorPreparationCoordinator(host)
+        coordinator.current = {
+            "preparationSeq": 7, "automatic": False, "status": "draining",
+            "checkpointBoundarySeq": None, "resumeSpeed": 3,
+        }
+        with self.assertRaisesRegex(ProtocolError, "preparation 7 is draining"):
+            coordinator.before_commit(
+                {"type": "proposal.prepare"}, "player1", 17,
+            )
+        self.assertEqual(coordinator.current["status"], "draining")
+
     def test_wire_state_and_cancel_action_are_strict(self) -> None:
         message = anchor_state_message(
             "anchor-state", "player1",

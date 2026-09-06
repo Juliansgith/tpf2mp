@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "id": "water-shoreline-calibration",
+  "description": "Read-only preview calibration for native harbor rotations along the fixture bank; does not claim placement or ships.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "passenger-harbor-bank-rotations",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -1800,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water.water-buildings.item.station/water/harbor_modular.con_0"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.579,
+            0.4
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "key",
+          "key": "m"
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    }
+  ]
+}

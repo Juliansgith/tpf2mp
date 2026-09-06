@@ -2042,7 +2042,87 @@ end
 -- performs the final physical map click; live_probe_bootstrap captures the
 -- game's own proposal before it commits, giving us an exact reference payload
 -- without guessing generated binding details.
-function M.runSignalGuiSetup()
+local nativeFactoryCorrelation = "900000001"
+local signalGuiTrackEntity
+local signalGuiMapClick
+
+local function signalPaletteClicks(railControl)
+  local rect = railControl and railControl.rect or nil
+  if not rect or type(rect.x) ~= "number" or type(rect.y) ~= "number"
+    or type(rect.h) ~= "number" or rect.h <= 0 then return nil end
+  local scale = rect.h / 120
+  local root = rect
+  local rootArea = (tonumber(root.w) or 0) * (tonumber(root.h) or 0)
+  for _, parent in ipairs(railControl.relatives and railControl.relatives.parents or {}) do
+    local candidate = parent.rect
+    local area = candidate and (tonumber(candidate.w) or 0) * (tonumber(candidate.h) or 0) or 0
+    if area > rootArea then root, rootArea = candidate, area end
+  end
+  if type(root.w) ~= "number" or type(root.h) ~= "number"
+    or root.w <= 0 or root.h <= 0 then return nil end
+  return {
+    -- Build 35924's stock rail palette is anchored to the bottom rail toggle.
+    -- Express the offsets in rail-button units so the external click path
+    -- remains stable across DPI and UI-scale changes.
+    category = {
+      x = rect.x - 189 * scale, y = rect.y - 319 * scale,
+      width = root.w, height = root.h,
+    },
+    item = {
+      x = rect.x - 703 * scale, y = rect.y - 127 * scale,
+      width = root.w, height = root.h,
+    },
+  }
+end
+
+local function focusSignalProbeCamera(trackEntity, x, y)
+  local mainView = api.gui.util.getById("mainView")
+  local controllerOk, controller = pcall(function()
+    return mainView and mainView:getCameraController()
+  end)
+  if controllerOk and controller then
+    local setOk, setError = pcall(function()
+      controller:setCameraData(api.type.Vec2f.new(x + 40, y), 320, 0, 0.82)
+    end)
+    if setOk then return true, "camera-controller" end
+    local focusOk, focusError = pcall(function() controller:focus(trackEntity) end)
+    if focusOk then return true, "camera-controller-focus" end
+    return false, tostring(setError or focusError)
+  end
+  local legacyOk, legacyError = pcall(game.gui.setCamera, trackEntity)
+  return legacyOk, legacyOk and "legacy-game-gui" or tostring(legacyError)
+end
+
+local function centeredMapClick()
+  local mainView = guiControlInfo("mainView", false)
+  local rect = mainView and mainView.rect or nil
+  if not rect or rect.w <= 0 or rect.h <= 0 then
+    return { x = 960, y = 500, width = 1920, height = 1080 }
+  end
+  return {
+    x = rect.x + rect.w * 0.5,
+    -- Keep clear of the lower construction palette while remaining close to
+    -- the explicitly centred 80 m probe track.
+    y = rect.y + rect.h * 0.46,
+    width = rect.w,
+    height = rect.h,
+  }
+end
+
+local function armNativeFactoryCapture()
+  local enable = rawget(_G, "tpf2mp_native_enable_build_gate")
+  local arm = rawget(_G, "tpf2mp_native_arm_build_correlation")
+  if type(enable) ~= "function" or type(arm) ~= "function" then
+    return nil, "native BuildProposal gate/correlation API unavailable"
+  end
+  local enabled, enableError = pcall(enable)
+  if not enabled then return nil, tostring(enableError) end
+  local armed, armError = pcall(arm, nativeFactoryCorrelation)
+  if not armed then return nil, tostring(armError) end
+  return nativeFactoryCorrelation
+end
+
+function M.runSignalGuiSetup(requireNativeFactoryCapture)
   M.capabilities()
   if not (api and api.gui and api.gui.util and api.gui.util.getById
     and game and game.gui and type(game.gui.setCamera) == "function") then
@@ -2059,18 +2139,104 @@ function M.runSignalGuiSetup()
       return
     end
     local trackEntity = track.createdTrackIds[1]
-    local cameraOk, cameraError = pcall(game.gui.setCamera, trackEntity)
+    signalGuiTrackEntity = trackEntity
+    local cameraOk, cameraSourceOrError = focusSignalProbeCamera(
+      trackEntity, track.x or 1400, track.y or -1400)
+    signalGuiMapClick = centeredMapClick()
     local control = guiControlInfo("menu.construction.rail", true)
+    local paletteClicks = signalPaletteClicks(control)
+    local nativeCorrelation, nativeError
+    if requireNativeFactoryCapture == true then
+      nativeCorrelation, nativeError = armNativeFactoryCapture()
+    end
     marker("signal-gui-rail-ready", {
-      success = cameraOk and control.activated == true,
+      success = cameraOk and control.activated == true
+        and (requireNativeFactoryCapture ~= true or nativeCorrelation ~= nil),
       stage = control.activated and "rail-menu-open" or "select-rail-menu",
       trackEntity = trackEntity,
       cameraFocused = cameraOk,
-      cameraError = not cameraOk and tostring(cameraError) or nil,
+      cameraSource = cameraOk and cameraSourceOrError or nil,
+      cameraError = not cameraOk and tostring(cameraSourceOrError) or nil,
+      nativeFactoryRequired = requireNativeFactoryCapture == true,
+      nativeFactoryCorrelation = nativeCorrelation,
+      nativeFactoryError = nativeError,
       control = control,
+      categoryClick = paletteClicks and paletteClicks.category or nil,
+      itemClick = paletteClicks and paletteClicks.item or nil,
+      mapClick = signalGuiMapClick,
     })
   end)
   return true
+end
+
+function M.consumeNativeFactoryCapture(expectedCorrelation)
+  local take = rawget(_G, "tpf2mp_native_take_build_factory_capture")
+  local disable = rawget(_G, "tpf2mp_native_disable_build_gate")
+  local success, evidence, failure = false, {}, nil
+  if type(take) ~= "function" then
+    failure = "native factory capture API unavailable"
+  else
+    local called, raw = pcall(take)
+    if not called then
+      failure = tostring(raw)
+    elseif type(raw) ~= "string" then
+      failure = "native factory capture queue returned " .. type(raw)
+    else
+      local decoded, capture = pcall(json.decode, raw)
+      if not decoded or type(capture) ~= "table" then
+        failure = "native factory capture JSON is invalid: " .. tostring(capture)
+      else
+        evidence = {
+          schemaVersion = capture.schemaVersion,
+          generation = capture.generation,
+          correlation = capture.correlation,
+          valid = capture.valid,
+          captureSource = capture.captureSource,
+          optionFieldsKnown = capture.optionFieldsKnown,
+          callerType = capture.callerType,
+          factoryCallerRva = capture.factoryCallerRva,
+          addCallerRva = capture.addCallerRva,
+          factoryThread = capture.factoryThread,
+          addThread = capture.addThread,
+          addedNodes = type(capture.addedNodes) == "table" and #capture.addedNodes or -1,
+          addedEdges = type(capture.addedEdges) == "table" and #capture.addedEdges or -1,
+          removedNodes = type(capture.removedNodes) == "table" and #capture.removedNodes or -1,
+          removedEdges = type(capture.removedEdges) == "table" and #capture.removedEdges or -1,
+          edgeObjectsToAdd = type(capture.edgeObjectsToAdd) == "table"
+            and #capture.edgeObjectsToAdd or -1,
+          constructionsToAdd = type(capture.constructionsToAdd) == "table"
+            and #capture.constructionsToAdd or -1,
+          withCost = capture.withCost,
+          ignoreErrors = capture.ignoreErrors,
+        }
+        local sourceValid = capture.captureSource == "factory"
+          and tonumber(capture.factoryCallerRva) ~= nil
+          and tonumber(capture.factoryCallerRva) > 0
+          and capture.optionFieldsKnown == true
+          or capture.captureSource == "command-list-add"
+          and tonumber(capture.factoryCallerRva) == 0
+          and capture.optionFieldsKnown == false
+        success = tonumber(capture.schemaVersion) == 1 and capture.valid == true
+          and tostring(capture.correlation) == tostring(expectedCorrelation)
+          and tonumber(capture.generation) ~= nil and tonumber(capture.generation) > 0
+          and sourceValid
+          and tonumber(capture.addCallerRva) ~= nil and tonumber(capture.addCallerRva) > 0
+          and evidence.addedNodes >= 0 and evidence.addedEdges >= 0
+          and evidence.removedNodes >= 0 and evidence.removedEdges >= 0
+          and evidence.edgeObjectsToAdd >= 0 and evidence.constructionsToAdd >= 0
+          and type(capture.withCost) == "boolean" and type(capture.ignoreErrors) == "boolean"
+        if not success then failure = capture.error or "native factory capture fields are incomplete" end
+      end
+    end
+  end
+  if type(disable) == "function" then pcall(disable) end
+  marker("native-factory-gui-capture", {
+    success = success,
+    expectedCorrelation = expectedCorrelation,
+    evidence = evidence,
+    error = failure,
+  })
+  return success
 end
 
 -- These two stages deliberately run in later console invocations.  The game
@@ -2079,14 +2245,29 @@ end
 -- components even though the first toolbar toggle succeeded.
 function M.selectSignalGuiCategory()
   local control = guiControlInfo("menu.construction.rail.signals", true)
+  local railMenu
+  for _, parent in ipairs(control.relatives and control.relatives.parents or {}) do
+    if parent.id == "menu.construction.railmenu" then railMenu = parent.rect; break end
+  end
+  local scale = control.rect and control.rect.h > 0 and control.rect.h / 33 or 1
+  local itemClick = railMenu and {
+    x = railMenu.x + 72 * scale,
+    y = railMenu.y + 112.5 * scale,
+    width = centeredMapClick().width,
+    height = centeredMapClick().height,
+  } or nil
   marker("signal-gui-category-ready", {
-    success = control.activated == true or guiLogicalClick(control) ~= nil,
+    success = (control.activated == true or guiLogicalClick(control) ~= nil)
+      and itemClick ~= nil,
     stage = control.activated and "signal-category-open" or "physical-category-click-required",
     control = control,
     physicalClickRequired = control.activated ~= true,
     logicalClick = guiLogicalClick(control),
+    itemClick = itemClick,
+    mapClick = signalGuiMapClick or centeredMapClick(),
   })
-  return control.activated == true or guiLogicalClick(control) ~= nil
+  return (control.activated == true or guiLogicalClick(control) ~= nil)
+    and itemClick ~= nil
 end
 
 function M.selectSignalGuiItem()
@@ -2098,7 +2279,8 @@ function M.selectSignalGuiItem()
     control = control,
     physicalClickRequired = control.activated ~= true,
     logicalClick = guiLogicalClick(control),
-    mapClick = { x = 960, y = 500, width = 1920, height = 1080 },
+    trackEntity = signalGuiTrackEntity,
+    mapClick = signalGuiMapClick or centeredMapClick(),
   })
   return control.activated == true or guiLogicalClick(control) ~= nil
 end

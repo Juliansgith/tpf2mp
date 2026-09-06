@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import time
 from typing import Any, Mapping
-from .anchor_prepare_cancel import is_internal_cancel, observe_cancel
+from .anchor_prepare_cancel import observe_cancel
 from .anchor_prepare_checkpoint import AnchorPreparationCheckpoint
 from .anchor_prepare_drain import AnchorPreparationDrain
+from .anchor_prepare_fence import enforce_before_commit
 from .anchor_prepare_phase import AnchorPreparationPhase
 from .anchor_prepare_replay import retire_after_host_resume
 from .protocol import ProtocolError
@@ -31,44 +32,7 @@ class AnchorPreparationCoordinator:
     def before_commit(
         self, action: Mapping[str, Any], origin: str, local_seq: int
     ) -> None:
-        """Fence player work while the host is manufacturing a boundary."""
-
-        action_type = str(action.get("type", ""))
-        if action_type == "network.checkpoint_request":
-            raise ProtocolError("network.checkpoint_request is host-generated")
-        active = self.current
-        if not active:
-            return
-        status = str(active.get("status", ""))
-        internal_clock = action_type == "clock.request" \
-            and origin == self.host.bridge.peer and local_seq < 0
-        requested_speed = int(action.get("requestedSpeed", -1)) if internal_clock else -1
-        synthetic_pause = internal_clock and requested_speed == 0
-        synthetic_drain_resume = internal_clock and status == "draining" \
-            and requested_speed == int(active.get("resumeSpeed", -1))
-        synthetic_phase_probe = self.phase.internal_probe(
-            active, action_type, origin, local_seq
-        )
-        synthetic_cancel = is_internal_cancel(
-            self.host, active, action, origin, local_seq
-        )
-        # A save receipt attests the already-prepared boundary; it is not new
-        # authored work and AnchorCoordinator deliberately excludes it from
-        # readiness's commits-since-boundary check.  Superseding here would
-        # leave the same boundary simultaneously READY and "superseded".
-        if action_type == "recovery.save_receipt":
-            return
-        if status in self.PENDING and not (
-            synthetic_pause or synthetic_drain_resume or synthetic_phase_probe or synthetic_cancel
-        ):
-            raise ProtocolError(
-                f"restore point preparation {active['preparationSeq']} is {status}"
-            )
-        if status not in self.PENDING and not (synthetic_pause or synthetic_cancel):
-            active["status"] = "superseded"
-            active["detail"] = "new ordered work superseded the prepared boundary"
-            self.last = dict(active)
-            self.current = None
+        enforce_before_commit(self, action, origin, local_seq)
 
     def observe_ordered(self, message: Mapping[str, Any], restoring: bool = False) -> None:
         """Rebuild or advance the workflow from the durable ordered stream."""

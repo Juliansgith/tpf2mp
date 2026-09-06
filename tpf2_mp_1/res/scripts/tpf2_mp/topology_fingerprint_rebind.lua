@@ -39,10 +39,16 @@ function M.new(deps)
     options = options or {}
     local binding, expectedTopology, expectedOrdinary, expectedNeighbours =
       expectedIdentity(registry, cid, kind)
+    local identityOptions = options
+    if binding and expectedTopology then
+      identityOptions = util.deepCopy(options)
+      identityOptions.ownerPinned = true
+      identityOptions.ownerCid = binding.metadata and binding.metadata.owner or nil
+    end
     local current = binding and tonumber(binding.localId) or nil
     if current and available(current, kind) then
       if expectedTopology then
-        local observed = topologyFingerprint(current, kind, options)
+        local observed = topologyFingerprint(current, kind, identityOptions)
         if observed == expectedTopology then
           return current, nil, { source = "primary-attested" }
         end
@@ -69,7 +75,7 @@ function M.new(deps)
         if free then
           local matched
           if expectedTopology then
-            matched = topologyFingerprint(localId, kind, options) == expectedTopology
+            matched = topologyFingerprint(localId, kind, identityOptions) == expectedTopology
           else
             matched = fingerprint(localId, kind) == expectedOrdinary
           end
@@ -80,7 +86,7 @@ function M.new(deps)
     if #matches > 1 and expectedNeighbours and neighbourFingerprint then
       local narrowed = {}
       for _, localId in ipairs(matches) do
-        if neighbourFingerprint(localId, kind, options) == expectedNeighbours then
+        if neighbourFingerprint(localId, kind, identityOptions) == expectedNeighbours then
           narrowed[#narrowed + 1] = localId
         end
       end

@@ -61,7 +61,8 @@ function M.new(fullStatus)
     end
     if type(takeFunction) ~= "function" then return nil, "unavailable" end
     local result = {}
-    for _ = 1, math.max(1, tonumber(maximum) or 64) do
+    local limit = math.max(1, tonumber(maximum) or 64)
+    for index = 1, limit + 1 do
       stats.eventReads = stats.eventReads + 1
       local called, raw = pcall(takeFunction)
       if not called then
@@ -78,6 +79,10 @@ function M.new(fullStatus)
         stats.invalidSamples = stats.invalidSamples + 1
         return nil, fault .. " (dropped " .. tostring(dropped) .. ")"
       end
+      if index > limit then
+        stats.invalidSamples = stats.invalidSamples + 1
+        return nil, "native suppressed-build event batch exceeded its bounded drain"
+      end
       local generation, correlation, tag = raw:match("^S1|(%d+)|(%d+)|(-?%d+)$")
       generation, correlation, tag = tonumber(generation), tonumber(correlation), tonumber(tag)
       if generation == nil or correlation == nil or tag == nil or tag ~= math.floor(tag) then
@@ -89,7 +94,7 @@ function M.new(fullStatus)
       }
       stats.events = stats.events + 1
     end
-    return nil, "native suppressed-build event batch exceeded its bounded drain"
+    return result
   end
 
   return { sample = sample, drain = drain, status = function() return stats end }

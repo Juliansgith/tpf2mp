@@ -11,6 +11,7 @@ param(
     [switch]$TrackBuildTest,
     [switch]$SignalTest,
     [switch]$SignalGuiCaptureTest,
+    [switch]$NativeFactoryGuiCaptureTest,
     [switch]$OwnershipTransferTest,
     [switch]$ProposalOwnershipTest,
     [switch]$StationUpgradeCodecTest,
@@ -132,7 +133,9 @@ function Invoke-StagedConsoleCommand([string]$Command) {
     Start-Sleep -Milliseconds 650
     Invoke-GameInput -InputAction 'accept-up'
     Start-Sleep -Milliseconds 350
-    Invoke-GameInput -InputAction 'toggle-console'
+    # The runner consumes the resulting marker immediately and tears down the
+    # disposable process. Leaving this final console open avoids disturbing a
+    # still-selected stock construction tool after its captured click.
 }
 
 function Wait-ForProbeMarker([string]$Event, [int]$TimeoutSeconds) {
@@ -167,12 +170,12 @@ function Invoke-ProbeLogicalClick($Payload, [string]$Label) {
 New-Item -ItemType Directory -Force -Path $runDirectory | Out-Null
 
 try {
-    $exclusiveModeCount = @($CapabilityOnly, $ExactConstructionTest, $ExactStationTest, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest, $VehiclePurchaseTest, $VehicleLifecycleTest, $IndustrySchemaTest).Where({ $_ }).Count
+    $exclusiveModeCount = @($CapabilityOnly, $ExactConstructionTest, $ExactStationTest, $BuildGateTest, $CommandGateTest, $TrackBuildTest, $SignalTest, $SignalGuiCaptureTest, $NativeFactoryGuiCaptureTest, $OwnershipTransferTest, $ProposalOwnershipTest, $StationUpgradeCodecTest, $VehiclePurchaseTest, $VehicleLifecycleTest, $IndustrySchemaTest).Where({ $_ }).Count
     if ($exclusiveModeCount -gt 1) {
         throw 'The supported-API probe mode switches are mutually exclusive.'
     }
-    if (($BuildGateTest -or $CommandGateTest) -and -not $NativeHook) {
-        throw '-BuildGateTest and -CommandGateTest require -NativeHook.'
+    if (($BuildGateTest -or $CommandGateTest -or $NativeFactoryGuiCaptureTest) -and -not $NativeHook) {
+        throw '-BuildGateTest, -CommandGateTest, and -NativeFactoryGuiCaptureTest require -NativeHook.'
     }
     if (Get-Process -Name TransportFever2 -ErrorAction SilentlyContinue) {
         throw 'Transport Fever 2 is already running; refusing to start an overlapping probe.'
@@ -202,24 +205,15 @@ try {
     $bootstrapInjected = $true
     New-Item -ItemType Directory -Path $libraryTarget | Out-Null
     $libraryInjected = $true
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\util.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\json.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\hash.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\canonical.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\construction_proposal_materializer.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\construction_exact_topology.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_codec.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\operation_vehicle_postcondition.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\vehicle_resource_facts.lua') -Destination $libraryTarget
-    Copy-Item -LiteralPath (Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp\industry_resource_facts.lua') -Destination $libraryTarget
+    $productionScripts = Join-Path $projectRoot 'tpf2_mp_1\res\scripts\tpf2_mp'
+    Copy-Item -Path (Join-Path $productionScripts '*.lua') -Destination $libraryTarget
     Copy-Item -LiteralPath (Join-Path $projectRoot 'investigation\live_console_probe.lua') -Destination $libraryTarget
-    Write-Host "Minimal probe resources injected; evidence directory: $runDirectory"
+    Write-Host "Isolated production-module probe bundle injected; evidence directory: $runDirectory"
 
     $process = Start-GameThroughSteam
     Wait-ForProcessWindow -GameProcess $process
     Write-Host "Transport Fever 2 process=$($process.Id)"
-    if ($SignalGuiCaptureTest) {
+    if ($SignalGuiCaptureTest -or $NativeFactoryGuiCaptureTest) {
         Invoke-GameInput -InputAction 'maximize'
     }
     Start-Sleep -Seconds $StartupDelaySeconds
@@ -263,8 +257,8 @@ try {
             "require('tpf2_mp_probe/live_console_probe').runTrackTest()"
         } elseif ($SignalTest) {
             "require('tpf2_mp_probe/live_console_probe').runSignalTest()"
-        } elseif ($SignalGuiCaptureTest) {
-            "require('tpf2_mp_probe/live_console_probe').runSignalGuiSetup()"
+        } elseif ($SignalGuiCaptureTest -or $NativeFactoryGuiCaptureTest) {
+            "require('tpf2_mp_probe/live_console_probe').runSignalGuiSetup($($NativeFactoryGuiCaptureTest.IsPresent.ToString().ToLowerInvariant()))"
         } elseif ($OwnershipTransferTest) {
             "require('tpf2_mp_probe/live_console_probe').runOwnershipTest()"
         } elseif ($ProposalOwnershipTest) {
@@ -286,7 +280,18 @@ try {
     Invoke-GameInput -InputAction 'accept-up'
     $acceptHeld = $false
     Start-Sleep -Milliseconds 500
-    Invoke-GameInput -InputAction 'toggle-console'
+    if ($SignalGuiCaptureTest -or $NativeFactoryGuiCaptureTest) {
+        # runSignalGuiSetup builds its source track asynchronously and opens
+        # the rail palette only from that later callback. Close the console
+        # now, while no construction tool can consume the defocus click. The
+        # exposed far-right map area releases prompt focus; unlike the console
+        # title bar, this is proven to let the grave binding close the overlay.
+        Invoke-GameInput -InputAction 'click-ui' -ClientX 3500 -ClientY 500 -UiWidth 3840 -UiHeight 2160
+        Start-Sleep -Milliseconds 200
+        Invoke-GameInput -InputAction 'toggle-console'
+    } else {
+        Invoke-GameInput -InputAction 'toggle-console'
+    }
     Write-Host $(if ($CapabilityOnly) {
         'Issued the isolated capability probe.'
     } elseif ($ExactConstructionTest) {
@@ -301,8 +306,12 @@ try {
         'Issued normal and electrified supported-API track proposals in the isolated disposable world.'
     } elseif ($SignalTest) {
         'Issued a typed signal add/remove sequence on a fresh track in the isolated disposable world.'
-    } elseif ($SignalGuiCaptureTest) {
-        'Preparing a genuine GUI signal click on a camera-focused disposable track.'
+    } elseif ($SignalGuiCaptureTest -or $NativeFactoryGuiCaptureTest) {
+        if ($NativeFactoryGuiCaptureTest) {
+            'Preparing a genuine GUI signal click with native factory/Add/visitor correlation armed.'
+        } else {
+            'Preparing a genuine GUI signal click on a camera-focused disposable track.'
+        }
     } elseif ($OwnershipTransferTest) {
         'Issued the symmetric road ownership-transfer test in the isolated disposable world.'
     } elseif ($ProposalOwnershipTest) {
@@ -319,7 +328,7 @@ try {
         'Issued one supported-API road proposal in the isolated disposable world.'
     })
 
-    if ($SignalGuiCaptureTest) {
+    if ($SignalGuiCaptureTest -or $NativeFactoryGuiCaptureTest) {
         $railReadyLine = Wait-ForProbeMarker -Event 'signal-gui-rail-ready' -TimeoutSeconds $ProbeTimeoutSeconds
         if (-not $railReadyLine) { throw 'Timed out waiting for disposable GUI rail-menu setup' }
         Write-Host $railReadyLine
@@ -327,35 +336,77 @@ try {
             Invoke-GameInput -InputAction 'inspect' -ScreenshotPath (Join-Path $runDirectory 'signal-tool-selection.png')
             throw 'Disposable GUI rail-menu setup completed with success=false'
         }
-        Start-Sleep -Milliseconds 750
-        Invoke-StagedConsoleCommand -Command "require('tpf2_mp_probe/live_console_probe').selectSignalGuiCategory()"
-        $categoryReadyLine = Wait-ForProbeMarker -Event 'signal-gui-category-ready' -TimeoutSeconds $ProbeTimeoutSeconds
-        if (-not $categoryReadyLine) { throw 'Timed out waiting for disposable GUI signal-category setup' }
-        Write-Host $categoryReadyLine
-        if ($categoryReadyLine -notmatch '"success":true') {
-            Invoke-GameInput -InputAction 'inspect' -ScreenshotPath (Join-Path $runDirectory 'signal-category-selection.png')
-            throw 'Disposable GUI signal-category setup completed with success=false'
-        }
-        $categoryPayload = ConvertFrom-ProbeMarker -Line $categoryReadyLine
-        if ($categoryPayload.physicalClickRequired) {
-            Invoke-ProbeLogicalClick -Payload $categoryPayload -Label 'the stock signal category'
+        $categoryPayload = ConvertFrom-ProbeMarker -Line $railReadyLine
+        $categoryPoint = $categoryPayload.categoryClick
+        if (-not $categoryPoint -or $categoryPoint.width -le 0 -or $categoryPoint.height -le 0) {
+            throw 'Disposable GUI rail setup did not expose a usable stock-category click point'
         }
         Start-Sleep -Milliseconds 750
-        Invoke-StagedConsoleCommand -Command "require('tpf2_mp_probe/live_console_probe').selectSignalGuiItem()"
-        $readyLine = Wait-ForProbeMarker -Event 'signal-gui-ready' -TimeoutSeconds $ProbeTimeoutSeconds
-        if (-not $readyLine) { throw 'Timed out waiting for disposable GUI signal-item setup' }
-        Write-Host $readyLine
-        if ($readyLine -notmatch '"success":true') {
-            Invoke-GameInput -InputAction 'inspect' -ScreenshotPath (Join-Path $runDirectory 'signal-item-selection.png')
-            throw 'Disposable GUI signal-item setup completed with success=false'
-        }
-        $itemPayload = ConvertFrom-ProbeMarker -Line $readyLine
-        if ($itemPayload.physicalClickRequired) {
-            Invoke-ProbeLogicalClick -Payload $itemPayload -Label 'the stock signal item'
-        }
+        Invoke-GameInput -InputAction 'click-ui' `
+            -ClientX ([Math]::Round($categoryPoint.x)) -ClientY ([Math]::Round($categoryPoint.y)) `
+            -UiWidth ([Math]::Round($categoryPoint.width)) -UiHeight ([Math]::Round($categoryPoint.height))
+        Write-Host "Physically clicked the stock signal category at UI $([Math]::Round($categoryPoint.x)),$([Math]::Round($categoryPoint.y))."
         Start-Sleep -Milliseconds 750
-        Invoke-GameInput -InputAction 'click-ui' -ClientX 960 -ClientY 500 -UiWidth 1920 -UiHeight 1080
+        $itemPoint = $categoryPayload.itemClick
+        if (-not $itemPoint -or $itemPoint.width -le 0 -or $itemPoint.height -le 0) {
+            throw 'Disposable GUI signal category did not expose a usable stock-item click point'
+        }
+        Invoke-GameInput -InputAction 'click-ui' `
+            -ClientX ([Math]::Round($itemPoint.x)) -ClientY ([Math]::Round($itemPoint.y)) `
+            -UiWidth ([Math]::Round($itemPoint.width)) -UiHeight ([Math]::Round($itemPoint.height))
+        Write-Host "Physically clicked the first stock signal item at UI $([Math]::Round($itemPoint.x)),$([Math]::Round($itemPoint.y))."
+        Start-Sleep -Milliseconds 750
+        $mapPoint = $categoryPayload.mapClick
+        if (-not $mapPoint -or $mapPoint.width -le 0 -or $mapPoint.height -le 0) {
+            throw 'Disposable GUI signal setup did not expose a usable map click rectangle'
+        }
+        Invoke-GameInput -InputAction 'click-ui' `
+            -ClientX ([Math]::Round($mapPoint.x)) -ClientY ([Math]::Round($mapPoint.y)) `
+            -UiWidth ([Math]::Round($mapPoint.width)) -UiHeight ([Math]::Round($mapPoint.height))
         Write-Host 'Clicked the camera-focused track through the selected stock signal tool.'
+        if ($NativeFactoryGuiCaptureTest) {
+            $nativeStatusSource = Join-Path (Join-Path ([IO.Path]::GetTempPath()) 'tpf2mp_native') "status-$($process.Id).json"
+            # A physical cursor move and button press can land in the same
+            # frame. If that first press only creates the stock preview, let
+            # it settle and click once more; never click twice after native
+            # suppression is already observed.
+            $previewDeadline = (Get-Date).AddSeconds(2)
+            $factoryReady = $false
+            while ((Get-Date) -lt $previewDeadline -and -not $process.HasExited) {
+                if (Test-Path -LiteralPath $nativeStatusSource) {
+                    try {
+                        $factoryStatus = (Get-Content -Raw -LiteralPath $nativeStatusSource | ConvertFrom-Json).gates.buildProposal.factoryCapture
+                        $factoryReady = [long]$factoryStatus.ready -gt 0 `
+                            -and [long]$factoryStatus.suppressedMatches -gt 0
+                    } catch { $factoryReady = $false }
+                }
+                if ($factoryReady) { break }
+                Start-Sleep -Milliseconds 100
+            }
+            if (-not $factoryReady) {
+                Invoke-GameInput -InputAction 'click-ui' `
+                    -ClientX ([Math]::Round($mapPoint.x)) -ClientY ([Math]::Round($mapPoint.y)) `
+                    -UiWidth ([Math]::Round($mapPoint.width)) -UiHeight ([Math]::Round($mapPoint.height))
+                Write-Host 'The first map press created only a preview; clicked the settled stock proposal once.'
+            }
+            $factoryDeadline = (Get-Date).AddSeconds($ProbeTimeoutSeconds)
+            while ((Get-Date) -lt $factoryDeadline -and -not $process.HasExited) {
+                if (Test-Path -LiteralPath $nativeStatusSource) {
+                    try {
+                        $factoryStatus = (Get-Content -Raw -LiteralPath $nativeStatusSource | ConvertFrom-Json).gates.buildProposal.factoryCapture
+                        $factoryReady = [long]$factoryStatus.ready -gt 0 `
+                            -and [long]$factoryStatus.suppressedMatches -gt 0
+                    } catch { $factoryReady = $false }
+                }
+                if ($factoryReady) { break }
+                Start-Sleep -Milliseconds 100
+                $process.Refresh()
+            }
+            if (-not $factoryReady) {
+                throw 'Stock GUI click did not reach the native factory/Add/suppressed-visitor capture queue.'
+            }
+            Invoke-StagedConsoleCommand -Command "require('tpf2_mp_probe/live_console_probe').consumeNativeFactoryCapture('900000001')"
+        }
     }
 
     $probeDeadline = (Get-Date).AddSeconds($ProbeTimeoutSeconds)
@@ -373,6 +424,8 @@ try {
             'track-build-complete'
         } elseif ($SignalTest) {
             'signal-build-complete'
+        } elseif ($NativeFactoryGuiCaptureTest) {
+            'native-factory-gui-capture'
         } elseif ($SignalGuiCaptureTest) {
             # The exact pre-commit proposal is sufficient evidence. A physical
             # click may legitimately be rejected by terrain validation in the
@@ -490,6 +543,22 @@ try {
                 $nativeHookStatus.gates.buildProposal.allowed -gt 0 -and
                 $nativeHookStatus.gates.buildProposal.enabled -eq $false
         }
+        if ($NativeFactoryGuiCaptureTest) {
+            $factory = $nativeHookStatus.gates.buildProposal.factoryCapture
+            $nativeHookPassed = $nativeHookPassed -and
+                $nativeHookStatus.hooks.makeBuildProposal -eq $true -and
+                $nativeHookStatus.hooks.commandListAdd -eq $true -and
+                ([long]$factory.factoryCalls + [long]$factory.addFallbackCalls) -gt 0 -and
+                [long]$factory.decoded -gt 0 -and
+                [long]$factory.invalid -eq 0 -and
+                [long]$factory.addMatches -gt 0 -and
+                [long]$factory.suppressedMatches -gt 0 -and
+                [long]$factory.suppressedMisses -eq 0 -and
+                [long]$factory.consumed -gt 0 -and
+                [long]$factory.dropped -eq 0 -and
+                [long]$factory.pending -eq 0 -and
+                [long]$factory.ready -eq 0
+        }
         if ($CommandGateTest) {
             $nativeHookPassed = $nativeHookPassed -and
                 $nativeHookStatus.gates.commandVisitors.hooked -eq 31 -and
@@ -551,6 +620,8 @@ finally {
             'track-build'
         } elseif ($SignalTest) {
             'signal-build'
+        } elseif ($NativeFactoryGuiCaptureTest) {
+            'native-factory-gui-capture'
         } elseif ($SignalGuiCaptureTest) {
             'signal-gui-capture'
         } elseif ($OwnershipTransferTest) {

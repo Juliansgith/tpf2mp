@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "id": "native-track-preview-calibration",
+  "description": "Discover native track confirmation controls; no track build coverage claimed by preview inspection.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "inspect-free-track-preview",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail.tracks"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail.tracks.item.standard.lua"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "drag",
+          "point": [
+            0.35,
+            0.4
+          ],
+          "to": [
+            0.47,
+            0.4
+          ],
+          "duration": 1
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "inspect-road-crossing-preview",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail.tracks"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail.tracks.item.standard.lua"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "drag",
+          "point": [
+            0.54,
+            0.5
+          ],
+          "to": [
+            0.65,
+            0.5
+          ],
+          "duration": 1
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    }
+  ]
+}

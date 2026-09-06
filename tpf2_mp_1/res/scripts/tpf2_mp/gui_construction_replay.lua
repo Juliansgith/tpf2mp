@@ -1,22 +1,22 @@
 local proposalCodec = require "tpf2_mp/proposal_codec"
-local constructionReplayPolicy = require "tpf2_mp/construction_replay_policy"
+local constructionReplayPolicy, constructionCollateralPolicy = require "tpf2_mp/construction_replay_policy", require "tpf2_mp/construction_collateral_policy"
 local depotConnectionRepair = require "tpf2_mp/construction_depot_connection_repair"
 local referenceGuard, world = require "tpf2_mp/gui_replay_reference_guard", require "tpf2_mp/world"
 
-local M = {
-  owns = constructionReplayPolicy.guiOwns,
+local M = { owns = constructionReplayPolicy.guiOwns,
   isExact = constructionReplayPolicy.isGuiExact,
-}
+  omitsCollateral = constructionCollateralPolicy.omit }
 
 function M.isHelperConnection(record)
   return type(record) == "table" and record.replayPath == "helper-depot-connection"
 end
 
 function M.materialise(record, localRefs, nativePlayerId, apiValue)
+  local omitConstructionCollateral = M.omitsCollateral(record)
   local referencesValid, referenceError = referenceGuard.validate(
     record.transaction, localRefs, apiValue, {
       fingerprint = world.fingerprint,
-      omitConstructionCollateral = record.replayPath == "staged-gui-build-proposal" })
+      omitConstructionCollateral = omitConstructionCollateral })
   if not referencesValid then return nil, referenceError end
   if M.isHelperConnection(record) then
     return depotConnectionRepair.materialise(record, proposalCodec, apiValue)
@@ -34,7 +34,7 @@ function M.materialiseOptions(record, localRefs, nativePlayerId)
   return {
     resolveLocal = function(cid) return localRefs[cid] end,
     nativePlayerId = nativePlayerId,
-    omitConstructionCollateral = record.replayPath == "staged-gui-build-proposal",
+    omitConstructionCollateral = M.omitsCollateral(record),
   }
 end
 

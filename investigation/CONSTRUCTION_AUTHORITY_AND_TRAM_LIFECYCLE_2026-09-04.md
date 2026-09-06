@@ -1,7 +1,7 @@
 # Construction authority and electric-tram lifecycle
 
 Date: 2026-09-04 (Europe/Amsterdam)  
-Status: implemented and regression-tested; exact native factory capture still needs a human-originated live build sample
+Status: implemented, regression-tested, and stock-GUI early capture live-proven
 
 ## Outcome
 
@@ -13,11 +13,27 @@ The connected electric-tram lifecycle now passes end to end in two real Transpor
 
 The hook now correlates three observations:
 
-1. `make_cmd::BuildProposal` captures the native proposal before application.
-2. `CommandList::Add` identifies the concrete queued command instance.
+1. `make_cmd::BuildProposal` preferably captures the native proposal before
+   application.
+2. `CommandList::Add` identifies the concrete queued command instance, or
+   performs the same synchronous decode when a caller bypasses the factory.
 3. `BuildProposalVisitor` remains the suppression and post-issue observation point.
 
-The captured native portion includes street/track nodes, tangents, edge topology and carrier flags, removals, edge objects, frozen nodes, segment tags, and construction resource/transform changes. Existing GUI capture supplies semantic construction parameters, quoted cost, edge-object semantics, and terrain/alignment fields that are not independently decoded from the Build 35924 factory layout. The result is intentionally hybrid; it is not a claim that every native terrain payload field is decoded.
+The captured native portion includes street/track nodes, tangents, edge topology and carrier flags, removals, edge objects, frozen nodes, segment tags, and construction resource/transform changes. Existing GUI capture supplies semantic construction parameters, quoted cost, edge-object semantics, and terrain/alignment fields that are not independently decoded from the Build 35924 layout. Factory-only option arguments are attested only on the factory branch; the Add fallback marks them unavailable. The result is intentionally hybrid; it is not a claim that every native terrain payload field is decoded.
+
+Late manual regression testing exposed four invalid assumptions in the first
+merge implementation: segment tags are sparse rather than edge-parallel;
+shallow GUI aliases can coexist with the exact apply payload; the GUI view may
+omit collateral construction removals; and the first edge-object record scalar
+is not a portable temporary identity for every builder. Those assumptions
+rejected crossings, road terminals/depots, edge objects, and build-plus-
+demolition clicks before mutation. The corrected design puts decoded topology
+in an explicit `__nativeTopology` envelope, retains GUI-only edge-object and
+parameter semantics, takes the validated identity union of native and exact-
+GUI collateral removals, and
+falls back to the exact generation-bound GUI path for an explicitly unsupported
+optional decode. Correlation loss, replay, overflow, or contradictory resource
+identity still fail closed.
 
 The exact executable profile now verifies 19 runtime signatures, including:
 
@@ -84,6 +100,24 @@ Live run: `runtime/localhost-live/localhost-tram-route-20260904z19--tram-electri
 
 An immediately preceding run (`z18`) failed before authority because Player 2's stock Load Game page did not open within 45 seconds. No proposal was submitted, both disposable processes were closed, and the fresh `z19` retry passed.
 
-## Honest remaining live gate
+## Stock GUI early-capture receipt
 
-The new native factory decoder and three-stage correlation have exhaustive native/unit/profile coverage, but this pass did not include a human click through each stock construction tool to prove the new early-capture path against arbitrary real previews. That remains the next focused live acceptance test, especially for terrain-heavy and modded constructions. The successful tram run proves canonical replay, output binding, connected topology, vehicle lifecycle, and two-peer convergence after the refactors.
+Disposable run `runtime/supported-api-probe/20260904-203543` used physical
+mouse input to select the vanilla rail-signal category, select the first stock
+signal, and apply it to a generated track. The observed capture was:
+
+- source: `factory`;
+- generation/correlation: `1` / `900000001`;
+- factory/Add caller RVAs: `4591115` / `4591145`;
+- one removed edge, one replacement edge, and one added edge object;
+- matching factory/Add thread `2332`;
+- one decoded, added, suppressed, and consumed capture;
+- zero invalid, suppressed-miss, ready-drop, pending, or residual-ready items.
+
+This closes the missing real stock-click proof for the signal path. It does not
+claim every stock construction palette or arbitrary mod callback follows the
+same factory caller. The synchronous Add fallback has native unit coverage but
+was not selected by this signal click. Terrain-heavy and scripted-content
+builders therefore remain focused compatibility tests, while the successful
+tram run separately proves replay, output binding, connected topology, vehicle
+lifecycle, and two-peer convergence.

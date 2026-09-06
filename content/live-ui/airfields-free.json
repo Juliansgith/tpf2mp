@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "id": "two-native-passenger-airfields",
+  "description": "Two stock passenger airfields with hangars, built by physical UI input. Placement is separate from subsequent purchase/route qualification.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {"w": 1920, "h": 1040},
+  "cases": [
+    {
+      "id": "p1-airfield-one",
+      "steps": [
+        {"peer": "player1", "action": "camera", "camera": {"x": -3000, "y": -1000, "distance": 1500, "angle": 0, "pitch": 0.82}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.air"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.air.air-buildings.item.station/air/airfield.con_0"}},
+        {"peer": "player1", "action": "move", "point": [0.30, 0.40]},
+        {"peer": "player1", "action": "wait", "seconds": 3},
+        {"peer": "player1", "action": "observe"},
+        {"peer": "player1", "action": "click", "point": [0.30, 0.40]},
+        {"peer": "player1", "action": "move", "point": [0.28, 0.85]},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.air"}}
+      ],
+      "expect": {"outcome": "built", "kind": "construction", "owner": "company:1", "finance": {"company:1": "debit", "company:2": "unchanged"}, "checks": [
+        {"path": ["native", "inventory", "counts", "constructions", "station"], "op": "deltaAtLeast", "value": 1},
+        {"path": ["native", "inventory", "counts", "constructions", "depot"], "op": "deltaAtLeast", "value": 1}
+      ]}
+    },
+    {
+      "id": "p1-airfield-two",
+      "steps": [
+        {"peer": "player1", "action": "camera", "camera": {"x": -4300, "y": -1000, "distance": 1500, "angle": 0, "pitch": 0.82}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.air"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.air.air-buildings.item.station/air/airfield.con_0"}},
+        {"peer": "player1", "action": "move", "point": [0.30, 0.40]},
+        {"peer": "player1", "action": "wait", "seconds": 3},
+        {"peer": "player1", "action": "observe"},
+        {"peer": "player1", "action": "click", "point": [0.30, 0.40]},
+        {"peer": "player1", "action": "move", "point": [0.28, 0.85]},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.air"}},
+        {"peer": "player1", "action": "observe"}
+      ],
+      "expect": {"outcome": "built", "kind": "construction", "owner": "company:1", "finance": {"company:1": "debit", "company:2": "unchanged"}, "checks": [
+        {"path": ["native", "inventory", "counts", "constructions", "station"], "op": "deltaAtLeast", "value": 1},
+        {"path": ["native", "inventory", "counts", "constructions", "depot"], "op": "deltaAtLeast", "value": 1}
+      ]}
+    }
+  ]
+}

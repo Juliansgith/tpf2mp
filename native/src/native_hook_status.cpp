@@ -158,6 +158,8 @@ std::string SerializeHookStatus(const HookStatusView& status) {
          << '}'
          << ",\"factoryCapture\":{"
          << "\"factoryCalls\":" << status.build_factory_capture.factory_calls
+         << ",\"addFallbackCalls\":"
+         << status.build_factory_capture.add_fallback_calls
          << ",\"decoded\":" << status.build_factory_capture.decoded
          << ",\"invalid\":" << status.build_factory_capture.invalid
          << ",\"addMatches\":" << status.build_factory_capture.add_matches
@@ -167,6 +169,11 @@ std::string SerializeHookStatus(const HookStatusView& status) {
          << ",\"consumed\":" << status.build_factory_capture.consumed
          << ",\"retired\":" << status.build_factory_capture.retired
          << ",\"orphaned\":" << status.build_factory_capture.orphaned
+         << ",\"expired\":" << status.build_factory_capture.expired
+         << ",\"evictedPending\":"
+         << status.build_factory_capture.evicted_pending
+         << ",\"correlationMisses\":"
+         << status.build_factory_capture.correlation_misses
          << ",\"dropped\":" << status.build_factory_capture.dropped
          << ",\"pending\":" << status.build_factory_capture.pending
          << ",\"ready\":" << status.build_factory_capture.ready

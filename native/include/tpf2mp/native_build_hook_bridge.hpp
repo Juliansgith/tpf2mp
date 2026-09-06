@@ -23,8 +23,8 @@ void Configure(HMODULE executable, GateSnapshotProvider gate_snapshot,
 void ResetPending();
 native_build::BuildCaptureStats Stats();
 std::optional<std::string> TakeEncoded();
-void PromoteSuppressed(void* build_proposal);
-void DiscardObserved(void* build_proposal);
+void PromoteSuppressed(void* build_proposal, std::uint64_t correlation);
+void DiscardObserved(void* build_proposal, std::uint64_t correlation);
 
 void* MakeBuildProposalDetour();
 void** MakeBuildProposalOriginalStorage();

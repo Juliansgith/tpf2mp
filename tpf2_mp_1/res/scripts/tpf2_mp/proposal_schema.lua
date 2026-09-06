@@ -3,6 +3,7 @@ local M = {
   SCHEMA_VERSION = 6,
   LEGACY_CONSTRUCTION_SCHEMA_VERSION = 7,
   CONSTRUCTION_SCHEMA_VERSION = 8,
+  NAMED_CONSTRUCTION_SCHEMA_VERSION = 9,
   MAX_NODES = 256,
   MAX_EDGES = 256,
   MAX_EDGE_OBJECTS = 256,
@@ -20,11 +21,13 @@ local M = {
 
 function M.isConstructionSchema(version)
   return version == M.CONSTRUCTION_SCHEMA_VERSION
+    or version == M.NAMED_CONSTRUCTION_SCHEMA_VERSION
     or version == M.LEGACY_CONSTRUCTION_SCHEMA_VERSION
 end
 
 function M.hasStreetFeatures(version)
   return version == M.SCHEMA_VERSION or version == M.CONSTRUCTION_SCHEMA_VERSION
+    or version == M.NAMED_CONSTRUCTION_SCHEMA_VERSION
 end
 
 return M

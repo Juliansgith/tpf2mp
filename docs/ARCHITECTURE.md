@@ -170,6 +170,12 @@ Domain modules under `res/scripts/tpf2_mp`:
   binding-focused native fingerprint used at ordinary checkpoints.
   `native_fingerprint_runtime.lua` schedules an ordered sample and escalates
   every tenth sample to the full whole-world structural inventory.
+  Full native fingerprint schema 3 counts attached BASE_EDGE objects (including
+  stops and waypoints), separately from signal-only bootstrap discovery, through
+  `world_edge_object_inventory.lua`. An unreadable attachment vector makes the
+  inventory incomplete, not empty. The companion still verifies older schemas.
+  `world_line_reading.lua` also owns the vehicle-to-canonical-line readback
+  extracted from `world.lua`; its cohesive module budget is 175 lines.
 - `operation_codec.lua` validates and materializes line and vehicle operation
   schema 4. A bounded stock multi-selection sale is one sorted canonical
   transaction even though the public engine replay primitive remains scalar.
@@ -237,7 +243,11 @@ Runtime-controller modules:
   derived from commits; `service_registration_runtime.lua` owns its bounded
   submitted/quarantined/recovered diagnostic and permanent-failure policy;
   `network_bridge_consumer.lua` owns ordered inbox application and
-  acknowledgements.
+  acknowledgements. `bridge.lua` preserves the JSON empty-array/object wire
+  distinction while authenticating companion envelopes. A rejected native
+  inbox record never advances the Lua cursor: the next poll reconfigures and
+  rewinds the process-owned FIFO to that durable sequence before later ordered
+  work can be consumed.
 - `industry_registry_sidecar.lua` reads and revalidates the exact
   session/peer-bound companion registry. `industry_content_runtime.lua` owns
   state migration, local/live binding, ordered two-peer content attestations,
@@ -305,8 +315,9 @@ GUI/native-adapter modules:
 - `gui_event_runtime.lua` owns vanilla GUI event authorization, native observer
   installation, bounded build/line/speed/vehicle capture, and GUI callback lifecycle.
 - `gui_early_build_capture.lua` correlates the pointer-free native proposal
-  captured at `make_cmd::BuildProposal`, `CommandList::Add`, and the tag-15
-  visitor with the same GUI preview. Native topology is authoritative while
+  captured at `make_cmd::BuildProposal` (or synchronously at the pre-queue
+  `CommandList::Add` fallback) and promoted by the tag-15 visitor with the same
+  GUI preview. Native topology is authoritative while
   bounded GUI semantics retain construction parameters, edge-object models,
   quoted cost, and terrain/alignment fields not independently decoded by the
   pinned native layout.
@@ -481,9 +492,12 @@ captured table reference would therefore mutate stale state after loading.
 - `native_hook_status.cpp` owns the stable native status JSON schema and formats
   a lock-protected view supplied by the hook.
 - `native_build_capture.cpp` decodes the pointer-free geometric/topological
-  BuildProposal projection at factory entry. `native_build_hook_bridge.cpp`
-  correlates the factory result with `CommandList::Add` and the suppressed
-  visitor without exporting native pointers.
+  BuildProposal projection at factory entry or, for factory-bypassing stock
+  callers, synchronously at the pre-queue Add boundary.
+  `native_build_hook_bridge.cpp` correlates the result with
+  `CommandList::Add` and the suppressed visitor without exporting native
+  pointers. Factory-only option arguments are explicitly marked unavailable
+  on the fallback branch.
 - `native_command_safety.generated.hpp` is generated from
   `content/native-command-safety-v1.json`; detours consume its suppression and
   pass-through policy as compile-time constants.

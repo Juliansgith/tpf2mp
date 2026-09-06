@@ -8,7 +8,14 @@ systems to Transport Fever 2. It contains two related modes:
 2. a restricted same-area network alpha in which two independent game
    processes replay supported actions and verify their results.
 
-Current release: `0.43.5-alpha`
+Current release: `0.44.0-alpha` (experimental testing release)
+
+Complex placement combining building demolition, road/rail attachment and
+terrain changes is not fully revalidated and may fail or fault the session.
+Some variants and save/load scenarios remain unverified; intermittent native
+Load Game stalls are still under investigation. Back up saves and update both
+players. Read the [release notes](docs/release-notes/RELEASE_NOTES_0.44.0-alpha.md)
+before testing.
 
 Supported executable: Transport Fever 2 Build 35924, Windows x64
 
@@ -88,7 +95,15 @@ route-phase drift but is not continuous coordinate lockstep.
 
 ## Current evidence
 
-The `0.43.5-alpha` qualification includes:
+Development leading to `0.44.0-alpha` passed real stock-UI two-instance bus,
+electric tram, empty-truck, passenger-aircraft and passenger-ship journeys,
+plus selected construction, rail purchase, road crossing and terrain cases.
+These are specific workflows, not blanket carrier or construction coverage.
+The full physical UI matrix is incomplete. Historical passes are bound to
+their tested source revisions, not automatically to the final release package.
+See the [2026-09-06 qualification](investigation/TRANSPORT_UI_QUALIFICATION_2026-09-06.md).
+
+Earlier `0.43.5-alpha` qualification included (not all rerun on this revision):
 
 - a 604.9-second populated two-process run with 1,168 samples;
 - ten converged checkpoints, four station releases, zero vehicle faults, and
@@ -112,6 +127,11 @@ Run the complete source gate from a PowerShell prompt:
 .\tools\run_tests.ps1
 ```
 
+The separate [real in-game UI regression harness](docs/LIVE_UI_TESTING.md)
+drives two windowed clients through native controls and checks both worlds.
+Its UI coverage gate does not count source tests or prepared-command tests as
+proof of player-click behaviour; uncalibrated/unrun cases remain uncovered.
+
 The same gate runs in GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml))
 on every push and pull request. The Windows runner builds its own Lua 5.1.5
 with `tools/ci/build_lua51.ps1`; `TPF2MP_LUA` and `TPF2MP_PYTHON` override the
@@ -126,7 +146,7 @@ release build.
 Build and transactionally verify a clean release bundle:
 
 ```powershell
-.\tools\package_release.ps1 -Version 0.43.5-alpha
+.\tools\package_release.ps1 -Version 0.44.0-alpha
 ```
 
 Publishing requires a clean commit, matching manifest, SHA-256 sidecar, release
@@ -134,8 +154,8 @@ notes, and explicit confirmation:
 
 ```powershell
 .\tools\publish_github_release.ps1 `
-  -Version 0.43.5-alpha `
-  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.43.5-alpha.md `
+  -Version 0.44.0-alpha `
+  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.44.0-alpha.md `
   -ConfirmPublish
 ```
 

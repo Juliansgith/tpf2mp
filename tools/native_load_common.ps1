@@ -768,6 +768,17 @@ function Invoke-Tpf2mpUiRectangleClick {
     if ($Rectangle.w -le 0 -or $Rectangle.h -le 0 -or $MenuRectangle.w -le 0 -or $MenuRectangle.h -le 0) {
         throw 'Native UI rectangle is empty.'
     }
+    if ($env:TPF2MP_LIVE_UI_TOKEN) {
+        $uiPython = if ($env:TPF2MP_PYTHON) { $env:TPF2MP_PYTHON } else { (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
+        $uiX = ([double]$Rectangle.x + [double]$Rectangle.w / 2 - [double]$MenuRectangle.x) / [double]$MenuRectangle.w
+        $uiY = ([double]$Rectangle.y + [double]$Rectangle.h / 2 - [double]$MenuRectangle.y) / [double]$MenuRectangle.h
+        & $uiPython (Join-Path $PSScriptRoot 'live_ui_input.py') --pid $GameProcess.Id --receipt $ReceiptPath `
+            --x $uiX.ToString([Globalization.CultureInfo]::InvariantCulture) --y $uiY.ToString([Globalization.CultureInfo]::InvariantCulture)
+        if ($LASTEXITCODE -ne 0) {
+            throw "DPI-aware UI input failed for PID $($GameProcess.Id) (exit $LASTEXITCODE); inspect $ReceiptPath.worker.json"
+        }
+        return
+    }
     $helper = Join-Path $PSScriptRoot 'send_game_console.ps1'
     $x = [int][Math]::Floor([double]$Rectangle.x + [double]$Rectangle.w / 2)
     $y = [int][Math]::Floor([double]$Rectangle.y + [double]$Rectangle.h / 2)
@@ -800,6 +811,7 @@ function Invoke-Tpf2mpPinnedSaveLoad {
         [ValidateRange(5, 120)][int]$PageTransitionTimeoutSeconds = 45
     )
     New-Item -ItemType Directory -Force -Path $EvidenceDirectory | Out-Null
+    if ($env:TPF2MP_LIVE_UI_TOKEN) { $PageTransitionTimeoutSeconds = 120 }
     $load = Wait-Tpf2mpMenuStage $GameProcess $BridgePath $Session $Peer `
         -Stage @('ready-to-click-load-game') -TimeoutSeconds $TimeoutSeconds
     # Build 35924 can expose an enabled Load Game button before its asynchronous
@@ -860,6 +872,13 @@ function Invoke-Tpf2mpPinnedSaveLoad {
         }
         if (-not $retryEligible -and -not $pageChanged `
                 -and (Get-Date) -ge $pageTransitionDeadline) {
+            if ($env:TPF2MP_LIVE_UI_TOKEN) {
+                try {
+                    $capturePython = if ($env:TPF2MP_PYTHON) { $env:TPF2MP_PYTHON } else { (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
+                    & $capturePython (Join-Path $PSScriptRoot 'live_ui_input.py') --pid $GameProcess.Id `
+                        --capture-only --minidump --receipt (Join-Path $EvidenceDirectory 'load-page-timeout.json')
+                } catch { Write-Warning "Load-page timeout screenshot failed: $_" }
+            }
             throw "Native Load Game page did not open within $PageTransitionTimeoutSeconds seconds after click attempt $loadAttempt."
         }
         if (-not $retryEligible) { break }
@@ -871,6 +890,14 @@ function Invoke-Tpf2mpPinnedSaveLoad {
     $remainingLoadSeconds = [Math]::Max(1, [Math]::Ceiling(($loadDeadline - (Get-Date)).TotalSeconds))
     $save = Wait-Tpf2mpMenuStage $GameProcess $BridgePath $Session $Peer `
         -Stage @('ready-to-click-pinned-save') -TimeoutSeconds $remainingLoadSeconds
+    if ($env:TPF2MP_LIVE_UI_TOKEN) {
+        $uiPython = if ($env:TPF2MP_PYTHON) { $env:TPF2MP_PYTHON } else { (Get-Command python -CommandType Application | Select-Object -First 1).Source }
+        $scrollReceipt = Join-Path $EvidenceDirectory 'scroll-pinned-save.json'
+        & $uiPython (Join-Path $PSScriptRoot 'live_ui_input.py') --pid $GameProcess.Id --receipt $scrollReceipt `
+            --menu-status (Join-Path $BridgePath 'launcher\menu_status.json') --save-name $ExpectedSaveBaseName
+        if ($LASTEXITCODE -ne 0) { throw "Native save scrolling failed; inspect $scrollReceipt.worker.json" }
+        $save = Read-Tpf2mpMenuStatus -BridgePath $BridgePath -Session $Session -Peer $Peer
+    }
     # Save metadata completion can reorder the native list for several frames.
     # Require the exact target rectangle to remain unchanged before posting a
     # physical click, otherwise a correct coordinate can name a different row

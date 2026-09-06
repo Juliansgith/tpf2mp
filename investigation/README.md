@@ -1,10 +1,46 @@
 # TPF2MP investigation record
 
-Last updated: 2026-09-01 (Europe/Amsterdam), development candidate after
-`0.43.5-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+[Transport UI qualification (2026-09-06)](TRANSPORT_UI_QUALIFICATION_2026-09-06.md)
+is the current evidence ledger for the real two-instance construction and
+vehicle suite: fixed bus, truck, passenger ship and aircraft route passes,
+terrain-height proof, retained failures and the unqualified matrix remainder.
+Do not treat the 412 required coverage labels as 412 implemented tests.
+
+Last updated: 2026-09-06 (Europe/Amsterdam), experimental release
+`0.44.0-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
 passenger-presentation schema `4`, cargo-presentation schema `2`,
-freight-industry schema `3`, edge proposal schema `5`, construction proposal
-schema `7`, native hook `0.19.0`.
+freight-industry schema `3`, edge proposal schema `6`, construction proposal
+schemas `8`/`9`, native edge-object inventory schema `3`, native hook `0.20.0`.
+
+[Real native UI regression harness (2026-09-05)](REAL_UI_REGRESSION_HARNESS_2026-09-05.md)
+records the physical-input runner, bilateral acceptance oracle, harness
+integration findings, and explicit boundary between UI and replay coverage.
+
+[Real UI public-road crossing rejection (2026-09-06)](REAL_UI_TRACK_CROSSING_REJECTION_2026-09-06.md)
+records a captured/ordered crossing rejected by both native builders, retained
+as a regression, its processed-topology repair, and the subsequent bilateral
+physical placement pass (road/rail traversal remains a separate proof).
+
+[Real UI airfield capture and replay (2026-09-06)](REAL_UI_AIRFIELD_CAPTURE_2026-09-06.md)
+records three real stock-airfield defects, captured-fixture and strict-userdata
+tests, and the two-airfield physical placement pass. Extended hangar interaction
+exposed and then fixed a missing native NAME component (named construction
+schema 9). Native aircraft buying/assignment passed; full flight qualification
+remains distinct from placement.
+
+[Real UI water transport (2026-09-06)](REAL_UI_WATER_TRANSPORT_2026-09-06.md)
+records bilateral harbor/shipyard construction, native boat buying, retained
+recipe failures, and the boundary between calibration and fixed-route proof.
+
+[Real UI keyboard and recovery isolation (2026-09-06)](REAL_UI_KEYBOARD_AND_SAVE_ISOLATION_2026-09-06.md)
+records physical scan codes/modifiers and removal of the competing automatic
+save UI driver from construction/vehicle fixtures, without changing normal
+multiplayer recovery defaults.
+
+[Native bridge empty-array checksum regression (2026-09-05)](NATIVE_BRIDGE_EMPTY_ARRAY_CHECKSUM_2026-09-05.md)
+records the automatic-recovery checkpoint that blocked a later vehicle
+purchase, the cross-language `[]` versus `{}` checksum mismatch, durable native
+FIFO rewind semantics, and the exact static/native proof boundary.
 
 [Construction hardening and local regression sweep (2026-09-01)](CONSTRUCTION_HARDENING_REGRESSION_2026-09-01.md)
 records recoverable terrain-candidate retry, atomic station/group rebinding,

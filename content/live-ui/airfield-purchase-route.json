@@ -1,0 +1,452 @@
+{
+  "schemaVersion": 1,
+  "id": "airfield-purchase-route-discovery",
+  "description": "Native airfield construction, hangar selection, aircraft purchase and two-stop line. Assignment calibration; not yet flight proof.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "p1-airfield-one",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -3000,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.air"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.air.air-buildings.item.station/air/airfield.con_0"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.3,
+            0.4
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.3,
+            0.4
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.air"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station"
+            ],
+            "op": "deltaAtLeast",
+            "value": 1
+          },
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "deltaAtLeast",
+            "value": 1
+          },
+          {
+            "path": [
+              "depotUi",
+              "missingName"
+            ],
+            "op": "equal",
+            "value": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "p1-airfield-two",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -4300,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.air"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.air.air-buildings.item.station/air/airfield.con_0"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.3,
+            0.4
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.3,
+            0.4
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.air"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station"
+            ],
+            "op": "deltaAtLeast",
+            "value": 1
+          },
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "deltaAtLeast",
+            "value": 1
+          },
+          {
+            "path": [
+              "depotUi",
+              "missingName"
+            ],
+            "op": "equal",
+            "value": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "open-native-aircraft-catalogue",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -3000,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.311,
+            0.425
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "waitUi",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "buy-native-aircraft",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.7,
+            0.58
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "vehicle",
+        "count": 1,
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "create-native-air-line",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "key",
+          "key": "escape"
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.lineManager"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "lineManager.newLine"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "line",
+        "count": 1,
+        "owner": "company:1",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "add-two-airport-stops",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -3000,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.312,
+            0.396
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -4300,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.312,
+            0.396
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "checks": [
+          {
+            "path": [
+              "structure",
+              "lines",
+              0,
+              "stops"
+            ],
+            "op": "length",
+            "value": 2
+          }
+        ],
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "open-aircraft-assignment",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "key",
+          "key": "escape"
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.vehicleManager"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    }
+  ]
+}

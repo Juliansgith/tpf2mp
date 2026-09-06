@@ -1,19 +1,25 @@
 # TPF2MP prototype status
 
-Current release: `0.43.5-alpha`
+Current release: `0.44.0-alpha` (experimental testing release)
 
-Last reviewed: 2026-09-04
+Last reviewed: 2026-09-06
 
 Supported game: Transport Fever 2 Build 35924, Windows x64
 
 Released protocol identity: state schema `35`, checkpoint format `5`, edge proposal
-schema `5`, construction proposal schema `7`, operation schema `4`, passenger
+schema `6`, construction proposal schema `8` (named constructions use `9`), operation schema `4`, passenger
 presentation schema `4`, cargo presentation schema `2`, freight-industry state
 schema `3`, native hook `0.20.0`.
 
-Unreleased development after `0.43.5-alpha` advances edge proposal schema to
-`6` and construction proposal schema to `8`; state schema and native hook
-version remain unchanged.
+Native attached-edge-object inventory advances to schema `3`. State schema and
+native hook version remain unchanged. Both players must run the same release;
+old-save continuation on these latest changes is not fully live-requalified.
+
+This release has targeted real-game evidence, not a complete UI matrix PASS.
+Combined demolition/attachment/terrain cases, all construction variants and
+fresh save/load/recovery remain incomplete. Intermittent native Load Game
+stalls remain unresolved. Back up saves; see the
+[release notes](release-notes/RELEASE_NOTES_0.44.0-alpha.md).
 
 ## Executive status
 
@@ -49,14 +55,17 @@ companies through a temporary native turn desk.
 
 ### Construction
 
-- hybrid pre-mutation BuildProposal capture correlating native
-  `make_cmd::BuildProposal`, `CommandList::Add`, and tag-15 visitor evidence
-  with the bounded GUI semantic preview;
+- hybrid pre-mutation BuildProposal capture preferring native
+  `make_cmd::BuildProposal`, falling back to synchronous decode before
+  `CommandList::Add`, and correlating the exact command through the tag-15
+  visitor with the bounded GUI semantic preview;
 - one generated safety registry for all 37 native command tags, mechanically
   checked against installed visitors plus operation and proposal codec replay;
 - named vanilla and data-only-mod roads, tracks, bridges, tunnels, signals,
   waypoints, edge upgrades, and removals;
-- rail, road, tram, air, and water stations/terminals and depots;
+- rail, road, tram, air, and water stations/terminals and depots, with isolated
+  depot replay established and carrier-connected depot replay structurally
+  generalized but still requiring live qualification for every carrier;
 - modular construction edits, arbitrary portable constructions and assets,
   collateral demolition, ownership, and physical postconditions;
 - public-road crossings and reconstruction, private endpoint authorization,
@@ -121,6 +130,19 @@ model values.
 
 ## Strongest current evidence
 
+Development leading to this release passed six fixed real-UI suites: bus,
+truck (empty travel only), passenger ship, small passenger aircraft, electric
+tram and depot terrain deformation. Journeys observed motion and distinct
+arrivals on both peers, and final audits required ownership/finance checks,
+converged checkpoints, settled shutdown and exact-process cleanup. Additional
+cases covered free stations/depots, train purchase and a rail/public-road
+crossing. The full automated rail route is unfinished. These passes belong
+to their recorded source fingerprints; final packaging/version changes do not
+inherit a current-source all-matrix PASS. See the
+[2026-09-06 qualification](../investigation/TRANSPORT_UI_QUALIFICATION_2026-09-06.md).
+
+The following is historical evidence, not all repeated for `0.44.0-alpha`.
+
 The 2026-09-01 qualification completed all fourteen repeatable local gates:
 
 - 604.9 seconds of populated two-process play;
@@ -139,12 +161,27 @@ See [the consolidated qualification](../investigation/ALPHA_QUALIFICATION_2026-0
 [construction qualification](../investigation/CONSTRUCTION_EDGE_CASE_QUALIFICATION_2026-09-01.md),
 and [practical geometry qualification](../investigation/PRACTICAL_TRACK_AND_STATION_GEOMETRY_2026-09-01.md).
 
-Unreleased 2026-09-04 evidence adds a fully connected two-process electric
+Earlier 2026-09-04 development evidence adds a fully connected two-process electric
 tram lifecycle: two terminals, route and curb stops, connected stock depot,
 line creation, Typ1 purchase, assignment, ten consensus barriers, twenty
 checkpoints, and matching final core/structure digests. The construction corpus
 also declares 2,848 static layout/geometry cases; this number describes codec
 coverage, not 2,848 live game placements.
+
+Disposable run `runtime/supported-api-probe/20260904-203543` additionally
+proves the new earliest-capture chain with a physical stock signal-tool click:
+factory decode, Add correlation, visitor suppression, and Lua consumption all
+matched generation `1`, with no invalid or dropped capture. This establishes
+the exact Build 35924 signal path; terrain-heavy and arbitrary third-party
+builders remain separate compatibility claims.
+
+Disposable run
+`runtime/localhost-live/localhost-compound-depot-coalesce-20260905-a` proves the
+compound connected-road-depot path that previously safety-faulted after leaving
+a 2.58-metre residual connector. Both native worlds now demolish the collateral
+house, split the public road, coalesce the depot entrance into that junction,
+and converge with one complete proposal, zero rejections/faults, matching
+finance/ownership, core digest `035ccd29`, and structural digest `9995a4be`.
 
 ## Not established
 
@@ -163,7 +200,10 @@ coverage, not 2,848 live game placements.
 
 ## Release position
 
-`0.43.5-alpha` is suitable for external trusted-tester feedback. The next
+`0.44.0-alpha` is an experimental release for external trusted-tester feedback,
+not a fully qualified construction or persistence release. The previous
+`0.43.5-alpha` release remains available for rollback using backed-up saves.
+The next
 evidence priority is a multi-hour physical two-computer relay match exercising
 dense construction, several simultaneous vehicles, passenger transfers,
 positive freight, reconnect, and receipt-bound restore. The machine-checkable

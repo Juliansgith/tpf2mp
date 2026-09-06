@@ -5,6 +5,7 @@ local bridgeConsumerModule = require "tpf2_mp/network_bridge_consumer"
 local followupQueueModule = require "tpf2_mp/network_followup_queue"
 local busyRejection = require "tpf2_mp/network_busy_rejection"
 local originCaptureRuntimeModule = require "tpf2_mp/network_origin_capture_runtime"
+local originWorkState = require "tpf2_mp/network_origin_work_state"
 local startupFence = require "tpf2_mp/network_startup_fence"
 local M = {
   MAX_DEFERRED_INTENTS = 32,
@@ -475,11 +476,9 @@ function M.new(deps)
     deferredIntents = function() return util.deepCopy(deferredNetworkIntents) end,
     deferredFollowups = followups.copy,
     localWorkState = function() return util.deepCopy(localWorkState()) end,
-    reset = function()
-      deferredNetworkIntents = {}
-      followups.clear()
-      networkIntentAwaitingOrder = nil
-    end,
+    originAppliedWorkState = function() return util.deepCopy(originWorkState.snapshot(
+      deferredNetworkIntents, networkIntentAwaitingOrder)) end,
+    reset = function() deferredNetworkIntents = {}; followups.clear(); networkIntentAwaitingOrder = nil end,
   }
 end
 

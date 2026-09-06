@@ -1,11 +1,17 @@
 local exactOwnership = require "tpf2_mp/construction_exact_ownership"
+local exactObject = require "tpf2_mp/construction_exact_edge_object"
 
 local M = {}
 
 local function field(value, key)
   if type(value) ~= "table" and type(value) ~= "userdata" then return nil end
   local ok, result = pcall(function() return value[key] end)
-  return ok and result or nil
+  -- Do not use `ok and result or nil` here: false is a meaningful native
+  -- value for BaseEdgeStreet.hasBus and BaseEdgeTrack.catenary. Collapsing it
+  -- to nil makes the typed C++ setter reject the exact replay after any
+  -- collateral preparation has already run.
+  if not ok then return nil end
+  return result
 end
 
 local function assign(value, key, replacement, label)
@@ -185,21 +191,6 @@ local function prepareExtraEdge(value, nodeMap, allocate)
   return assign(value, "entity", allocate(), "captured edge entity")
 end
 
-local function rewriteObject(observed, expected, edgeMap)
-  local mappedEdge = remap(field(expected, "edgeEntity"), edgeMap)
-  if not scalar(field(observed, "edgeEntity"), mappedEdge) then
-    return nil, "generated edge-object topology does not match the captured graph prefix"
-  end
-  for _, name in ipairs({ "edgeEntity", "param", "oneWay", "left", "model", "playerEntity", "name" }) do
-    local value = name == "edgeEntity" and mappedEdge or field(expected, name)
-    if value ~= nil then
-      local ok, err = assign(observed, name, value, "generated edge object " .. name)
-      if not ok then return nil, err end
-    end
-  end
-  return true
-end
-
 function M.applyProcessed(command, exact, safeField)
   safeField = type(safeField) == "function" and safeField or field
   local processed = safeField(command, "proposal")
@@ -226,7 +217,8 @@ function M.applyProcessed(command, exact, safeField)
   end
   local disposableNodeCount = generatedNodes - exactNodeCount
   if generatedEdges > exactEdgeCount or generatedObjects > #(exact.objects or {})
-      or disposableNodeCount > 1
+      or disposableNodeCount < 0
+      or disposableNodeCount > exactEdgeCount
       or (disposableNodeCount > 0 and (exactEdgeCount == 0
         or generatedEdges ~= exactEdgeCount)) then
     return nil, "generated construction graph exceeds the captured exact graph"
@@ -277,7 +269,8 @@ function M.applyProcessed(command, exact, safeField)
   end
 
   if disposableNodeCount > 0 then
-    if snapReplacements < 1 or referencesAnyNode(edges, edgeCount, disposableNodes) then
+    if snapReplacements < disposableNodeCount
+        or referencesAnyNode(edges, edgeCount, disposableNodes) then
       return nil, "generated construction snap node could not be replaced safely"
     end
     local trimmed, trimError = trimTail(nodes, nodeCount, exactNodeCount, "processed nodes")
@@ -285,10 +278,19 @@ function M.applyProcessed(command, exact, safeField)
     nodeCount = trimmed
   end
 
+  local objectNodes, objectEdges = {}, {}
+  for index = 1, nodeCount do
+    local row = field(nodes, index)
+    objectNodes[number(field(row, "entity"))] = field(field(row, "comp"), "position")
+  end
+  for index = 1, edgeCount do
+    local row = field(edges, index); objectEdges[number(field(row, "entity"))] = row
+  end
   local objectCount = generatedObjects
   for index, expected in ipairs(exact.objects or {}) do
     if index <= generatedObjects then
-      local ok, err = rewriteObject(field(objects, index), expected, edgeMap)
+      local ok, err = exactObject.rewrite(field(objects, index), expected, edgeMap,
+        exact.objectFacts and exact.objectFacts[index], objectNodes, objectEdges, field, assign)
       if not ok then return nil, err end
     else
       local ok, err = assign(expected, "edgeEntity",

@@ -73,10 +73,21 @@ void* DetourMakeBuildProposal(void* output, void* engine, void* proposal,
 void DetourCommandListAdd(void* list, void* output, void* command,
                           void* callback, void* tail) {
   if (native_command::NativeCommandTag(command) == 15) {
+    const auto gate = g_gate_snapshot != nullptr ? g_gate_snapshot() : GateSnapshot{};
+    const void* command_data = nullptr;
+    if (native_command::IsReadableRange(command, sizeof(void*))) {
+      std::memcpy(&command_data, command, sizeof(command_data));
+    }
     {
       Lock lock;
-      g_captures.ObserveAdd(command, CallerRva(_ReturnAddress()),
-                            GetCurrentThreadId());
+      if (gate.enabled && gate.correlation != 0) {
+        g_captures.ObserveAddOrDecode(command, command_data, gate.correlation,
+                                      CallerRva(_ReturnAddress()),
+                                      GetCurrentThreadId());
+      } else {
+        g_captures.ObserveAdd(command, CallerRva(_ReturnAddress()),
+                              GetCurrentThreadId());
+      }
     }
     Notify();
   }
@@ -107,14 +118,14 @@ std::optional<std::string> TakeEncoded() {
   return g_captures.TakeEncoded();
 }
 
-void PromoteSuppressed(void* build_proposal) {
+void PromoteSuppressed(void* build_proposal, const std::uint64_t correlation) {
   Lock lock;
-  g_captures.PromoteSuppressed(build_proposal);
+  g_captures.PromoteSuppressed(build_proposal, correlation);
 }
 
-void DiscardObserved(void* build_proposal) {
+void DiscardObserved(void* build_proposal, const std::uint64_t correlation) {
   Lock lock;
-  g_captures.DiscardObserved(build_proposal);
+  g_captures.DiscardObserved(build_proposal, correlation);
 }
 
 void* MakeBuildProposalDetour() {

@@ -1,0 +1,99 @@
+{
+  "edgeObjectsToAdd": [
+    {
+      "category": 0,
+      "left": false,
+      "modelInstance": {
+        "modelId": 2229,
+        "transf": [
+          0.9873763918876648,
+          0.1583913266658783,
+          0,
+          0,
+          -0.1583913266658783,
+          0.9873763918876648,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2080.3173828125,
+          -790.8348999023438,
+          4.379441738128662,
+          1
+        ]
+      },
+      "name": "Chester Road",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -1
+    }
+  ],
+  "edgeObjectsToRemove": {},
+  "edgesToAdd": [
+    {
+      "comp": {
+        "node0": 79609,
+        "node1": 79610,
+        "objects": {
+          "1": {
+            "1": -1,
+            "2": 1
+          }
+        },
+        "tangent0": {
+          "x": -79.2229309,
+          "y": 0.0000604423039,
+          "z": -0.468760282
+        },
+        "tangent1": {
+          "x": -73.1875229,
+          "y": -30.3152008,
+          "z": -1.03433943
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -1,
+      "streetEdge": {
+        "bus": false,
+        "streetType": 15,
+        "tramTrackType": 0
+      },
+      "type": 0
+    }
+  ],
+  "edgesToRemove": [
+    {
+      "comp": {
+        "node0": 79609,
+        "node1": 79610,
+        "objects": {},
+        "tangent0": {
+          "x": -79.2229309,
+          "y": 0.0000604423039,
+          "z": -0.468760282
+        },
+        "tangent1": {
+          "x": -73.1875229,
+          "y": -30.3152008,
+          "z": -1.03433943
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": 79629,
+      "streetEdge": {
+        "bus": false,
+        "streetType": 15,
+        "tramTrackType": 0
+      },
+      "type": 0
+    }
+  ],
+  "nodesToAdd": {},
+  "nodesToRemove": {},
+  "schemaVersion": 1,
+  "__observedCost": 900
+}

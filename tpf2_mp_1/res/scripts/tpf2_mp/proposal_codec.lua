@@ -9,7 +9,9 @@ local createdMatcher = require "tpf2_mp/proposal_created_matcher"
 local M = require "tpf2_mp/proposal_schema"
 local stationLayout = require "tpf2_mp/proposal_station_layout"
 local stockStationTemplate = require "tpf2_mp/proposal_stock_station_template"
+local wrapperSelector = require "tpf2_mp/proposal_wrapper_selector"
 local util = require "tpf2_mp/util"
+local constructionName = require "tpf2_mp/construction_name"
 
 -- Canonical, pointer-free BuildProposal vertical slice.  The native proposal
 -- types contain process-local entity IDs and userdata; none of those values
@@ -106,6 +108,20 @@ local function findField(root, names, maxDepth)
     return nil
   end
   return walk(root, 0)
+end
+
+local function nativeTopology(root)
+  local value = safeField(root, "__nativeTopology")
+  if type(value) ~= "table" or integer(safeField(value, "schemaVersion")) ~= 1 then
+    return nil
+  end
+  for _, field in ipairs({
+    "nodesToAdd", "edgesToAdd", "nodesToRemove", "edgesToRemove",
+    "edgeObjectsToAdd", "edgeObjectsToRemove",
+  }) do
+    if type(safeField(value, field)) ~= "table" then return nil end
+  end
+  return value
 end
 
 local function vec3(value, label)
@@ -1003,6 +1019,8 @@ local function normaliseConstructionChange(additions, removals, options)
     return nil, "a canonical bulldoze must name at least one construction root"
   end
   local value = #additions == 1 and additions[1].value or nil
+  local name, nameError = constructionName.capture(value, safeField)
+  if nameError then return nil, nameError end
   local rawFileName = value and (safeField(value, "fileName") or safeField(value, "name")) or nil
   local rawHeadquarters
   if value ~= nil then rawHeadquarters = safeField(value, "headquarters") end
@@ -1061,6 +1079,7 @@ local function normaliseConstructionChange(additions, removals, options)
     station.adapter = "stock-rail-station"
     station.sourceCid = sourceCid
     station.collateral = collateral
+    station.name = name
     return station
   end
   local fileName, fileError = portableResourceName(rawFileName, ".con", "construction")
@@ -1087,7 +1106,7 @@ local function normaliseConstructionChange(additions, removals, options)
   return {
     slot = "construction:1", mode = mode, adapter = "portable-construction",
     kind = constructionKind(fileName), sourceCid = sourceCid, fileName = fileName,
-    transform = transform, params = params, modules = modules, collateral = collateral,
+    transform = transform, params = params, modules = modules, collateral = collateral, name = name,
   }
 end
 
@@ -1167,11 +1186,27 @@ local function closestSplineParam(position, p0, p1, tangent0, tangent1)
   return param, distanceSquared(position, cubicPoint(p0, p1, tangent0, tangent1, param))
 end
 
+-- Shared read-only projection for canonical capture and processed-command
+-- verification. Processed native EdgeObject has segmentEntity/modelInstance,
+-- not the writable fields on SimpleStreetProposal.EdgeObject.
+function M.nativeEdgeObjectParam(value, segment, nodePosition)
+  local modelPosition = edgeObjectWorldPosition(value)
+  local comp = safeField(segment, "comp") or segment
+  local p0 = vec3(nodePosition(integer(safeField(comp, "node0"))), "object node0")
+  local p1 = vec3(nodePosition(integer(safeField(comp, "node1"))), "object node1")
+  local tangent0 = vec3(safeField(comp, "tangent0"), "edge tangent0")
+  local tangent1 = vec3(safeField(comp, "tangent1"), "edge tangent1")
+  if not (modelPosition and p0 and p1 and tangent0 and tangent1) then return nil end
+  local param, distance = closestSplineParam(modelPosition, p0, p1, tangent0, tangent1)
+  if distance > 10000 then return nil, "processed edge-object model is too far from its carrier edge" end
+  return param
+end
+
 local function normaliseEdgeObjects(
   root, edgeEntries, edgeSlots, companyCid, options, nodeEntries)
   local additions = entries(findField(root, { "edgeObjectsToAdd" }))
   if #additions > M.MAX_EDGE_OBJECTS then return nil, nil, "proposal exceeds edge-object limit" end
-  local edgeObjectRefs, retained, retainedSeen = {}, {}, {}
+  local edgeObjectRefs, refsById, retained, retainedSeen = {}, {}, {}, {}
   for edgeIndex, edgeEntry in ipairs(edgeEntries) do
     local segment = edgeEntry.value
     local comp = safeField(segment, "comp") or segment
@@ -1186,11 +1221,14 @@ local function normaliseEdgeObjects(
       end
       if temporaryId == nil then return nil, nil, "edge object reference has no entity id" end
       if temporaryId < 0 then
-        edgeObjectRefs[#edgeObjectRefs + 1] = {
+        if refsById[temporaryId] then return nil, nil, "duplicate temporary edge-object id" end
+        local reference = {
           edgeSlot = "edge:" .. tostring(edgeIndex),
           temporaryId = temporaryId,
           category = category,
         }
+        refsById[temporaryId] = reference
+        edgeObjectRefs[#edgeObjectRefs + 1] = reference
       else
         local reference, referenceError = canonicalReference(
           "edge_object", temporaryId, {}, options)
@@ -1227,7 +1265,15 @@ local function normaliseEdgeObjects(
   end
   local seenTemporary, result = {}, {}
   for index, entry in ipairs(additions) do
-    local value, reference = entry.value, edgeObjectRefs[index]
+    local value = entry.value
+    -- Simple input may carry an explicit identity. Processed StreetProposal
+    -- objects use a separate vector-local identity space (-1, -2, ...), NOT
+    -- the traversal order of SegmentAndEntity.comp.objects. Stock airfields
+    -- already put object -2's carrier before object -1's carrier.
+    local objectId = entityId(value)
+    if objectId == nil then objectId = -index end
+    local reference = refsById[objectId]
+    if not reference then return nil, nil, "edge-object addition has no matching temporary reference" end
     if seenTemporary[reference.temporaryId] then return nil, nil, "duplicate temporary edge-object id" end
     seenTemporary[reference.temporaryId] = true
     local edgeId = integer(safeField(value, "edgeEntity") or safeField(value, "segmentEntity")
@@ -1235,7 +1281,12 @@ local function normaliseEdgeObjects(
     local edgeReference, edgeError = canonicalReference("edge", edgeId, edgeSlots, options)
     if not edgeReference then return nil, nil, edgeError end
     if edgeReference.slot ~= reference.edgeSlot then
-      return nil, nil, "edge-object vector order does not match its edge reference"
+      return nil, nil, "edge-object identity does not match its carrier edge reference"
+    end
+    local declaredCategory = safeField(value, "category")
+    if declaredCategory ~= nil and not require("tpf2_mp/edge_object_reference").matches(
+      reference.category, integer(declaredCategory), safeField(value, "left")) then
+      return nil, nil, "edge-object identity does not match its category reference"
     end
     local param = finite(safeField(value, "param") or safeField(value, "position"))
     -- Build 35924's processed signal/waypoint output can retain an out-of-range
@@ -1243,26 +1294,16 @@ local function normaliseEdgeObjects(
     -- committed world position. Treat that sentinel exactly like a missing
     -- public param and reconstruct its position on the referenced spline.
     if param == nil or param < 0 or param > 1 then
-      local modelPosition = edgeObjectWorldPosition(value)
       local segment = edgeEntries[index] and edgeEntries[index].value or nil
-      -- Vector order has already been proven above. Use the referenced edge,
+      -- Object identity has already been proven above. Use the referenced edge,
       -- not merely the same list index, when one proposal carries multiple
       -- objects on different segments.
       for edgeIndex, candidate in ipairs(edgeEntries) do
         if "edge:" .. tostring(edgeIndex) == reference.edgeSlot then segment = candidate.value; break end
       end
-      local comp = safeField(segment, "comp") or segment
-      local p0 = nodePosition(integer(safeField(comp, "node0")))
-      local p1 = nodePosition(integer(safeField(comp, "node1")))
-      local tangent0 = vec3(safeField(comp, "tangent0"), "edge tangent0")
-      local tangent1 = vec3(safeField(comp, "tangent1"), "edge tangent1")
-      if modelPosition and p0 and p1 and tangent0 and tangent1 then
-        local distance
-        param, distance = closestSplineParam(modelPosition, p0, p1, tangent0, tangent1)
-        if distance > 10000 then
-          return nil, nil, "processed edge-object model is too far from its carrier edge"
-        end
-      end
+      local paramError
+      param, paramError = M.nativeEdgeObjectParam(value, segment, nodePosition)
+      if paramError then return nil, nil, paramError end
     end
     if param == nil or param < 0 or param > 1 then return nil, nil, "edge-object param is outside [0,1]" end
     local model, modelError = edgeObjectModel(value, options)
@@ -1340,6 +1381,16 @@ function M.normalise(root, companyCid, options)
     return nil, "canonical companyCid is required"
   end
   if type(root) ~= "table" and type(root) ~= "userdata" then return nil, "proposal root is unavailable" end
+  -- Builder callbacks can retain a shallow hover alias beside the exact
+  -- nested apply proposal. Prefer the explicit native envelope, then the
+  -- known semantic wrapper path; recursive discovery is only a last resort
+  -- inside that selected object.
+  local topologyRoot = nativeTopology(root)
+  if not topologyRoot then
+    local selectorError
+    topologyRoot, selectorError = wrapperSelector.select(root)
+    if not topologyRoot then return nil, selectorError end
+  end
   local constructionContainer = constructionAdditions(root)
   local constructionEntries = entries(constructionContainer)
   local hasConstruction = #constructionEntries > 0
@@ -1353,8 +1404,8 @@ function M.normalise(root, companyCid, options)
   if quotedCost == nil then return nil, "proposal has no authoritative quoted cost" end
   if math.abs(quotedCost) > 1000000000000 then return nil, "proposal quoted cost is outside the supported range" end
 
-  local nodeContainer = findField(root, { "nodesToAdd", "addedNodes" })
-  local edgeContainer = findField(root, { "edgesToAdd", "addedSegments" })
+  local nodeContainer = findField(topologyRoot, { "nodesToAdd", "addedNodes" })
+  local edgeContainer = findField(topologyRoot, { "edgesToAdd", "addedSegments" })
   local nodeEntries, edgeEntries = entries(nodeContainer), entries(edgeContainer)
   local nodeLimit = hasConstructionChange and M.MAX_CONSTRUCTION_NODES or M.MAX_NODES
   local edgeLimit = hasConstructionChange and M.MAX_CONSTRUCTION_EDGES or M.MAX_EDGES
@@ -1401,6 +1452,10 @@ function M.normalise(root, companyCid, options)
     local carrier = carrierValue == 0 and "street" or carrierValue == 1 and "track" or nil
     if not carrier then return nil, "edge " .. index .. " uses unsupported carrier " .. tostring(carrierValue) end
     local carrierComponent = safeField(segment, carrier == "street" and "streetEdge" or "trackEdge")
+    -- Geometry/removal vectors come only from the selected exact topology.
+    -- Builder selection fields can legitimately live beside that envelope
+    -- (`__builderData`/params on Build 35924 and several modded builders), so
+    -- retain the bounded whole-root scalar fallback when the edge omits one.
     local resourceValue, resourceError = resource(carrier, carrierComponent, options, root)
     if not resourceValue then return nil, resourceError end
     local edge = {
@@ -1441,11 +1496,22 @@ function M.normalise(root, companyCid, options)
       -- replay before sendCommand can produce a callback.
       local bus = safeField(carrierComponent, "hasBus")
       if bus == nil then bus = safeField(carrierComponent, "bus") end
+      local tramError, busError
       if tramTrackType == nil then
-        return nil, "street edge has no tram-track selection"
+        tramTrackType, tramError = uniqueScalarField(root, "tramTrackType", "integer")
       end
       if type(bus) ~= "boolean" then
-        return nil, "street edge has no bus-lane selection"
+        bus, busError = uniqueScalarField(root, "hasBus", "boolean")
+        if type(bus) ~= "boolean" then
+          local alternate, alternateError = uniqueScalarField(root, "bus", "boolean")
+          bus, busError = alternate, busError or alternateError
+        end
+      end
+      if tramTrackType == nil then
+        return nil, tramError or "street edge has no tram-track selection"
+      end
+      if type(bus) ~= "boolean" then
+        return nil, busError or "street edge has no bus-lane selection"
       end
       edge.tramTrackType = tramTrackType
       edge.bus = bus
@@ -1454,12 +1520,12 @@ function M.normalise(root, companyCid, options)
   end
 
   local edgeObjects, removeEdgeObjects, edgeObjectError, retainEdgeObjects = normaliseEdgeObjects(
-    root, edgeEntries, edgeSlots, companyCid, options, nodeEntries)
+    topologyRoot, edgeEntries, edgeSlots, companyCid, options, nodeEntries)
   if not edgeObjects then return nil, edgeObjectError end
 
-  local removeEdges, removeEdgeError = removalList(root, { "edgesToRemove", "removedSegments" }, "edge", options)
+  local removeEdges, removeEdgeError = removalList(topologyRoot, { "edgesToRemove", "removedSegments" }, "edge", options)
   if not removeEdges then return nil, removeEdgeError end
-  local removeNodes, removeNodeError = removalList(root, { "nodesToRemove", "removedNodes" }, "node", options)
+  local removeNodes, removeNodeError = removalList(topologyRoot, { "nodesToRemove", "removedNodes" }, "node", options)
   if not removeNodes then return nil, removeNodeError end
   local constructions
   if hasConstructionChange then
@@ -1467,9 +1533,6 @@ function M.normalise(root, companyCid, options)
       constructionEntries, constructionRemovalEntries, options)
     if not construction then return nil, constructionError end
     if construction.adapter == "stock-rail-station" then
-      if #removeEdges > 0 or #removeNodes > 0 then
-        return nil, "stock station placement cannot replace existing topology"
-      end
       local graphValid, graphError = validateStationGraph(nodes, edges, construction.params)
       if not graphValid then return nil, graphError end
     end
@@ -1484,7 +1547,10 @@ function M.normalise(root, companyCid, options)
     edgeObjects = { add = edgeObjects, retain = retainEdgeObjects, remove = removeEdgeObjects },
     remove = { edges = removeEdges, nodes = removeNodes },
   }
-  if constructions then transaction.constructions = constructions end
+  if constructions then
+    transaction.constructions = constructions
+    if constructions[1].name then transaction.schemaVersion = M.NAMED_CONSTRUCTION_SCHEMA_VERSION end
+  end
   transaction.digest = M.digest(transaction)
   transaction.transactionId = "proposal:" .. transaction.digest
   local valid, validationError = M.validate(transaction)
@@ -1548,6 +1614,7 @@ function M.validate(transaction)
   if transaction.schemaVersion ~= M.SCHEMA_VERSION
     and transaction.schemaVersion ~= M.LEGACY_SCHEMA_VERSION
     and transaction.schemaVersion ~= M.CONSTRUCTION_SCHEMA_VERSION
+    and transaction.schemaVersion ~= M.NAMED_CONSTRUCTION_SCHEMA_VERSION
     and transaction.schemaVersion ~= M.LEGACY_CONSTRUCTION_SCHEMA_VERSION then
     return false, "unsupported proposal schemaVersion"
   end
@@ -1728,10 +1795,17 @@ function M.validate(transaction)
       return false, "construction proposal requires one construction change"
     end
     local construction = transaction.constructions[1]
-    if not exactFields(construction, {
+    local fields = {
       "slot", "mode", "adapter", "kind", "sourceCid", "fileName",
       "transform", "params", "modules", "collateral",
-    }) or construction.slot ~= "construction:1" then
+    }
+    if transaction.schemaVersion == M.NAMED_CONSTRUCTION_SCHEMA_VERSION then
+      fields[#fields + 1] = "name"
+      if not constructionName.valid(construction.name) or construction.mode == "remove" then
+        return false, "invalid construction name"
+      end
+    end
+    if not exactFields(construction, fields) or construction.slot ~= "construction:1" then
       return false, "invalid construction record"
     end
     if construction.mode ~= "build" and construction.mode ~= "upgrade" and construction.mode ~= "remove" then
@@ -1933,23 +2007,9 @@ function M.validatePortable(transaction)
   end
   if constructionSchema(transaction.schemaVersion) then
     local construction = transaction.constructions[1]
-    -- Build 35924's buildConstruction helper receives only
-    -- filename/params/transform, so it cannot reproduce a captured existing
-    -- endpoint for any depot. Connected street depots remain portable because
-    -- replay first creates a stock-helper-safe root, then appends the captured
-    -- connection as a second topology-only proposal. Connected rail depots
-    -- stay rejected because typed rail-depot outputs crash the stock context
-    -- helper when selected. An isolated depot followed by a separate road or
-    -- track build remains portable through the selectable helper path.
-    if construction.mode == "build" and construction.kind == "depot" then
-      for _, edge in ipairs(transaction.edges) do
-        local node0, node1 = edge.node0 or {}, edge.node1 or {}
-        if edge.carrier == "track"
-          and (type(node0.cid) == "string" or type(node1.cid) == "string") then
-          return false, "network depot snapped to existing track; place the depot clear of track, wait for synchronization, then connect it with a separate track build"
-        end
-      end
-    end
+    -- Connected depots of either carrier use the generic helper-root plus
+    -- topology-repair path. Classification is structural and therefore also
+    -- covers data-driven/modded depot resources.
     if construction.mode ~= "remove" then
       local fileName, fileError = portableResourceName(construction.fileName, ".con", "construction")
       if not fileName then return false, fileError end
@@ -2084,7 +2144,7 @@ function M.materialise(transaction, options)
 
   local proposal = gameApi.type.SimpleProposal.new()
   local exactTopology = {
-    nodes = {}, edges = {}, objects = {}, edgeOwners = {},
+    nodes = {}, edges = {}, objects = {}, edgeOwners = {}, objectFacts = {},
     playerOwnedFactory = gameApi.type.PlayerOwned and gameApi.type.PlayerOwned.new or nil,
   }
   local slotIds, nextId = {}, -1
@@ -2216,6 +2276,8 @@ function M.materialise(transaction, options)
     value.playerEntity = object.private and integer(options.nativePlayerId) or -1
     value.name = object.name
     exactTopology.objects[index] = value
+    exactTopology.objectFacts[index] = { modelIndex = modelIndex, param = object.param,
+      category = object.category, left = object.left, oneWay = object.oneWay }
     if not nativeGeneratedTopology then proposal.streetProposal.edgeObjectsToAdd[index] = value end
   end
   for index, cid in ipairs(transaction.remove.edges) do
@@ -2379,6 +2441,7 @@ function M.materialiseConstruction(transaction, options)
     sourceCid = source.sourceCid,
     collateral = util.deepCopy(source.collateral),
     fileName = source.fileName,
+    name = source.name,
     headquarters = string.lower(source.fileName or "") == "asset/headquarter.con",
     transform = util.deepCopy(source.transform),
     params = params,

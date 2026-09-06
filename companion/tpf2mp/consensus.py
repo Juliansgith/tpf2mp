@@ -15,7 +15,7 @@ CONSENSUS_BOUND_ACTIONS = {
     "recovery.save_receipt",
     "content.industry_attest", "freight.industry_bootstrap", "freight.milestone",
     "passenger.milestone",
-    "economy.settle", "probe.structural",
+    "economy.settle", "probe.structural", "probe.native_fingerprint",
 }
 
 

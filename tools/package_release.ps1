@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.43.5-alpha',
+    [string]$Version = '0.44.0-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -226,6 +226,13 @@ $quickStart = @'
 
 This is an alpha research build for trusted two-player matches. Secure relay
 transport is available, but hostile peers and host migration are unsupported.
+
+Experimental construction/transport release: combined building demolition,
+road/rail attachment and terrain changes are not fully revalidated and may
+fail or fault the session. Some variants and save/load scenarios remain
+unverified; intermittent native Load Game stalls remain under investigation.
+Back up existing saves, update both players, and start a new session. See
+`docs/release-notes/RELEASE_NOTES_0.44.0-alpha.md` for the exact evidence limits.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 

@@ -65,6 +65,12 @@ struct BuildFactoryCapture {
   std::uint32_t add_thread{};
   bool option_with_cost{};
   bool option_ignore_errors{};
+  // Some stock GUI paths construct tag-15 CommandData directly and therefore
+  // never visit make_cmd::BuildProposal.  In that case CommandList::Add is
+  // still a pre-mutation boundary, but the factory-only option arguments are
+  // unavailable and must be supplied by the correlated GUI envelope.
+  bool option_fields_known{};
+  bool captured_at_add{};
   bool valid{};
   std::string error;
   std::vector<ProposalNode> added_nodes;
@@ -87,6 +93,7 @@ struct BuildFactoryCapture {
 
 struct BuildCaptureStats {
   std::uint64_t factory_calls{};
+  std::uint64_t add_fallback_calls{};
   std::uint64_t decoded{};
   std::uint64_t invalid{};
   std::uint64_t add_matches{};
@@ -98,6 +105,12 @@ struct BuildCaptureStats {
   // lost evidence. Only `dropped` makes TakeEncoded emit a sticky fault.
   std::uint64_t retired{};
   std::uint64_t orphaned{};
+  // Pending captures can legitimately be abandoned when a hover/factory path
+  // never reaches the visitor. Keep those lifecycle losses separate from a
+  // ready-queue overflow, which is the only evidence loss that must fault.
+  std::uint64_t expired{};
+  std::uint64_t evicted_pending{};
+  std::uint64_t correlation_misses{};
   std::uint64_t dropped{};
   std::size_t pending{};
   std::size_t ready{};
@@ -115,7 +128,8 @@ struct BuildCaptureStats {
 class BuildFactoryCaptureQueue {
  public:
   explicit BuildFactoryCaptureQueue(std::size_t pending_limit = 32,
-                                    std::size_t ready_limit = 16);
+                                    std::size_t ready_limit = 16,
+                                    std::uint64_t pending_generation_window = 64);
 
   BuildFactoryCapture Decode(const void* proposal, std::uint64_t correlation,
                              std::uint32_t factory_caller_rva,
@@ -126,8 +140,15 @@ class BuildFactoryCaptureQueue {
               const void* command_data);
   void ObserveAdd(const void* command, std::uint32_t add_caller_rva,
                   std::uint32_t add_thread);
-  bool PromoteSuppressed(const void* command_data);
-  bool DiscardObserved(const void* command_data);
+  // Correlate a factory-produced command when one exists; otherwise decode
+  // the tag-15 CommandData in-place at CommandList::Add.  Add runs before the
+  // command enters the queue, so both branches remain pre-mutation.
+  void ObserveAddOrDecode(const void* command, const void* command_data,
+                          std::uint64_t correlation,
+                          std::uint32_t add_caller_rva,
+                          std::uint32_t add_thread);
+  bool PromoteSuppressed(const void* command_data, std::uint64_t correlation = 0);
+  bool DiscardObserved(const void* command_data, std::uint64_t correlation = 0);
   std::optional<std::string> TakeEncoded();
   void ResetPending();
 
@@ -135,10 +156,24 @@ class BuildFactoryCaptureQueue {
   [[nodiscard]] bool has_ready() const;
 
  private:
+  BuildFactoryCapture DecodeProposal(const void* proposal,
+                                     std::uint64_t correlation,
+                                     std::uint32_t factory_caller_rva,
+                                     std::uint32_t capture_thread,
+                                     bool option_with_cost,
+                                     bool option_ignore_errors,
+                                     bool option_fields_known,
+                                     bool captured_at_add);
+  bool MarkAdded(const void* command, std::uint64_t correlation,
+                 std::uint32_t add_caller_rva, std::uint32_t add_thread);
+  void PruneExpired();
+  void RetirePointerReuse(const void* command, const void* command_data,
+                          std::uint64_t correlation);
   void DropOldestPending();
 
   std::size_t pending_limit_;
   std::size_t ready_limit_;
+  std::uint64_t pending_generation_window_;
   std::deque<BuildFactoryCapture> pending_;
   std::deque<BuildFactoryCapture> ready_;
   BuildCaptureStats stats_;

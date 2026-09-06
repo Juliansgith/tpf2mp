@@ -11,6 +11,7 @@ function M.new(deps)
     positionOf = deps.positionOf, stableName = deps.stableName,
     ownerCid = function(id, _, options)
       options = options or {}
+      if options.ownerPinned == true then return options.ownerCid end
       if options.ownerCid ~= nil then return options.ownerCid end
       local logical = options.worldState and options.worldState.logicalOwners
         and options.worldState.logicalOwners[tostring(id)] or nil

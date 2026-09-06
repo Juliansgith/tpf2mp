@@ -1244,8 +1244,16 @@ class ProtocolTests(unittest.TestCase):
         snapped_edge["node1"] = {"cid": "node:pre:depot-approach"}
         snapped_depot["edges"] = [snapped_edge]
         redigest_proposal(snapped_depot)
-        with self.assertRaisesRegex(ProtocolError, "place the depot clear of track"):
-            validate_action({"type": "proposal.build", "transaction": snapped_depot})
+        accepted_snapped_depot = validate_action({
+            "type": "proposal.build", "transaction": snapped_depot,
+        })
+        self.assertEqual(
+            accepted_snapped_depot["transaction"]["edges"][0]["carrier"], "track"
+        )
+        self.assertEqual(
+            accepted_snapped_depot["transaction"]["edges"][0]["node1"],
+            {"cid": "node:pre:depot-approach"},
+        )
 
         snapped_street_depot = portable_construction_transaction(kind="depot")
         snapped_street_depot["constructions"][0].update({
@@ -1606,6 +1614,33 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(
             accepted_attached["transaction"]["edges"][-1]["node1"]["cid"],
             "node:pre:station-approach",
+        )
+
+        # A through station inserted into an existing carrier replaces the old
+        # edge and can bind both generated endpoints to canonical boundary
+        # nodes. The game-side codec and companion must accept the same shape.
+        inserted = json.loads(json.dumps(transaction))
+        inserted["nodes"] = inserted["nodes"][1:-1]
+        for index, node in enumerate(inserted["nodes"], 1):
+            node["slot"] = f"node:{index}"
+        inserted["edges"][0]["node0"] = {"cid": "node:pre:station-west"}
+        inserted["edges"][-1]["node1"] = {"cid": "node:pre:station-east"}
+        for index, edge in enumerate(inserted["edges"], 1):
+            for end in ("node0", "node1"):
+                slot = edge[end].get("slot")
+                if slot is not None:
+                    old_index = int(slot.split(":", 1)[1])
+                    edge[end] = {"slot": f"node:{old_index - 1}"}
+            edge["slot"] = f"edge:{index}"
+        inserted["remove"]["edges"] = ["edge:pre:station-through"]
+        redigest_proposal(inserted)
+        accepted_inserted = validate_action({"type": "proposal.build", "transaction": inserted})
+        self.assertEqual(accepted_inserted["transaction"]["remove"]["edges"], [
+            "edge:pre:station-through"
+        ])
+        self.assertEqual(
+            accepted_inserted["transaction"]["edges"][0]["node0"]["cid"],
+            "node:pre:station-west",
         )
 
         reused_boundary = json.loads(json.dumps(attached))
@@ -6263,6 +6298,49 @@ class AnchorCoordinatorTests(unittest.TestCase):
                     "payload": {"action": {"type": "recovery.prepare"}},
                 }))
 
+    def test_player_proposal_preempts_automatic_checkpoint_without_losing_click(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host = self._host(Path(directory))
+            prepare = host.emit_local_intent({
+                "type": "recovery.prepare", "automatic": True,
+            })
+            self.assertEqual(prepare["seq"], 1)
+            checkpoint = host.anchor_preparation.checkpoint.emit(1, {
+                "schemaVersion": 1,
+                "sampleKeys": ["anchor-test:player1:phase-a", "anchor-test:player1:phase-b"],
+                "vehiclePhaseDigest": "4567def0",
+                "vehicleRounds": [],
+            })
+            self.assertEqual(checkpoint["seq"], 2)
+            self.assertEqual(host._pending_checkpoint()["boundarySeq"], 2)
+            host.automatic_recovery.preparation_seq = 1
+            host.automatic_recovery.started_at = host.automatic_recovery.monotonic()
+            host.automatic_recovery.resume_speed = 0
+
+            player_intent = sign({
+                "protocol": 1, "session": "anchor-test", "peer": "player2",
+                "local_seq": 795, "tick": 4381, "kind": "intent",
+                "payload": {"action": {
+                    "type": "proposal.prepare",
+                    "transaction": proposal_transaction("company:2"),
+                }},
+            })
+            committed = host._commit(player_intent)
+
+            self.assertEqual(host.commits[3]["payload"]["action"], {
+                "type": "recovery.cancel", "preparationSeq": 1,
+                "errorCode": "new ordered gameplay superseded automatic restore-point preparation",
+            })
+            self.assertEqual(host.checkpoint_consensus[2]["status"], "superseded")
+            self.assertEqual(committed["seq"], 4)
+            self.assertEqual(committed["origin_peer"], "player2")
+            self.assertEqual(committed["origin_local_seq"], 795)
+            self.assertEqual(committed["payload"]["action"]["type"], "proposal.prepare")
+            self.assertIsNone(host._pending_checkpoint())
+            automatic = host.automatic_recovery.status()["automaticRecovery"]
+            self.assertEqual(automatic["status"], "scheduled")
+            self.assertGreaterEqual(automatic["nextDueInSeconds"], 898)
+
     def test_audit_replay_recovers_a_pause_before_vehicle_drain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -7494,6 +7572,11 @@ class NetworkIntegrationTests(unittest.TestCase):
                 }),
                 sign({
                     "protocol": 1, "session": session, "peer": "player1",
+                    "local_seq": 5, "tick": 0, "kind": "intent",
+                    "payload": {"action": {"type": "probe.native_fingerprint"}},
+                }),
+                sign({
+                    "protocol": 1, "session": session, "peer": "player1",
                     "local_seq": 3, "tick": 0, "kind": "intent",
                     "payload": {"action": {
                         "type": "freight.milestone", "stage": "aboard",
@@ -7519,6 +7602,45 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertEqual(host.next_seq, 1)
             self.assertEqual(list(host.audit.messages()), [])
             self.assertIsNone(host._pending_checkpoint())
+
+    def test_native_fingerprint_probe_opens_resolves_and_replays_its_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "native-fingerprint-tracker"
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                GameBridge(root / "host", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            commit = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "probe.native_fingerprint"}},
+            }))
+            self.assertEqual(commit["seq"], 1)
+            tracker = host.checkpoint_consensus[1]
+            self.assertEqual(tracker["reason"], "native-fingerprint-probe")
+            self.assertEqual(tracker["status"], "pending")
+
+            for peer, local_seq in (("player1", 1), ("player2", 1)):
+                host._record_non_intent(consensus_checkpoint(
+                    session, peer, local_seq, 1, "native-fingerprint-probe",
+                ))
+            self.assertEqual(tracker["status"], "complete")
+            self.assertEqual(host.last_agreed_checkpoint["boundarySeq"], 1)
+            self.assertEqual(host.next_seq, 3)
+
+            restored = CommitHost(
+                GameBridge(root / "restored", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            self.assertEqual(
+                restored.checkpoint_consensus[1]["status"], "complete"
+            )
+            self.assertEqual(
+                restored.checkpoint_consensus[1]["reason"],
+                "native-fingerprint-probe",
+            )
 
     def test_receipt_bound_restore_blocks_gameplay_until_fresh_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -9072,6 +9194,100 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertEqual(host.checkpoint_consensus[2]["status"], "complete")
             self.assertEqual(host._commit(blocked)["seq"], 4)
             self.assertEqual(replay(audit, session), 0)
+
+    def test_optimistic_line_burst_supersedes_only_its_intermediate_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = "operation-origin-burst"
+            bridge = GameBridge(root / "host", session, "player1")
+            audit = root / "audit.ndjson"
+            host = CommitHost(
+                bridge, "127.0.0.1", 0, audit, require_connected_peers=False
+            )
+            created = operation_transaction("company:2")
+            first = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "operation.execute", "transaction": created,
+                    "originCaptureToken": "player2:line-origin:1",
+                }},
+            }))
+            self.assertEqual(first["seq"], 1)
+            for peer, local_seq in (("player1", 10), ("player2", 11)):
+                host._record_non_intent(operation_completion(
+                    session, peer, local_seq, created, commit_seq=1,
+                ))
+            self.assertEqual(host._pending_checkpoint()["boundarySeq"], 2)
+
+            line_cid = f"line:event:{session}:player2:1:1"
+            update_content = {
+                "schemaVersion": OPERATION_SCHEMA_VERSION,
+                "kind": "line.update", "companyCid": "company:2",
+                "data": {
+                    "targetCid": line_cid,
+                    "line": {"stops": created["data"]["line"]["stops"][:1]},
+                },
+            }
+            update_digest = checksum(update_content)
+            update = {
+                **update_content, "digest": update_digest,
+                "transactionId": f"operation:{update_digest}",
+            }
+            second = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 2, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "operation.execute", "transaction": update,
+                    "originCaptureToken": "player2:line-origin:2",
+                }},
+            }))
+            self.assertEqual(second["seq"], 3)
+            self.assertEqual(
+                second["payload"]["action"]["supersedesCheckpointBoundarySeq"], 2
+            )
+            self.assertEqual(host.checkpoint_consensus[2]["status"], "superseded")
+            self.assertIsNone(host._pending_checkpoint())
+
+            for peer, local_seq in (("player1", 12), ("player2", 13)):
+                completion = operation_completion(
+                    session, peer, local_seq, update, commit_seq=3,
+                )
+                completion["payload"]["outputs"] = []
+                completion["payload"]["postcondition"] = {
+                    "kind": "line.update", "targetCid": line_cid,
+                    "exists": True, "stops": update["data"]["line"]["stops"],
+                }
+                completion["payload"]["resultDigest"] = (
+                    operation_completion_result_digest(completion["payload"])
+                )
+                host._record_non_intent(completion)
+            reason = f"operation-consensus:{session}:player2:3"
+            self.assertEqual(host._pending_checkpoint()["boundarySeq"], 4)
+            host._record_non_intent(consensus_checkpoint(session, "player1", 14, 4, reason))
+            host._record_non_intent(consensus_checkpoint(session, "player2", 15, 4, reason))
+            self.assertEqual(host.checkpoint_consensus[4]["status"], "complete")
+            self.assertIsNone(host.session_fault)
+            self.assertEqual(replay(audit, session), 0)
+            restored = CommitHost(
+                GameBridge(root / "restored", session, "player1"),
+                "127.0.0.1", 0, audit, require_connected_peers=False,
+            )
+            self.assertEqual(restored.checkpoint_consensus[2]["status"], "superseded")
+            self.assertEqual(restored.checkpoint_consensus[4]["status"], "complete")
+            self.assertIsNone(restored.session_fault)
+
+            forged = sign({
+                "protocol": 1, "session": session, "peer": "player2",
+                "local_seq": 3, "tick": 0, "kind": "intent",
+                "payload": {"action": {
+                    "type": "operation.execute", "transaction": update,
+                    "originCaptureToken": "player2:line-origin:3",
+                    "supersedesCheckpointBoundarySeq": 4,
+                }},
+            })
+            with self.assertRaisesRegex(ProtocolError, "host-derived"):
+                host._commit(forged)
 
     def test_operation_company_is_bound_to_numbered_peer(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

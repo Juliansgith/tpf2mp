@@ -12,6 +12,12 @@ end
 
 local M = {}
 
+-- Lua has only tables, so an empty JSON array and an empty JSON object would
+-- otherwise both decode to `{}`.  Remember empty arrays by identity while the
+-- decoded tree is alive.  The weak keys do not retain protocol messages, and
+-- the marker is deliberately consulted only while the table is still empty.
+local decodedEmptyArrays = setmetatable({}, { __mode = "k" })
+
 local escapes = {
   ["\b"] = "\\b",
   ["\f"] = "\\f",
@@ -48,6 +54,9 @@ local function encodeTable(value, stack)
   stack[value] = true
 
   local array, length = util.isArray(value)
+  if not array and next(value) == nil and decodedEmptyArrays[value] then
+    array, length = true, 0
+  end
   local parts = {}
   if array then
     for index = 1, length do parts[index] = encodeValue(value[index], stack) end
@@ -158,7 +167,11 @@ local function decoder(text)
     pos = pos + 1
     skipWhitespace()
     local result = {}
-    if text:sub(pos, pos) == "]" then pos = pos + 1; return result end
+    if text:sub(pos, pos) == "]" then
+      pos = pos + 1
+      decodedEmptyArrays[result] = true
+      return result
+    end
     while true do
       result[#result + 1] = parseValue()
       skipWhitespace()

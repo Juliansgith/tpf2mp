@@ -13,14 +13,16 @@ local function hasConstructionCollateral(transaction)
     and type(construction.collateral) == "table" and #construction.collateral > 0
 end
 
-function M.make(factory, proposal, transaction, materialisation, safeField)
+function M.make(factory, proposal, transaction, materialisation, safeField, options)
   if factory == nil then return nil, "GUI BuildProposal API is unavailable" end
   -- Vanilla permits a GUI-approved road/track edit or construction placement
   -- to cross its soft Collision warning when that same proposal explicitly
   -- demolishes the obstruction. Critical errors still reject; the exact
   -- removal vector is checked before and after the native proposal processor
   -- converts SimpleProposal.
-  local ignoreSoftErrors = proposalCodec.isTopologyConstructionRemoval(transaction)
+  options = type(options) == "table" and options or {}
+  local ignoreSoftErrors = options.forceIgnoreSoftErrors == true
+    or proposalCodec.isTopologyConstructionRemoval(transaction)
     or hasConstructionCollateral(transaction)
   local commandOk, commandOrError = pcall(factory, proposal, nil, ignoreSoftErrors)
   if not commandOk then return nil, commandOrError end

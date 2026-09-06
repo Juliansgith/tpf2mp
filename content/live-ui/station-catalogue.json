@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "station-catalogue-calibration",
+  "description": "Pinned-map native station catalogue calibration. No construction coverage claimed.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {"w": 1920, "h": 1040},
+  "cases": [
+    {
+      "id": "p1-station-catalogue",
+      "steps": [
+        {"peer": "player1", "action": "camera", "camera": {"x": -1800, "y": -1000, "distance": 650, "angle": 0, "pitch": 0.82}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings"}},
+        {"peer": "player1", "action": "observe"}
+      ],
+      "expect": {"outcome": "unchanged", "finance": {"company:1": "unchanged", "company:2": "unchanged"}}
+    },
+    {
+      "id": "p2-station-catalogue",
+      "steps": [
+        {"peer": "player2", "action": "camera", "camera": {"x": -2200, "y": -1000, "distance": 650, "angle": 0, "pitch": 0.82}},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings"}},
+        {"peer": "player2", "action": "observe"}
+      ],
+      "expect": {"outcome": "unchanged", "finance": {"company:1": "unchanged", "company:2": "unchanged"}}
+    }
+  ]
+}

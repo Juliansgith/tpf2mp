@@ -16,10 +16,13 @@ local guiNativeCaptureSchedulerModule = require "tpf2_mp/gui_native_capture_sche
 local guiClockCapturePolicyModule = require "tpf2_mp/gui_clock_capture_policy"
 local guiBuildGateSamplerModule = require "tpf2_mp/gui_build_gate_sampler"
 local guiEarlyBuildCaptureModule = require "tpf2_mp/gui_early_build_capture"
+local guiBuildCaptureRuntimeModule = require "tpf2_mp/gui_build_capture_runtime"
+local guiBuildEventQueueRuntimeModule = require "tpf2_mp/gui_build_event_queue_runtime"
 local guiBuildCorrelationModule = require "tpf2_mp/gui_build_correlation"
 local guiConstructionSubmissionModule = require "tpf2_mp/gui_construction_submission"
 local guiProposalPredicatesModule = require "tpf2_mp/gui_proposal_predicates"
 local proposalCodec = require "tpf2_mp/proposal_codec"
+local proposalWrapperSelector = require "tpf2_mp/proposal_wrapper_selector"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local networkIntentRuntimeModule = require "tpf2_mp/network_intent_runtime"
 local networkBusyRejectionModule = require "tpf2_mp/network_busy_rejection"
@@ -36,6 +39,8 @@ local validationRuntimeModule = require "tpf2_mp/validation_runtime"
 local validationTrackCandidatesModule = require "tpf2_mp/validation_track_candidates"
 local townDevelopmentValidationModule = require "tpf2_mp/validation_town_development"
 local checkpointRuntimeModule = require "tpf2_mp/checkpoint_runtime"
+local networkCheckpointBatchModule = require "tpf2_mp/network_checkpoint_batch"
+local serviceRegistrationOperationCheckpoint = require "tpf2_mp/service_registration_operation_checkpoint"
 local checkpointRetentionModule = require "tpf2_mp/checkpoint_retention"
 local recoveryPrepareRuntimeModule = require "tpf2_mp/recovery_prepare_runtime"
 local resultErrorModule = require "tpf2_mp/result_error"
@@ -87,6 +92,7 @@ local hashModule = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 local jsonModule = require "tpf2_mp/json"
 local nativeFingerprintModule = require "tpf2_mp/world_native_fingerprint"
+dofile(project .. "/tests/native_edge_object_inventory_cases.lua")
 local nativeFingerprintRuntimeModule = require "tpf2_mp/native_fingerprint_runtime"
 
 assert(nativeCommandSafety.assertComplete())
@@ -162,6 +168,7 @@ do
     node = { 41 }, edge = { 11 }, edge_object = {}, construction = { 12 },
     asset = {}, station = {}, station_group = {}, depot = {}, line = {}, vehicle = {},
   }
+  local attachedObjects = { 51, 52 }
   local sampler = nativeFingerprintModule.new({
     entityExists = function(id) return topology[id] ~= nil end,
     fingerprint = function(id, kind) return tostring(kind) .. ":" .. tostring(topology[id]) end,
@@ -170,8 +177,13 @@ do
     listIndustries = function() return { 31 } end,
     townCapacity = function() return 12, { 3, 4, 5 } end,
     listKind = function(kind) return inventory[kind] end,
+    listInventoryEdgeObjects = function(edgeIds)
+      assert(edgeIds == inventory.edge, "full inventory enumerated a different edge set")
+      return attachedObjects
+    end,
     kindOf = function(id) return topology[id] and (id == 11 and "edge" or "construction") or "node" end,
     ownerOf = function() return 7 end,
+    lineDescriptor = function() return { name = "", stops = {} } end,
   })
   local registry = canonicalModule.newState()
   assert(canonicalModule.bind(registry, "edge:event:test:1", "edge", 11,
@@ -181,15 +193,42 @@ do
   local first = sampler.sample(registry, {
     logicalOwners = { ["11"] = "company:1", ["12"] = "company:1" },
   }, { ["company:1"] = { playerId = 7 } }, { fullInventory = true })
-  assert(first.schemaVersion == 2 and first.counts.edges == 1
+  assert(first.schemaVersion == 3 and first.counts.edges == 1
       and first.counts.constructions == 1 and first.counts.autonomous == 2
       and first.inventoryComplete == true and first.inventory.counts.edges.node == 1,
     "cheap native fingerprint omitted a required category")
+  assert(first.inventory.counts.edges.edge_object == 2,
+    "full inventory used signal-only bootstrap discovery for attached stops")
+  attachedObjects = nil
+  local incomplete = sampler.sample(registry, {}, {}, { fullInventory = true })
+  assert(incomplete.inventoryComplete == false and incomplete.inventory == nil,
+    "failed attached-object enumeration reported a complete inventory")
+  attachedObjects = { 51, 52 }
   local cheapBaseline = sampler.sample(registry, {
     logicalOwners = { ["11"] = "company:1", ["12"] = "company:1" },
   }, { ["company:1"] = { playerId = 7 } })
   assert(cheapBaseline.inventoryComplete == false and cheapBaseline.inventory == nil,
     "binding-focused checkpoint reused stale full-inventory evidence")
+
+  -- Exact construction ordering tokens are synthetic
+  -- (proposalDigest:kind:slot), so they cannot identify a live candidate or
+  -- participate in drift attestation. Only captured ordinary/topology
+  -- fingerprints are portable. Changing this bookkeeping token must therefore
+  -- leave the native digest unchanged when safe native reads are unavailable.
+  registry.byCanonical["construction:event:test:1"].metadata.nativeReadUnsafe = true
+  registry.byCanonical["construction:event:test:1"].metadata.proposalOutputFingerprint =
+    "digest-a:construction:1"
+  local unsafeFirst = sampler.sample(registry, {
+    logicalOwners = { ["11"] = "company:1", ["12"] = "company:1" },
+  }, { ["company:1"] = { playerId = 7 } })
+  registry.byCanonical["construction:event:test:1"].metadata.proposalOutputFingerprint =
+    "digest-b:construction:1"
+  local unsafeSecond = sampler.sample(registry, {
+    logicalOwners = { ["11"] = "company:1", ["12"] = "company:1" },
+  }, { ["company:1"] = { playerId = 7 } })
+  assert(unsafeFirst.digest == unsafeSecond.digest,
+    "synthetic exact-output ordering token masqueraded as portable native identity")
+  registry.byCanonical["construction:event:test:1"].metadata.nativeReadUnsafe = nil
   topology[11] = "edge-b"
   local second = sampler.sample(registry, { logicalOwners = {} },
     { ["company:1"] = { playerId = 7 } })
@@ -205,6 +244,53 @@ do
   assert(inventoryDrift.inventory.counts.edges.node == 2
       and inventoryDrift.categories.edges ~= second.categories.edges,
     "full native fingerprint did not detect an extra unbound topology entity")
+end
+
+do
+  -- A native line must be attested by its canonical stop topology, not by
+  -- cosmetic station-group names/positions. The latter can differ between
+  -- peers even when the same ordered line.update postcondition succeeded.
+  local genericFingerprint = "peer-a-generated-station-name"
+  local stopCid = "station_group:event:test:1"
+  local sampler = nativeFingerprintModule.new({
+    entityExists = function(id) return id == 101 end,
+    fingerprint = function(id, kind)
+      return tostring(kind) .. ":" .. tostring(id) .. ":" .. genericFingerprint
+    end,
+    topologyFingerprint = function() return nil end,
+    listTowns = function() return {} end,
+    listIndustries = function() return {} end,
+    townCapacity = function() return 0, { 0, 0, 0 } end,
+    kindOf = function() return "line" end,
+    ownerOf = function() return 7 end,
+    lineDescriptor = function()
+      return {
+        name = "Line 1",
+        stops = { {
+          stationGroupCid = stopCid,
+          station = 0,
+          terminal = 0,
+          alternativeTerminals = {},
+        } },
+      }
+    end,
+  })
+  local registry = canonicalModule.newState()
+  assert(canonicalModule.bind(registry, "line:event:test:1", "line", 101,
+    { owner = "company:1" }))
+  local companies = { ["company:1"] = { playerId = 7 } }
+  local first = sampler.sample(registry, { logicalOwners = {} }, companies)
+  genericFingerprint = "peer-b-generated-station-name"
+  local cosmeticDifference = sampler.sample(
+    registry, { logicalOwners = {} }, companies)
+  assert(first.digest == cosmeticDifference.digest,
+    "cosmetic station identity leaked into canonical native line consensus")
+  stopCid = "station_group:event:test:2"
+  local topologyDifference = sampler.sample(
+    registry, { logicalOwners = {} }, companies)
+  assert(first.digest ~= topologyDifference.digest
+      and first.categories.vehicles ~= topologyDifference.categories.vehicles,
+    "canonical native line fingerprint missed a changed stop target")
 end
 
 do
@@ -929,6 +1015,57 @@ do
       and proposalCodec.validatePortable(physical),
     "derived depot connection graph retained a non-sequential canonical node slot")
 
+  -- A road-attached depot commonly splits a public road only 2-3 metres past
+  -- the helper's own snap node. Appending that residual as another edge is
+  -- rejected by Build 35924 after the depot shell and collateral have already
+  -- changed the world. Coalesce the captured split onto the existing helper
+  -- node instead, retaining the exact two public-road branches.
+  local compoundTransaction = assert(validationRoadDepotProposalModule.transaction(
+    "company:1", { compoundTownRoad = true }))
+  local compoundRecord = {
+    proposalId = "depot:compound-repair", transaction = compoundTransaction,
+    nativeOwnerPlayerId = 100, replayPath = "helper-depot-connection",
+    localRefs = {
+      ["node:pre:352d0cd3"] = 700, ["node:pre:410b0cf7"] = 701,
+      ["edge:pre:65d911d6"] = 702,
+      ["construction:pre:87462897"] = 703,
+    },
+    constructionPending = { depotConnectionRepair = {
+      internalNodeSlot = "node:1", internalNodeId = 801,
+      sourceInternalPosition = util.deepCopy(compoundTransaction.nodes[1].position),
+      helperInternalPosition = {
+        x = -1107.218505859375, y = -962.9073486328125, z = 7.5595388412475586,
+      },
+      helperExternalPosition = {
+        x = -1097.7056884765625, y = -961.50543212890625, z = 7.5595388412475586,
+      },
+      helperEdgeIds = { 803 }, helperNodeIds = { 802 },
+    } },
+  }
+  local compoundPhysical, compoundRefs, compoundError, compoundPlan =
+    depotConnectionGraph.build(compoundRecord, proposalCodec)
+  assert(compoundPhysical, compoundError)
+  assert(compoundPlan.coalesced
+      and compoundPlan.coalesced.junctionSlot == "node:2"
+      and compoundPlan.coalesced.entranceSlot == "edge:1"
+      and #compoundPhysical.nodes == 0 and #compoundPhysical.edges == 2
+      and compoundPhysical.edges[1].slot == "edge:1"
+      and compoundPhysical.edges[1].node1.cid == "node:repair:depot-external"
+      and compoundPhysical.edges[2].slot == "edge:2"
+      and compoundPhysical.edges[2].node0.cid == "node:repair:depot-external"
+      and compoundRefs["node:repair:depot-external"] == 802
+      and depotConnectionGraph.coalesces(compoundRecord)
+      and proposalCodec.validatePortable(compoundPhysical),
+    "compound connected depot retained its rejected residual micro-edge")
+  compoundRecord.replayPath = "helper-connected-depot"
+  local noAuxiliary = assert(depotAuxiliaryBinding.apply({
+    canonical = canonicalModule.newState(), companies = {
+      ["company:1"] = { playerId = 100 },
+    }, world = { logicalOwners = {}, pinnedCustody = {} },
+  }, compoundRecord, {}, function() return 100 end))
+  assert(#noAuxiliary == 0,
+    "coalesced depot helper topology was rebound as duplicate auxiliary output")
+
   -- Exercise the other endpoint and both possible internal-node ordinals.
   -- The helper edge direction is not stable across depot orientation, while
   -- a retained approach node may sort before or after the helper-owned node.
@@ -1237,10 +1374,10 @@ do
     },
   }
   assert(proposalDerivedStationRuntime.requiresCapture(record.transaction, registry),
-    "passenger edge stop did not request derived entity capture")
+    "left-side edge stop did not request derived entity capture")
   record.transaction.edgeObjects.add[1].category = 1
   assert(proposalDerivedStationRuntime.requiresCapture(record.transaction, registry),
-    "cargo edge stop did not request derived entity capture")
+    "right-side edge stop did not request derived entity capture")
   record.transaction.edgeObjects.add[1].category = 2
   assert(not proposalDerivedStationRuntime.requiresCapture(record.transaction, registry),
     "signal edge object incorrectly requested station capture")
@@ -1520,6 +1657,18 @@ do
   assert(clean and cleanError == nil and calledContext == nil and calledIgnore == false
       and cleanMetadata.ignoreSoftErrors == false,
     "clean topology replay unexpectedly enabled soft-error acceptance")
+
+  local helperRepair, helperRepairError, helperRepairMetadata =
+    guiBuildCommandFactory.make(
+      function(_, context, ignoreErrors)
+        calledContext, calledIgnore = context, ignoreErrors
+        return { proposal = {} }
+      end,
+      {}, { schemaVersion = proposalCodec.SCHEMA_VERSION }, nil, safeField,
+      { forceIgnoreSoftErrors = true })
+  assert(helperRepair and helperRepairError == nil and calledContext == nil
+      and calledIgnore == true and helperRepairMetadata.ignoreSoftErrors == true,
+    "bounded helper-depot repair lost its original soft-error allowance")
 end
 
 do
@@ -1870,9 +2019,34 @@ do
       and constructionReplayState.isGuiExact(collateralRecord)
       and stagedPending.before == stagedBefore
       and stagedPending.guiDelta == nil and stagedPending.rootEntity == nil
+      and stagedPending.collateralRetired == true
       and stagedPending.deadlineTick == 630 and stagedPending.nextVerificationTick == 32
       and stagedPending.verificationScans == 0 and stagedProposals.queued == 5,
     "post-collateral construction did not rebase and enter exact GUI replay")
+
+  local helperCollateralRecord = util.deepCopy(depotRecord)
+  helperCollateralRecord.transaction.constructions[1].collateral = {
+    { kind = "construction", cid = "construction:pre:depot-obstruction" },
+  }
+  helperCollateralRecord.localInputs = {
+    { kind = "construction", cid = "construction:pre:depot-obstruction", localId = 171 },
+  }
+  local helperCollateralPending = {
+    phase = "clearing-collateral", deadlineTick = 100,
+  }
+  helperCollateralRecord.constructionPending = helperCollateralPending
+  local helperReady = assert(constructionReplayState.advanceCollateral(
+    helperCollateralRecord, helperCollateralPending, {
+      verification = {
+        inputsPendingOrSnapshot = function() return 0, {} end,
+      },
+      proposals = { queued = 0 }, codec = proposalCodec, tick = 40,
+      timeoutTicks = 600, firstVerifyDelayTicks = 2, pendingRescanTicks = 1,
+    }))
+  assert(helperReady.readyForHelper == true
+      and helperCollateralPending.collateralRetired == true
+      and guiConstructionReplay.omitsCollateral(helperCollateralRecord),
+    "helper-built depot forgot the irreversible collateral boundary")
 
   fakeApi.res.moduleRep.get = function() return { metadata = io.stdout } end
   collateralRecord.transaction.constructions[1].modules = {
@@ -2630,11 +2804,78 @@ end
 
 
 do
+  local function topology(marker)
+    return { edgesToAdd = {}, nodesToAdd = {}, marker = marker }
+  end
+  for _, wrapper in ipairs({ "proposal", "data", "context", "params" }) do
+    local stale, exact = topology("stale"), topology(wrapper)
+    local root = {
+      __observedCost = 123,
+      __builderData = { trackType = 7 },
+      streetProposal = stale,
+    }
+    root[wrapper] = { streetProposal = exact }
+    local selected, selectError, info = proposalWrapperSelector.select(root)
+    assert(selected == exact and selectError == nil and info.depth == 2,
+      "wrapper selector did not prefer nested " .. wrapper .. " apply topology")
+  end
+
+  local exact = topology("cycle-safe")
+  local cyclic = { __observedCost = 123 }
+  cyclic.proposal = cyclic
+  cyclic.data = { context = { streetProposal = exact } }
+  local selected, selectError = proposalWrapperSelector.select(cyclic)
+  assert(selected == exact and selectError == nil,
+    "wrapper selector did not terminate safely on a cyclic live envelope")
+
+  local shared = topology("shared")
+  local aliased = { proposal = { streetProposal = shared }, data = { streetProposal = shared } }
+  selected, selectError = proposalWrapperSelector.select(aliased)
+  assert(selected == shared and selectError == nil,
+    "wrapper selector rejected two paths to the same topology object")
+
+  local conflicting = {
+    proposal = { streetProposal = topology("proposal") },
+    data = { streetProposal = topology("data") },
+  }
+  selected, selectError = proposalWrapperSelector.select(conflicting)
+  assert(selected == nil and selectError:find("ambiguous topology wrappers", 1, true),
+    "wrapper selector made an arbitrary same-depth topology choice")
+
+  local tooDeep, cursor = {}, nil
+  cursor = tooDeep
+  for _ = 1, proposalWrapperSelector.MAX_DEPTH do
+    cursor.proposal = {}
+    cursor = cursor.proposal
+  end
+  cursor.streetProposal = topology("outside-budget")
+  selected, selectError = proposalWrapperSelector.select(tooDeep)
+  assert(selected == nil and selectError:find("depth limit", 1, true),
+    "wrapper selector traversed beyond its hard depth budget")
+end
+
+
+do
   local semantic = {
+    __observedCost = 12500,
+    -- A shallow hover alias intentionally disagrees with the exact nested
+    -- payload. The native envelope must prevent recursive key order from
+    -- selecting this incomplete copy during normalisation.
+    nodesToAdd = { { entity = -91, comp = { position = { x = 999, y = 999, z = 9 } } } },
+    edgesToAdd = { { entity = -92, type = 0, comp = {
+      node0 = -91, node1 = 44, tangent0 = { x = 1, y = 0, z = 0 },
+      tangent1 = { x = 1, y = 0, z = 0 }, type = 0, typeIndex = 0,
+    }, streetEdge = { streetType = 99 } } },
     streetProposal = {
       nodesToAdd = { { entity = -1, comp = { position = { x = 99, y = 99, z = 99 } } } },
-      edgesToAdd = {}, nodesToRemove = {}, edgesToRemove = {},
-      edgeObjectsToAdd = { { entity = -5, edgeEntity = -2, param = 0.5 } },
+      edgesToAdd = { { entity = -2, type = 0, comp = {
+        node0 = -1, node1 = 44, tangent0 = { x = 1, y = 0, z = 0 },
+        tangent1 = { x = 1, y = 0, z = 0 }, type = 0, typeIndex = 0,
+        objects = { { -5, 1 } },
+      }, streetEdge = { streetType = 4, hasBus = false, tramTrackType = 0 } } },
+      nodesToRemove = {}, edgesToRemove = {},
+      edgeObjectsToAdd = { { entity = -5, edgeEntity = -2, param = 0.5,
+        left = false, oneWay = false, model = "street/bus_stop_v2.mdl" } },
       edgeObjectsToRemove = { 52 },
     },
     constructionsToAdd = { {
@@ -2647,9 +2888,16 @@ do
     } },
     constructionsToRemove = { 700 }, __constructionRemovals = { 700 },
   }
+  -- Build 35924 can keep this direct hover alias after publishing a newer
+  -- nested apply payload. The nested envelope is the click; the direct one is
+  -- deliberately made stale and incomplete so selector order is exercised.
+  semantic.proposal = { streetProposal = util.deepCopy(semantic.streetProposal) }
+  semantic.streetProposal.nodesToAdd[1].comp.position.x = 777
+  semantic.streetProposal.edgeObjectsToAdd = {}
   local capture = {
     schemaVersion = 1, generation = 8, correlation = 9, valid = true,
     factoryThread = 11, addThread = 12, withCost = true, ignoreErrors = false,
+    captureSource = "factory", optionFieldsKnown = true,
     factoryCallerRva = 0x419F62, addCallerRva = 0x419F90,
     callerType = "construction-builder",
     addedNodes = { { e = -1, x = 10, y = 20, z = 3, f = 0, t = 0 } },
@@ -2668,25 +2916,193 @@ do
       frozenNodes = { -1 }, segmentsBefore = 0,
     } },
   }
+  local semanticOnly, semanticOnlyError = proposalCodec.normalise(
+    semantic, "company:1", {
+      requireResourceName = true,
+      resourceName = function(kind, index)
+        if kind == "street" and index == 4 then return "standard/country_small_new.lua" end
+        if kind == "model" then return "street/bus_stop_v2.mdl" end
+      end,
+      resolveCanonical = function(kind, id)
+        local values = { node = { [44] = "node:pre:44" },
+          edge_object = { [52] = "edge_object:pre:52" },
+          construction = { [700] = "construction:pre:700" } }
+        return values[kind] and values[kind][id] or nil
+      end,
+      entityPosition = function(kind, id)
+        if kind == "node" and id == 44 then return { x = 30, y = 20, z = 3 } end
+      end,
+    })
+  assert(semanticOnly and semanticOnlyError == nil
+      and semanticOnly.nodes[1].position.x == 99
+      and semanticOnly.edges[1].resource.index == 4,
+    "semantic fallback selected a stale shallow hover alias")
   local merged, mergeError = guiEarlyBuildCaptureModule.merge(semantic, capture)
   assert(merged and mergeError == nil
-      and merged.streetProposal.nodesToAdd[1].comp.position.x == 10
-      and merged.streetProposal.edgesToAdd[1].comp.node1 == 44
-      and merged.nodesToAdd == nil
+      and merged.proposal.streetProposal.nodesToAdd[1].comp.position.x == 10
+      and merged.proposal.streetProposal.edgesToAdd[1].comp.node1 == 44
+      and merged.streetProposal.nodesToAdd[1].comp.position.x == 777
+      and merged.nodesToAdd[1].entity == -91
+      and merged.__nativeTopology.nodesToAdd[1].comp.position.x == 10
+      and merged.__nativeTopology.edgesToAdd[1].streetEdge.tramTrackType == 1
+      and merged.__nativeTopology.edgesToAdd[1].comp.objects[1][1] == -5
       and merged.__constructionAdditions[1].transf[13] == 10
       and merged.__constructionAdditions[1].params.terminals == 2
-      and merged.__nativeFactoryCapture.factoryThread == 11,
+      and merged.__nativeFactoryCapture.factoryThread == 11
+      and merged.__nativeFactoryCapture.captureSource == "factory"
+      and merged.__nativeFactoryCapture.optionFieldsKnown == true
+      and merged.__nativeFactoryCapture.withCost == true
+      and merged.__nativeFactoryCapture.optionSource == "native-factory"
+      and merged.__nativeFactoryCapture.nativeConstructionRemoveCount == 1
+      and merged.__nativeFactoryCapture.semanticConstructionRemoveCount == 1
+      and merged.__nativeFactoryCapture.mergedConstructionRemoveCount == 1
+      and merged.__nativeFactoryCapture.constructionRemovalSource == "native+semantic",
     "pre-mutation native proposal did not replace nested topology and preserve semantics")
+  local attachedPending = { proposalSnapshot = util.deepCopy(semantic) }
+  local attached, attachError, attachChanged = guiEarlyBuildCaptureModule.attach(
+    attachedPending, capture)
+  assert(attached == attachedPending and attachError == nil and attachChanged == true
+      and attached.proposalSnapshot.__nativeTopology.edgesToAdd[1].streetEdge.tramTrackType == 1
+      and attached.nativeFactoryCapture == capture
+      and attached.nativeFactoryGeneration == capture.generation
+      and attached.nativeFactoryCallerType == capture.callerType,
+    "native evidence attachment did not preserve topology and capture identity")
+  local idempotent, idempotentError, idempotentChanged =
+    guiEarlyBuildCaptureModule.attach(attachedPending, capture)
+  assert(idempotent == attachedPending and idempotentError == nil
+      and idempotentChanged == false,
+    "reattaching the same native evidence rewrote an already-attested snapshot")
+  local normalised, normaliseError = proposalCodec.normalise(merged, "company:1", {
+    requireResourceName = true,
+    resourceName = function(kind, index)
+      if kind == "street" then return "standard/country_small_new.lua" end
+      if kind == "model" then return "street/bus_stop_v2.mdl" end
+    end,
+    resolveCanonical = function(kind, id)
+      local values = { node = { [44] = "node:pre:44" },
+        edge_object = { [52] = "edge_object:pre:52" },
+        construction = { [700] = "construction:pre:700" } }
+      return values[kind] and values[kind][id] or nil
+    end,
+    entityPosition = function(kind, id)
+      if kind == "node" and id == 44 then return { x = 30, y = 20, z = 3 } end
+    end,
+  })
+  assert(normalised and normaliseError == nil
+      and normalised.nodes[1].position.x == 10
+      and normalised.edges[1].tramTrackType == 1
+      and normalised.edges[1].resource.name == "standard/country_small_new.lua"
+      and normalised.constructions[1].collateral[1].cid == "construction:pre:700",
+    "proposal codec rediscovered a stale shallow alias instead of native topology")
   local wrongResource = util.deepCopy(semantic)
   wrongResource.__constructionAdditions[1].fileName = "station/street/truck_station.con"
   local rejected, resourceError = guiEarlyBuildCaptureModule.merge(wrongResource, capture)
   assert(rejected == nil and resourceError:find("resource differs", 1, true),
     "native/semantic construction mismatch was not rejected")
+  local addFallback = util.deepCopy(capture)
+  addFallback.captureSource = "command-list-add"
+  addFallback.optionFieldsKnown = false
+  addFallback.factoryCallerRva = 0
+  addFallback.withCost = false
+  addFallback.ignoreErrors = false
+  local fallbackMerged, fallbackError = guiEarlyBuildCaptureModule.merge(semantic, addFallback)
+  assert(fallbackMerged and fallbackError == nil
+      and fallbackMerged.__nativeFactoryCapture.captureSource == "command-list-add"
+      and fallbackMerged.__nativeFactoryCapture.optionFieldsKnown == false
+      and fallbackMerged.__nativeFactoryCapture.withCost == nil
+      and fallbackMerged.__nativeFactoryCapture.ignoreErrors == nil
+      and fallbackMerged.__nativeFactoryCapture.optionSource == "correlated-envelope",
+    "CommandList::Add fallback capture falsely attested unavailable factory options")
+  local invalidFallback = util.deepCopy(addFallback)
+  invalidFallback.factoryCallerRva = 123
+  local invalidFallbackResult, invalidFallbackError = guiEarlyBuildCaptureModule.merge(
+    semantic, invalidFallback)
+  assert(invalidFallbackResult == nil
+      and invalidFallbackError:find("source/caller contract", 1, true),
+    "CommandList::Add fallback accepted contradictory factory caller evidence")
   local missingObject = util.deepCopy(semantic)
-  missingObject.streetProposal.edgeObjectsToAdd = {}
+  missingObject.proposal.streetProposal.edgeObjectsToAdd = {}
   local objectRejected, objectError = guiEarlyBuildCaptureModule.merge(missingObject, capture)
   assert(objectRejected == nil and objectError:find("edge-object-add count", 1, true),
     "native/semantic edge-object mismatch was not rejected")
+  local opaqueObjectScalar = util.deepCopy(capture)
+  opaqueObjectScalar.edgeObjectsToAdd = { 123456 }
+  local opaqueMerged, opaqueError = guiEarlyBuildCaptureModule.merge(
+    semantic, opaqueObjectScalar)
+  assert(opaqueMerged and opaqueError == nil
+      and opaqueMerged.__nativeTopology.edgeObjectsToAdd[1].entity == -5,
+    "opaque native edge-object scalar displaced the correlated semantic record")
+  local omittedCollateral = util.deepCopy(semantic)
+  omittedCollateral.constructionsToRemove = nil
+  omittedCollateral.__constructionRemovals = nil
+  local collateralMerged, collateralError = guiEarlyBuildCaptureModule.merge(
+    omittedCollateral, capture)
+  assert(collateralMerged and collateralError == nil
+      and collateralMerged.__constructionRemovals[1] == 700,
+    "native construction collateral remained dependent on the shallow GUI projection")
+
+  -- Mixed topology/collateral builders do not all expose the same native STL
+  -- removal vector. The exact GUI callback can be the only source for a town
+  -- building demolished by a track or road click. Its correlation-bound
+  -- semantic removal must survive an empty native removal vector.
+  local semanticOnlyCapture = util.deepCopy(capture)
+  semanticOnlyCapture.constructionsToRemove = {}
+  local semanticCollateralMerged, semanticCollateralError =
+    guiEarlyBuildCaptureModule.merge(semantic, semanticOnlyCapture)
+  assert(semanticCollateralMerged and semanticCollateralError == nil
+      and #semanticCollateralMerged.__constructionRemovals == 1
+      and semanticCollateralMerged.__constructionRemovals[1] == 700
+      and semanticCollateralMerged.__nativeFactoryCapture.nativeConstructionRemoveCount == 0
+      and semanticCollateralMerged.__nativeFactoryCapture.semanticConstructionRemoveCount == 1
+      and semanticCollateralMerged.__nativeFactoryCapture.mergedConstructionRemoveCount == 1
+      and semanticCollateralMerged.__nativeFactoryCapture.constructionRemovalSource
+        == "__constructionRemovals",
+    "exact GUI-only construction collateral was discarded by an empty native vector")
+  local semanticCollateralNormalised, semanticCollateralNormaliseError =
+    proposalCodec.normalise(semanticCollateralMerged, "company:1", {
+      requireResourceName = true,
+      resourceName = function(kind)
+        if kind == "street" then return "standard/country_small_new.lua" end
+        if kind == "model" then return "street/bus_stop_v2.mdl" end
+      end,
+      resolveCanonical = function(kind, id)
+        local values = { node = { [44] = "node:pre:44" },
+          edge_object = { [52] = "edge_object:pre:52" },
+          construction = { [700] = "construction:pre:700" } }
+        return values[kind] and values[kind][id] or nil
+      end,
+      entityPosition = function(kind, id)
+        if kind == "node" and id == 44 then return { x = 30, y = 20, z = 3 } end
+      end,
+    })
+  assert(semanticCollateralNormalised and semanticCollateralNormaliseError == nil
+      and semanticCollateralNormalised.schemaVersion == 8
+      and semanticCollateralNormalised.constructions[1].collateral[1].cid
+        == "construction:pre:700",
+    "semantic-only collateral did not become an atomic topology/construction transaction")
+
+  local richerSemantic = util.deepCopy(semantic)
+  richerSemantic.__constructionRemovals = { { entity = 700 } }
+  local deduplicated, deduplicateError = guiEarlyBuildCaptureModule.merge(
+    richerSemantic, capture)
+  assert(deduplicated and deduplicateError == nil
+      and #deduplicated.__constructionRemovals == 1
+      and deduplicated.__constructionRemovals[1].entity == 700,
+    "native and semantic construction removal identities were not deduplicated")
+
+  local conflictingSemantic = util.deepCopy(semantic)
+  conflictingSemantic.__constructionRemovals = { { entity = 700, id = 701 } }
+  local conflictResult, conflictError = guiEarlyBuildCaptureModule.merge(
+    conflictingSemantic, semanticOnlyCapture)
+  assert(conflictResult == nil and conflictError:find("conflicting entity ids", 1, true),
+    "conflicting semantic construction removal identities did not fail closed")
+
+  local sparseSemantic = util.deepCopy(semantic)
+  sparseSemantic.__constructionRemovals = { [2] = 700 }
+  local sparseResult, sparseError = guiEarlyBuildCaptureModule.merge(
+    sparseSemantic, semanticOnlyCapture)
+  assert(sparseResult == nil and sparseError:find("malformed", 1, true),
+    "sparse semantic construction removals did not fail closed")
 
   local previousFactoryTake = rawget(_G, "tpf2mp_native_take_build_factory_capture")
   local secondCapture = util.deepCopy(capture)
@@ -2706,6 +3122,340 @@ do
       and earlyQueue.take(capture.correlation) == nil,
     "same-correlation native factory captures were not retained in FIFO order")
   tpf2mp_native_take_build_factory_capture = previousFactoryTake
+
+  local boundedCaptures = {}
+  for generation = 30, 32 do
+    local value = util.deepCopy(capture)
+    value.generation = generation
+    boundedCaptures[#boundedCaptures + 1] = jsonModule.encode(value)
+  end
+  tpf2mp_native_take_build_factory_capture = function()
+    if #boundedCaptures == 0 then return nil end
+    return table.remove(boundedCaptures, 1)
+  end
+  local boundedQueue = guiEarlyBuildCaptureModule.new({
+    maximumTotal = 4, maximumPerCorrelation = 2, maximumGenerationAge = 4,
+  })
+  local boundedDrained, boundedError = boundedQueue.drain(3)
+  local boundedFirst = boundedQueue.take(capture.correlation)
+  local boundedSecond = boundedQueue.take(capture.correlation)
+  assert(boundedDrained == true and boundedError == nil
+      and boundedFirst and boundedFirst.generation == 31
+      and boundedSecond and boundedSecond.generation == 32
+      and boundedQueue.status().evicted == 1
+      and boundedQueue.status().orphaned == 1
+      and boundedQueue.status().queued == 0,
+    "bounded per-correlation factory FIFO did not retire an abandoned prefix")
+  tpf2mp_native_take_build_factory_capture = previousFactoryTake
+
+  local invalidCapture = util.deepCopy(capture)
+  invalidCapture.generation = capture.generation + 20
+  invalidCapture.valid = false
+  invalidCapture.error = "optional native vector is not represented by this builder"
+  nativeCaptures = { jsonModule.encode(invalidCapture) }
+  tpf2mp_native_take_build_factory_capture = function()
+    if #nativeCaptures == 0 then return nil end
+    return table.remove(nativeCaptures, 1)
+  end
+  local fallbackQueue = guiEarlyBuildCaptureModule.new()
+  local fallbackDrained, fallbackDrainError = fallbackQueue.drain(2)
+  local invalidQueued = fallbackQueue.take(capture.correlation)
+  assert(fallbackDrained == true and fallbackDrainError == nil
+      and invalidQueued and invalidQueued.__validationError
+      and fallbackQueue.status().invalid == 1,
+    "correlated decoder limitation became a queue-level build rejection")
+  tpf2mp_native_take_build_factory_capture = previousFactoryTake
+end
+
+do
+  -- A compound station edit can emit several factory/Add/visitor records with
+  -- one GUI correlation. Each suppression must consume the corresponding
+  -- native capture in FIFO order; overwriting by correlation merged the last
+  -- command into the first event and left the remainder without evidence.
+  local pending = { proposalSnapshot = { construction = true } }
+  local nativeCaptures = {
+    { generation = 501, correlation = 77 },
+    { generation = 502, correlation = 77 },
+  }
+  local taken, failures = {}, 0
+  local gui = {
+    frames = 30, nativeBuildCapture = {},
+    proposalSnapshotHasConstructionChange = function() return true end,
+  }
+  local runtime = guiBuildEventQueueRuntimeModule.new({
+    gui = gui,
+    correlation = {
+      lookup = function() return pending end,
+      validatePending = function() return true end,
+    },
+    earlyCapture = {
+      drain = function() return false end,
+      take = function()
+        local value = table.remove(nativeCaptures, 1)
+        taken[#taken + 1] = value and value.generation or -1
+        return value
+      end,
+    },
+    attachEvidence = function(value, capture)
+      local result = util.deepCopy(value.proposalSnapshot)
+      result.lastNativeGeneration = capture.generation
+      value.proposalSnapshot = result
+      value.nativeFactoryCapture = capture
+      value.nativeFactoryGeneration = capture.generation
+      return value, nil, true
+    end,
+    drainEvents = function()
+      return {
+        { generation = 601, correlation = 77, tag = 15 },
+        { generation = 602, correlation = 77, tag = 15 },
+      }
+    end,
+    captureFailure = function() failures = failures + 1; return "failed" end,
+    finish = function() return "finished" end,
+  })
+  local handled, result = runtime.process(2, {
+    sampleVersion = 3, factoryCaptureAvailable = true, dropped = 0,
+  }, { activeCompanyCid = "company:1" })
+  assert(handled == true and result == "finished" and failures == 0
+      and taken[1] == 501 and taken[2] == 502 and #nativeCaptures == 0
+      and gui.pendingNetworkBuildSuppression.suppressedCalls == 2
+      and gui.pendingNetworkBuildSuppression.pending.proposalSnapshot.lastNativeGeneration == 502
+      and gui.pendingNetworkBuildSuppression.nativeFactoryCapture.generation == 502,
+    "same-correlation compound suppressions did not consume native captures FIFO")
+end
+
+do
+  -- An identity-bound native decoder gap must retain the old exact GUI path.
+  -- Queue overflow/correlation failures still use the fail-closed callback;
+  -- merely learning less than expected about an optional native sub-vector
+  -- must not regress every builder family at once.
+  local pending = { proposalSnapshot = { streetProposal = {} } }
+  local failures, finished = 0, 0
+  local gui = {
+    frames = 20,
+    nativeBuildCapture = {},
+    proposalSnapshotHasConstructionChange = function() return false end,
+  }
+  local runtime = guiBuildEventQueueRuntimeModule.new({
+    gui = gui,
+    correlation = {
+      lookup = function(correlation)
+        assert(correlation == 701)
+        return pending
+      end,
+      validatePending = function(value, event, companyCid)
+        assert(value == pending and event.generation == 91 and companyCid == "company:1")
+        return true
+      end,
+    },
+    earlyCapture = {
+      drain = function() return false end,
+      take = function(correlation)
+        assert(correlation == 701)
+        return { generation = 92, correlation = correlation }
+      end,
+    },
+    attachEvidence = function(value)
+      assert(value == pending)
+      return nil, "unsupported optional native vector"
+    end,
+    drainEvents = function()
+      return { { generation = 91, correlation = 701 } }
+    end,
+    captureFailure = function()
+      failures = failures + 1
+      return "failed"
+    end,
+    finish = function()
+      finished = finished + 1
+      return "finished"
+    end,
+  })
+  local handled, result = runtime.process(1, {
+    sampleVersion = 3, factoryCaptureAvailable = true,
+    -- A process-lifetime historical drop was already delivered by the F1
+    -- drain record. It must not poison every later build in this session.
+    factoryDropped = 7, dropped = 0,
+  }, { activeCompanyCid = "company:1" })
+  assert(handled == true and result == "finished" and failures == 0 and finished == 1
+      and pending.nativeFactoryCaptureError == "unsupported optional native vector"
+      and gui.nativeBuildCapture.earlyCaptureFallbacks == 1
+      and gui.pendingNetworkBuildSuppression.pending == pending,
+    "identity-bound native decoder gap did not retain exact GUI fallback")
+end
+
+do
+  -- Reproduce the live ordering that regressed track-over-road crossings:
+  -- native suppression attaches to the preview first, then builder.apply
+  -- upgrades that correlation to an exact GUI envelope. This transition is
+  -- shared by every BuildProposal family and must never discard evidence.
+  for _, family in ipairs({
+    "street", "track", "mixed-transport", "edge-object", "construction",
+  }) do
+    local capture = {
+      generation = 801, correlation = 901, callerType = family .. "-builder",
+    }
+    local preview = {
+      correlationId = 901, companyCid = "company:1", sourceId = "builder",
+      family = family, frame = 40, exact = false,
+      proposalSnapshot = { __nativeTopology = { marker = "preview-native" } },
+      nativeFactoryCapture = capture, nativeFactoryGeneration = 801,
+    }
+    local gui = {
+      frames = 40, snapshot = { networkMode = "network" },
+      nativeBuildCapture = {}, nativeBuildApplySettleFrames = 4,
+      pendingNetworkBuildSuppression = {
+        pending = preview, correlationId = 901, nativeFactoryCapture = capture,
+        detectedFrame = 40, suppressed = 1, suppressedCalls = 1,
+        firstGeneration = 811,
+      },
+      proposalSnapshotHasChange = function() return true end,
+      proposalSnapshotHasConstructionChange = function()
+        return family == "construction"
+      end,
+    }
+    local queued, failures, registered = nil, 0, nil
+    local runtime = guiBuildCaptureRuntimeModule.new({
+      gui = gui,
+      sampler = {
+        sample = function() return 1, nil, { sampleVersion = 3 } end,
+        drain = function() return {} end,
+      },
+      correlation = {
+        begin = function() error("explicit metadata expected") end,
+        register = function(value) registered = value; return true end,
+      },
+      earlyCapture = {
+        drain = function() return false end,
+        take = function() return nil end,
+        attach = function(value, native)
+          assert(native == capture and value.proposalSnapshot.guiOnly == family)
+          local merged = util.deepCopy(value.proposalSnapshot)
+          merged.__nativeTopology = { marker = "exact-native", family = family }
+          value.proposalSnapshot = merged
+          value.nativeFactoryCapture = native
+          value.nativeFactoryGeneration = native.generation
+          value.nativeFactoryCallerType = native.callerType
+          return value, nil, true
+        end,
+      },
+      queueCapture = function(value) queued = value; return true end,
+      captureFailure = function() failures = failures + 1; return false end,
+      renderGui = function() end,
+    })
+    local accepted = runtime.arm({ guiOnly = family }, "company:1", "builder",
+      true, true, {
+        correlationId = 901, toolGeneration = 1, family = family,
+      })
+    assert(accepted == true and failures == 0 and registered == queued
+        and queued.exact == true and queued.suppressedCalls == 1
+        and queued.nativeSuppressionGeneration == 811
+        and queued.nativeFactoryCapture == capture
+        and queued.proposalSnapshot.__nativeTopology.marker == "exact-native"
+        and queued.proposalSnapshot.__nativeTopology.family == family
+        and gui.nativeBuildCapture.exactEvidenceUpgrades == 1
+        and gui.pendingNetworkBuildSuppression == nil,
+      "exact " .. family .. " apply downgraded its native-attested preview")
+  end
+end
+
+do
+  -- If an exact envelope genuinely conflicts with native evidence that was
+  -- already accepted on its preview, discarding the evidence is unsafe. The
+  -- click must remain suppressed and fail before canonical submission.
+  local capture = { generation = 921, correlation = 922 }
+  local gui = {
+    frames = 50, snapshot = { networkMode = "network" },
+    nativeBuildCapture = {}, nativeBuildApplySettleFrames = 4,
+    pendingNetworkBuildSuppression = {
+      pending = {
+        correlationId = 922, exact = false,
+        proposalSnapshot = { __nativeTopology = { marker = "attested" } },
+        nativeFactoryCapture = capture,
+      },
+      correlationId = 922, nativeFactoryCapture = capture,
+      detectedFrame = 50, suppressed = 1,
+    },
+    proposalSnapshotHasChange = function() return true end,
+    proposalSnapshotHasConstructionChange = function() return false end,
+  }
+  local failures, queued = 0, 0
+  local runtime = guiBuildCaptureRuntimeModule.new({
+    gui = gui,
+    sampler = { sample = function() return 1 end, drain = function() return {} end },
+    correlation = { register = function() return true end },
+    earlyCapture = {
+      drain = function() return false end, take = function() return nil end,
+      attach = function() return nil, "native/exact topology conflict" end,
+    },
+    queueCapture = function() queued = queued + 1 end,
+    captureFailure = function(message, details)
+      failures = failures + 1
+      assert(message:find("disagrees", 1, true)
+          and details.error == "native/exact topology conflict")
+      return false
+    end,
+    renderGui = function() end,
+  })
+  local accepted = runtime.arm({ guiOnly = true }, "company:1", "builder", true,
+    true, { correlationId = 922, toolGeneration = 1, family = "mixed-transport" })
+  assert(accepted == false and failures == 1 and queued == 0
+      and gui.nativeBuildCapture.exactEvidenceUpgradeFailures == 1
+      and gui.pendingNetworkBuildSuppression == nil,
+    "conflicting exact apply silently downgraded to GUI-only evidence")
+end
+
+do
+  -- Cover the opposite callback order too: builder.apply is already exact
+  -- when the native suppression event is drained. Attachment is idempotent,
+  -- and finish observes the same evidence-bearing pending object.
+  local capture = { generation = 1001, correlation = 1002 }
+  local pending = {
+    correlationId = 1002, companyCid = "company:1", exact = true,
+    proposalSnapshot = { guiOnly = true },
+  }
+  local attachCalls, failures, finished = 0, 0, 0
+  local gui = {
+    frames = 60, nativeBuildCapture = {},
+    proposalSnapshotHasConstructionChange = function() return false end,
+  }
+  local runtime = guiBuildEventQueueRuntimeModule.new({
+    gui = gui,
+    correlation = {
+      lookup = function() return pending end,
+      validatePending = function() return true end,
+    },
+    earlyCapture = {
+      drain = function() return false end,
+      take = function() return capture end,
+    },
+    attachEvidence = function(value, native)
+      attachCalls = attachCalls + 1
+      if value.nativeFactoryCapture == native
+        and value.proposalSnapshot.__nativeTopology then
+        return value, nil, false
+      end
+      value.proposalSnapshot.__nativeTopology = { marker = "native" }
+      value.nativeFactoryCapture = native
+      value.nativeFactoryGeneration = native.generation
+      return value, nil, true
+    end,
+    drainEvents = function()
+      return { { generation = 1101, correlation = 1002, tag = 15 } }
+    end,
+    captureFailure = function() failures = failures + 1; return false end,
+    finish = function()
+      finished = finished + 1
+      assert(gui.pendingNetworkBuildSuppression.pending == pending)
+      return true
+    end,
+  })
+  local handled, result = runtime.process(1, { sampleVersion = 3 },
+    { activeCompanyCid = "company:1" })
+  assert(handled == true and result == true and failures == 0 and finished == 1
+      and attachCalls == 2 and pending.nativeFactoryCapture == capture
+      and pending.proposalSnapshot.__nativeTopology.marker == "native",
+    "native-event-after-exact ordering lost or duplicated native evidence")
 end
 
 do
@@ -2748,6 +3498,11 @@ do
   assert(eventError == nil and #events == 1 and events[1].generation == 43
       and events[1].correlation == 77 and events[1].tag == 15,
     "native suppressed-build correlation event did not preserve its identity")
+  nativeEvents = { "S1|44|77|15", "S1|45|77|15" }
+  local fullEvents, fullError = sampler.drain(2)
+  assert(fullError == nil and #fullEvents == 2
+      and fullEvents[1].generation == 44 and fullEvents[2].generation == 45,
+    "a full-but-drained suppressed-build queue was misreported as overflow")
   nativeEvents = { "F1|suppressed-build-queue-overflow|65" }
   local overflowEvents, overflowError = sampler.drain(4)
   assert(overflowEvents == nil
@@ -2804,6 +3559,28 @@ do
   }, "company:1")
   assert(valid == true and armed[#armed] == tostring(stationMetadata.correlationId),
     "station preview was not bound to its native correlation token")
+
+  gui.frames = 10000
+  assert(correlation.lookup(stationMetadata.correlationId) == stationPending
+      and correlation.validatePending(stationPending, {
+        correlation = stationMetadata.correlationId, tag = 15,
+      }, "company:1") == true
+      and correlation.validateApply(stationMetadata, "constructionBuilder", station, "company:1") == true,
+    "a stationary active ghost expired solely because many render frames elapsed")
+  assert(correlation.validatePending(stationPending, {
+      correlation = stationMetadata.correlationId, tag = 15,
+    }, "company:2") == false,
+    "active preview retention bypassed company validation")
+  local replacement = correlation.begin(station, "company:1", "constructionBuilder", "station-template")
+  assert(correlation.lookup(stationMetadata.correlationId) == nil
+      and correlation.validateApply(stationMetadata, "constructionBuilder", station, "company:1") == false,
+    "superseded preview kept the active ghost lifetime exemption")
+  local replacementPending = { proposalSnapshot = station }
+  for key, value in pairs(replacement) do replacementPending[key] = value end
+  correlation.register(replacementPending)
+  correlation.consume(replacement.correlationId)
+  assert(correlation.lookup(replacement.correlationId) == nil,
+    "consumed active preview was retained for a duplicate click")
 
   gui.frames = 11
   local track = { streetProposal = { edgesToAdd = { ["1"] = {
@@ -2891,6 +3668,9 @@ do
   correlation.invalidate("test-cancel", { clearConstruction = true })
   assert(armed[#armed] == "0" and gui.builderContext == nil,
     "build correlation invalidation did not disarm the native hook")
+  gui.frames = 20000
+  assert(correlation.validateApply(replacement, "constructionBuilder", station, "company:1") == false,
+    "cancelled generation kept the active ghost lifetime exemption")
   tpf2mp_native_arm_build_correlation = previousArm
 end
 
@@ -5133,6 +5913,9 @@ do
         and secondResult.rawOperationCapture == true
         and #normalizedKinds == 1 and normalizedKinds[1] == "line.create",
       "dependent line updates were normalized before the create binding existed")
+    local originWork = controller.originAppliedWorkState()
+    assert(originWork.pending == true and originWork.deferredCount == 2,
+      "origin-ahead queue was not exposed to checkpoint batching")
     assert(util.tableCount(current.world.originResidueCustody) == 2,
       "raw origin-applied queue was not persisted as reload-detectable custody")
 
@@ -5167,6 +5950,98 @@ do
   end, debug.traceback)
   bridgeModule.emit, bridgeModule.poll = originalEmit, originalPoll
   if not ok then error(failure, 0) end
+end
+
+do
+  local now, work = 100, { pending = true }
+  local exports, diagnostics = {}, {}
+  local current = {
+    tick = 50, networkMode = "network",
+    world = { checkpointConsensus = { byBoundary = {} } },
+  }
+  local runtime = networkCheckpointBatchModule.new({
+    getState = function() return current end,
+    exportCheckpoint = function(boundary, reason, proposalId)
+      exports[#exports + 1] = {
+        boundary = boundary, reason = reason, proposalId = proposalId,
+      }
+      return true, { boundarySeq = boundary }
+    end,
+    originWorkState = function() return work end,
+    diagnosticLog = function(name, detail)
+      diagnostics[#diagnostics + 1] = { name = name, detail = detail }
+    end,
+    wallTime = function() return now end,
+    quietWallSeconds = 1,
+    quietPasses = 2,
+  })
+  runtime.schedule(16, "operation-consensus:test:player2:15", "test:player2:15")
+  assert(runtime.maintain() == false and #exports == 0,
+    "checkpoint batch exported while an optimistic edit was queued")
+  work.pending, now = false, 101
+  assert(runtime.maintain() == false and runtime.maintain() == true
+      and #exports == 1 and exports[1].boundary == 16,
+    "checkpoint batch did not export after a quiescent debounce")
+
+  runtime.schedule(20, "operation-consensus:test:player2:19", "test:player2:19")
+  current.world.checkpointConsensus.byBoundary["20"] = {
+    boundarySeq = 20, status = "pending", exported = true,
+  }
+  assert(runtime.supersede({
+    type = "operation.execute", supersedesCheckpointBoundarySeq = 20,
+    transaction = { kind = "line.update", transactionId = "operation:next" },
+  }, 21) == true and runtime.pending() == nil
+      and current.world.checkpointConsensus.byBoundary["20"].status == "superseded"
+      and current.world.checkpointConsensus.byBoundary["20"].supersededBySeq == 21,
+    "new optimistic operation did not supersede the intermediate checkpoint")
+  assert(diagnostics[#diagnostics].name == "checkpoint-batch-superseded",
+    "checkpoint supersession was not left in diagnostics")
+end
+
+do
+  -- Registration is derived only after the final quiescent operation
+  -- checkpoint.  An intermediate operation outcome (which a later vanilla
+  -- line edit may supersede) must not enqueue an authored registration round.
+  local registered, cancelled = {}, {}
+  local state = { world = { operations = { byId = {
+    ["operation:line-final"] = {
+      companyCid = "company:1",
+      transaction = { kind = "line.update", data = { lineCid = "line:event:1" } },
+      result = { outputs = { { cid = "line:event:1" } } },
+    },
+    ["operation:line-delete"] = {
+      companyCid = "company:1",
+      transaction = { kind = "line.delete", data = { targetCid = "line:event:2" } },
+      result = { outputs = {} },
+    },
+  } } } }
+  local controller = { cancelLineRegistration = function(cid)
+    cancelled[#cancelled + 1] = cid
+  end }
+  local function register(transaction, outputCid)
+    registered[#registered + 1] = { transaction = transaction, outputCid = outputCid }
+  end
+  assert(serviceRegistrationOperationCheckpoint.after({
+    success = true, reason = "operation-consensus:operation:line-final",
+    proposalId = "operation:line-final",
+  }, state, controller, register) == true
+      and #registered == 1 and registered[1].outputCid == "line:event:1",
+    "final line-operation checkpoint did not trigger exactly one registration")
+  assert(serviceRegistrationOperationCheckpoint.after({
+    success = true, reason = "operation-consensus:operation:line-delete",
+    proposalId = "operation:line-delete",
+  }, state, controller, register) == true
+      and cancelled[1] == "line:event:2",
+    "final line-delete checkpoint did not cancel stale registration work")
+  assert(serviceRegistrationOperationCheckpoint.after({
+    success = true, reason = "physical-consensus:proposal:1",
+    proposalId = "operation:line-final",
+  }, state, controller, register) == false
+      and serviceRegistrationOperationCheckpoint.after({
+        success = false, reason = "operation-consensus:operation:line-final",
+        proposalId = "operation:line-final",
+      }, state, controller, register) == false,
+    "non-operation or failed checkpoints triggered service registration")
 end
 
 do

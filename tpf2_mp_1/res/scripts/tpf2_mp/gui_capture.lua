@@ -742,7 +742,35 @@ function M.install(gui, env)
     local new = placement.transform
     if not old or type(new) ~= "table" then return nil, "construction transform is unavailable" end
   
-    local seen, nodeCount, edgeCount = {}, 0, 0
+    local seen, rebasedObjects, objectError, nodeCount, edgeCount = {}, {}, nil, 0, 0
+    local function transformObjects(container)
+      if type(container) ~= "table" then return end
+      for _, entry in pairs(container) do
+        if type(entry) == "table" and not rebasedObjects[entry] then
+          rebasedObjects[entry] = true
+          local instance = entry.modelInstance
+          local matrix = type(instance) == "table" and (instance.transf or instance.transform)
+          if matrix ~= nil then
+            local values = gui.previewMatrix(matrix)
+            if not values then objectError = "projected edge-object transform is incomplete"; return end
+            -- Model transforms are world-space too. Moving only the node graph
+            -- left airfield terminals at the previous cached ghost position.
+            for column = 0, 3 do
+              local start = 1 + column * 4
+              local point = { x = values[start], y = values[start + 1], z = values[start + 2] }
+              if not gui.transformPreviewPoint(point, old, new, column < 3) then
+                objectError = "projected edge-object transform cannot be rebased"; return
+              end
+              for offset, component in ipairs({ point.x, point.y, point.z }) do
+                local index = start + offset - 1
+                if matrix[tostring(index)] ~= nil then matrix[tostring(index)] = component
+                else matrix[index] = component end
+              end
+            end
+          end
+        end
+      end
+    end
     local function transformEntries(container, nodes)
       if type(container) ~= "table" then return end
       for key, entry in pairs(container) do
@@ -767,13 +795,15 @@ function M.install(gui, env)
       for key, nested in pairs(value) do
         local name = tostring(key)
         if name == "nodesToAdd" or name == "addedNodes" then transformEntries(nested, true)
-        elseif name == "edgesToAdd" or name == "addedSegments" then transformEntries(nested, false) end
+        elseif name == "edgesToAdd" or name == "addedSegments" then transformEntries(nested, false)
+        elseif name == "edgeObjectsToAdd" then transformObjects(nested) end
       end
       for key, nested in pairs(value) do
         if key ~= "__type" and key ~= "__truncated" then walk(nested, depth + 1) end
       end
     end
     walk(result, 0)
+    if objectError then return nil, objectError end
     -- Portable constructions do not necessarily own a transport graph.  Stock
     -- decorative assets, for example, produce an ASSET_GROUP from the named
     -- .con and have no proposal nodes or edges to move.  Their authoritative

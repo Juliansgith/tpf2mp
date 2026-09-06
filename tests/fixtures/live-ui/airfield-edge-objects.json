@@ -1,0 +1,1483 @@
+{
+  "edgeObjectsToAdd": [
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.10642679035663605,
+          -0.9943205118179321,
+          0,
+          0,
+          0.9943205118179321,
+          0.10642679035663605,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2257.286376953125,
+          -954.410400390625,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -33
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.2886694669723511,
+          0.9574288129806519,
+          0,
+          0,
+          -0.9574288129806519,
+          0.2886694669723511,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2614.89892578125,
+          -921.0186157226562,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -32
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.9956689476966858,
+          -0.0929693877696991,
+          0,
+          0,
+          0.0929693877696991,
+          0.9956689476966858,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2311.426025390625,
+          -933.6622924804688,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -36
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.995668888092041,
+          -0.0929703339934349,
+          0,
+          0,
+          0.0929703339934349,
+          0.995668888092041,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2336.31787109375,
+          -931.3380737304688,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -37
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.9956689476966858,
+          -0.09296964108943939,
+          0,
+          0,
+          0.09296964108943939,
+          0.9956689476966858,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2386.101318359375,
+          -926.6895751953125,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -39
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.9956689476966858,
+          -0.09296964108943939,
+          0,
+          0,
+          0.09296964108943939,
+          0.9956689476966858,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2435.884765625,
+          -922.0410766601562,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -41
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.995668888092041,
+          -0.09297008067369461,
+          0,
+          0,
+          0.09297008067369461,
+          0.995668888092041,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2460.7763671875,
+          -919.7168579101562,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -42
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.9956689476966858,
+          -0.09296964108943939,
+          0,
+          0,
+          0.09296964108943939,
+          0.9956689476966858,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2485.668212890625,
+          -917.392578125,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -43
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.995668888092041,
+          -0.09297008067369461,
+          0,
+          0,
+          0.09297008067369461,
+          0.995668888092041,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2510.559814453125,
+          -915.068359375,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -44
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.9956689476966858,
+          -0.09296964108943939,
+          0,
+          0,
+          0.09296964108943939,
+          0.9956689476966858,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2535.45166015625,
+          -912.7440795898438,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -45
+    },
+    {
+      "__type": "userdata",
+      "category": 2,
+      "left": false,
+      "modelInstance": {
+        "__type": "userdata",
+        "modelId": 2177,
+        "transf": [
+          0.9956689476966858,
+          -0.0929693877696991,
+          0,
+          0,
+          0.0929693877696991,
+          0.9956689476966858,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -2560.34326171875,
+          -910.4198608398438,
+          5.453937530517578,
+          1
+        ]
+      },
+      "name": "Coleford Airport",
+      "oneWay": false,
+      "playerEntity": 62328,
+      "segmentEntity": -46
+    }
+  ],
+  "edgeObjectsToRemove": {},
+  "edgesToAdd": [
+    {
+      "comp": {
+        "node0": -1,
+        "node1": -2,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 20,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 20,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -26,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 4,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -2,
+        "node1": -3,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 320,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 320,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -27,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 4,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -3,
+        "node1": -4,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 20,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 20,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -28,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 4,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -5,
+        "node1": -1,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 19,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 19,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -29,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 4,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -4,
+        "node1": -6,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 19,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 19,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -30,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 4,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -4,
+        "node1": -7,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 0,
+          "y": -20,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 0,
+          "y": -20,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -31,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -7,
+        "node1": -8,
+        "objects": {
+          "1": {
+            "1": -2,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 0,
+          "y": -47.0999985,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -47.0999985,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -32,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -9,
+        "node1": -10,
+        "objects": {
+          "1": {
+            "1": -1,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -47.0999985,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 0,
+          "y": 47.0999985,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -33,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -10,
+        "node1": -1,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 0,
+          "y": 20,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 0,
+          "y": 20,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -34,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -11,
+        "node1": -9,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -35,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -12,
+        "node1": -11,
+        "objects": {
+          "1": {
+            "1": -3,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -36,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -13,
+        "node1": -12,
+        "objects": {
+          "1": {
+            "1": -4,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -37,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -14,
+        "node1": -13,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -38,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -15,
+        "node1": -14,
+        "objects": {
+          "1": {
+            "1": -5,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -39,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -16,
+        "node1": -15,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -40,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -17,
+        "node1": -16,
+        "objects": {
+          "1": {
+            "1": -6,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -41,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -18,
+        "node1": -17,
+        "objects": {
+          "1": {
+            "1": -7,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -42,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -19,
+        "node1": -18,
+        "objects": {
+          "1": {
+            "1": -8,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -43,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -20,
+        "node1": -19,
+        "objects": {
+          "1": {
+            "1": -9,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -44,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -21,
+        "node1": -20,
+        "objects": {
+          "1": {
+            "1": -10,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -45,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -8,
+        "node1": -21,
+        "objects": {
+          "1": {
+            "1": -11,
+            "2": 2,
+            "__type": "table"
+          },
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "tangent1": {
+          "x": -25,
+          "y": 0,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -46,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -15,
+        "node1": -22,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 0,
+          "y": -40,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 0,
+          "y": -40,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -47,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -23,
+        "node1": -13,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 0,
+          "y": 20,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 0,
+          "y": 20,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -48,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -24,
+        "node1": -23,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 0,
+          "y": 10,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 0,
+          "y": 10,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -49,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    },
+    {
+      "comp": {
+        "node0": -25,
+        "node1": -24,
+        "objects": {
+          "__type": "table"
+        },
+        "tangent0": {
+          "x": 0,
+          "y": 15,
+          "z": 0
+        },
+        "tangent1": {
+          "x": 0,
+          "y": 15,
+          "z": 0
+        },
+        "type": 0,
+        "typeIndex": -1
+      },
+      "entity": -50,
+      "playerOwned": {
+        "player": 62328
+      },
+      "streetEdge": {
+        "bus": false,
+        "streetType": 7,
+        "tramTrackType": 0
+      },
+      "type": 0
+    }
+  ],
+  "edgesToRemove": {},
+  "nodesToAdd": [
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3233.04785,
+          "y": -1515.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -1
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3213.04785,
+          "y": -1515.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -2
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2893.04785,
+          "y": -1515.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -3
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2873.04785,
+          "y": -1515.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -4
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3252.04785,
+          "y": -1515.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -5
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2854.04785,
+          "y": -1515.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -6
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2873.04785,
+          "y": -1536.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -7
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2903.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -8
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3203.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -9
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3233.04785,
+          "y": -1536.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -10
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3178.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -11
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3153.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -12
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3128.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -13
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3103.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -14
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3078.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -15
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3053.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -16
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3028.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -17
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3003.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -18
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2978.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -19
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2953.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -20
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -2928.04785,
+          "y": -1556.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -21
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3078.04785,
+          "y": -1604.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -22
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3128.04785,
+          "y": -1576.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -23
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3128.04785,
+          "y": -1586.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -24
+    },
+    {
+      "comp": {
+        "flags": 32512,
+        "position": {
+          "x": -3128.04785,
+          "y": -1604.84546,
+          "z": 16.9520264
+        },
+        "type": 2
+      },
+      "entity": -25
+    }
+  ],
+  "nodesToRemove": {},
+  "schemaVersion": 1
+}

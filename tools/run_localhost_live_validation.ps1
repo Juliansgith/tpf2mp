@@ -6,12 +6,14 @@ param(
     [ValidateRange(30, 3600)][int]$ClockRunTicks = 30,
     [ValidateRange(120, 3600)][int]$TimeoutSeconds = 900,
     [ValidateRange(30, 600)][int]$ConsensusTimeoutSeconds = 180,
-    [ValidateSet('full', 'connected-terminal', 'connected-road-depot', 'connected-tram-depot',
+    [ValidateSet('full', 'connected-terminal', 'connected-road-depot',
+        'connected-road-depot-compound', 'connected-tram-depot',
         'second-station', 'air-route', 'tram-route')]
     [string]$ValidationSlice = 'full',
     [string]$GameExecutable,
     [string]$LocalModsPath,
     [string]$StartingSave,
+    [string]$LiveUiSuite,
     [string]$RestorePlan,
     [string]$Player1StartingSave,
     [string]$Player2StartingSave,
@@ -42,6 +44,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($LiveUiSuite -and (-not $ManualOnly -or -not $InteractiveAfterValidation -or $KeepGamesOpen -or
+        -not $StartingSave -or -not $Session.StartsWith('localhost-ui-'))) {
+    throw 'LiveUiSuite requires a pinned save, a localhost-ui- session, ManualOnly and InteractiveAfterValidation; KeepGamesOpen is forbidden.'
+}
+$liveUiToken = if ($LiveUiSuite) { [guid]::NewGuid().ToString('N') } else { '' }
+$previousLiveUiToken = $env:TPF2MP_LIVE_UI_TOKEN
+$previousLiveUiPids = $env:TPF2MP_LIVE_UI_PIDS
 if ($ManualOnly -and $OperationalCaptureLab) {
     throw 'ManualOnly and OperationalCaptureLab are mutually exclusive.'
 }
@@ -255,6 +264,9 @@ function Set-LocalhostValidationSettings([string]$Path) {
     )
     if ($LocalhostPerformanceProfile -eq 'Balanced') {
         $updated = [regex]::Replace($updated,
+            '(?m)^(?<prefix>[ \t]*screenMode[ \t]*=[ \t]*)"[A-Z]+"(?<suffix>[ \t]*,)',
+            '${prefix}"WINDOWED"${suffix}')
+        $updated = [regex]::Replace($updated,
             '(?m)^(?<prefix>[ \t]*vsync[ \t]*=[ \t]*)(true|false)(?<suffix>[ \t]*,)',
             '${prefix}true${suffix}')
         $updated = [regex]::Replace($updated,
@@ -309,6 +321,7 @@ function Start-Companion([string]$Role, [string[]]$Arguments, [string]$LogBase) 
 }
 
 function Start-GamePeer([string]$Peer, [string]$BridgePath) {
+    $env:TPF2MP_LIVE_UI_TOKEN = $liveUiToken
     $env:SteamAppId = [string]$script:Tpf2AppId
     $env:SteamGameId = [string]$script:Tpf2AppId
     $env:TPF2MP_PEER_ID = $Peer
@@ -385,6 +398,10 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
 }
 
 function Set-LocalhostLabWindowLayout {
+    if ($LiveUiSuite) {
+        Write-Host 'UI suite retains the launch-time windowed viewport (no post-load render resize).'
+        return
+    }
     $script:windowLayout = Set-Tpf2mpLocalhostWindowLayout `
         $script:peer1Game $script:peer2Game $LocalhostPerformanceProfile
     if ($script:windowLayout) {
@@ -404,6 +421,10 @@ function Start-RecoveryWatcher([string]$Peer, [string]$BridgePath, [Diagnostics.
         '-MatchContentProfilePath', $matchContentProfilePath,
         '-BundleRoot', $projectRoot
     )
+    # One physical input owner per UI fixture. Recovery/save scenarios must
+    # explicitly drive their own controls; a background fallback can resize
+    # windows or type into an unrelated construction/catalogue dialog.
+    if ($LiveUiSuite) { $arguments += '-DisableUiSaveFallback' }
     $watcher = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
         -ArgumentList (ConvertTo-Tpf2mpCommandLine $arguments) -PassThru -WindowStyle Hidden `
         -RedirectStandardOutput $stdout -RedirectStandardError $stderr
@@ -735,7 +756,12 @@ function Suspend-LoadedWorldForPeerHandoff(
     # Escape is the only pinned, process-local hard pause available before the
     # shared Lua clock may safely bootstrap.  Keep its menu open until both
     # worlds have accepted the ordered initial pause.
-    Invoke-GameInput $GameProcess 'escape'
+    if ($LiveUiSuite) {
+        $uiPython = if ($env:TPF2MP_PYTHON) { $env:TPF2MP_PYTHON } else { (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
+        & $uiPython (Join-Path $PSScriptRoot 'live_ui_input.py') --pid $GameProcess.Id --key escape `
+            --receipt (Join-Path $runRoot "$Peer-ui-handoff-pause.json")
+        if ($LASTEXITCODE -ne 0) { throw 'UI suite could not pause the exact loaded world.' }
+    } else { Invoke-GameInput $GameProcess 'escape' }
     $loadedWorldHandoffPauseMenus[$Peer] = $true
     Write-Host "$Peer loaded world is frozen at its process-local handoff boundary."
 }
@@ -747,7 +773,12 @@ function Release-LoadedWorldHandoffPauses {
         if ($loadedWorldHandoffPauseMenus[$entry.Peer] -ne $true) { continue }
         [void](Assert-Tpf2mpGameProcessHealthy -GameProcess $entry.Game `
             -Context "before releasing the $($entry.Peer) load-handoff pause menu")
-        Invoke-GameInput $entry.Game 'escape'
+        if ($LiveUiSuite) {
+            $uiPython = if ($env:TPF2MP_PYTHON) { $env:TPF2MP_PYTHON } else { (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
+            & $uiPython (Join-Path $PSScriptRoot 'live_ui_input.py') --pid $entry.Game.Id --key escape `
+                --receipt (Join-Path $runRoot "$($entry.Peer)-ui-handoff-resume.json")
+            if ($LASTEXITCODE -ne 0) { throw 'UI suite could not release the exact handoff menu.' }
+        } else { Invoke-GameInput $entry.Game 'escape' }
         $loadedWorldHandoffPauseMenus[$entry.Peer] = $false
         $released += 1
     }
@@ -1630,6 +1661,7 @@ try {
         '--completion-timeout', [string]$ConsensusTimeoutSeconds,
         '--manifest', $manifestPath
     )
+    if ($LiveUiSuite) { $hostArgs += @('--automatic-recovery-interval', '0') }
     if ($restorePlanPath) { $hostArgs += @('--restore-plan', $restorePlanPath) }
     $clientArgs = @(
         'client', '127.0.0.1', '--session', $Session, '--peer', 'player2',
@@ -1659,16 +1691,30 @@ try {
     & $injector --pid $peer1Game.Id --dll $hook --wait-ms 60000
     if ($LASTEXITCODE -ne 0) { throw "Native hook injection failed for PID $($peer1Game.Id)" }
 
+    # UI qualification follows host-first player flow. Finish the host's
+    # native save-manager transition before a second renderer/cache owner
+    # exists; the loaded host stays frozen at the existing handoff barrier.
+    $uiHostLoaded = $false
+    if ($LiveUiSuite -and $ManualOnly) {
+        $env:TPF2MP_LIVE_UI_PIDS = "$($peer1Game.Id)"
+        [IO.File]::WriteAllText((Join-Path $peer1Bridge 'launcher\start'),
+            'start', [Text.UTF8Encoding]::new($false))
+        Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+        $uiHostLoaded = $true
+    }
     Set-StagedStartingSaveNewest 'player2'
     $peer2Game = Start-GamePeer 'player2' $peer2Bridge
     Wait-MenuBootstrap $peer2Game 'player2' $peer2Bridge
     & $injector --pid $peer2Game.Id --dll $hook --wait-ms 60000
     if ($LASTEXITCODE -ne 0) { throw "Native hook injection failed for PID $($peer2Game.Id)" }
     Write-Host "Started and staged exact game PIDs $($peer1Game.Id) (host) and $($peer2Game.Id) (client)."
+    if ($LiveUiSuite) { $env:TPF2MP_LIVE_UI_PIDS = "$($peer1Game.Id),$($peer2Game.Id)" }
     if ($ManualOnly) {
-        [IO.File]::WriteAllText((Join-Path $peer1Bridge 'launcher\start'),
-            'start', [Text.UTF8Encoding]::new($false))
-        Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+        if (-not $uiHostLoaded) {
+            [IO.File]::WriteAllText((Join-Path $peer1Bridge 'launcher\start'),
+                'start', [Text.UTF8Encoding]::new($false))
+            Start-GameWorldViaConsole $peer1Game 'player1' (Get-StagedStartingSave 'player1')
+        }
         [IO.File]::WriteAllText((Join-Path $peer2Bridge 'launcher\start'),
             'start', [Text.UTF8Encoding]::new($false))
         Start-GameWorldViaConsole $peer2Game 'player2' (Get-StagedStartingSave 'player2')
@@ -1891,6 +1937,7 @@ try {
     $sliceProofCheck = @{
         'connected-terminal' = 'connected-terminal-created-exact-connected-graph'
         'connected-road-depot' = 'connected-road-depot-bus-checkpoint-consensus'
+        'connected-road-depot-compound' = 'connected-road-depot-compound-created-complete-graph'
         'connected-tram-depot' = 'connected-tram-depot-created-complete-graph'
         'second-station' = 'second-station-collateral-retired'
         'air-route' = 'air-route-vehicle-assigned'
@@ -2106,10 +2153,17 @@ try {
         $labStatus | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $labStatusPath -Encoding UTF8
         Write-Host "MANUAL LAB READY for up to $InteractiveMinutes minutes: player1 PID $($peer1Game.Id), player2 PID $($peer2Game.Id)"
         Write-Host "labStatus=$labStatusPath"
+        if ($LiveUiSuite) {
+            $uiPython = if ($env:TPF2MP_PYTHON) { $env:TPF2MP_PYTHON } else { (Get-Command python -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source }
+            $collectInteractiveEvidence = $true
+            & $uiPython (Join-Path $PSScriptRoot 'run_live_ui.py') --suite $LiveUiSuite `
+                --save $StartingSave --lab $labStatusPath --output (Join-Path $runRoot 'ui-suite')
+            if ($LASTEXITCODE -ne 0) { throw "Real UI suite failed; see $runRoot\ui-suite\report.json" }
+        }
         Write-Host 'Export useful Research/Snapshot records before stopping; evidence is bundled automatically after both games close.'
         $interactiveDeadline = (Get-Date).AddMinutes($InteractiveMinutes)
         $lastInteractiveCheckpointState = $null
-        while ((Get-Date) -lt $interactiveDeadline) {
+        while (-not $LiveUiSuite -and (Get-Date) -lt $interactiveDeadline) {
             $peer1Game.Refresh()
             $peer2Game.Refresh()
             if ($peer1Game.HasExited -or $peer2Game.HasExited) { break }
@@ -2179,9 +2233,22 @@ catch {
     Write-Warning $failure
 }
 finally {
+    $env:TPF2MP_LIVE_UI_TOKEN = $previousLiveUiToken
+    $env:TPF2MP_LIVE_UI_PIDS = $previousLiveUiPids
     # Capture the last observable authority state before stopping any exact
     # process. Manual-only runs previously left these fields null and could
     # report PASS even after a companion had died during the interactive soak.
+    if ($LiveUiSuite -and -not $failure) {
+        $uiReportPath = Join-Path $runRoot 'ui-suite\report.json'
+        if (-not (Test-Path -LiteralPath $uiReportPath -PathType Leaf)) {
+            $failure = 'UI suite was requested but no UI report was produced; bootstrap is not gameplay proof.'
+        } else {
+            try {
+                $uiReport = Get-Content -LiteralPath $uiReportPath -Raw | ConvertFrom-Json
+                if ($uiReport.passed -ne $true -or $uiReport.session -ne $Session) { $failure = 'UI report failed or names a different session.' }
+            } catch { $failure = 'UI report could not be verified.' }
+        }
+    }
     $capturedHostStatus = Read-CompanionStatus $peer1Bridge
     $capturedClientStatus = Read-CompanionStatus $peer2Bridge
     if ($capturedHostStatus) { $finalHostStatus = $capturedHostStatus }

@@ -1,0 +1,611 @@
+{
+  "schemaVersion": 1,
+  "id": "ship-native-route",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "p2-first-passenger-harbor",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -1800,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water.water-buildings.item.station/water/harbor_modular.con_0"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.582,
+            0.65
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.582,
+            0.65
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        }
+      },
+      "coverage": [
+        "p2-passenger-harbor-free"
+      ]
+    },
+    {
+      "id": "p2-second-passenger-harbor",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water.water-buildings.item.station/water/harbor_modular.con_0"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.586,
+            0.72
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.586,
+            0.72
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        }
+      }
+    },
+    {
+      "id": "p2-shipyard",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water.water-buildings.item.depot/shipyard_era_a.con"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.596,
+            0.68
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.596,
+            0.68
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.water"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "depot",
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        },
+        "checks": [
+          {
+            "path": [
+              "depotUi",
+              "missingName"
+            ],
+            "op": "equal",
+            "value": 0
+          }
+        ]
+      },
+      "coverage": [
+        "p2-shipyard-free"
+      ]
+    },
+    {
+      "id": "p2-open-shipyard",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.59,
+            0.682
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "waitUi",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p2-ship-catalogue",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "waitUi",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "select-small-passenger-ship",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.44,
+            0.15
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "p2-buy-passenger-ship",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.7,
+            0.58
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "vehicle",
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        }
+      }
+    },
+    {
+      "id": "p2-create-shipping-line",
+      "timeout": 120,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.752,
+            0.016
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.lineManager"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "lineManager.newLine"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 2
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "line",
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "frame-harbor-icons-above-native-manager",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -1000,
+            "y": -1000,
+            "distance": 1500,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "add-both-native-harbor-stops",
+      "timeout": 120,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.592,
+            0.195
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.595,
+            0.249
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "checks": [
+          {
+            "path": [
+              "structure",
+              "lines",
+              0,
+              "stops"
+            ],
+            "op": "length",
+            "value": 2
+          }
+        ],
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "open-native-ship-assignment",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.vehicleManager"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "select-ship-and-open-native-line-picker",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.426,
+            0.715
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.vehicleManager.setLineButton"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "assign-ship-through-native-line-picker",
+      "timeout": 120,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.466,
+            0.678
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "checks": [
+          {
+            "path": [
+              "structure",
+              "lines",
+              0,
+              "vehicles"
+            ],
+            "op": "equal",
+            "value": 1
+          }
+        ],
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "sail-ship-between-two-native-harbors",
+      "timeout": 1200,
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.speedButton3"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "journey",
+        "journey": {
+          "lineName": "Line 1",
+          "owner": "company:2",
+          "vehicles": 1,
+          "stops": 2,
+          "carrier": 4,
+          "models": [
+            "vehicle/ship/ds_schaffhausen_v2.mdl"
+          ]
+        }
+      },
+      "coverage": [
+        "harbor-ship-route",
+        "p2-ship-buy-assign-journey"
+      ]
+    }
+  ],
+  "description": "Two native passenger harbors, shipyard, Schaffhausen purchase, native two-stop line and observed full journey on both peers. Fixed physical UI recipe; no gameplay injection."
+}

@@ -48,13 +48,13 @@ function M.requiresAtomic(record, codec)
   local transaction = type(record) == "table" and record.transaction or nil
   local construction = type(transaction) == "table"
     and type(transaction.constructions) == "table" and transaction.constructions[1] or nil
-  if connectionReplay.isConnectedStreetDepot(transaction, construction) then return true end
+  if connectionReplay.isConnectedDepot(transaction, construction) then return true end
   if not M.isExact(record, codec) and not M.isStagedExact(record, codec) then return false end
   local remove = type(transaction.remove) == "table" and transaction.remove or {}
   local edgeObjects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
   -- Transform-only fallback would detach any captured existing-road endpoint,
   -- independent of the construction's stock/mod resource name.
-  return connectionReplay.hasExistingStreetEndpoint(transaction, construction)
+  return connectionReplay.hasExistingCarrierEndpoint(transaction, construction)
     or #(construction.collateral or {}) > 0
     or #(remove.edges or {}) > 0 or #(remove.nodes or {}) > 0
     or #(edgeObjects.add or {}) > 0 or #(edgeObjects.retain or {}) > 0

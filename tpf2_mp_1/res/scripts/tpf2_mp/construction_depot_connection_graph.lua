@@ -2,6 +2,7 @@ local util = require "tpf2_mp/util"
 
 local M = {}
 local EXTERNAL_CID = "node:repair:depot-external"
+local MAX_JUNCTION_COALESCE_DISTANCE = 4
 
 local function reindexRetainedNodes(nodes)
   local byOriginalSlot = {}
@@ -13,6 +14,20 @@ local function reindexRetainedNodes(nodes)
     local physicalSlot = "node:" .. tostring(index)
     byOriginalSlot[originalSlot] = physicalSlot
     node.slot = physicalSlot
+  end
+  return byOriginalSlot
+end
+
+local function reindexRetainedEdges(edges)
+  local byOriginalSlot = {}
+  for index, edge in ipairs(edges) do
+    local originalSlot = tostring(edge.slot or "")
+    if originalSlot == "" or byOriginalSlot[originalSlot] then
+      return nil, "connected depot retained an invalid or duplicate edge slot"
+    end
+    local physicalSlot = "edge:" .. tostring(index)
+    byOriginalSlot[originalSlot] = physicalSlot
+    edge.slot = physicalSlot
   end
   return byOriginalSlot
 end
@@ -56,6 +71,47 @@ local function referenceTouches(reference, slot)
   return type(reference) == "table" and reference.slot == slot
 end
 
+local function squaredDistance(a, b)
+  if not finitePosition(a) or not finitePosition(b) then return nil end
+  local x = tonumber(a.x) - tonumber(b.x)
+  local y = tonumber(a.y) - tonumber(b.y)
+  local z = tonumber(a.z) - tonumber(b.z)
+  return x * x + y * y + z * z
+end
+
+local function nearbySplitJunction(transaction, repair)
+  local entrance, junctionSlot
+  for _, edge in ipairs(transaction.edges or {}) do
+    local first = referenceTouches(edge.node0, repair.internalNodeSlot)
+    local second = referenceTouches(edge.node1, repair.internalNodeSlot)
+    if first or second then
+      if entrance or (first and second) then return nil end
+      local other = first and edge.node1 or edge.node0
+      if type(other) ~= "table" or type(other.slot) ~= "string" then return nil end
+      entrance, junctionSlot = edge, other.slot
+    end
+  end
+  if not entrance then return nil end
+  local junction
+  for _, node in ipairs(transaction.nodes or {}) do
+    if node.slot == junctionSlot then junction = node; break end
+  end
+  local distance = junction and squaredDistance(junction.position,
+    repair.helperExternalPosition) or nil
+  if not distance or distance > MAX_JUNCTION_COALESCE_DISTANCE ^ 2 then return nil end
+  local branches = 0
+  for _, edge in ipairs(transaction.edges or {}) do
+    if edge.slot ~= entrance.slot and (referenceTouches(edge.node0, junctionSlot)
+        or referenceTouches(edge.node1, junctionSlot)) then
+      if edge.carrier ~= entrance.carrier then return nil end
+      branches = branches + 1
+    end
+  end
+  if branches < 2 then return nil end
+  return { entranceSlot = entrance.slot, junctionSlot = junctionSlot,
+    distance = math.sqrt(distance) }
+end
+
 local function repairOf(record)
   local pending = type(record) == "table" and record.constructionPending or nil
   local repair = type(pending) == "table" and pending.depotConnectionRepair or nil
@@ -89,11 +145,15 @@ function M.build(record, codec)
     return nil, nil, "connected depot source transaction is invalid: "
       .. tostring(sourceError)
   end
+  local coalesced = nearbySplitJunction(transaction, repair)
   local nodes = {}
   local internalNodes = 0
   for _, node in ipairs(transaction.nodes or {}) do
     if node.slot == repair.internalNodeSlot then
       internalNodes = internalNodes + 1
+    elseif coalesced and node.slot == coalesced.junctionSlot then
+      -- The helper's existing external snap node becomes the road junction.
+      -- Keeping the captured node as well would require a rejected micro-edge.
     else
       nodes[#nodes + 1] = util.deepCopy(node)
     end
@@ -114,11 +174,25 @@ function M.build(record, codec)
   local sourceCorrection = vector(sourceInternal, repair.helperInternalPosition, -1)
   local edges, shifted = {}, 0
   for _, source in ipairs(transaction.edges or {}) do
+    if coalesced and source.slot == coalesced.entranceSlot then
+      shifted = shifted + 1
+    else
     local edge = util.deepCopy(source)
     local first = referenceTouches(source.node0, repair.internalNodeSlot)
     local second = referenceTouches(source.node1, repair.internalNodeSlot)
     if first and second then return nil, nil, "depot connection edge loops through its internal node" end
-    if first then
+    if coalesced and (referenceTouches(source.node0, coalesced.junctionSlot)
+        or referenceTouches(source.node1, coalesced.junctionSlot)) then
+      if first or second then
+        return nil, nil, "connected depot junction coalescing found a second internal edge"
+      end
+      if referenceTouches(source.node0, coalesced.junctionSlot) then
+        edge.node0 = { cid = EXTERNAL_CID }
+      end
+      if referenceTouches(source.node1, coalesced.junctionSlot) then
+        edge.node1 = { cid = EXTERNAL_CID }
+      end
+    elseif first then
       edge.node0 = { cid = EXTERNAL_CID }
       edge.tangent0 = vector(vector(source.tangent0, delta, -1), sourceCorrection, 1)
       edge.tangent1 = vector(vector(source.tangent1, delta, -1), sourceCorrection, 1)
@@ -134,10 +208,13 @@ function M.build(record, codec)
     local secondOk, secondError = remapNodeReference(edge.node1, physicalSlotByOriginal)
     if not secondOk then return nil, nil, secondError end
     edges[#edges + 1] = edge
+    end
   end
   if shifted ~= 1 then
     return nil, nil, "connected depot must expose exactly one entrance edge"
   end
+  local physicalEdgeByOriginal, edgeReindexError = reindexRetainedEdges(edges)
+  if not physicalEdgeByOriginal then return nil, nil, edgeReindexError end
   local physical = {
     schemaVersion = codec.SCHEMA_VERSION,
     companyCid = transaction.companyCid,
@@ -161,7 +238,15 @@ function M.build(record, codec)
   localRefs[EXTERNAL_CID] = repair.helperNodeIds[1]
   return physical, localRefs, nil, {
     physicalSlotByOriginal = physicalSlotByOriginal,
+    physicalEdgeByOriginal = physicalEdgeByOriginal,
+    coalesced = coalesced,
   }
+end
+
+function M.coalesces(record)
+  local transaction = type(record) == "table" and record.transaction or nil
+  local repair = repairOf(record)
+  return transaction and repair and nearbySplitJunction(transaction, repair) ~= nil
 end
 
 function M.filter(record, nodes, edges)
@@ -210,12 +295,19 @@ function M.match(record, codec, nodes, edges, deps)
     or #matched.unmatchedEdgeObjects > 0 then
     return nil, matchError or "connected depot repair created unexpected topology"
   end
-  local canonical = { nodes = {}, edges = matched.edges, edgeObjects = matched.edgeObjects,
+  local canonical = { nodes = {}, edges = {}, edgeObjects = matched.edgeObjects,
     unmatchedNodes = {}, unmatchedEdges = {}, unmatchedEdgeObjects = {} }
   for _, node in ipairs(record.transaction.nodes or {}) do
     canonical.nodes[node.slot] = node.slot == repair.internalNodeSlot
       and repair.internalNodeId
+      or (slotPlan.coalesced and node.slot == slotPlan.coalesced.junctionSlot
+        and repair.helperNodeIds[1])
       or matched.nodes[slotPlan.physicalSlotByOriginal[node.slot]]
+  end
+  for _, edge in ipairs(record.transaction.edges or {}) do
+    canonical.edges[edge.slot] = slotPlan.coalesced
+      and edge.slot == slotPlan.coalesced.entranceSlot and repair.helperEdgeIds[1]
+      or matched.edges[slotPlan.physicalEdgeByOriginal[edge.slot]]
   end
   return canonical
 end

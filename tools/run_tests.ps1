@@ -82,6 +82,16 @@ try {
     & $lua (Join-Path $projectRoot 'tests\run_construction_corpus_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Construction corpus tests failed with exit code $LASTEXITCODE" }
 
+    & $lua (Join-Path $projectRoot 'tests\run_live_ui_observer_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Live UI observer tests failed with exit code $LASTEXITCODE" }
+
+    & $lua (Join-Path $projectRoot 'tests\run_processed_transport_topology_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Processed transport topology tests failed' }
+    & $lua (Join-Path $projectRoot 'tests\run_airfield_capture_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Airfield capture tests failed' }
+    & $lua (Join-Path $projectRoot 'tests\run_construction_name_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Construction name tests failed' }
+
     & $lua (Join-Path $projectRoot 'tests\run_transport_network_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Transport-network tests failed with exit code $LASTEXITCODE" }
 

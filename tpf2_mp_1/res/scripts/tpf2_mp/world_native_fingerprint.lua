@@ -1,7 +1,7 @@
 local hash = require "tpf2_mp/hash"
 local util = require "tpf2_mp/util"
 
-local M = { SCHEMA_VERSION = 2 }
+local M = { SCHEMA_VERSION = 3 }
 
 local CATEGORY = {
   node = "edges", edge = "edges", edge_object = "edges",
@@ -24,6 +24,8 @@ function M.new(deps)
   local ownerOf = deps.ownerOf
   local resolveCanonical = deps.resolveCanonical
   local vehicleLine = deps.vehicleLine
+  local lineDescriptor = assert(deps.lineDescriptor,
+    "lineDescriptor dependency is required")
 
   local inventoryKinds = {
     edges = { "node", "edge", "edge_object" },
@@ -48,11 +50,21 @@ function M.new(deps)
   local function sampleInventory()
     if type(listKind) ~= "function" then return nil end
     local inventory = { counts = {}, geometry = {} }
+    local edgeIds = listKind("edge")
+    if type(edgeIds) ~= "table" then return nil end
     for category, kinds in pairs(inventoryKinds) do
       inventory.counts[category] = {}
       for _, kind in ipairs(kinds) do
-        local ids = listKind(kind)
-        ids = type(ids) == "table" and ids or {}
+        local ids
+        if kind == "edge_object" and type(deps.listInventoryEdgeObjects) == "function" then
+          ids = deps.listInventoryEdgeObjects(edgeIds)
+        elseif kind == "edge" then
+          ids = edgeIds
+        else
+          ids = listKind(kind)
+        end
+        -- An unavailable/partial read is not an empty, complete inventory.
+        if type(ids) ~= "table" then return nil end
         inventory.counts[category][kind] = #ids
         if kind == "node" or kind == "edge" then
           local values = {}
@@ -83,8 +95,28 @@ function M.new(deps)
       local nativeFingerprint, attestedFingerprint
       if exists then
         if metadata.nativeReadUnsafe == true then
+          -- proposalOutputFingerprint is an ordering token
+          -- (proposalDigest:kind:slot), not an observable world identity. It
+          -- must never masquerade as an attested native fingerprint: no live
+          -- candidate can reproduce it and topology fallback cannot rebind by
+          -- it. Exact construction capture supplies a real ordinary/topology
+          -- fingerprint when safe; otherwise the binding remains explicitly
+          -- non-portable and the full inventory tier still detects residue.
           attestedFingerprint = metadata.topologyFingerprint
-            or metadata.fingerprint or metadata.proposalOutputFingerprint
+            or metadata.fingerprint
+        elseif kind == "line" then
+          -- A LINE component stores engine-local station-group ids. The
+          -- generic fingerprint replaces those ids with station names and
+          -- positions, but native auto-naming/position projection is cosmetic
+          -- and can differ across otherwise equivalent peers. Hash the actual
+          -- native stop order after translating each group through the
+          -- canonical registry instead. This still detects missing, reordered,
+          -- or wrongly targeted stops and terminals without making generated
+          -- presentation text part of consensus.
+          nativeFingerprint = hash.value({
+            kind = "line",
+            descriptor = lineDescriptor(binding.localId, registry),
+          })
         elseif category == "edges" or category == "constructions" then
           nativeFingerprint = topologyFingerprint(binding.localId, kind, {
             registry = registry, worldState = worldState, ownerCid = metadata.owner,

@@ -116,8 +116,7 @@ local applyCommitted
 -- authority becomes idle instead of disappearing after the dust animation.
 -- Raw captures are never portable match state and deliberately never enter
 -- saves or core digests; each is canonicalized only when it reaches the head.
-local MAX_DEFERRED_NETWORK_INTENTS = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS
-local networkIntentController, networkClock, economyClock, calendarRuntime, vehicleSync
+local networkIntentController, networkCheckpointBatch, networkClock, economyClock, calendarRuntime, vehicleSync
 local nativeFingerprintRuntime
 local freezeNetworkGame, freezeNetworkCalendar
 -- Automatic line registration is defined beside its handler but referenced by
@@ -234,7 +233,7 @@ local publicSnapshot = publicSnapshotModule.new({
   networkIntentAwaitingOrder = function()
     return networkIntentController and networkIntentController.awaitingOrder() or nil
   end,
-  maxDeferredNetworkIntents = MAX_DEFERRED_NETWORK_INTENTS,
+  maxDeferredNetworkIntents = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS,
 })
 local function publishSnapshot()
   -- The game regularly calls the GUI state's load callback with the engine
@@ -2695,6 +2694,7 @@ applyCommitted = function(action, actor, commitSeq)
   if type(action) ~= "table" or type(action.type) ~= "string" then return false, "invalid action" end
   local logSeq = state.eventLog.nextSeq or 1
   local authoritySeq = tonumber(commitSeq)
+  if networkCheckpointBatch and authoritySeq then networkCheckpointBatch.supersede(action, authoritySeq) end
   local identitySeq = authoritySeq or logSeq
   local eventId = string.format("%s:%s:%d", state.bridge.sessionId, tostring(actor or state.bridge.peerId), identitySeq)
   local before, beforeModel = digestPair()
@@ -2769,52 +2769,21 @@ applyCommitted = function(action, actor, commitSeq)
       error = action.success ~= true and action.errorCode or nil,
       tick = state.tick,
     })
+  elseif success and action.type == "network.checkpoint_outcome"
+    and serviceRegistrationIntegration.afterOperationCheckpoint(action) then
   elseif success and action.type == "network.proposal_outcome"
     and (action.success == true or action.recoverable == true) and authoritySeq then
     local reason = (action.success == true and "physical-consensus:" or "physical-rejection:")
       .. tostring(action.proposalId or "unknown")
     local checkpointed, checkpointError = exportCheckpointBarrier(authoritySeq, reason, action.proposalId)
-    if not checkpointed then
-      diagnosticLog("checkpoint-barrier-error", {
-        tick = state.tick,
-        boundarySeq = authoritySeq,
-        error = tostring(checkpointError),
-      })
-    end
+    if not checkpointed then diagnosticLog("checkpoint-barrier-error", {
+      tick = state.tick, boundarySeq = authoritySeq, error = tostring(checkpointError) }) end
     serviceRegistrationIntegration.afterProposalOutcome(action)
   elseif success and action.type == "network.operation_outcome"
     and (action.success == true or action.recoverable == true) and authoritySeq then
-    -- Both worlds have now agreed on this operation's physical result, so the
-    -- owning peer can safely re-derive the line's competitive facts from a
-    -- world its rival also sees.
-    local record = state.world.operations.byId[tostring(action.operationId or "")]
-    if action.success == true and record then
-      -- A line may be deleted before its commit-derived registration reaches
-      -- the head of the authored follow-up FIFO.  Drop that now-impossible
-      -- job so it cannot retry forever and starve registrations behind it.
-      if record.transaction.kind == "line.delete" and networkIntentController then
-        networkIntentController.cancelLineRegistration(record.transaction.data.targetCid)
-      end
-      local outputCid = record.result and record.result.outputs
-        and record.result.outputs[1] and record.result.outputs[1].cid or nil
-      autoRegisterLineFor(record.transaction, outputCid)
-      local priorLines = record.previousLineCids
-        or (record.previousLineCid and { record.previousLineCid } or {})
-      for _, previousLineCid in ipairs(priorLines) do
-        if type(previousLineCid) == "string" and previousLineCid ~= ""
-          and not (record.transaction.data
-            and record.transaction.data.lineCid == previousLineCid) then
-          autoRegisterLineFor({
-            kind = "vehicle.assign",
-            companyCid = record.companyCid,
-            data = { lineCid = previousLineCid },
-          }, nil)
-        end
-      end
-    end
     local reason = (action.success == true and "operation-consensus:"
       or "operation-rejection:") .. tostring(action.operationId or "unknown")
-    local checkpointed, checkpointError = exportCheckpointBarrier(
+    local checkpointed, checkpointError = networkCheckpointBatch.schedule(
       authoritySeq, reason, action.operationId)
     if not checkpointed then
       diagnosticLog("checkpoint-barrier-error", {
@@ -2865,7 +2834,7 @@ networkIntentController = networkIntentRuntimeModule.new({
   diagnosticLog = diagnosticLog,
   coreDigest = coreDigest,
   proposalPreparation = proposalPreparation,
-  maxDeferredIntents = MAX_DEFERRED_NETWORK_INTENTS,
+  maxDeferredIntents = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS,
   maxDeferredFollowups = networkIntentRuntimeModule.MAX_DEFERRED_FOLLOWUPS,
   physicalPrerequisite = function(action)
     return networkClock and networkClock.operationPrerequisite(action) or nil
@@ -2878,6 +2847,9 @@ networkIntentController = networkIntentRuntimeModule.new({
   end,
   ignoreDuplicateInitialise = function(action) return matchInitialisePolicy.ignoreDuplicateSubmission(state, action, diagnosticLog, publishSnapshot) end,
 })
+networkCheckpointBatch = require("tpf2_mp/network_checkpoint_batch").new({ getState = function() return state end,
+  exportCheckpoint = exportCheckpointBarrier, originWorkState = networkIntentController.originAppliedWorkState,
+  diagnosticLog = diagnosticLog })
 submitIntent = networkIntentController.submit
 local processDeferredNetworkIntent = networkIntentController.processDeferred
 local consumeBridge = networkIntentController.consume
@@ -2946,7 +2918,7 @@ local networkPump = networkPumpRuntimeModule.new({
   submitIntent = submitIntent, performance = performanceRuntime,
   continuationFenced = savedMatchContinuationRuntime.fenced,
 })
-local pumpNetworkBridge = networkPump.pump
+local function pumpNetworkBridge(...) local ok = networkPump.pump(...); local called, err = pcall(networkCheckpointBatch.maintain); if not called then diagnosticLog("checkpoint-batch-error", { error = tostring(err), tick = state.tick }) end; return ok and called end
 
 local validationRuntime = validationRuntimeModule.new({
   getState = function() return state end,
@@ -2973,7 +2945,7 @@ local gui = guiState.new()
 local function renderGui()
   local snapshot = gui.snapshot or publicSnapshot()
   local result = guiView.render(gui, snapshot, {
-    maxDeferredNetworkIntents = MAX_DEFERRED_NETWORK_INTENTS,
+    maxDeferredNetworkIntents = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS,
   })
   return result
 end
@@ -3273,6 +3245,7 @@ local script = {
     -- here as well as inside pumpNetworkBridge, doubling vehicle scans and
     -- clock work on every multiplayer update.
     engineBackgroundRuntime.run()
+    require("tpf2_mp/live_ui_observer").engine(state, publicSnapshot, world)
     if state.tick % 900 == 0 then
       local cosmeticOk, cosmeticError = xpcall(refreshPassengerCosmetics, debug.traceback)
       if not cosmeticOk then state.probes.passengerCosmetics.lastError = tostring(cosmeticError) end
@@ -3491,6 +3464,7 @@ local script = {
       -- The launcher heartbeat is transport housekeeping, not a GUI refresh.
       -- Avoid rebuilding and scaling every authoritative panel while running.
       if not launcherHeartbeat then publishSnapshot() end
+      require("tpf2_mp/live_ui_observer").engine(state, publicSnapshot, world)
     end
   end,
 
@@ -3498,6 +3472,7 @@ local script = {
 
   guiUpdate = function()
     local result = guiEventRuntime.update()
+    require("tpf2_mp/live_ui_observer").gui(gui)
     if guiStockPresentation.due(gui, gui.snapshot or {}) then
       pcall(guiStockPresentation.update, gui, gui.snapshot or {})
     end

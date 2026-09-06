@@ -1,13 +1,25 @@
 local geometry = require "tpf2_mp/validation_connected_depot_geometry"
 local proposalCodec = require "tpf2_mp/proposal_codec"
+local compoundTownRoad = require "tpf2_mp/validation_connected_road_depot_compound"
 
 local M = {}
+
+local function finalise(transaction)
+  transaction.digest = proposalCodec.digest(transaction)
+  transaction.transactionId = "proposal:" .. transaction.digest
+  local valid, validationError = proposalCodec.validate(transaction)
+  if not valid then return nil, validationError end
+  return transaction
+end
 
 -- Build 35924 connected STREET_DEPOT fixture captured from relay session
 -- mp-87164966f1cca6a9. Callers may rotate/translate it onto a route endpoint
 -- and select either the stock road or tram depot resource.
 function M.transaction(companyCid, options)
   options = type(options) == "table" and options or {}
+  if options.compoundTownRoad == true then
+    return compoundTownRoad.transaction(companyCid, options)
+  end
   local layout, layoutError = geometry.resolve(options)
   if not layout then return nil, layoutError end
   local params = { paramX = 0, paramY = 0, seed = 1, year = 1940 }
@@ -43,11 +55,7 @@ function M.transaction(companyCid, options)
       params = params, modules = {}, collateral = {},
     }},
   }
-  transaction.digest = proposalCodec.digest(transaction)
-  transaction.transactionId = "proposal:" .. transaction.digest
-  local valid, validationError = proposalCodec.validate(transaction)
-  if not valid then return nil, validationError end
-  return transaction
+  return finalise(transaction)
 end
 
 return M

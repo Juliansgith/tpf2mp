@@ -1,19 +1,8 @@
 local fixture = require "tpf2_mp/validation_connected_road_depot_proposal"
 local purchaseModule = require "tpf2_mp/validation_depot_vehicle_purchase"
+local outputValidation = require "tpf2_mp/validation_connected_depot_outputs"
 
 local M = {}
-
-local function completeOutputs(outputs)
-  local wanted = {
-    ["construction:construction:1"] = true, ["depot:depot:1"] = true,
-    ["edge:edge:1"] = true, ["node:node:1"] = true,
-    ["edge:edge:helper:1"] = true, ["node:node:helper:1"] = true,
-  }
-  for _, item in ipairs(outputs or {}) do
-    wanted[tostring(item.kind) .. ":" .. tostring(item.slot)] = nil
-  end
-  return #(outputs or {}) == 6 and next(wanted) == nil
-end
 
 function M.new(deps)
   local getState = assert(deps.getState, "road-depot validation state is required")
@@ -66,8 +55,10 @@ function M.new(deps)
         outcome and outcome.success == true, outcome)
       check(checkPrefix .. "-used-selectable-helper-repair", result
         and result.constructionReplayPath == "helper-connected-depot", result)
+      local compound = type(fixtureOptions) == "table"
+        and fixtureOptions.compoundTownRoad == true
       check(checkPrefix .. "-created-complete-graph",
-        result and completeOutputs(result.outputs), result)
+        result and outputValidation.complete(result.outputs, compound), result)
       for _, output in ipairs(result and result.outputs or {}) do
         if output.kind == "depot" then
           state.validation.values[key .. "Cid"] = output.cid

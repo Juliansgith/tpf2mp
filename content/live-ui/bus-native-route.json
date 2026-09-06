@@ -1,0 +1,593 @@
+{
+  "schemaVersion": 1,
+  "id": "bus-native-route",
+  "description": "Native P1 road-connected depot, both curb sides, Saurer purchase, native two-stop line, assignment and bilateral operating journey.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "preview-public-road-depot-site",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.depot/road_depot_era_a.con"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.61,
+            0.35
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-road-depot-snapped-to-public-road",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.61,
+            0.35
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "delta",
+            "value": 1
+          },
+          {
+            "path": [
+              "depotUi",
+              "missingName"
+            ],
+            "op": "equal",
+            "value": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "preview-northern-public-road-bus-stop",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.station/bus/small_mid.mdl"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.54,
+            0.18
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-native-northern-bus-stop",
+      "timeout": 120,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.54,
+            0.18
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "edge_object",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      },
+      "coverage": [
+        "bus-stop"
+      ]
+    },
+    {
+      "id": "preview-southern-public-road-bus-stop",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.66,
+            0.66
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-native-southern-bus-stop",
+      "timeout": 120,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.66,
+            0.66
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "edge_object",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "open-connected-road-depot-and-bus-catalogue",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.594,
+            0.321
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "waitUi",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-buy-saurer-bus",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.44,
+            0.32
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 1
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.7,
+            0.58
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "vehicle",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        }
+      },
+      "coverage": [
+        "vanilla-buy-bus"
+      ]
+    },
+    {
+      "id": "create-native-bus-line",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.016
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.lineManager"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "lineManager.newLine"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "line",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "frame-road-stops-for-native-line-manager",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2000,
+            "y": -1000,
+            "distance": 1000,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "add-native-bus-line-stops",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.528,
+            0.121
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.596,
+            0.412
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "structure",
+              "lines",
+              0,
+              "stops"
+            ],
+            "op": "length",
+            "value": 2
+          }
+        ]
+      },
+      "coverage": [
+        "vanilla-line-create-stops"
+      ]
+    },
+    {
+      "id": "open-native-bus-assignment",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.vehicleManager"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.426,
+            0.715
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.vehicleManager.setLineButton"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "assign-bus-to-native-line",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.466,
+            0.678
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "structure",
+              "lines",
+              0,
+              "vehicles"
+            ],
+            "op": "equal",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "drive-bus-through-both-native-stops",
+      "timeout": 600,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.speedButton3"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "journey",
+        "journey": {
+          "lineName": "Line 1",
+          "owner": "company:1",
+          "vehicles": 1,
+          "stops": 2,
+          "carrier": 0,
+          "models": [
+            "vehicle/bus/saurer_tuescher_v2.mdl"
+          ]
+        }
+      },
+      "coverage": [
+        "p1-bus-buy-assign-journey",
+        "road-depot-connected",
+        "p1-road-depot-road-connected"
+      ]
+    }
+  ]
+}

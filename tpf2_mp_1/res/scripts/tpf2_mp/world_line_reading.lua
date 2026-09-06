@@ -1,3 +1,5 @@
+local util = require "tpf2_mp/util"
+
 local M = {}
 
 local function read(value, key)
@@ -9,6 +11,9 @@ end
 function M.new(deps)
   local getApi = assert(deps.getApi, "getApi dependency is required")
   local entityNumber = assert(deps.entityNumber, "entityNumber dependency is required")
+  local nameOf = assert(deps.nameOf, "nameOf dependency is required")
+  local resolveCanonical = assert(deps.resolveCanonical, "resolveCanonical dependency is required")
+  local fingerprint = assert(deps.fingerprint, "fingerprint dependency is required")
 
   local function component(gameApi, id, kind)
     if not (kind and gameApi.engine and gameApi.engine.getComponent) then return nil end
@@ -117,9 +122,50 @@ function M.new(deps)
     })
   end
 
+  local function nativeDescriptor(lineId, registry)
+    local gameApi = getApi() or {}
+    local types = gameApi.type and gameApi.type.ComponentType or {}
+    local line = component(gameApi, entityNumber(lineId), types.LINE)
+    if not line then return { missing = true, stops = {} } end
+    local descriptor = { name = nameOf(lineId), stops = {} }
+    local stops = read(line, "stops") or {}
+    for _, stop in ipairs(stops) do
+      local groupId = entityNumber(read(stop, "stationGroup") or read(stop, "group") or read(stop, "station"))
+      local groupCid = groupId and resolveCanonical(registry, "station_group", groupId) or nil
+      if not groupCid then
+        -- Keep an unbound native stop visible and fail-closed without ever
+        -- admitting its engine-local id into a cross-peer digest.
+        local fallback = groupId and fingerprint(groupId, "station_group", { componentOnly = true })
+        groupCid = groupId and ("unbound-station-group:" .. tostring(fallback or "unavailable"))
+          or "missing-station-group"
+      end
+      local alternatives = {}
+      for _, alternative in ipairs(read(stop, "alternativeTerminals") or {}) do
+        alternatives[#alternatives + 1] = {
+          station = util.integer(read(alternative, "station"), 0),
+          terminal = util.integer(read(alternative, "terminal"), 0) }
+      end
+      descriptor.stops[#descriptor.stops + 1] = {
+        stationGroupCid = groupCid, station = util.integer(read(stop, "station"), 0),
+        terminal = util.integer(read(stop, "terminal"), 0), alternativeTerminals = alternatives }
+    end
+    return descriptor
+  end
+
+  local function vehicleLine(vehicleId, registry)
+    local gameApi = getApi() or {}
+    local types = gameApi.type and gameApi.type.ComponentType or {}
+    local vehicle = component(gameApi, vehicleId, types.TRANSPORT_VEHICLE)
+    local lineId = tonumber(read(vehicle, "line"))
+    if not lineId or lineId < 0 then return nil end
+    return resolveCanonical(registry, "line", lineId) or "unbound-line"
+  end
+
   return {
     lineServiceKind = lineServiceKind,
     stationGroupKind = stationGroupKind,
+    nativeDescriptor = nativeDescriptor,
+    vehicleLine = vehicleLine,
   }
 end
 

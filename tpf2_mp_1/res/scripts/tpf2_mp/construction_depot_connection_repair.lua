@@ -24,7 +24,7 @@ local function shape(record)
 end
 
 function M.isRepairableTransaction(transaction, construction)
-  if not connectionReplay.isConnectedStreetDepot(transaction, construction) then return false end
+  if not connectionReplay.isConnectedDepot(transaction, construction) then return false end
   local objects = type(transaction.edgeObjects) == "table" and transaction.edgeObjects or {}
   if #(objects.add or {}) > 0 or #(objects.retain or {}) > 0
     or #(objects.remove or {}) > 0 then return false end
@@ -41,9 +41,9 @@ function M.helperSafe(record)
   local transaction = type(record) == "table" and record.transaction or nil
   local construction = type(transaction) == "table" and transaction.constructions
     and transaction.constructions[1] or nil
-  if connectionReplay.isConnectedStreetDepot(transaction, construction)
+  if connectionReplay.isConnectedDepot(transaction, construction)
     and not M.isRepairableTransaction(transaction, construction) then
-    return false, "connected street depot graph is outside the safe helper-repair boundary"
+    return false, "connected depot graph is outside the safe helper-repair boundary"
   end
   return true
 end
@@ -139,8 +139,9 @@ function M.stage(record, pending, deps)
     pending.depotHelperSignature, pending.depotHelperStableSinceTick = nil, nil
     return { waiting = true, phase = "settling-helper-depot" }
   end
-  if edges[1].carrier ~= "street" then
-    return nil, "connected street depot helper generated a non-street edge"
+  local expectedCarrier = connectionReplay.connectedDepotCarrier(transaction, construction)
+  if not expectedCarrier or edges[1].carrier ~= expectedCarrier then
+    return nil, "connected depot helper generated the wrong carrier edge"
   end
   local expectedInternal, internalError = internalNode(transaction, construction)
   if not expectedInternal then return nil, internalError end

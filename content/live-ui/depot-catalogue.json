@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "native-depot-and-road-catalogue-calibration",
+  "description": "Build a real rail depot, then inspect native selection and road catalogue. The two inspection cases claim no purchase or road-construction coverage.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {"w": 1920, "h": 1040},
+  "cases": [
+    {
+      "id": "p1-rail-depot-free",
+      "steps": [
+        {"peer": "player1", "action": "camera", "camera": {"x": -2200, "y": -1000, "distance": 650, "angle": 0, "pitch": 0.82}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings.item.depot/train_depot_era_a.con"}},
+        {"peer": "player1", "action": "move", "point": [0.40, 0.42]},
+        {"peer": "player1", "action": "wait", "seconds": 5},
+        {"peer": "player1", "action": "observe"},
+        {"peer": "player1", "action": "click", "point": [0.40, 0.42]},
+        {"peer": "player1", "action": "move", "point": [0.57, 0.85]}
+      ],
+      "expect": {"outcome": "built", "kind": "construction", "count": 1, "owner": "company:1", "finance": {"company:1": "debit", "company:2": "unchanged"}, "checks": [{"path": ["native", "inventory", "counts", "constructions", "depot"], "op": "delta", "value": 1}]}
+    },
+    {
+      "id": "inspect-p1-depot-selection",
+      "coverage": ["vanilla-depot-open"],
+      "steps": [
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player1", "action": "click", "point": [0.40, 0.42]},
+        {"peer": "player1", "action": "waitUi", "selector": {"id": "vehicleManager.buyVehicles"}},
+        {"peer": "player1", "action": "observe"}
+      ],
+      "expect": {"outcome": "unchanged", "finance": {"company:1": "unchanged", "company:2": "unchanged"}}
+    },
+    {
+      "id": "inspect-p1-vehicle-catalogue",
+      "steps": [
+        {"peer": "player1", "action": "click", "selector": {"id": "vehicleManager.buyVehicles"}},
+        {"peer": "player1", "action": "observe"}
+      ],
+      "expect": {"outcome": "unchanged", "finance": {"company:1": "unchanged", "company:2": "unchanged"}}
+    },
+    {
+      "id": "inspect-p2-road-catalogue",
+      "steps": [
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.road"}},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.road.road-buildings"}},
+        {"peer": "player2", "action": "observe"}
+      ],
+      "expect": {"outcome": "unchanged", "finance": {"company:1": "unchanged", "company:2": "unchanged"}}
+    }
+  ]
+}

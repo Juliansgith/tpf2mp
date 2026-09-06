@@ -164,8 +164,14 @@ end
 function M.verify(message)
   if type(message) ~= "table" or type(message.checksum) ~= "string" then return false, "missing checksum" end
   local expected = message.checksum
-  local core = util.deepCopy(message)
-  core.checksum = nil
+  -- Keep decoded child-table identities intact: json.lua uses a private weak
+  -- identity marker to distinguish an empty JSON array from an empty object.
+  -- Hashing is read-only, so a shallow top-level copy is sufficient to omit
+  -- the checksum without discarding that wire-shape information.
+  local core = {}
+  for key, value in pairs(message) do
+    if key ~= "checksum" then core[key] = value end
+  end
   local actual = hash.value(core)
   if expected ~= actual then return false, "checksum mismatch: expected " .. expected .. ", calculated " .. actual end
   return true
@@ -247,6 +253,27 @@ function M.emit(state, kind, payload, tick)
   return true, message
 end
 
+local function rejectInbound(state, nativeActive, message)
+  state.lastError = tostring(message)
+  if nativeActive then
+    -- The process-owned FIFO transports opaque bytes and TakeInbound removes
+    -- its front item before Lua can authenticate it.  Keep the Lua cursor on
+    -- the rejected sequence and force Configure on the next poll.  Configure
+    -- then rewinds the native reader to nextInSeq and reloads the immutable
+    -- durable file, so one bad/temporarily incompatible envelope cannot drain
+    -- all later ordered work from the in-memory queue.
+    state.nativeTransport = type(state.nativeTransport) == "table"
+      and state.nativeTransport or {}
+    state.nativeTransport.active = false
+    state.nativeTransport.reason = "native inbox rewind required: "
+      .. state.lastError
+    state.nativeTransport.rewinds = math.max(
+      0, util.integer(state.nativeTransport.rewinds, 0)) + 1
+    state.nativeTransport.lastRejectedInSeq = state.nextInSeq
+  end
+  return false
+end
+
 function M.poll(state, limit)
   local messages = {}
   limit = limit or 8
@@ -260,8 +287,9 @@ function M.poll(state, limit)
       elseif response ~= nil then
         local observed, payload = tostring(response):match("^I1|(%d+)|(.*)$")
         if tonumber(observed) ~= seq then
-          state.lastError = "native inbox sequence mismatch: expected "
-            .. tostring(seq) .. ", observed " .. tostring(observed)
+          rejectInbound(state, nativeActive,
+            "native inbox sequence mismatch: expected "
+              .. tostring(seq) .. ", observed " .. tostring(observed))
           break
         end
         raw = payload
@@ -277,12 +305,29 @@ function M.poll(state, limit)
       break
     end
     local ok, message = pcall(json.decode, raw)
-    if not ok then state.lastError = "invalid inbox JSON at " .. seq .. ": " .. tostring(message); break end
+    if not ok then
+      rejectInbound(state, nativeActive,
+        "invalid inbox JSON at " .. seq .. ": " .. tostring(message))
+      break
+    end
     local valid, verifyErr = M.verify(message)
-    if not valid then state.lastError = "invalid inbox message at " .. seq .. ": " .. verifyErr; break end
-    if tonumber(message.protocol) ~= tonumber(state.protocol) then state.lastError = "protocol mismatch"; break end
-    if tostring(message.session) ~= tostring(state.sessionId) then state.lastError = "session mismatch"; break end
-    if tonumber(message.seq) ~= seq then state.lastError = "inbox sequence mismatch"; break end
+    if not valid then
+      rejectInbound(state, nativeActive,
+        "invalid inbox message at " .. seq .. ": " .. verifyErr)
+      break
+    end
+    if tonumber(message.protocol) ~= tonumber(state.protocol) then
+      rejectInbound(state, nativeActive, "protocol mismatch")
+      break
+    end
+    if tostring(message.session) ~= tostring(state.sessionId) then
+      rejectInbound(state, nativeActive, "session mismatch")
+      break
+    end
+    if tonumber(message.seq) ~= seq then
+      rejectInbound(state, nativeActive, "inbox sequence mismatch")
+      break
+    end
     messages[#messages + 1] = message
     state.nextInSeq = seq + 1
     state.received = (state.received or 0) + 1
@@ -304,6 +349,12 @@ function M.nativeStatus(state)
     return { active = true, error = "native async bridge returned invalid status" }
   end
   value.active = true
+  value.luaNextInSeq = math.max(1, util.integer(state.nextInSeq, 1))
+  value.rewinds = math.max(0, util.integer(
+    state.nativeTransport and state.nativeTransport.rewinds, 0))
+  value.lastRejectedInSeq = state.nativeTransport
+    and state.nativeTransport.lastRejectedInSeq or nil
+  value.luaLastError = state.lastError
   return value
 end
 

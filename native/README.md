@@ -83,9 +83,9 @@ globals:
   `S1|generation|correlation|tag` event. Its 64-entry FIFO faults with a sticky
   `F1` record and discards the ambiguous prefix on overflow;
 - `tpf2mp_native_take_build_factory_capture()` returns the oldest bounded,
-  pointer-free proposal whose factory command was observed by
-  `CommandList::Add` and whose command-data pointer reached the suppressed
-  tag-15 visitor;
+  pointer-free proposal captured at the named factory or synchronously at the
+  pre-queue `CommandList::Add` fallback, and whose exact command-data pointer
+  reached the suppressed tag-15 visitor;
 - `tpf2mp_native_build_gate_sample()` returns the versioned constant-size
   `B3|enabled|suppressed|tagMismatches|lastGeneration|queued|dropped|armedCorrelation|factoryReady|factoryDropped`
   sample used by render-cadence proposal capture without serializing complete
@@ -147,15 +147,24 @@ revokes an unused token if Lua command submission throws before reaching the
 visitor, so an unrelated later command cannot inherit it.
 
 The DLL now decodes a bounded, pointer-free geometric/topological proposal at
-`make_cmd::BuildProposal` entry, before queueing or simulation mutation. It
-captures nodes, edges/tangents, carrier/resource and ownership scalars,
+`make_cmd::BuildProposal` entry, before queueing or simulation mutation. A
+stock path that bypasses this named factory is decoded synchronously from the
+tag-15 command data at `CommandList::Add`, still before the original Add can
+queue it. It captures nodes, edges/tangents, carrier/resource and ownership scalars,
 removals, edge-object entity lists, frozen indices, segment tags, construction
-resource names/transforms, factory options, and caller/thread evidence. The
+resource names/transforms, and caller/thread evidence. Factory options are
+attested on the factory branch and explicitly marked unavailable on the Add
+fallback. The
 same native command must then pass `CommandList::Add` and the suppressed
 visitor correlation before Lua can consume it. Construction parameter trees,
 edge-object model semantics, quoted cost, and remaining terrain/alignment
 semantics still come from the correlated bounded GUI projection; they are not
-claimed as independently native-decoded fields.
+claimed as independently native-decoded fields. Segment tags are sparse native
+metadata and are not required to have one entry per added edge. Likewise, an
+edge-object record scalar is not treated as a portable temporary identity. An
+explicitly invalid optional decode may fall back to the exact GUI payload only
+while retaining the same factory/Add/visitor correlation and generation;
+malformed identity or FIFO loss still fails closed.
 
 Unreleased development implements road/track/node plus named edge-object codec
 schema 6 and portable construction codec schema 8, canonical translation,
@@ -211,8 +220,9 @@ Accordingly, the hook is useful now for:
 
 - proving command-interface and per-state capability anchors;
 - observing mod-issued command calls without changing their semantics;
-- capturing the native BuildProposal topology at factory entry and correlating
-  it with the queued command, suppressed visitor, and GUI semantic preview;
+- capturing native BuildProposal topology at factory entry or the pre-queue
+  Add fallback and correlating it with the suppressed visitor and GUI semantic
+  preview;
 - observing all queued and direct native command applies by exact tag;
 - suppressing or one-shot-authorizing a disposable BuildProposal before mutation;
 - suppressing or tag-authorizing selected speed, line, vehicle, terrain, date,
@@ -268,6 +278,13 @@ visitor gate:
 .\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -CommandGateTest
 ```
 
+To exercise the complete early-capture chain with a physical vanilla signal
+tool click in an unsaved disposable world:
+
+```powershell
+.\tools\run_supported_api_build_probe.ps1 -NativeHook -SkipNativeBuild -NativeFactoryGuiCaptureTest
+```
+
 For a personal main-menu/manual test:
 
 ```powershell
@@ -288,7 +305,7 @@ world while this component is experimental.
 - `src/hook_dll.cpp`: fail-closed Lua/command hooks, timelines, mirrors,
   BuildProposal gate, and 31-tag consequential/autonomy command gate.
 - `src/native_build_capture.cpp`: bounded Build 35924 proposal-layout decoder.
-- `src/native_build_hook_bridge.cpp`: factory/Add/visitor correlation queue.
+- `src/native_build_hook_bridge.cpp`: factory-or-Add/visitor correlation queue.
 - `include/tpf2mp/native_command_safety.generated.hpp`: generated 37-tag
   suppression, UI-result, replay, ownership, cost, and postcondition policy.
 - `tests/`: profile and fail-closed-load tests.

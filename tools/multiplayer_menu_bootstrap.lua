@@ -411,6 +411,18 @@ function data()
     return exactTextItem(expectedSave)
   end
 
+  local function saveScrollArea(value)
+    for _ = 1, 48 do
+      if not value then return nil end
+      if safeStringCall(value, "getName") == "ScrollArea" then return value end
+      local method = safeMethod(value, "getParent")
+      if not method then return nil end
+      local ok, parent = pcall(method, value)
+      if not ok or not parent or parent == value then return nil end
+      value = parent
+    end
+  end
+
   local function saveIndexReady()
     -- Build 35924 constructs the save rows before their metadata/index is
     -- usable. Clicking a visible row in this state is ignored and Start then
@@ -455,6 +467,7 @@ function data()
       nextGameRect = menuVisible and rectJson(item("next-game-button")) or "null",
       multiplayerRect = menuVisible and rectJson(item("tpf2mp.mainMenuEntry")) or "null",
       expectedSaveRect = menuVisible and rectJson(expectedItem) or "null",
+      expectedSaveClipRect = menuVisible and rectJson(saveScrollArea(expectedItem)) or "null",
       menuRect = menuVisible and rectJson(menuRoot) or "null",
       -- A hidden pause-menu parent leaves the stock Save button's own
       -- isVisible() flag true. Publish effective ancestor visibility so the
@@ -501,6 +514,7 @@ function data()
         .. ',"nextGameRect":' .. fields.nextGameRect
          .. ',"multiplayerRect":' .. fields.multiplayerRect
         .. ',"expectedSaveRect":' .. fields.expectedSaveRect
+        .. ',"expectedSaveClipRect":' .. fields.expectedSaveClipRect
         .. ',"menuRect":' .. fields.menuRect
         .. ',"inGameSaveVisible":' .. fields.inGameSaveVisible
         .. ',"inGameSaveRect":' .. fields.inGameSaveRect

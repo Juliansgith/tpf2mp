@@ -1,0 +1,528 @@
+{
+  "schemaVersion": 1,
+  "id": "native-buildings-and-train-buy",
+  "description": "Physical native UI construction and purchase regression scenarios on the calibrated map. Free depots do not claim road/track connectivity or route operation coverage.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "p1-rail-depot-free",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail.rail-buildings"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail.rail-buildings.item.depot/train_depot_era_a.con"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.4,
+            0.42
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 5
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.4,
+            0.42
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "count": 1,
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "bus-station-free",
+      "coverage": [
+        "bus-station-free"
+      ],
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -1800,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.station/street/modular_terminal.con_1"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.46,
+            0.4
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 5
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.46,
+            0.4
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "count": 1,
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station_group"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "truck-station-free",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.station/street/modular_terminal.con_4"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.4,
+            0.2
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 5
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.4,
+            0.2
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "count": 1,
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station_group"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "road-depot-free",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -1800,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.depot/road_depot_era_a.con"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.43,
+            0.25
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 5
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.43,
+            0.25
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "count": 1,
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "tram-depot-free",
+      "steps": [
+        {
+          "peer": "player2",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.depot/tram_depot_era_a.con"
+          }
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.36,
+            0.45
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "wait",
+          "seconds": 5
+        },
+        {
+          "peer": "player2",
+          "action": "observe"
+        },
+        {
+          "peer": "player2",
+          "action": "click",
+          "point": [
+            0.36,
+            0.45
+          ]
+        },
+        {
+          "peer": "player2",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "count": 1,
+        "owner": "company:2",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "debit"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "p1-open-native-depot",
+      "coverage": [
+        "vanilla-depot-open"
+      ],
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.rail"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.4,
+            0.42
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "waitUi",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "p1-buy-native-train",
+      "coverage": [
+        "vanilla-buy-train"
+      ],
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "doubleClick",
+          "point": [
+            0.44,
+            0.095
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.7,
+            0.58
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "vehicle",
+        "count": 1,
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        }
+      }
+    }
+  ]
+}

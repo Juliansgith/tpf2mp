@@ -82,7 +82,8 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_native_selector_guard.lua' = 60
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_construction_submission.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_network_bootstrap.lua' = 80
-    'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_runtime.lua' = 652
+    # Three lines retain the native result in capability-gated UI diagnostics.
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_runtime.lua' = 655
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_construction_replay.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_reference_guard.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_work_index.lua' = 40
@@ -123,6 +124,7 @@ $budgets = [ordered]@{
     'companion\tpf2mp\anchor_prepare_replay.py' = 50
     'companion\tpf2mp\automatic_recovery.py' = 200
     'companion\tpf2mp\automatic_recovery_actions.py' = 45
+    'companion\tpf2mp\automatic_recovery_preempt.py' = 70
     'companion\tpf2mp\automatic_recovery_restart.py' = 60
     'companion\tpf2mp\automatic_recovery_state.py' = 90
     'companion\tpf2mp\anchor_prepare_checkpoint.py' = 80
@@ -182,6 +184,7 @@ $budgets = [ordered]@{
     'native\src\native_vehicle_command_codec.cpp' = 180
     'native\src\native_hook_status.cpp' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
+    'tpf2_mp_1\res\scripts\tpf2_mp\proposal_wrapper_selector.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
     'tpf2_mp_1\res\scripts\tpf2_mp\world_vehicle_restore_phase.lua' = 110
     'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua' = 285
@@ -198,7 +201,8 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\world_operational_telemetry.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_town_reading.lua' = 220
     'tpf2_mp_1\res\scripts\tpf2_mp\world_station_reading.lua' = 120
-    'tpf2_mp_1\res\scripts\tpf2_mp\world_line_reading.lua' = 150
+    # Includes vehicle-to-line native readback extracted from world.lua.
+    'tpf2_mp_1\res\scripts\tpf2_mp\world_line_reading.lua' = 175
     'tpf2_mp_1\res\scripts\tpf2_mp\world_industry_reading.lua' = 160
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_registry_sidecar.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\industry_content_runtime.lua' = 360
@@ -429,6 +433,9 @@ foreach ($launcherPath in @('tools\run_localhost_live_validation.ps1', 'tools\st
 }
 $liveLauncher = Get-Content -LiteralPath `
     (Join-Path $root 'tools\run_localhost_live_validation.ps1') -Raw
+if (-not $liveLauncher.Contains('${prefix}"WINDOWED"${suffix}')) {
+    throw 'The balanced localhost lab no longer forces true windowed rendering.'
+}
 if (-not $liveLauncher.Contains('Stop-Tpf2mpSessionCompanionChildren')) {
     throw 'The localhost harness no longer retires PyInstaller companion children by exact session identity.'
 }
@@ -650,6 +657,26 @@ $guiViewSource = Get-Content -LiteralPath `
     (Join-Path $root 'tpf2_mp_1\res\scripts\tpf2_mp\gui_view.lua') -Raw
 if (-not $guiViewSource.Contains('tpf2_mp/gui_fault_recovery')) {
     throw 'Multiplayer panel no longer exposes fault-recovery readiness.'
+}
+$supportedProbeSource = Get-Content -LiteralPath `
+    (Join-Path $root 'tools\run_supported_api_build_probe.ps1') -Raw
+$liveConsoleProbeSource = Get-Content -LiteralPath `
+    (Join-Path $root 'investigation\live_console_probe.lua') -Raw
+$liveProbeBootstrapSource = Get-Content -LiteralPath `
+    (Join-Path $root 'investigation\live_probe_bootstrap.lua') -Raw
+if (-not $supportedProbeSource.Contains('NativeFactoryGuiCaptureTest') `
+    -or -not $supportedProbeSource.Contains('factory.suppressedMatches') `
+    -or -not $supportedProbeSource.Contains('factory.addFallbackCalls') `
+    -or -not $supportedProbeSource.Contains("consumeNativeFactoryCapture('900000001')") `
+    -or -not $supportedProbeSource.Contains("Join-Path `$productionScripts '*.lua'") `
+    -or -not $supportedProbeSource.Contains("-ClientX 3500 -ClientY 500")) {
+    throw 'Supported-API probe no longer proves the stock GUI native factory/Add/visitor capture chain.'
+}
+if (-not $liveConsoleProbeSource.Contains('function M.consumeNativeFactoryCapture(expectedCorrelation)') `
+    -or -not $liveConsoleProbeSource.Contains('native-factory-gui-capture') `
+    -or -not $liveConsoleProbeSource.Contains('capture.captureSource == "command-list-add"') `
+    -or -not $liveProbeBootstrapSource.Contains('tpf2_mp_probe/" .. name:sub')) {
+    throw 'Disposable console probe no longer validates the exported native factory payload.'
 }
 if ($hostSource -match '(?m)^class CommitClient:') {
     throw 'CommitClient was copied back into the host authority module.'

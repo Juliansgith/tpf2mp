@@ -1,0 +1,140 @@
+{
+  "schemaVersion": 1,
+  "id": "road-depot-terrain",
+  "description": "Physical road-depot placement with native before/after height grid on both peers. This proves terrain modification, not routing by itself.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "preview-public-road-depot-site",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.depot/road_depot_era_a.con"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.61,
+            0.35
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-road-depot-snapped-to-public-road",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.61,
+            0.35
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "delta",
+            "value": 1
+          },
+          {
+            "path": [
+              "depotUi",
+              "missingName"
+            ],
+            "op": "equal",
+            "value": 0
+          }
+        ],
+        "terrain": {
+          "bounds": [
+            -2345,
+            -885,
+            -2295,
+            -835
+          ],
+          "grid": 9,
+          "minDelta": 0.05,
+          "minSamples": 2,
+          "tolerance": 0.01
+        }
+      },
+      "coverage": [
+        "p1-road-depot-terrain"
+      ]
+    }
+  ]
+}

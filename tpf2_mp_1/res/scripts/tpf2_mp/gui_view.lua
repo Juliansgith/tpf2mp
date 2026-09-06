@@ -162,15 +162,16 @@ function M.render(gui, snapshot, options)
     local capture = gui.nativeBuildCapture or {}
     local constructionBusy = constructionSubmission.reason(snapshot)
     lines[#lines + 1] = string.format(
-      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | duplicate %d | unmatched %d | busy build clicks rejected %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",
+      "Vanilla build bridge: %s | captured %d (%d exact/%d fallback) | native merge %d/%d/%d accepted/fallback/miss | exact evidence %d/%d kept/rejected | duplicate %d | unmatched %d | busy build clicks rejected %d | construction previews %d/%d projected/skipped | replay quarantine %d/%d preview/apply",
       constructionBusy and ("construction locked: " .. constructionBusy)
         or (gui.proposalReplayQuarantine and "replay settling"
         or (gui.pendingNetworkBuildSuppression and "settling click"
         or (gui.pendingNetworkBuildExact and "exact click latched"
           or (gui.pendingNetworkBuildPreview and "preview armed" or "idle")))),
-      tonumber(capture.captured) or 0,
-      tonumber(capture.exactCaptures) or 0,
-      tonumber(capture.previewFallbacks) or 0,
+      tonumber(capture.captured) or 0, tonumber(capture.exactCaptures) or 0,
+      tonumber(capture.previewFallbacks) or 0, tonumber(capture.earlyCaptures) or 0, tonumber(capture.earlyCaptureFallbacks) or 0,
+      tonumber(capture.earlyCaptureMisses) or 0, tonumber(capture.exactEvidenceUpgrades) or 0,
+      tonumber(capture.exactEvidenceUpgradeFailures) or 0,
       tonumber(capture.duplicates) or 0,
       tonumber(capture.orphaned) or 0,
       tonumber(capture.busyRejected) or 0,

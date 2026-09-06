@@ -107,7 +107,7 @@ function M.apply(proposal, spec, options)
       construction.fileName = spec.fileName
       construction.params = params
       construction.transf = transform
-      construction.name = ""
+      construction.name = spec.name or ""
       construction.playerEntity = math.floor(nativePlayerId)
       construction.headquarters = spec.headquarters == true
       additions[1] = construction
@@ -115,11 +115,12 @@ function M.apply(proposal, spec, options)
     if not assigned then
       return nil, "construction addition assignment failed: " .. tostring(assignError)
     end
-    local roundTripOk, fileName, playerEntity, length = pcall(function()
-      return additions[1].fileName, additions[1].playerEntity, #additions
+    local roundTripOk, fileName, playerEntity, length, nativeName = pcall(function()
+      return additions[1].fileName, additions[1].playerEntity, #additions, additions[1].name
     end)
     if not roundTripOk or fileName ~= spec.fileName
-      or tonumber(playerEntity) ~= math.floor(nativePlayerId) or tonumber(length) ~= 1 then
+      or tonumber(playerEntity) ~= math.floor(nativePlayerId) or tonumber(length) ~= 1
+      or nativeName ~= (spec.name or "") then
       return nil, "construction addition did not round-trip through SimpleProposal"
     end
     factoryLabel = factory.label

@@ -13,6 +13,16 @@ function M.new(deps)
   local currentBuildGateSuppressed = sampler.sample
   local drainSuppressedBuildEvents = sampler.drain
 
+  local function attachNativeEvidence(pending, capture)
+    if type(earlyCapture) ~= "table" or type(earlyCapture.attach) ~= "function" then
+      return nil, "native build evidence attachment is unavailable"
+    end
+    local ok, attached, attachError, changed = pcall(
+      earlyCapture.attach, pending, capture)
+    if not ok then return nil, tostring(attached) end
+    return attached, attachError, changed
+  end
+
   local function finishSuppressedNativeBuildCapture()
     local waiting = gui.pendingNetworkBuildSuppression
     if not waiting then return false end
@@ -28,11 +38,13 @@ function M.new(deps)
       return false
     end
     gui.pendingNetworkBuildSuppression = nil
+    pcall(require("tpf2_mp/live_ui_build_diagnostics").capture, gui, pending)
     return queueCapture(pending)
   end
   gui.finishSuppressedNativeBuildCapture = finishSuppressedNativeBuildCapture
   local eventQueueRuntime = eventQueueRuntimeModule.new({
     gui = gui, correlation = correlation, earlyCapture = earlyCapture,
+    attachEvidence = attachNativeEvidence,
     drainEvents = drainSuppressedBuildEvents, captureFailure = captureFailure,
     finish = finishSuppressedNativeBuildCapture,
   })
@@ -174,9 +186,51 @@ function M.new(deps)
     if pending.exact and gui.pendingNetworkBuildSuppression
       and tonumber(gui.pendingNetworkBuildSuppression.correlationId)
         == tonumber(pending.correlationId) then
-      pending.suppressionDetectedFrame = gui.pendingNetworkBuildSuppression.detectedFrame
-      pending.suppressed = gui.pendingNetworkBuildSuppression.suppressed
-      gui.pendingNetworkBuildSuppression.pending = pending
+      local waiting = gui.pendingNetworkBuildSuppression
+      local nativeFactoryCapture = waiting.nativeFactoryCapture
+        or (waiting.pending and waiting.pending.nativeFactoryCapture)
+      local priorNativeTopology = waiting.pending
+        and waiting.pending.proposalSnapshot
+        and waiting.pending.proposalSnapshot.__nativeTopology
+      if priorNativeTopology and not nativeFactoryCapture then
+        gui.nativeBuildCapture.exactEvidenceUpgradeFailures =
+          (gui.nativeBuildCapture.exactEvidenceUpgradeFailures or 0) + 1
+        gui.pendingNetworkBuildSuppression = nil
+        gui.pendingNetworkBuildPreview = nil
+        gui.pendingNetworkBuildExact = nil
+        return captureFailure(
+          "exact apply upgrade lost the native capture behind its attested preview", {
+            correlationId = pending.correlationId,
+          })
+      end
+      if nativeFactoryCapture then
+        local attached, attachError, changed = attachNativeEvidence(
+          pending, nativeFactoryCapture)
+        if not attached then
+          gui.nativeBuildCapture.lastEarlyCaptureError = tostring(attachError)
+          gui.nativeBuildCapture.exactEvidenceUpgradeFailures =
+            (gui.nativeBuildCapture.exactEvidenceUpgradeFailures or 0) + 1
+          gui.pendingNetworkBuildSuppression = nil
+          gui.pendingNetworkBuildPreview = nil
+          gui.pendingNetworkBuildExact = nil
+          return captureFailure(
+            "exact apply payload disagrees with its attached native BuildProposal capture", {
+              error = tostring(attachError), correlationId = pending.correlationId,
+            })
+        end
+        pending = attached
+        if changed ~= false then
+          gui.nativeBuildCapture.exactEvidenceUpgrades =
+            (gui.nativeBuildCapture.exactEvidenceUpgrades or 0) + 1
+        end
+      end
+      pending.suppressionDetectedFrame = waiting.detectedFrame
+      pending.suppressed = waiting.suppressed
+      pending.suppressedCalls = waiting.suppressedCalls or 1
+      pending.nativeSuppressionGeneration = waiting.firstGeneration
+        or (waiting.pending and waiting.pending.nativeSuppressionGeneration)
+      waiting.pending = pending
+      waiting.nativeFactoryCapture = nativeFactoryCapture
       gui.pendingNetworkBuildPreview = nil
       gui.pendingNetworkBuildExact = nil
       return finishSuppressedNativeBuildCapture()

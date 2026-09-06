@@ -1,0 +1,782 @@
+{
+  "schemaVersion": 1,
+  "id": "tram-native-route",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {
+    "w": 1920,
+    "h": 1040
+  },
+  "cases": [
+    {
+      "id": "ground-cursor-physical-target-smoke",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "moveGround",
+          "world": [
+            -2200,
+            -1000
+          ],
+          "tolerance": 0.5
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "preview-public-tram-depot-site",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2200,
+            "y": -1000,
+            "distance": 650,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.depot/tram_depot_era_a.con"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.61,
+            0.35
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-tram-depot-on-public-road",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.61,
+            0.35
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "construction",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "depot"
+            ],
+            "op": "delta",
+            "value": 1
+          },
+          {
+            "path": [
+              "depotUi",
+              "missingName"
+            ],
+            "op": "equal",
+            "value": 0
+          }
+        ]
+      }
+    },
+    {
+      "id": "inspect-native-tram-road-upgrades",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.upgrades"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "preview-northern-road-tram-electrification",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.upgrades.item.tram_0"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.542,
+            0.18
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "electrify-northern-public-road",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.542,
+            0.18
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "snapshot",
+              "checkpointConsensus",
+              "lastAgreed",
+              "boundarySeq"
+            ],
+            "op": "deltaAtLeast",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "preview-southern-road-tram-electrification",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.653,
+            0.66
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "electrify-southern-public-road",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.653,
+            0.66
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "snapshot",
+              "checkpointConsensus",
+              "lastAgreed",
+              "boundarySeq"
+            ],
+            "op": "deltaAtLeast",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "preview-northern-public-road-tram-stop",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road.road-buildings.item.station/bus/small_mid.mdl"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.54,
+            0.18
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-native-northern-tram-stop",
+      "timeout": 120,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.54,
+            0.18
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "edge_object",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      },
+      "coverage": [
+        "tram-stop"
+      ]
+    },
+    {
+      "id": "preview-southern-public-road-tram-stop",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.66,
+            0.66
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-native-southern-tram-stop",
+      "timeout": 120,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.66,
+            0.66
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "move",
+          "point": [
+            0.28,
+            0.85
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "edge_object",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "native",
+              "inventory",
+              "counts",
+              "constructions",
+              "station"
+            ],
+            "op": "delta",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "open-connected-tram-depot-and-catalogue",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.construction.road"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.594,
+            0.321
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "waitUi",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "vehicleManager.buyVehicles"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 2
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "p1-buy-native-electric-tram",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.7,
+            0.58
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "vehicle",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "debit",
+          "company:2": "unchanged"
+        }
+      },
+      "coverage": [
+        "vanilla-buy-tram"
+      ]
+    },
+    {
+      "id": "create-native-tram-line",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.016
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.lineManager"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "lineManager.newLine"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "built",
+        "kind": "line",
+        "owner": "company:1",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        }
+      }
+    },
+    {
+      "id": "frame-road-stops-for-native-line-manager",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "camera",
+          "camera": {
+            "x": -2000,
+            "y": -1000,
+            "distance": 1000,
+            "angle": 0,
+            "pitch": 0.82
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "add-native-tram-line-stops",
+      "timeout": 180,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.528,
+            0.121
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "wait",
+          "seconds": 3
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.596,
+            0.412
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "structure",
+              "lines",
+              0,
+              "stops"
+            ],
+            "op": "length",
+            "value": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "open-native-tram-assignment",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.vehicleManager"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.426,
+            0.715
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.vehicleManager.setLineButton"
+          }
+        },
+        {
+          "peer": "player1",
+          "action": "observe"
+        }
+      ],
+      "expect": {
+        "outcome": "unchanged"
+      }
+    },
+    {
+      "id": "assign-tram-to-native-line",
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.466,
+            0.678
+          ]
+        }
+      ],
+      "expect": {
+        "outcome": "changed",
+        "finance": {
+          "company:1": "unchanged",
+          "company:2": "unchanged"
+        },
+        "checks": [
+          {
+            "path": [
+              "structure",
+              "lines",
+              0,
+              "vehicles"
+            ],
+            "op": "equal",
+            "value": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "drive-electric-tram-through-both-native-stops",
+      "timeout": 600,
+      "steps": [
+        {
+          "peer": "player1",
+          "action": "click",
+          "point": [
+            0.752,
+            0.617
+          ]
+        },
+        {
+          "peer": "player1",
+          "action": "click",
+          "selector": {
+            "id": "menu.speedButton3"
+          }
+        }
+      ],
+      "expect": {
+        "outcome": "journey",
+        "journey": {
+          "lineName": "Line 1",
+          "owner": "company:1",
+          "vehicles": 1,
+          "stops": 2,
+          "carrier": 2,
+          "models": [
+            "vehicle/tram/halle_v2.mdl"
+          ]
+        }
+      },
+      "coverage": [
+        "p1-tram-buy-assign-journey",
+        "tram-depot-connected",
+        "p1-tram-depot-road-connected"
+      ]
+    }
+  ],
+  "description": "Physical native P1 tram-depot road attachment, electrified road upgrades, both curb stops, electric tram Buy, line assignment and bilateral journeys."
+}

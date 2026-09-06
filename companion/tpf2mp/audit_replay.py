@@ -68,6 +68,13 @@ def replay(
                         "originPeer": str(message.get("origin_peer", "")),
                     }
                 elif action.get("type") == "operation.execute":
+                    superseded = action.get("supersedesCheckpointBoundarySeq")
+                    if superseded is not None:
+                        if not isinstance(superseded, int) or superseded not in checkpoint_expected_boundaries:
+                            raise ProtocolError(
+                                "operation supersedes an unknown checkpoint boundary"
+                            )
+                        checkpoint_expected_boundaries.discard(superseded)
                     operation_commits[seq] = {
                         "operationId": (
                             f"{message.get('session')}:{message.get('origin_peer')}:{seq}"

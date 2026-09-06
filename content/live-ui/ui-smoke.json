@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "id": "ui-entry-smoke",
+  "description": "Native toolbar interaction only. This smoke test is NOT construction coverage.",
+  "cases": [
+    {
+      "id": "p1-rail-toolbar",
+      "coverage": ["native-ui-input"],
+      "steps": [
+        {"peer": "player1", "action": "waitUi", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player1", "action": "waitUi", "selector": {"id": "menu.construction.rail.settingsWindow"}},
+        {"peer": "player1", "action": "observe"},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player1", "action": "waitUi", "selector": {"id": "menu.construction.rail.settingsWindow"}, "absent": true}
+      ],
+      "expect": {"outcome": "unchanged", "finance": {"company:1": "unchanged", "company:2": "unchanged"}}
+    },
+    {
+      "id": "p2-rail-toolbar",
+      "coverage": ["native-ui-input"],
+      "steps": [
+        {"peer": "player2", "action": "waitUi", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player2", "action": "waitUi", "selector": {"id": "menu.construction.rail.settingsWindow"}},
+        {"peer": "player2", "action": "observe"},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player2", "action": "waitUi", "selector": {"id": "menu.construction.rail.settingsWindow"}, "absent": true}
+      ],
+      "expect": {"outcome": "unchanged", "finance": {"company:1": "unchanged", "company:2": "unchanged"}}
+    }
+  ]
+}

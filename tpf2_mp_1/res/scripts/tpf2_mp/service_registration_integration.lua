@@ -1,4 +1,5 @@
 local M = {}
+local operationCheckpoint = require "tpf2_mp/service_registration_operation_checkpoint"
 
 function M.new(deps)
   local getState = assert(deps.getState, "state provider is required")
@@ -48,7 +49,9 @@ function M.new(deps)
   end
 
   return { line = line, existing = existing,
-    afterProposalOutcome = afterProposalOutcome }
+    afterProposalOutcome = afterProposalOutcome,
+    afterOperationCheckpoint = function(action)
+      return operationCheckpoint.after(action, getState(), getController(), line) end }
 end
 
 return M

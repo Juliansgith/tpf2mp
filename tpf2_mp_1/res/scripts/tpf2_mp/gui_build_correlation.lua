@@ -169,12 +169,26 @@ function M.new(gui, options)
     runtime.previews[tostring(correlationId)] = nil
   end
 
+  local function activePreview(pending)
+    -- A stationary native ghost does not necessarily emit another preview.
+    -- Keep only the currently armed, generation-bound preview alive until a
+    -- tool change/cancel/consume replaces it. At 200+ FPS, the history's 600
+    -- frame retention is just a few seconds, not a valid lifetime for a ghost.
+    return type(pending) == "table" and runtime.activeToolKey ~= nil
+      and tonumber(pending.correlationId) == tonumber(runtime.activeCorrelation)
+      and tonumber(pending.toolGeneration) == tonumber(runtime.toolGeneration)
+  end
+
+  local function expired(pending)
+    return not activePreview(pending)
+      and (gui.frames or 0) - (tonumber(pending.frame) or 0) > maximumAge
+  end
+
   local function prune()
-    local minimumFrame = (gui.frames or 0) - maximumAge
     local retained = {}
     for _, correlationId in ipairs(runtime.order) do
       local pending = runtime.previews[tostring(correlationId)]
-      if pending and (tonumber(pending.frame) or 0) >= minimumFrame then
+      if pending and not expired(pending) then
         retained[#retained + 1] = correlationId
       else
         remove(correlationId)
@@ -267,7 +281,7 @@ function M.new(gui, options)
       runtime.semanticRejects = runtime.semanticRejects + 1
       return false, "suppressed build belongs to a different active company"
     end
-    if (gui.frames or 0) - (tonumber(pending.frame) or 0) > maximumAge then
+    if expired(pending) then
       runtime.ambiguousRejects = runtime.ambiguousRejects + 1
       return false, "suppressed build preview correlation expired"
     end
@@ -293,7 +307,7 @@ function M.new(gui, options)
       runtime.semanticRejects = runtime.semanticRejects + 1
       return false, "builder.apply company differs from its preview company"
     end
-    if (gui.frames or 0) - (tonumber(context.frame) or 0) > maximumAge then
+    if expired(context) then
       runtime.ambiguousRejects = runtime.ambiguousRejects + 1
       return false, "builder.apply preview correlation expired"
     end

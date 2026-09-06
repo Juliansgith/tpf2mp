@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 from .bridge import AuditLog, AuditUnavailable, GameBridge
 from .checkpoint import CHECKPOINT_VERSION, verify_checkpoint
+from . import checkpoint_supersession
 from .completion_validation import (
     operation_completion_payload,
     proposal_completion_payload,
@@ -62,6 +63,15 @@ HOST_AUTHORITY_ACTIONS = {
 
 # Company-bound actions may originate on either peer; owners carry their service facts.
 COMPANY_BOUND_ACTIONS = {"proposal.prepare", "operation.execute", "line.register"}
+
+# Every ordered probe in this map exports a checkpoint from both game VMs.
+# Keep live commit tracking and audit replay on this single contract: omitting
+# a probe here leaves the games waiting forever for an outcome the host never
+# knows it must produce.
+PROBE_CHECKPOINT_REASONS = {
+    "probe.structural": "structural-probe",
+    "probe.native_fingerprint": "native-fingerprint-probe",
+}
 
 class CommitHost(HostIntentMixin):
     def __init__(
@@ -217,6 +227,7 @@ class CommitHost(HostIntentMixin):
                         self.sync_fault_emitted = True
                     elif action.get("type") == "operation.execute":
                         self._track_operation(message)
+                        checkpoint_supersession.restore(self, action, origin_peer, seq)
                     elif action.get("type") == "match.initialise":
                         tracked = self.restore_session.track_commit(message)
                         if tracked is None:
@@ -236,8 +247,10 @@ class CommitHost(HostIntentMixin):
                         self.industry_content_consensus.observe(
                             action, origin_peer, restoring=True,
                         )
-                    elif action.get("type") == "probe.structural":
-                        self._track_checkpoint_boundary(seq, "structural-probe")
+                    elif action.get("type") in PROBE_CHECKPOINT_REASONS:
+                        self._track_checkpoint_boundary(
+                            seq, PROBE_CHECKPOINT_REASONS[action.get("type")]
+                        )
                     elif action.get("type") == "recovery.resume":
                         self.restore_session.track_commit(message)
                     elif action.get("type") == "recovery.requalify":
@@ -449,6 +462,7 @@ class CommitHost(HostIntentMixin):
                 return None
             raw_action = intent.get("payload", {}).get("action")
             action = validate_action(raw_action)
+            checkpoint_supersession.reject_client_marker(raw_action)
             if action["type"] == "recovery.requalify":
                 if not isinstance(raw_action, Mapping) or set(raw_action) != {"type"}:
                     raise ProtocolError("recovery.requalify evidence is host-derived")
@@ -469,6 +483,7 @@ class CommitHost(HostIntentMixin):
                 emergency_pause or action["type"] in {"recovery.requalify", "recovery.cancel"}
             ):
                 raise ProtocolError(f"session is faulted: {self.session_fault}")
+            checkpoint_to_supersede = None
             if not clock_request and action["type"] != "recovery.cancel":
                 pending_prepare = self._pending_prepare()
                 if pending_prepare:
@@ -485,11 +500,7 @@ class CommitHost(HostIntentMixin):
                     raise ProtocolError(
                         f"physical operation {pending_operation['operationId']} is awaiting completion consensus"
                     )
-                checkpoint_pending = self._pending_checkpoint()
-                if checkpoint_pending:
-                    raise ProtocolError(
-                        f"checkpoint boundary {checkpoint_pending['boundarySeq']} is awaiting peer consensus"
-                    )
+                checkpoint_to_supersede = checkpoint_supersession.admit(self, self._pending_checkpoint(), action, origin)
             if action["type"] in HOST_AUTHORITY_ACTIONS and origin != self.bridge.peer:
                 raise ProtocolError(f"{action['type']} may only originate from host peer {self.bridge.peer}")
             if action["type"] == "proposal.build":
@@ -584,8 +595,8 @@ class CommitHost(HostIntentMixin):
             if clock_request:
                 requested = int(action["requestedSpeed"])
                 action = self.synchronization.prepare_clock_request(requested, origin)
-            seq = self.next_seq
-            self.next_seq += 1
+            seq = self.next_seq; self.next_seq += 1
+            action = checkpoint_supersession.annotate(checkpoint_to_supersede, action, origin, seq)
             commit = sign(
                 {
                     "protocol": PROTOCOL_VERSION,
@@ -624,8 +635,10 @@ class CommitHost(HostIntentMixin):
                 self._track_checkpoint_boundary(seq, "economy-settlement")
             elif action["type"] == "content.industry_attest":
                 self.industry_content_consensus.observe(action, origin)
-            elif action["type"] == "probe.structural":
-                self._track_checkpoint_boundary(seq, "structural-probe")
+            elif action["type"] in PROBE_CHECKPOINT_REASONS:
+                self._track_checkpoint_boundary(
+                    seq, PROBE_CHECKPOINT_REASONS[action["type"]]
+                )
             elif action["type"] == "recovery.resume":
                 self.restore_session.track_commit(commit)
             elif action["type"] == "recovery.requalify":

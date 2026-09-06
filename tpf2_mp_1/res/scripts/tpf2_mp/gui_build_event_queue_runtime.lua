@@ -7,6 +7,8 @@ function M.new(deps)
   local gui = assert(deps.gui, "GUI state is required")
   local correlation = assert(deps.correlation, "build correlation runtime is required")
   local earlyCapture = deps.earlyCapture
+  local attachEvidence = assert(deps.attachEvidence,
+    "native build evidence attachment is required")
   local drainEvents = assert(deps.drainEvents, "suppressed-build drain is required")
   local captureFailure = assert(deps.captureFailure, "build failure callback is required")
   local finish = assert(deps.finish, "build completion callback is required")
@@ -15,25 +17,17 @@ function M.new(deps)
     local eventQueueReady = gateSample and (gateSample.sampleVersion == 2
       or gateSample.sampleVersion == 3
       or gateSample.correlationQueueAvailable == true)
-    local factoryCaptureRequired = gateSample
-      and gateSample.factoryCaptureAvailable == true
-    local factoryDropped = tonumber(gateSample and gateSample.factoryDropped) or 0
-    if factoryCaptureRequired and factoryDropped > 0 then
-      return true, captureFailure(
-        "native pre-mutation BuildProposal capture queue previously overflowed; restart the multiplayer session",
-        { dropped = factoryDropped })
-    end
+    -- `factoryDropped` is a process-lifetime diagnostic. A ready-queue loss is
+    -- delivered exactly once as an F1 record by earlyCapture.drain; treating
+    -- the cumulative status counter as a current fault made every later click
+    -- fail even after the queue had been drained/reset.
     if earlyCapture then
       local _, earlyError = earlyCapture.drain(16)
       if earlyError and earlyError ~= "unavailable" then
         gui.nativeBuildCapture.lastEarlyCaptureError = tostring(earlyError)
-        if factoryCaptureRequired then
-          return true, captureFailure(
-            "cannot read the pre-mutation native BuildProposal capture",
-            { error = tostring(earlyError) })
-        end
-        gui.nativeBuildCapture.earlyCaptureFallbacks =
-          (gui.nativeBuildCapture.earlyCaptureFallbacks or 0) + 1
+        return true, captureFailure(
+          "cannot read the pre-mutation native BuildProposal capture queue",
+          { error = tostring(earlyError) })
       end
     end
 
@@ -47,12 +41,8 @@ function M.new(deps)
       end
       return false
     end
-    local dropped = tonumber(gateSample and gateSample.dropped) or 0
-    if dropped > 0 then
-      return true, captureFailure(
-        "native BuildProposal correlation queue previously overflowed; restart the multiplayer session",
-        { dropped = dropped })
-    end
+    -- Suppression-queue loss is likewise consumed once through drainEvents'
+    -- F1 record. The status value is lifetime telemetry, not pending state.
 
     gui.buildGateSuppressedSeen = current
     for _, event in ipairs(nativeEvents) do
@@ -75,37 +65,25 @@ function M.new(deps)
 
       local nativeFactoryCapture = earlyCapture and earlyCapture.take(event.correlation) or nil
       if nativeFactoryCapture then
-        local merged, mergeError = earlyCapture.merge(
-          pending.proposalSnapshot, nativeFactoryCapture)
-        if merged then
-          pending.proposalSnapshot = merged
-          pending.nativeFactoryCapture = nativeFactoryCapture
-          pending.nativeFactoryGeneration = nativeFactoryCapture.generation
-          pending.nativeFactoryCallerType = nativeFactoryCapture.callerType
+        local attached, mergeError = attachEvidence(pending, nativeFactoryCapture)
+        if attached then
+          pending = attached
           gui.nativeBuildCapture.earlyCaptures =
             (gui.nativeBuildCapture.earlyCaptures or 0) + 1
         else
           pending.nativeFactoryCaptureError = tostring(mergeError)
           gui.nativeBuildCapture.lastEarlyCaptureError = tostring(mergeError)
-          if factoryCaptureRequired then
-            return true, captureFailure(
-              "pre-mutation native BuildProposal capture disagrees with its semantic envelope", {
-                error = tostring(mergeError), correlationId = event.correlation,
-                generation = event.generation,
-              })
-          end
           gui.nativeBuildCapture.earlyCaptureFallbacks =
             (gui.nativeBuildCapture.earlyCaptureFallbacks or 0) + 1
         end
       else
         gui.nativeBuildCapture.earlyCaptureMisses =
           (gui.nativeBuildCapture.earlyCaptureMisses or 0) + 1
-        if factoryCaptureRequired then
-          return true, captureFailure(
-            "suppressed BuildProposal has no pre-mutation native factory capture", {
-              correlationId = event.correlation, generation = event.generation,
-            })
-        end
+        pending.nativeFactoryCaptureError =
+          "suppressed BuildProposal has no pre-mutation native factory capture"
+        gui.nativeBuildCapture.lastEarlyCaptureError = pending.nativeFactoryCaptureError
+        gui.nativeBuildCapture.earlyCaptureFallbacks =
+          (gui.nativeBuildCapture.earlyCaptureFallbacks or 0) + 1
       end
 
       local waiting = gui.pendingNetworkBuildSuppression
@@ -123,6 +101,13 @@ function M.new(deps)
         waiting.suppressedCalls = (waiting.suppressedCalls or 1) + 1
         waiting.pending.suppressedCalls = waiting.suppressedCalls
         waiting.lastGeneration = event.generation
+        -- A compound construction click may emit more than one native
+        -- BuildProposal. Retain the latest capture that successfully attached
+        -- to the shared pending snapshot; an exact apply must never fall back
+        -- to the first (or to GUI-only evidence).
+        if pending.nativeFactoryCapture == nativeFactoryCapture then
+          waiting.nativeFactoryCapture = nativeFactoryCapture
+        end
         gui.nativeBuildCapture.coalescedConstructionSuppressions =
           (gui.nativeBuildCapture.coalescedConstructionSuppressions or 0) + 1
       else
@@ -152,20 +137,24 @@ function M.new(deps)
       local upgraded = correlation.lookup(waiting.correlationId)
       if upgraded and upgraded.exact == true then
         if waiting.nativeFactoryCapture then
-          local merged, mergeError = earlyCapture.merge(
-            upgraded.proposalSnapshot, waiting.nativeFactoryCapture)
-          if merged then upgraded.proposalSnapshot = merged
-          else
-            upgraded.nativeFactoryCaptureError = tostring(mergeError)
+          local attached, mergeError, changed = attachEvidence(
+            upgraded, waiting.nativeFactoryCapture)
+          if not attached then
             gui.nativeBuildCapture.lastEarlyCaptureError = tostring(mergeError)
-            if factoryCaptureRequired then
-              return true, captureFailure(
-                "exact apply payload disagrees with its pre-mutation native BuildProposal capture", {
-                  error = tostring(mergeError), correlationId = waiting.correlationId,
-                })
-            end
-            gui.nativeBuildCapture.earlyCaptureFallbacks =
-              (gui.nativeBuildCapture.earlyCaptureFallbacks or 0) + 1
+            gui.nativeBuildCapture.exactEvidenceUpgradeFailures =
+              (gui.nativeBuildCapture.exactEvidenceUpgradeFailures or 0) + 1
+            gui.pendingNetworkBuildSuppression = nil
+            gui.pendingNetworkBuildPreview = nil
+            gui.pendingNetworkBuildExact = nil
+            return true, captureFailure(
+              "exact apply payload disagrees with its attached native BuildProposal capture", {
+                error = tostring(mergeError), correlationId = waiting.correlationId,
+              })
+          end
+          upgraded = attached
+          if changed ~= false then
+            gui.nativeBuildCapture.exactEvidenceUpgrades =
+              (gui.nativeBuildCapture.exactEvidenceUpgrades or 0) + 1
           end
         end
         upgraded.suppressionDetectedFrame = waiting.detectedFrame

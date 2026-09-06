@@ -25,8 +25,14 @@ def observe_cancel(
         tracker = host.checkpoint_consensus.get(boundary)
         if tracker and tracker.get("status") == "pending":
             tracker["status"] = "superseded"
-        current["status"] = "failed"
-        current["detail"] = str(
+        detail = str(
             action.get("errorCode") or "restore-point preparation cancelled"
         )
+        current["status"] = (
+            "superseded"
+            if current.get("automatic") is True
+            and detail == "new ordered gameplay superseded automatic restore-point preparation"
+            else "failed"
+        )
+        current["detail"] = detail
     return True

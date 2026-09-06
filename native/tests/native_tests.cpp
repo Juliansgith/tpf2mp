@@ -644,6 +644,82 @@ int main(int argc, char** argv) {
     return 1;
   }
   {
+    // Compound station/depot builders use segment tags as sparse semantic
+    // labels, not a parallel vector with one string per generated edge. A
+    // cardinality equality check here regressed otherwise valid native
+    // captures in live Build 35924 sessions.
+    auto compound_proposal = native_proposal;
+    std::array<std::uint8_t, tpf2mp::profile::kProposalEdgeRecordSize * 2>
+        compound_edges{};
+    std::memcpy(compound_edges.data(), captured_edge.data(), captured_edge.size());
+    std::memcpy(compound_edges.data() + captured_edge.size(), captured_edge.data(),
+                captured_edge.size());
+    const std::int32_t second_edge_entity = -5;
+    std::memcpy(compound_edges.data() + captured_edge.size(), &second_edge_entity,
+                sizeof(second_edge_entity));
+    std::array<std::uint8_t, tpf2mp::profile::kProposalNativeStringSize> segment_tag{};
+    constexpr char tag_text[] = "entrance";
+    const std::uint64_t tag_size = sizeof(tag_text) - 1;
+    const std::uint64_t tag_capacity = 15;
+    std::memcpy(segment_tag.data(), tag_text, tag_size);
+    std::memcpy(segment_tag.data() + 0x10, &tag_size, sizeof(tag_size));
+    std::memcpy(segment_tag.data() + 0x18, &tag_capacity, sizeof(tag_capacity));
+    const tpf2mp::native_command::NativeVectorLayout compound_edge_layout{
+        compound_edges.data(), compound_edges.data() + compound_edges.size(),
+        compound_edges.data() + compound_edges.size()};
+    const tpf2mp::native_command::NativeVectorLayout segment_tag_layout{
+        segment_tag.data(), segment_tag.data() + segment_tag.size(),
+        segment_tag.data() + segment_tag.size()};
+    std::memcpy(compound_proposal.data() +
+                    tpf2mp::profile::kProposalAddedEdgesOffset,
+                &compound_edge_layout, sizeof(compound_edge_layout));
+    std::memcpy(compound_proposal.data() +
+                    tpf2mp::profile::kProposalSegmentTagsOffset,
+                &segment_tag_layout, sizeof(segment_tag_layout));
+    tpf2mp::native_build::BuildFactoryCaptureQueue compound_queue(2, 2);
+    const auto compound_capture = compound_queue.Decode(
+        compound_proposal.data(), 709, 0x419F62, 12, true, false);
+    if (!compound_capture.valid || compound_capture.added_edges.size() != 2 ||
+        compound_capture.segment_tags.size() != 1 ||
+        compound_capture.segment_tags[0] != "entrance") {
+      std::cerr << "sparse compound-builder segment tags invalidated capture\n";
+      return 1;
+    }
+  }
+  {
+    // Stock GUI tools may construct tag-15 CommandData directly and skip the
+    // named make_cmd factory. CommandList::Add must still capture that exact
+    // pre-mutation payload and correlate it with the visitor.
+    tpf2mp::native_build::BuildFactoryCaptureQueue add_queue(4, 2);
+    std::array<std::uint8_t, sizeof(void*)> direct_command{};
+    const void* direct_data = native_proposal.data();
+    std::memcpy(direct_command.data(), &direct_data, sizeof(direct_data));
+    add_queue.ObserveAddOrDecode(direct_command.data(), direct_data, 708,
+                                 0x459EB7, 13);
+    if (!add_queue.PromoteSuppressed(direct_data)) {
+      std::cerr << "CommandList::Add fallback capture failed\n";
+      return 1;
+    }
+    const auto encoded_add_capture = add_queue.TakeEncoded();
+    if (!encoded_add_capture ||
+        encoded_add_capture->find("\"correlation\":708") == std::string::npos ||
+        encoded_add_capture->find(
+            "\"captureSource\":\"command-list-add\"") == std::string::npos ||
+        encoded_add_capture->find("\"optionFieldsKnown\":false") ==
+            std::string::npos ||
+        encoded_add_capture->find("\"factoryCallerRva\":0") ==
+            std::string::npos ||
+        add_queue.stats().factory_calls != 0 ||
+        add_queue.stats().add_fallback_calls != 1 ||
+        add_queue.stats().decoded != 1 || add_queue.stats().invalid != 0 ||
+        add_queue.stats().add_matches != 1 || add_queue.stats().add_misses != 0 ||
+        add_queue.stats().suppressed_matches != 1 ||
+        add_queue.stats().consumed != 1) {
+      std::cerr << "pre-mutation CommandList::Add fallback evidence is invalid\n";
+      return 1;
+    }
+  }
+  {
     tpf2mp::native_build::BuildFactoryCaptureQueue lifecycle_queue(1, 2);
     tpf2mp::native_build::BuildFactoryCapture first{};
     first.valid = true;
@@ -692,6 +768,64 @@ int main(int argc, char** argv) {
         newest_encoded->find("\"correlation\":902") == std::string::npos ||
         reuse_queue.stats().orphaned != 1) {
       std::cerr << "reused command-data pointer selected stale capture\n";
+      return 1;
+    }
+  }
+  {
+    // Compound construction clicks can enqueue multiple commands under one
+    // GUI correlation, including allocator reuse of the command/data slots.
+    // They must remain FIFO; a visitor from another correlation must not
+    // consume either entry.
+    tpf2mp::native_build::BuildFactoryCaptureQueue fifo_queue(4, 4, 8);
+    int reused_command = 1;
+    int reused_data = 2;
+    for (const int marker : {1001, 1002}) {
+      tpf2mp::native_build::BuildFactoryCapture capture{};
+      capture.valid = true;
+      capture.correlation = 903;
+      capture.added_nodes.push_back(
+          tpf2mp::native_build::ProposalNode{static_cast<float>(marker)});
+      fifo_queue.Commit(std::move(capture), &reused_command, &reused_data);
+      fifo_queue.ObserveAddOrDecode(&reused_command, &reused_data, 903,
+                                    0x201, 5);
+    }
+    if (fifo_queue.PromoteSuppressed(&reused_data, 904) ||
+        fifo_queue.stats().correlation_misses != 1 ||
+        !fifo_queue.PromoteSuppressed(&reused_data, 903)) {
+      std::cerr << "native factory capture crossed its GUI correlation\n";
+      return 1;
+    }
+    const auto first = fifo_queue.TakeEncoded();
+    if (!first || first->find("\"x\":1001") == std::string::npos ||
+        !fifo_queue.PromoteSuppressed(&reused_data, 903)) {
+      std::cerr << "same-correlation native captures were not FIFO\n";
+      return 1;
+    }
+    const auto second = fifo_queue.TakeEncoded();
+    if (!second || second->find("\"x\":1002") == std::string::npos ||
+        fifo_queue.stats().pending != 0 || fifo_queue.stats().dropped != 0) {
+      std::cerr << "same-correlation native capture FIFO lost evidence\n";
+      return 1;
+    }
+  }
+  {
+    // Factory calls abandoned before Add/visitor are normal hover lifecycle.
+    // Expiry is bounded and observable but must never become the sticky
+    // ready-evidence overflow fault.
+    tpf2mp::native_build::BuildFactoryCaptureQueue expiry_queue(8, 2, 2);
+    int commands[4]{};
+    int data[4]{};
+    for (int index = 0; index < 4; ++index) {
+      tpf2mp::native_build::BuildFactoryCapture capture{};
+      capture.valid = true;
+      capture.correlation = static_cast<std::uint64_t>(1100 + index);
+      expiry_queue.Commit(std::move(capture), &commands[index], &data[index]);
+    }
+    const auto stats = expiry_queue.stats();
+    if (stats.expired != 2 || stats.orphaned != 2 || stats.pending != 2 ||
+        stats.dropped != 0 ||
+        expiry_queue.has_ready() || expiry_queue.TakeEncoded().has_value()) {
+      std::cerr << "abandoned native factory capture became a sticky fault\n";
       return 1;
     }
   }
@@ -746,6 +880,18 @@ int main(int argc, char** argv) {
       ("native-test-" + std::to_string(GetCurrentProcessId()) + "-" +
        std::to_string(GetTickCount64()));
   tpf2mp::async_bridge::AsyncFileBridge async_bridge({2, 1024, 512});
+  const auto await_inbound = [&async_bridge]() {
+    // Pump uses an adaptive idle polling interval. A fixed Sleep(12) can land
+    // before the next poll on Windows and incorrectly report lost data.
+    const auto deadline = GetTickCount64() + 500;
+    do {
+      async_bridge.Pump();
+      auto item = async_bridge.TakeInbound();
+      if (item) return item;
+      Sleep(5);
+    } while (GetTickCount64() < deadline);
+    return decltype(async_bridge.TakeInbound()){};
+  };
   std::uint64_t effective_out = 0;
   std::string bridge_error;
   if (!async_bridge.Configure(bridge_root, 1, 1, effective_out, bridge_error) ||
@@ -769,12 +915,26 @@ int main(int argc, char** argv) {
     std::cerr << "could not stage native async bridge inbox fixture\n";
     return 1;
   }
-  Sleep(12);
-  async_bridge.Pump();
-  const auto inbound_item = async_bridge.TakeInbound();
+  const auto inbound_item = await_inbound();
   if (!inbound_item || inbound_item->first != 1 || inbound_item->second != "inbound" ||
       async_bridge.StatusJson().find("\"taken\":1") == std::string::npos) {
     std::cerr << "native async bridge did not preserve inbound sequence identity\n";
+    return 1;
+  }
+  // Lua authenticates opaque bytes after TakeInbound. If authentication
+  // fails, it reconfigures with its unchanged cursor; the durable record must
+  // then be readable again instead of leaving every later commit stranded
+  // behind a destructively advanced process-owned FIFO.
+  std::uint64_t rewind_effective = 0;
+  if (!async_bridge.Configure(bridge_root, 3, 1, rewind_effective, bridge_error)) {
+    std::cerr << "native async bridge refused an inbound rewind: " << bridge_error << "\n";
+    return 1;
+  }
+  const auto replayed_inbound = await_inbound();
+  if (!replayed_inbound || replayed_inbound->first != 1 ||
+      replayed_inbound->second != "inbound" ||
+      async_bridge.StatusJson().find("\"taken\":2") == std::string::npos) {
+    std::cerr << "native async bridge did not replay a rewound durable record\n";
     return 1;
   }
   std::uint64_t rejected_effective = 0;

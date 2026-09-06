@@ -7,13 +7,19 @@ for _, moduleName in ipairs({ "tpf2_mp_probe/json", "tpf2_mp/json" }) do
   if ok then json = value; break end
 end
 if not json then error("TPF2MP disposable probe JSON module is unavailable") end
--- proposal_codec keeps its production module names. Alias only the isolated
--- probe copies so this disposable base-resource harness executes the exact
--- shipped codec without creating a second production-named script tree.
-package.preload["tpf2_mp/util"] = function() return require "tpf2_mp_probe/util" end
-package.preload["tpf2_mp/json"] = function() return require "tpf2_mp_probe/json" end
-package.preload["tpf2_mp/hash"] = function() return require "tpf2_mp_probe/hash" end
-package.preload["tpf2_mp/canonical"] = function() return require "tpf2_mp_probe/canonical" end
+-- Production modules keep production-qualified requires. Redirect every such
+-- dependency into the disposable namespace so future module extraction cannot
+-- silently make this native probe unrunnable. The runner copies the complete
+-- production Lua directory, but the full multiplayer mod is never enabled.
+local loaders = package.loaders or package.searchers
+table.insert(loaders, 1, function(name)
+  local prefix = "tpf2_mp/"
+  if type(name) ~= "string" or name:sub(1, #prefix) ~= prefix then
+    return "\n\tnot a TPF2MP disposable-probe module"
+  end
+  local target = "tpf2_mp_probe/" .. name:sub(#prefix + 1)
+  return function() return require(target) end
+end)
 local proposalCodec = require "tpf2_mp_probe/proposal_codec"
 local operationCodec = require "tpf2_mp_probe/operation_codec"
 local operationVehiclePostcondition = require "tpf2_mp_probe/operation_vehicle_postcondition"

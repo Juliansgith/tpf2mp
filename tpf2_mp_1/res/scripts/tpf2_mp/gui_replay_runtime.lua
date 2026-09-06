@@ -271,7 +271,7 @@ function M.new(deps)
         local beforeWorld, worldCaptureError = proposalWorld.capture(
           types, issuerPlayerId, nativePlayerId, captureEntityDelta,
           proposalTransaction, replayLocalRefs, { omitConstructionCollateral =
-            record.replayPath == "staged-gui-build-proposal" })
+            constructionReplay.omitsCollateral(record) })
         if not beforeWorld then
           rejectGuiProposal(proposalId, worldCaptureError, true)
           return true
@@ -279,8 +279,16 @@ function M.new(deps)
         local beforeEdges = beforeWorld.sets.edges
         local beforeNodes = beforeWorld.sets.nodes
         local commandOrError, commandError = buildCommandFactory.make(
-          factory, proposal, proposalTransaction, materialisation, safeField)
+          factory, proposal, proposalTransaction, materialisation, safeField, {
+            -- This repair is the second half of one GUI-approved click.  The
+            -- helper shell occupies the depot footprint, so Build 35924 needs
+            -- the original soft-error allowance. Only this bounded,
+            -- postcondition-checked helper state machine can request it.
+            forceIgnoreSoftErrors = helperConnection,
+          })
         if not commandOrError then constructionReplay.rejectOrFallback(record, proposalId, commandError, queueGuiProposalResult, rejectGuiProposal); return true end
+        pcall(require("tpf2_mp/live_ui_build_diagnostics").replay,
+          gui, proposalId, commandOrError, eventShape)
         if state.networkMode == "network" then
           local authorize = rawget(_G, "tpf2mp_native_authorize_build")
           if type(authorize) ~= "function" then
@@ -295,7 +303,9 @@ function M.new(deps)
           end
         end
         gui.issuingCanonicalProposal = proposalId
-        local sent, sendError = util.sendCommand(commandOrError, function(_, success)
+        local sent, sendError = util.sendCommand(commandOrError, function(nativeResult, success)
+            pcall(require("tpf2_mp/live_ui_build_diagnostics").replay,
+              gui, proposalId, nativeResult or commandOrError, eventShape)
             replayQuarantine.nativeSettled(gui, proposalId); if success ~= true then
               rejectGuiProposal(proposalId, proposalWorld.rejection(beforeWorld,
                 types, issuerPlayerId, nativePlayerId, "native BuildProposal rejected"))

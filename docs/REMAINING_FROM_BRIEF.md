@@ -1,8 +1,8 @@
 # What remains from the TPF2MP brief
 
-Current release: `0.43.5-alpha`
+Current release: `0.44.0-alpha` (experimental testing release)
 
-Last reviewed: 2026-09-01
+Last reviewed: 2026-09-06
 
 ## Bottom line
 
@@ -16,6 +16,12 @@ two-computer receipt does not mean the implemented command is absent, while an
 unsupported engine command or script-heavy mod is a genuine authority gap.
 
 ## Before calling the alpha mature
+
+Complete and rerun the real player-input regression matrix on the release
+candidate. Priority gaps are combined demolition/attachment/terrain, a full
+railway workflow, construction variants, positive freight, save/load and the
+intermittent native Load Game stall. See [live UI testing](LIVE_UI_TESTING.md)
+and the [current qualification](../investigation/TRANSPORT_UI_QUALIFICATION_2026-09-06.md).
 
 1. **Physical two-computer endurance.** Run several multi-hour relay matches on
    different machines, GPUs, save sizes, and network qualities. Exercise both

@@ -968,7 +968,7 @@ bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {
       if (tag_mismatch) {
         ++g_build_gate_suppressed;
         g_suppressed_builds.Capture(g_build_gate_last_tag);
-        tpf2mp::native_build_hook::PromoteSuppressed(build_proposal);
+        tpf2mp::native_build_hook::PromoteSuppressed(build_proposal, g_suppressed_builds.last_correlation());
         suppress = true;
       } else if (g_build_gate_authorizations > 0) {
         --g_build_gate_authorizations;
@@ -976,11 +976,12 @@ bool DetourBuildProposalVisitor(void* visitor_context, void* build_proposal) {
         // Authorized replay must retire its early factory capture. Leaving it
         // pending makes pointer reuse correlate a later player command with
         // stale pre-mutation evidence.
-        tpf2mp::native_build_hook::DiscardObserved(build_proposal);
+        tpf2mp::native_build_hook::DiscardObserved(build_proposal, 0);
       } else {
         ++g_build_gate_suppressed;
         g_suppressed_builds.Capture(g_build_gate_last_tag);
-        tpf2mp::native_build_hook::PromoteSuppressed(build_proposal);
+        tpf2mp::native_build_hook::PromoteSuppressed(
+            build_proposal, g_suppressed_builds.last_correlation());
         suppress = true;
       }
     }

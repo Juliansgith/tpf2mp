@@ -21,6 +21,7 @@ local function prime(record, pending, before, tick, timeoutTicks, firstVerifyDel
   pending.lastReadySignature = nil
   pending.nextVerificationTick = tick + firstVerifyDelayTicks
   pending.verificationScans = 0
+  pending.collateralRetired = true
   record.replayPath = "staged-gui-build-proposal"
   record.status = "queued"
   return { stagedGuiBuild = true, proposalId = record.proposalId }
@@ -55,6 +56,11 @@ function M.advance(record, pending, deps)
       pendingRemovalInputs = count, pendingRemovalKinds = kinds,
     }
   end
+  -- This is the irreversible boundary shared by exact construction replay
+  -- and helper-built depots. Record it independently of the next replay path
+  -- so every subsequent reference/materialisation layer omits the roots it
+  -- has just verified absent.
+  pending.collateralRetired = true
   if policy.isStagedExact(record, deps.codec) then return M.stage(record, pending, deps) end
   return { readyForHelper = true }
 end

@@ -322,21 +322,35 @@ void WriteEdges(std::ostream& output, const std::vector<ProposalEdge>& values) {
 }  // namespace
 
 BuildFactoryCaptureQueue::BuildFactoryCaptureQueue(const std::size_t pending_limit,
-                                                   const std::size_t ready_limit)
+                                                   const std::size_t ready_limit,
+                                                   const std::uint64_t pending_generation_window)
     : pending_limit_(std::max<std::size_t>(1, pending_limit)),
-      ready_limit_(std::max<std::size_t>(1, ready_limit)) {}
+      ready_limit_(std::max<std::size_t>(1, ready_limit)),
+      pending_generation_window_(std::max<std::uint64_t>(1, pending_generation_window)) {}
 
 BuildFactoryCapture BuildFactoryCaptureQueue::Decode(
     const void* proposal_pointer, const std::uint64_t correlation,
     const std::uint32_t factory_caller_rva, const std::uint32_t factory_thread,
     const bool option_with_cost, const bool option_ignore_errors) {
   ++stats_.factory_calls;
+  return DecodeProposal(proposal_pointer, correlation, factory_caller_rva,
+                        factory_thread, option_with_cost, option_ignore_errors,
+                        true, false);
+}
+
+BuildFactoryCapture BuildFactoryCaptureQueue::DecodeProposal(
+    const void* proposal_pointer, const std::uint64_t correlation,
+    const std::uint32_t factory_caller_rva, const std::uint32_t capture_thread,
+    const bool option_with_cost, const bool option_ignore_errors,
+    const bool option_fields_known, const bool captured_at_add) {
   BuildFactoryCapture capture;
   capture.correlation = correlation;
   capture.factory_caller_rva = factory_caller_rva;
-  capture.factory_thread = factory_thread;
+  capture.factory_thread = capture_thread;
   capture.option_with_cost = option_with_cost;
   capture.option_ignore_errors = option_ignore_errors;
+  capture.option_fields_known = option_fields_known;
+  capture.captured_at_add = captured_at_add;
   stats_.last_correlation = correlation;
   stats_.last_factory_caller_rva = factory_caller_rva;
   const auto* proposal = static_cast<const std::uint8_t*>(proposal_pointer);
@@ -366,9 +380,6 @@ BuildFactoryCapture BuildFactoryCaptureQueue::Decode(
              !ReadConstructions(proposal, capture.constructions_to_add,
                                 capture.error)) {
     // The decoder assigned a precise bounded-read error.
-  } else if (!capture.segment_tags.empty() &&
-             capture.segment_tags.size() != capture.added_edges.size()) {
-    capture.error = "segment-tag count does not match added-edge count";
   } else {
     capture.valid = true;
   }
@@ -380,6 +391,38 @@ void BuildFactoryCaptureQueue::DropOldestPending() {
   if (pending_.empty()) return;
   pending_.pop_front();
   ++stats_.orphaned;
+  ++stats_.evicted_pending;
+}
+
+void BuildFactoryCaptureQueue::PruneExpired() {
+  while (!pending_.empty() && next_generation_ > pending_.front().generation &&
+         next_generation_ - pending_.front().generation > pending_generation_window_) {
+    pending_.pop_front();
+    ++stats_.orphaned;
+    ++stats_.expired;
+  }
+  stats_.pending = pending_.size();
+}
+
+void BuildFactoryCaptureQueue::RetirePointerReuse(
+    const void* command, const void* command_data,
+    const std::uint64_t correlation) {
+  // Allocator reuse across distinct GUI correlations is stale identity, not a
+  // second member of the current click's FIFO. Captures in the same
+  // correlation are retained in creation order: compound builders can emit
+  // several tag-15 commands from one apply action and all must survive.
+  for (auto found = pending_.begin(); found != pending_.end();) {
+    const bool pointer_match =
+        (command != nullptr && found->command == command) ||
+        (command_data != nullptr && found->command_data == command_data);
+    if (pointer_match && found->correlation != correlation) {
+      found = pending_.erase(found);
+      ++stats_.orphaned;
+      ++stats_.expired;
+    } else {
+      ++found;
+    }
+  }
 }
 
 void BuildFactoryCaptureQueue::Commit(BuildFactoryCapture capture,
@@ -389,49 +432,99 @@ void BuildFactoryCaptureQueue::Commit(BuildFactoryCapture capture,
   capture.command = command;
   capture.command_data = command_data;
   stats_.last_generation = capture.generation;
-  for (auto found = pending_.begin(); found != pending_.end();) {
-    if ((command != nullptr && found->command == command) ||
-        (command_data != nullptr && found->command_data == command_data)) {
-      found = pending_.erase(found);
-      ++stats_.orphaned;
-    } else {
-      ++found;
-    }
-  }
+  PruneExpired();
+  RetirePointerReuse(command, command_data, capture.correlation);
   while (pending_.size() >= pending_limit_) DropOldestPending();
   pending_.push_back(std::move(capture));
   stats_.pending = pending_.size();
 }
 
-void BuildFactoryCaptureQueue::ObserveAdd(const void* command,
-                                          const std::uint32_t add_caller_rva,
-                                          const std::uint32_t add_thread) {
-  auto found = std::find_if(pending_.rbegin(), pending_.rend(),
-                            [command](const BuildFactoryCapture& capture) {
-                              return capture.command == command;
+bool BuildFactoryCaptureQueue::MarkAdded(const void* command,
+                                         const std::uint64_t correlation,
+                                         const std::uint32_t add_caller_rva,
+                                         const std::uint32_t add_thread) {
+  PruneExpired();
+  auto found = std::find_if(pending_.begin(), pending_.end(),
+                            [command, correlation](const BuildFactoryCapture& capture) {
+                              return capture.command == command && !capture.added &&
+                                     (correlation == 0 ||
+                                      capture.correlation == correlation);
                             });
-  if (found == pending_.rend()) {
-    ++stats_.add_misses;
-    return;
+  if (found == pending_.end()) {
+    if (correlation != 0 && std::any_of(
+          pending_.begin(), pending_.end(),
+          [command](const BuildFactoryCapture& capture) {
+            return capture.command == command && !capture.added;
+          })) {
+      ++stats_.correlation_misses;
+    }
+    return false;
   }
   found->added = true;
   found->add_caller_rva = add_caller_rva;
   found->add_thread = add_thread;
   ++stats_.add_matches;
   stats_.last_add_caller_rva = add_caller_rva;
+  return true;
 }
 
-bool BuildFactoryCaptureQueue::PromoteSuppressed(const void* command_data) {
-  auto found = std::find_if(pending_.rbegin(), pending_.rend(),
-                             [command_data](const BuildFactoryCapture& capture) {
-                               return capture.command_data == command_data;
-                             });
-  if (found == pending_.rend() || !found->added) {
+void BuildFactoryCaptureQueue::ObserveAdd(const void* command,
+                                          const std::uint32_t add_caller_rva,
+                                          const std::uint32_t add_thread) {
+  if (!MarkAdded(command, 0, add_caller_rva, add_thread)) ++stats_.add_misses;
+}
+
+void BuildFactoryCaptureQueue::ObserveAddOrDecode(
+    const void* command, const void* command_data,
+    const std::uint64_t correlation, const std::uint32_t add_caller_rva,
+    const std::uint32_t add_thread) {
+  if (MarkAdded(command, correlation, add_caller_rva, add_thread)) return;
+  if (correlation == 0 || command_data == nullptr) {
+    ++stats_.add_misses;
+    return;
+  }
+
+  ++stats_.add_fallback_calls;
+  auto capture = DecodeProposal(command_data, correlation, 0, add_thread,
+                                false, false, false, true);
+  capture.command = command;
+  capture.command_data = command_data;
+  capture.added = true;
+  capture.add_caller_rva = add_caller_rva;
+  capture.add_thread = add_thread;
+  capture.generation = next_generation_++;
+  stats_.last_generation = capture.generation;
+  stats_.last_add_caller_rva = add_caller_rva;
+  PruneExpired();
+  RetirePointerReuse(command, command_data, capture.correlation);
+  while (pending_.size() >= pending_limit_) DropOldestPending();
+  pending_.push_back(std::move(capture));
+  ++stats_.add_matches;
+  stats_.pending = pending_.size();
+}
+
+bool BuildFactoryCaptureQueue::PromoteSuppressed(
+    const void* command_data, const std::uint64_t correlation) {
+  PruneExpired();
+  auto found = std::find_if(pending_.begin(), pending_.end(),
+                            [command_data, correlation](const BuildFactoryCapture& capture) {
+                              return capture.command_data == command_data && capture.added &&
+                                     (correlation == 0 ||
+                                      capture.correlation == correlation);
+                            });
+  if (found == pending_.end()) {
+    if (correlation != 0 && std::any_of(
+          pending_.begin(), pending_.end(),
+          [command_data](const BuildFactoryCapture& capture) {
+            return capture.command_data == command_data && capture.added;
+          })) {
+      ++stats_.correlation_misses;
+    }
     ++stats_.suppressed_misses;
     return false;
   }
   BuildFactoryCapture capture = std::move(*found);
-  pending_.erase(std::prev(found.base()));
+  pending_.erase(found);
   ++stats_.suppressed_matches;
   if (ready_.size() >= ready_limit_) {
     stats_.dropped += static_cast<std::uint64_t>(ready_.size()) + 1;
@@ -444,13 +537,17 @@ bool BuildFactoryCaptureQueue::PromoteSuppressed(const void* command_data) {
   return true;
 }
 
-bool BuildFactoryCaptureQueue::DiscardObserved(const void* command_data) {
-  auto found = std::find_if(pending_.rbegin(), pending_.rend(),
-                            [command_data](const BuildFactoryCapture& capture) {
-                              return capture.command_data == command_data;
+bool BuildFactoryCaptureQueue::DiscardObserved(
+    const void* command_data, const std::uint64_t correlation) {
+  PruneExpired();
+  auto found = std::find_if(pending_.begin(), pending_.end(),
+                            [command_data, correlation](const BuildFactoryCapture& capture) {
+                              return capture.command_data == command_data &&
+                                     (correlation == 0 ||
+                                      capture.correlation == correlation);
                             });
-  if (found == pending_.rend()) return false;
-  pending_.erase(std::prev(found.base()));
+  if (found == pending_.end()) return false;
+  pending_.erase(found);
   ++stats_.retired;
   stats_.pending = pending_.size();
   return true;
@@ -505,6 +602,8 @@ std::string EncodeBuildFactoryCapture(const BuildFactoryCapture& capture) {
   std::ostringstream output;
   output << "{\"schemaVersion\":1,\"generation\":" << capture.generation
          << ",\"correlation\":" << capture.correlation
+         << ",\"captureSource\":\""
+         << (capture.captured_at_add ? "command-list-add" : "factory") << "\""
          << ",\"factoryCallerRva\":" << capture.factory_caller_rva
          << ",\"addCallerRva\":" << capture.add_caller_rva
          << ",\"callerType\":\"" << BuildFactoryCallerType(capture.factory_caller_rva)
@@ -512,6 +611,8 @@ std::string EncodeBuildFactoryCapture(const BuildFactoryCapture& capture) {
          << ",\"addThread\":" << capture.add_thread
          << ",\"withCost\":" << (capture.option_with_cost ? "true" : "false")
          << ",\"ignoreErrors\":" << (capture.option_ignore_errors ? "true" : "false")
+         << ",\"optionFieldsKnown\":"
+         << (capture.option_fields_known ? "true" : "false")
          << ",\"valid\":" << (capture.valid ? "true" : "false")
          << ",\"error\":\"" << tpf2mp::JsonEscape(capture.error) << "\""
          << ",\"addedNodes\":";

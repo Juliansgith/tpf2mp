@@ -1,0 +1,672 @@
+{
+  "evidence": "localhost-ui-20260906-041925-dab688, physical native UI crossing",
+  "raw": {
+    "edgeObjectsToAdd": {},
+    "edgeObjectsToRemove": {},
+    "edgesToAdd": [
+      {
+        "comp": {
+          "node0": -1,
+          "node1": -2,
+          "tangent0": {
+            "x": -0.69544822,
+            "y": 77.6928024,
+            "z": -2.60965014
+          },
+          "tangent1": {
+            "x": -0.695431173,
+            "y": 77.6928101,
+            "z": -2.60964966
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -5,
+        "playerOwned": {
+          "player": 62328
+        },
+        "trackEdge": {
+          "catenary": true,
+          "trackType": 1
+        },
+        "type": 1
+      },
+      {
+        "comp": {
+          "node0": -2,
+          "node1": -3,
+          "tangent0": {
+            "x": -0.246909842,
+            "y": 27.5844955,
+            "z": -0.926544845
+          },
+          "tangent1": {
+            "x": -0.246970654,
+            "y": 27.5844994,
+            "z": -0.926544905
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -6,
+        "playerOwned": {
+          "player": 62328
+        },
+        "trackEdge": {
+          "catenary": true,
+          "trackType": 1
+        },
+        "type": 1
+      },
+      {
+        "comp": {
+          "node0": -3,
+          "node1": -4,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "x": -0.448631823,
+            "y": 50.1083145,
+            "z": -1.68310487
+          },
+          "tangent1": {
+            "x": -0.448523551,
+            "y": 50.1083107,
+            "z": -1.68310463
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -7,
+        "playerOwned": {
+          "player": 62328
+        },
+        "trackEdge": {
+          "catenary": true,
+          "trackType": 1
+        },
+        "type": 1
+      },
+      {
+        "comp": {
+          "node0": 79611,
+          "node1": -3,
+          "tangent0": {
+            "x": -3.013273,
+            "y": -1.24813592,
+            "z": 0.0579439178
+          },
+          "tangent1": {
+            "x": -3.04361916,
+            "y": -1.14217329,
+            "z": 0.0470864475
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -8,
+        "streetEdge": {
+          "bus": false,
+          "streetType": 15,
+          "tramTrackType": 0
+        },
+        "type": 0
+      },
+      {
+        "comp": {
+          "node0": -3,
+          "node1": 79612,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "x": -68.6476974,
+            "y": -25.7612934,
+            "z": 1.0620172
+          },
+          "tangent1": {
+            "x": -67.9739151,
+            "y": 28.1557674,
+            "z": -0.066510357
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -9,
+        "streetEdge": {
+          "bus": false,
+          "streetType": 15,
+          "tramTrackType": 0
+        },
+        "type": 0
+      }
+    ],
+    "edgesToRemove": [
+      {
+        "comp": {
+          "node0": 79611,
+          "node1": 79612,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "x": -70.9765244,
+            "y": -29.3993759,
+            "z": 1.36484742
+          },
+          "tangent1": {
+            "x": -70.9876556,
+            "y": 29.4041042,
+            "z": -0.0694592148
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": 79631,
+        "streetEdge": {
+          "bus": false,
+          "streetType": 15,
+          "tramTrackType": 0
+        },
+        "type": 0
+      }
+    ],
+    "nodesToAdd": [
+      {
+        "comp": {
+          "flags": 0,
+          "position": {
+            "x": -2200.78711,
+            "y": -944.640503,
+            "z": 7.67819977
+          },
+          "type": 2
+        },
+        "entity": -1
+      },
+      {
+        "comp": {
+          "flags": 512,
+          "position": {
+            "x": -2201.48242,
+            "y": -866.947693,
+            "z": 5.06855011
+          },
+          "type": 2
+        },
+        "entity": -2
+      },
+      {
+        "comp": {
+          "flags": 512,
+          "position": {
+            "x": -2201.72925,
+            "y": -839.363159,
+            "z": 4.14200497
+          },
+          "type": 2
+        },
+        "entity": -3
+      },
+      {
+        "comp": {
+          "flags": 0,
+          "position": {
+            "x": -2202.17798,
+            "y": -789.254883,
+            "z": 2.45890045
+          },
+          "type": 2
+        },
+        "entity": -4
+      }
+    ],
+    "nodesToRemove": {},
+    "schemaVersion": 1
+  },
+  "street": {
+    "addedNodes": {
+      "1": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "position": {
+            "__type": "userdata",
+            "x": -2200.787109375,
+            "y": -944.6405029296875,
+            "z": 7.678199768066406
+          }
+        },
+        "entity": -1
+      },
+      "2": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "position": {
+            "__type": "userdata",
+            "x": -2201.729248046875,
+            "y": -839.3631591796875,
+            "z": 4.14200496673584
+          }
+        },
+        "entity": -3
+      },
+      "3": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "position": {
+            "__type": "userdata",
+            "x": -2202.177978515625,
+            "y": -789.2548828125,
+            "z": 2.4589004516601562
+          }
+        },
+        "entity": -4
+      },
+      "4": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "position": {
+            "__type": "userdata",
+            "x": -2201.25830078125,
+            "y": -891.9996337890625,
+            "z": 5.910027980804443
+          }
+        },
+        "entity": -10
+      },
+      "5": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "position": {
+            "__type": "userdata",
+            "x": -2163.24658203125,
+            "y": -823.4830322265625,
+            "z": 3.679295778274536
+          }
+        },
+        "entity": -13
+      },
+      "__type": "userdata"
+    },
+    "addedSegments": {
+      "1": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": -3,
+          "node1": -4,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -0.44863182306289673,
+            "y": 50.108314514160156,
+            "z": -1.6831048727035522
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -0.44852355122566223,
+            "y": 50.10831069946289,
+            "z": -1.6831046342849731
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -7,
+        "params": {
+          "__type": "userdata",
+          "catenary": true,
+          "trackType": 1
+        },
+        "playerOwned": {
+          "__type": "userdata",
+          "player": 62328
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": -1
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": true,
+          "trackType": 1
+        },
+        "type": 1
+      },
+      "2": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": -3,
+          "node1": 79612,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -68.64769744873047,
+            "y": -25.761293411254883,
+            "z": 1.0620172023773193
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -67.97391510009766,
+            "y": 28.1557674407959,
+            "z": -0.06651035696268082
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -9,
+        "params": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": false,
+          "trackType": -1
+        },
+        "type": 0
+      },
+      "3": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": -1,
+          "node1": -10,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -0.47120192646980286,
+            "y": 52.640865325927734,
+            "z": -1.768172025680542
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -0.47108107805252075,
+            "y": 52.640865325927734,
+            "z": -1.7681714296340942
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -11,
+        "params": {
+          "__type": "userdata",
+          "catenary": true,
+          "trackType": 1
+        },
+        "playerOwned": {
+          "__type": "userdata",
+          "player": 62328
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": -1
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": true,
+          "trackType": 1
+        },
+        "type": 1
+      },
+      "4": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": -10,
+          "node1": -3,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -0.471041738986969,
+            "y": 52.636470794677734,
+            "z": -1.7680238485336304
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -0.4712670147418976,
+            "y": 52.636470794677734,
+            "z": -1.7680240869522095
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -12,
+        "params": {
+          "__type": "userdata",
+          "catenary": true,
+          "trackType": 1
+        },
+        "playerOwned": {
+          "__type": "userdata",
+          "player": 62328
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": -1
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": true,
+          "trackType": 1
+        },
+        "type": 1
+      },
+      "5": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": 79610,
+          "node1": -13,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -38.45803451538086,
+            "y": -15.929805755615234,
+            "z": -0.543516993522644
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -38.4580078125,
+            "y": -15.9298734664917,
+            "z": -0.038970015943050385
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -14,
+        "params": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": false,
+          "trackType": -1
+        },
+        "type": 0
+      },
+      "6": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": -13,
+          "node1": -3,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -38.464229583740234,
+            "y": -15.932452201843262,
+            "z": -0.03897632285952568
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -38.979129791259766,
+            "y": -14.62762451171875,
+            "z": 0.6030283570289612
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": -15,
+        "params": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": false,
+          "trackType": -1
+        },
+        "type": 0
+      },
+      "__type": "userdata"
+    },
+    "new2oldSegments": {
+      "-14": {
+        "1": 79630,
+        "2": 79631,
+        "__type": "userdata"
+      },
+      "-15": {
+        "1": 79630,
+        "2": 79631,
+        "__type": "userdata"
+      },
+      "-9": {
+        "1": 79631,
+        "__type": "userdata"
+      },
+      "__type": "userdata"
+    },
+    "removedNodes": {
+      "1": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "position": {
+            "__type": "userdata",
+            "x": -2198.69873046875,
+            "y": -838.1677856445312,
+            "z": 3.9790802001953125
+          }
+        },
+        "entity": 79611
+      },
+      "__type": "userdata"
+    },
+    "removedSegments": {
+      "1": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": 79611,
+          "node1": 79612,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -70.97652435302734,
+            "y": -29.399375915527344,
+            "z": 1.3648474216461182
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -70.98765563964844,
+            "y": 29.404104232788086,
+            "z": -0.0694592148065567
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": 79631,
+        "params": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": false,
+          "trackType": -1
+        },
+        "type": 0
+      },
+      "2": {
+        "__type": "userdata",
+        "comp": {
+          "__type": "userdata",
+          "node0": 79610,
+          "node1": 79611,
+          "objects": {
+            "__type": "table"
+          },
+          "tangent0": {
+            "__type": "userdata",
+            "x": -73.90827941894531,
+            "y": -30.613744735717773,
+            "z": -1.0445257425308228
+          },
+          "tangent1": {
+            "__type": "userdata",
+            "x": -73.90291595458984,
+            "y": -30.611522674560547,
+            "z": 1.4211206436157227
+          },
+          "type": 0,
+          "typeIndex": -1
+        },
+        "entity": 79630,
+        "params": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "streetEdge": {
+          "__type": "userdata",
+          "streetType": 15
+        },
+        "trackEdge": {
+          "__type": "userdata",
+          "catenary": false,
+          "trackType": -1
+        },
+        "type": 0
+      },
+      "__type": "userdata"
+    }
+  }
+}

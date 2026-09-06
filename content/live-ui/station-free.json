@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "id": "native-station-free-both-origins",
+  "description": "Physically select and place a native passenger station once from each company on the pinned map. Verify replicated native construction, owner, wallet and fresh shared checkpoint.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {"w": 1920, "h": 1040},
+  "cases": [
+    {
+      "id": "p1-station-free",
+      "coverage": ["p1-station-free"],
+      "steps": [
+        {"peer": "player1", "action": "camera", "camera": {"x": -1800, "y": -1000, "distance": 650, "angle": 0, "pitch": 0.82}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings"}},
+        {"peer": "player1", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings.item.station/rail/modular_station/modular_station.con_2"}},
+        {"peer": "player1", "action": "move", "point": [0.46, 0.40]},
+        {"peer": "player1", "action": "wait", "seconds": 5},
+        {"peer": "player1", "action": "observe"},
+        {"peer": "player1", "action": "click", "point": [0.46, 0.40]},
+        {"peer": "player1", "action": "move", "point": [0.28, 0.85]},
+        {"peer": "player1", "action": "observe"}
+      ],
+      "expect": {"outcome": "built", "kind": "construction", "count": 1, "owner": "company:1", "finance": {"company:1": "debit", "company:2": "unchanged"}, "checks": [{"path": ["native", "inventory", "counts", "constructions", "station_group"], "op": "delta", "value": 1}]}
+    },
+    {
+      "id": "p2-station-free",
+      "coverage": ["p2-station-free"],
+      "steps": [
+        {"peer": "player2", "action": "camera", "camera": {"x": -2200, "y": -1000, "distance": 650, "angle": 0, "pitch": 0.82}},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.rail"}},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings"}},
+        {"peer": "player2", "action": "click", "selector": {"id": "menu.construction.rail.rail-buildings.item.station/rail/modular_station/modular_station.con_3"}},
+        {"peer": "player2", "action": "move", "point": [0.40, 0.40]},
+        {"peer": "player2", "action": "wait", "seconds": 5},
+        {"peer": "player2", "action": "observe"},
+        {"peer": "player2", "action": "click", "point": [0.40, 0.40]},
+        {"peer": "player2", "action": "move", "point": [0.28, 0.85]},
+        {"peer": "player2", "action": "observe"}
+      ],
+      "expect": {"outcome": "built", "kind": "construction", "count": 1, "owner": "company:2", "finance": {"company:1": "unchanged", "company:2": "debit"}, "checks": [{"path": ["native", "inventory", "counts", "constructions", "station_group"], "op": "delta", "value": 1}]}
+    }
+  ]
+}

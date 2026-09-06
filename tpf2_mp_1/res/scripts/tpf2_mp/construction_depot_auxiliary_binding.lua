@@ -1,8 +1,9 @@
 local canonical = require "tpf2_mp/canonical"
+local connectionGraph = require "tpf2_mp/construction_depot_connection_graph"
 
 local M = {}
 
--- The stock street-depot helper owns a short entrance edge and its external
+-- The stock depot helper owns a short entrance edge and its external
 -- snap node, both of which remain attached to the construction. The canonical
 -- proposal edge is the appended connector beyond them. Bind both helper
 -- entities as explicit derived outputs so later operations can address the
@@ -11,6 +12,10 @@ function M.apply(state, record, bound, ownerOf, worldAdapter)
   if type(record) ~= "table" or record.replayPath ~= "helper-connected-depot" then
     return bound
   end
+  -- A nearby captured road split is coalesced onto the helper snap node. In
+  -- that shape the helper node and edge already *are* canonical node/edge
+  -- slots from the user's proposal, rather than additional derived outputs.
+  if connectionGraph.coalesces(record) then return bound end
   local pending = record.constructionPending
   local repair = type(pending) == "table" and pending.depotConnectionRepair or nil
   local edgeIds = type(repair) == "table" and repair.helperEdgeIds or nil
@@ -26,6 +31,13 @@ function M.apply(state, record, bound, ownerOf, worldAdapter)
   end
   if canonical.resolveCanonical(state.canonical, "node", nodeId) then
     return nil, "connected depot helper node was bound before proposal finalisation"
+  end
+
+  local sourceEdge = type(record.transaction.edges) == "table"
+    and record.transaction.edges[1] or nil
+  local carrier = type(sourceEdge) == "table" and sourceEdge.carrier or nil
+  if carrier ~= "street" and carrier ~= "track" then
+    return nil, "connected depot helper carrier is unavailable for canonical binding"
   end
 
   local nodeSlot = "node:helper:1"
@@ -54,7 +66,7 @@ function M.apply(state, record, bound, ownerOf, worldAdapter)
   local cid = canonical.createdId("edge", record.eventId .. ":helper", 1)
   local ok, bindError = canonical.bind(state.canonical, cid, "edge", edgeId, {
     owner = record.companyCid,
-    carrier = "street",
+    carrier = carrier,
     private = true,
     auxiliary = "construction-helper-entrance",
     proposalDigest = record.transaction.digest,

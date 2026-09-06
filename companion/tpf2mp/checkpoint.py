@@ -31,12 +31,16 @@ EVENT_RECORD_VERSION = 1
 def _validate_native_fingerprint(value: Any, expected_digest: Any) -> dict[str, Any]:
     fingerprint = _mapping(value, "checkpoint native fingerprint")
     schema = fingerprint.get("schemaVersion")
+    if type(schema) is not int:
+        raise ProtocolError("checkpoint native fingerprint header is invalid")
     required = {"schemaVersion", "categories", "counts", "digest"}
     optional: set[str] = set()
-    if schema == 2:
+    # v3 keeps the v2 wire shape but counts attached stop/waypoint objects,
+    # not only SIGNAL_LIST. Older saved checkpoints remain verifiable.
+    if schema in {2, 3}:
         required.add("inventoryComplete")
         optional.add("inventory")
-    if schema not in {1, 2} or not required <= set(fingerprint) \
+    if schema not in {1, 2, 3} or not required <= set(fingerprint) \
             or set(fingerprint) - required - optional:
         raise ProtocolError("checkpoint native fingerprint header is invalid")
     categories = _mapping(fingerprint.get("categories"), "native fingerprint categories")
@@ -51,7 +55,7 @@ def _validate_native_fingerprint(value: Any, expected_digest: Any) -> dict[str, 
     for name, count in counts.items():
         if _positive_int(count, f"native fingerprint {name} count") > 10_000_000:
             raise ProtocolError("native fingerprint entity count is too large")
-    if schema == 2:
+    if schema in {2, 3}:
         complete = fingerprint.get("inventoryComplete")
         if not isinstance(complete, bool) or complete != ("inventory" in fingerprint):
             raise ProtocolError("checkpoint native fingerprint inventory state is invalid")

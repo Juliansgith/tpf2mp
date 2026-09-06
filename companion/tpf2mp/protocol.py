@@ -13,6 +13,7 @@ from .fault_recovery_protocol import validation_error as fault_recovery_validati
 from .line_registration_protocol import validate_metadata as validate_line_metadata
 from .proposal_schema import (
     CONSTRUCTION_PROPOSAL_SCHEMA_VERSION, LEGACY_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
+    construction_fields as _construction_fields,
     LEGACY_PROPOSAL_SCHEMA_VERSION, MAX_CONSTRUCTION_COLLATERAL, MAX_CONSTRUCTION_PROPOSAL_EDGES,
     MAX_CONSTRUCTION_PROPOSAL_NODES, MAX_PROPOSAL_EDGE_OBJECTS, MAX_PROPOSAL_EDGES,
     MAX_PROPOSAL_NODES, MAX_PROPOSAL_OUTPUTS, MAX_PROPOSAL_REMOVALS, MAX_STATION_MODULES,
@@ -994,10 +995,9 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
         if len(constructions) != 1:
             raise ProtocolError("schema 7 proposal requires one construction change")
         construction = constructions[0]
-        fields = {
-            "slot", "mode", "adapter", "kind", "sourceCid", "fileName",
-            "transform", "params", "modules", "collateral",
-        }
+        fields, name_error = _construction_fields(schema_version, construction)
+        if name_error:
+            raise ProtocolError(name_error)
         if not isinstance(construction, dict) or set(construction) != fields or construction.get("slot") != "construction:1":
             raise ProtocolError("schema 7 construction has unknown or missing fields")
         mode, adapter, kind = construction.get("mode"), construction.get("adapter"), construction.get("kind")
@@ -1007,17 +1007,6 @@ def validate_proposal_transaction(value: Any) -> dict[str, Any]:
             raise ProtocolError("construction adapter is invalid")
         if kind not in {"rail_station", "station", "depot", "construction", "asset"}:
             raise ProtocolError("construction kind is invalid")
-        if mode == "build" and kind == "depot" and any(
-            edge.get("carrier") == "track"
-            and isinstance(endpoint, dict)
-            and isinstance(endpoint.get("cid"), str)
-            for edge in edges
-            for endpoint in (edge.get("node0"), edge.get("node1"))
-        ):
-            raise ProtocolError(
-                "network depot snapped to existing track; place the depot clear of track, "
-                "wait for synchronization, then connect it with a separate track build"
-            )
         source = construction.get("sourceCid")
         if mode == "build":
             if source != "":
@@ -1734,11 +1723,19 @@ def validate_action(action: Any) -> dict[str, Any]:
                     f"proposal edge:{index} requires a stable resource name on the network"
                 )
     if action_type == "operation.execute":
-        allowed = {"type", "transaction", "originCaptureToken"}
+        allowed = {"type", "transaction", "originCaptureToken", "supersedesCheckpointBoundarySeq"}
         if not {"type", "transaction"} <= set(action) or set(action) - allowed:
             raise ProtocolError("operation.execute has unknown or missing fields")
         validate_operation_transaction(action.get("transaction"))
         token = action.get("originCaptureToken")
+        superseded = action.get("supersedesCheckpointBoundarySeq")
+        if superseded is not None and (
+            isinstance(superseded, bool) or not isinstance(superseded, int)
+            or superseded < 1 or superseded > MAX_EXACT_INTEGER
+        ):
+            raise ProtocolError("operation.execute has an invalid checkpoint supersession boundary")
+        if superseded is not None and token is None:
+            raise ProtocolError("operation.execute checkpoint supersession requires an optimistic-origin token")
         if token is not None:
             if (
                 not isinstance(token, str)

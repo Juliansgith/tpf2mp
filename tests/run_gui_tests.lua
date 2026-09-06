@@ -1,6 +1,7 @@
 local project = assert(arg[1], "project root argument required"):gsub("\\", "/")
 package.path = project .. "/tpf2_mp_1/res/scripts/?.lua;" .. package.path
 local util = require "tpf2_mp/util"
+local json = require "tpf2_mp/json"
 
 local sentEvents = {}
 local enabled = {}
@@ -17,6 +18,7 @@ local nativeBuildGeneration = 0
 local nativeBuildDropped = 0
 local nativeBuildArmedCorrelation = 0
 local nativeBuildEvents = {}
+local nativeFactoryCaptures = {}
 local nativeSpeedRequests = {}
 local nativeLineCommands = {}
 local nativeVehicleCommands = {}
@@ -76,7 +78,10 @@ tpf2mp_native_take_suppressed_build = function()
   if #nativeBuildEvents == 0 then return nil end
   return table.remove(nativeBuildEvents, 1)
 end
-tpf2mp_native_take_build_factory_capture = function() return nil end
+tpf2mp_native_take_build_factory_capture = function()
+  if #nativeFactoryCaptures == 0 then return nil end
+  return table.remove(nativeFactoryCaptures, 1)
+end
 
 tpf2mp_native_set_command_observer = function(callback)
   assert(type(callback) == "function", "native observer setter did not receive a function")
@@ -1170,6 +1175,124 @@ tpf2mp_native_take_suppressed_build = function()
   if #nativeBuildEvents == 0 then return nil end
   return table.remove(nativeBuildEvents, 1)
 end
+
+-- Reproduce the live public-road crossing order exactly: the suppression and
+-- native factory payload arrive while a GUI preview is pending, followed by a
+-- builder.apply envelope whose replacement street edge omits the default
+-- tramTrackType. The exact upgrade must retain native topology rather than
+-- replacing it with the weaker GUI-only snapshot.
+do
+local crossingCase = {}
+crossingCase.captureCount = #proposalCaptureEvents()
+crossingCase.preview = {
+  data = { costs = 2250, trackType = 3, catenary = false },
+  proposal = { streetProposal = {
+    nodesToAdd = {
+      { entity = -101, comp = { position = { x = 0, y = 0, z = 1 } } },
+      { entity = -102, comp = { position = { x = 50, y = 0, z = 1 } } },
+      { entity = -103, comp = { position = { x = 25, y = -10, z = 1 } } },
+      { entity = -104, comp = { position = { x = 25, y = 10, z = 1 } } },
+    },
+    edgesToAdd = {
+      { entity = -111, type = 1, comp = {
+        node0 = -101, node1 = -102,
+        tangent0 = { x = 50, y = 0, z = 0 },
+        tangent1 = { x = 50, y = 0, z = 0 }, type = 0, typeIndex = -1,
+      }, trackEdge = { trackType = 3, catenary = false } },
+      { entity = -112, type = 0, comp = {
+        node0 = -103, node1 = -104,
+        tangent0 = { x = 0, y = 20, z = 0 },
+        tangent1 = { x = 0, y = 20, z = 0 }, type = 0, typeIndex = 0,
+      }, streetEdge = { streetType = 2, hasBus = false } },
+    },
+    nodesToRemove = {}, edgesToRemove = {},
+    edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+  } },
+}
+assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", crossingCase.preview) == nil,
+  "mixed track/public-road crossing preview was unexpectedly vetoed")
+crossingCase.correlation = nativeBuildArmedCorrelation
+nativeBuildGeneration = nativeBuildGeneration + 1
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+crossingCase.nativeCapture = {
+  schemaVersion = 1, generation = 1201, correlation = crossingCase.correlation,
+  valid = true, captureSource = "factory", optionFieldsKnown = true,
+  factoryThread = 11, addThread = 11,
+  factoryCallerRva = 0x459E97, addCallerRva = 0x459EB7,
+  callerType = "track-builder", withCost = true, ignoreErrors = false,
+  addedNodes = {
+    { e = -101, x = 0, y = 0, z = 1, t = 0, f = 0 },
+    { e = -102, x = 50, y = 0, z = 1, t = 0, f = 0 },
+    { e = -103, x = 25, y = -10, z = 1, t = 0, f = 0 },
+    { e = -104, x = 25, y = 10, z = 1, t = 0, f = 0 },
+  },
+  removedNodes = {},
+  addedEdges = {
+    { e = -111, n0 = -101, n1 = -102, t0 = { 50, 0, 0 }, t1 = { 50, 0, 0 },
+      carrier = 1, w28 = 0, w2c = -1, trackType = 3, f64 = 0, player = 100, owned = 1 },
+    { e = -112, n0 = -103, n1 = -104, t0 = { 0, 20, 0 }, t1 = { 0, 20, 0 },
+      carrier = 0, w28 = 0, w2c = 0, streetType = 2, w50 = 0,
+      tramTrackType = 0, player = -1, owned = 0 },
+  },
+  removedEdges = {}, edgeObjectsToAdd = {}, edgeObjectsToRemove = {},
+  constructionsToAdd = {}, constructionsToRemove = {},
+  frozenNodeIndices = {}, segmentTags = {},
+}
+nativeFactoryCaptures[#nativeFactoryCaptures + 1] = json.encode(crossingCase.nativeCapture)
+nativeBuildEvents[#nativeBuildEvents + 1] = table.concat({
+  "S1", nativeBuildGeneration, crossingCase.correlation, 15,
+}, "|")
+script.guiUpdate()
+assert(script.guiHandleEvent("trackBuilder", "builder.apply", crossingCase.preview) == nil,
+  "exact mixed crossing apply was unexpectedly vetoed")
+for _ = 1, 4 do script.guiUpdate() end
+captures = proposalCaptureEvents()
+crossingCase.result = captures[#captures] and captures[#captures].param.proposalSnapshot
+assert(#captures == crossingCase.captureCount + 1
+    and crossingCase.result.__nativeTopology.edgesToAdd[2].streetEdge.tramTrackType == 0
+    and crossingCase.result.__nativeFactoryCapture.correlation == crossingCase.correlation,
+  "exact crossing apply discarded its already-captured native street defaults")
+
+-- The exact GUI callback can be the only place a mixed track/road proposal
+-- exposes a collateral town-building removal. Build 35924's native topology
+-- vector is still authoritative for the carrier graph, but an empty native
+-- construction vector must not erase this correlation-bound semantic fact.
+crossingCase.collateralCaptureCount = #proposalCaptureEvents()
+crossingCase.collateralPreview = util.deepCopy(crossingCase.preview)
+crossingCase.collateralPreview.data.costs = 47851
+crossingCase.collateralPreview.proposal.constructionsToRemove = { 700 }
+assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate",
+    crossingCase.collateralPreview) == nil,
+  "mixed crossing/demolition preview was unexpectedly vetoed")
+crossingCase.collateralCorrelation = nativeBuildArmedCorrelation
+crossingCase.collateralNativeCapture = util.deepCopy(crossingCase.nativeCapture)
+crossingCase.collateralNativeCapture.generation = 1202
+crossingCase.collateralNativeCapture.correlation = crossingCase.collateralCorrelation
+crossingCase.collateralNativeCapture.constructionsToRemove = {}
+nativeBuildGeneration = nativeBuildGeneration + 1
+nativeBuildGate.suppressed = nativeBuildGate.suppressed + 1
+nativeFactoryCaptures[#nativeFactoryCaptures + 1] = json.encode(
+  crossingCase.collateralNativeCapture)
+nativeBuildEvents[#nativeBuildEvents + 1] = table.concat({
+  "S1", nativeBuildGeneration, crossingCase.collateralCorrelation, 15,
+}, "|")
+script.guiUpdate()
+assert(script.guiHandleEvent("trackBuilder", "builder.apply",
+    crossingCase.collateralPreview) == nil,
+  "exact mixed crossing/demolition apply was unexpectedly vetoed")
+for _ = 1, 4 do script.guiUpdate() end
+captures = proposalCaptureEvents()
+crossingCase.collateralResult = captures[#captures]
+  and captures[#captures].param.proposalSnapshot
+assert(#captures == crossingCase.collateralCaptureCount + 1
+    and (crossingCase.collateralResult.__constructionRemovals[1]
+      or crossingCase.collateralResult.__constructionRemovals["1"]) == 700
+    and crossingCase.collateralResult.__nativeFactoryCapture.nativeConstructionRemoveCount == 0
+    and crossingCase.collateralResult.__nativeFactoryCapture.semanticConstructionRemoveCount == 1
+    and crossingCase.collateralResult.__nativeFactoryCapture.mergedConstructionRemoveCount == 1,
+  "suppression-first exact upgrade discarded GUI-only construction collateral")
+end
+
 local transitionCaptureCount = #proposalCaptureEvents()
 local transitionErrors = observedEvents("native.buildProposal.captureError")
 assert(script.guiHandleEvent(
@@ -1206,12 +1329,19 @@ assert(#captures == transitionCaptureCount + 1
 
 local overflowCaptureCount = #proposalCaptureEvents()
 local overflowErrors = observedEvents("native.buildProposal.captureError")
-nativeBuildDropped = 1
+nativeBuildEvents[#nativeBuildEvents + 1] = "F1|suppressed-build-queue-overflow|1"
 assert(script.guiHandleEvent("trackBuilder", "builder.proposalCreate", networkPreview) == nil)
 for _ = 1, 4 do script.guiUpdate() end
 assert(#proposalCaptureEvents() == overflowCaptureCount
     and observedEvents("native.buildProposal.captureError") > overflowErrors,
-  "a historically overflowed native correlation queue resumed accepting builds")
+  "a pending native correlation-queue overflow resumed accepting builds")
+-- Once that exact loss was consumed, a cumulative status counter from the
+-- process lifetime must not poison a reset/new match.
+nativeBuildDropped = 1
+local historicalErrors = observedEvents("native.buildProposal.captureError")
+for _ = 1, 2 do script.guiUpdate() end
+assert(observedEvents("native.buildProposal.captureError") == historicalErrors,
+  "a consumed historical native queue loss remained a sticky build fault")
 nativeBuildDropped = 0
 
 -- Build 35924 throws a table-valued native exception when its global unpack
@@ -1570,6 +1700,35 @@ assert(referenceGuard.validate(stagedFreshStation, {}, nil, {
     omitConstructionCollateral = true,
   }),
   "slot-local station after collateral demolition incorrectly required a canonical-node API")
+
+-- Connected depots use a helper-built shell followed by a topology-only GUI
+-- repair. Their collateral has already been demolished before that second
+-- replay. The old path-name special case covered staged stations only, so the
+-- guard demanded the now-absent house and faulted both otherwise equal worlds.
+local guiConstructionReplay = require "tpf2_mp/gui_construction_replay"
+local depotConnectionRepairForCollateral = require "tpf2_mp/construction_depot_connection_repair"
+local originalDepotMaterialiseForCollateral = depotConnectionRepairForCollateral.materialise
+depotConnectionRepairForCollateral.materialise = function()
+  return { repaired = true }, { transaction = { nodes = {}, edges = {} } }
+end
+local postCollateralDepot, postCollateralDepotError = guiConstructionReplay.materialise({
+  replayPath = "helper-depot-connection",
+  constructionPending = { collateralRetired = true },
+  transaction = {
+    nodes = {}, edges = {}, remove = { nodes = {}, edges = {} },
+    edgeObjects = { add = {}, retain = {}, remove = {} },
+    constructions = { {
+      mode = "build", kind = "depot",
+      collateral = {
+        { kind = "construction", cid = "construction:pre:demolished-house" },
+      },
+    } },
+  },
+}, { ["construction:pre:demolished-house"] = 901 }, 100, nil)
+depotConnectionRepairForCollateral.materialise = originalDepotMaterialiseForCollateral
+assert(postCollateralDepot and postCollateralDepot.repaired == true,
+  "post-collateral depot connector revalidated its demolished house: "
+    .. tostring(postCollateralDepotError))
 local referenceTransaction = { edges = {{
   node0 = { cid = "node:event:prior:3" }, node1 = { slot = "node:1" },
 }} }

@@ -1435,8 +1435,8 @@ local stationAccess = stationAccessModule.new({
 local stationGroupPassengerAccess = stationAccess.stationGroupPassengerAccess
 M.stationGroupPassengerAccess = stationGroupPassengerAccess
 local lineReading = lineReadingModule.new({
-  getApi = function() return api end,
-  entityNumber = entityNumber,
+  getApi = function() return api end, entityNumber = entityNumber, nameOf = componentNameOf,
+  resolveCanonical = canonical.resolveCanonical, fingerprint = M.fingerprint,
 })
 local lineServiceKind = lineReading.lineServiceKind
 M.lineServiceKind = lineServiceKind
@@ -1526,15 +1526,10 @@ local nativeFingerprint = nativeFingerprintModule.new({
   topologyFingerprint = M.topologyFingerprint,
   listTowns = M.listTowns, listIndustries = M.listIndustries,
   townCapacity = townCapacity, listKind = listKind,
+  listInventoryEdgeObjects = require("tpf2_mp/world_edge_object_inventory").forWorld(M, component),
   kindOf = M.kindOf, ownerOf = M.ownerOf,
-  resolveCanonical = canonical.resolveCanonical,
-  vehicleLine = function(vehicleId, registry)
-    local transportVehicle = component(
-      vehicleId, api.type.ComponentType.TRANSPORT_VEHICLE)
-    local lineId = tonumber(safeComponentField(transportVehicle, "line"))
-    if not lineId or lineId < 0 then return nil end
-    return canonical.resolveCanonical(registry, "line", lineId) or "unbound-line"
-  end,
+  resolveCanonical = canonical.resolveCanonical, lineDescriptor = lineReading.nativeDescriptor,
+  vehicleLine = lineReading.vehicleLine,
 })
 M.nativeFingerprint = nativeFingerprint.sample
 

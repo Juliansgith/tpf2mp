@@ -6,9 +6,11 @@ LEGACY_PROPOSAL_SCHEMA_VERSION = 5
 PROPOSAL_SCHEMA_VERSION = 6
 LEGACY_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION = 7
 CONSTRUCTION_PROPOSAL_SCHEMA_VERSION = 8
+NAMED_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION = 9
 SUPPORTED_PROPOSAL_SCHEMA_VERSIONS = {
     LEGACY_PROPOSAL_SCHEMA_VERSION, PROPOSAL_SCHEMA_VERSION,
     LEGACY_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION, CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
+    NAMED_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
 }
 MAX_PROPOSAL_NODES = 256
 MAX_PROPOSAL_EDGES = 256
@@ -29,15 +31,37 @@ TRAM_TRACK_PLAIN = 1
 TRAM_TRACK_ELECTRIC = 2
 
 
+def valid_construction_name(construction: Any) -> bool:
+    name = construction.get("name") if isinstance(construction, dict) else None
+    if not isinstance(name, str) or construction.get("mode") == "remove":
+        return False
+    try:
+        return 0 < len(name.encode("utf-8")) <= 240 and all(ord(char) >= 32 for char in name)
+    except UnicodeEncodeError:
+        return False
+
+
+def construction_fields(version: int, construction: Any) -> tuple[set[str], str | None]:
+    fields = {"slot", "mode", "adapter", "kind", "sourceCid", "fileName",
+              "transform", "params", "modules", "collateral"}
+    if version == NAMED_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION:
+        fields.add("name")
+        if not valid_construction_name(construction):
+            return fields, "construction name is invalid"
+    return fields, None
+
+
 def construction_proposal_schema(version: Any) -> bool:
     return version in {
         LEGACY_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
         CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
+        NAMED_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
     }
 
 
 def street_features_schema(version: Any) -> bool:
-    return version in {PROPOSAL_SCHEMA_VERSION, CONSTRUCTION_PROPOSAL_SCHEMA_VERSION}
+    return version in {PROPOSAL_SCHEMA_VERSION, CONSTRUCTION_PROPOSAL_SCHEMA_VERSION,
+                       NAMED_CONSTRUCTION_PROPOSAL_SCHEMA_VERSION}
 
 
 def street_feature_error(edge: Mapping[str, Any], version: Any) -> str | None:

@@ -11,13 +11,35 @@ Run from the repository root:
 
 ```powershell
 .\tools\run_tests.ps1
-.\tools\package_release.ps1 -Version 0.43.5-alpha
+.\tools\package_release.ps1 -Version 0.44.0-alpha
 ```
 
 The gate covers Lua/Python deterministic parity, proposal and operation codecs,
 ownership, finance, transport conservation, reconnect backlog replay, recovery
 plan integrity, launcher construction, native-hook signatures/build, release
 manifest checks, and a transactional clean install/uninstall.
+
+## Native UI regression evidence
+
+`0.44.0-alpha` is explicitly published as an experimental testing release,
+not as completion of the full acceptance procedure below. Its release notes
+disclose missing construction, operational and persistence coverage. Preserve
+the full gate and report missing/current-source proof rather than treating
+this limited release as a blanket PASS.
+
+For construction capture, suppression, depot UI, line editing, or purchase
+changes, include real stock-widget evidence from the changed entry path.
+Prepared-action replay tests do not establish that a human click works.
+Use [the real UI runner](LIVE_UI_TESTING.md), retain its per-case report and
+screenshots, and add a repeatable recipe for each newly reproduced regression.
+An equal pair with no building is not a successful construction test.
+
+The full automated UI matrix is tracked in
+`content/live-ui/required-coverage.json`; run `tools/check_live_ui_coverage.py`
+with current-source UI reports before claiming full automated UI coverage.
+This gate deliberately rejects missing, blocked, stale, and replay-only proof.
+Until all recipes are calibrated and pass, report the remaining UI coverage
+explicitly and retain the human live-alpha scenario below.
 
 ## Clean-machine gate
 
