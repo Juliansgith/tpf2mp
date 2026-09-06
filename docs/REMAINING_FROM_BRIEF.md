@@ -1,6 +1,6 @@
 # What remains from the TPF2MP brief
 
-Current release: `0.44.0-alpha` (experimental testing release)
+Current release: `0.44.1-alpha` (experimental testing release)
 
 Last reviewed: 2026-09-06
 

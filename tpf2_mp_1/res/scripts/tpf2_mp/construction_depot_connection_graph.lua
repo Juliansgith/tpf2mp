@@ -107,7 +107,9 @@ local function nearbySplitJunction(transaction, repair)
       branches = branches + 1
     end
   end
-  if branches < 2 then return nil end
+  -- Existing dead-end road nodes have one branch. Capture expands their full
+  -- neighbourhood and explicitly removes the old node before this repair.
+  if branches < 2 and not (branches == 1 and #(transaction.remove.nodes or {}) == 1) then return nil end
   return { entranceSlot = entrance.slot, junctionSlot = junctionSlot,
     distance = math.sqrt(distance) }
 end

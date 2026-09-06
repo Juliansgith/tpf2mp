@@ -82,6 +82,9 @@ try {
     & $lua (Join-Path $projectRoot 'tests\run_construction_corpus_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Construction corpus tests failed with exit code $LASTEXITCODE" }
 
+    & $lua (Join-Path $projectRoot 'tests\run_depot_junction_tests.lua') $projectRoot
+    if ($LASTEXITCODE -ne 0) { throw "Depot existing-junction tests failed with exit code $LASTEXITCODE" }
+
     & $lua (Join-Path $projectRoot 'tests\run_live_ui_observer_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw "Live UI observer tests failed with exit code $LASTEXITCODE" }
 

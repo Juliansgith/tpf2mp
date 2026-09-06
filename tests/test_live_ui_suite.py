@@ -36,6 +36,27 @@ BUILD = {"outcome": "built", "kind": "construction", "count": 1, "owner": "compa
 
 
 class OracleTests(unittest.TestCase):
+    def test_existing_junction_recipe_cannot_pass_a_free_depot_or_micro_connector(self):
+        recipe = load_suite(ROOT / 'content/live-ui/depot-existing-node.json')
+        self.assertNotIn('calibrationIdleSeconds', recipe)
+        expect = recipe['cases'][1]['expect']
+        self.assertIs(expect['geometry'], True)
+        before, after = pair(), pair(True)
+        for peer in before:
+            before[peer]['native']['inventory']['counts']['constructions']['depot'] = 0
+            after[peer]['native']['inventory']['counts']['constructions']['depot'] = 1
+            before[peer]['native']['inventory']['counts']['edges'] = {'node': 10, 'edge': 10}
+            after[peer]['native']['inventory']['counts']['edges'] = {'node': 11, 'edge': 11}
+            after[peer]['depotUi'] = {'missingName': 0}
+        verify(before, after, expect)
+        for peer in after:
+            detached = copy.deepcopy(after)
+            detached[peer]['native']['inventory']['counts']['edges']['node'] = 12
+            with self.assertRaises(Pending): verify(before, detached, expect)
+            residual = copy.deepcopy(after)
+            residual[peer]['native']['inventory']['counts']['edges']['edge'] = 12
+            with self.assertRaises(Pending): verify(before, residual, expect)
+
     def test_journey_records_busy_samples_but_fault_and_consensus_still_gate_pass(self):
         class Trace:
             def __init__(self): self.samples = 0

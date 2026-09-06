@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "id": "depot-existing-node",
+  "description": "Existing-node road depot regression from localhost-manual-20260906-145621; distinguish this from middle-of-road splitting.",
+  "saveSha256": "47fbd37409d999392301a884ef3caa6297c682c58cdfda604b1f89ce79f0f5e3",
+  "viewport": {"w": 1920, "h": 1040},
+  "cases": [{
+    "id": "preview-existing-node-depot",
+    "steps": [
+      {"peer":"player1","action":"camera","camera":{"x":-800,"y":-1100,"distance":450,"angle":0,"pitch":0.82}},
+      {"peer":"player1","action":"click","selector":{"id":"menu.construction.road"}},
+      {"peer":"player1","action":"click","selector":{"id":"menu.construction.road.road-buildings"}},
+      {"peer":"player1","action":"click","selector":{"id":"menu.construction.road.road-buildings.item.depot/road_depot_era_a.con"}},
+      {"peer":"player1","action":"moveGround","world":[-804.376017,-1126.802871],"tolerance":0.8},
+      {"peer":"player1","action":"key","key":"m"},
+      {"peer":"player1","action":"key","key":"m"},
+      {"peer":"player1","action":"key","key":"m"},
+      {"peer":"player1","action":"key","key":"m"},
+      {"peer":"player1","action":"key","key":"m"},
+      {"peer":"player1","action":"wait","seconds":2},
+      {"peer":"player1","action":"observe"}
+    ],
+    "expect":{"outcome":"unchanged"}
+  }, {
+    "id":"place-depot-at-existing-road-node",
+    "timeout":180,
+    "steps":[
+      {"peer":"player1","action":"clickGround","world":[-804.376017,-1126.802871],"tolerance":0.8},
+      {"peer":"player1","action":"wait","seconds":2},
+      {"peer":"player1","action":"click","selector":{"id":"menu.construction.road"}}
+    ],
+    "expect":{"outcome":"built","kind":"construction","owner":"company:1","geometry":true,
+      "finance":{"company:1":"debit","company:2":"unchanged"},
+      "checks":[{"path":["native","inventory","counts","constructions","depot"],"op":"delta","value":1},
+        {"path":["native","inventory","counts","edges","node"],"op":"delta","value":1},
+        {"path":["native","inventory","counts","edges","edge"],"op":"delta","value":1},
+        {"path":["depotUi","missingName"],"op":"equal","value":0}]}
+  }]
+}

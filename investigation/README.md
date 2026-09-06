@@ -6,8 +6,14 @@ vehicle suite: fixed bus, truck, passenger ship and aircraft route passes,
 terrain-height proof, retained failures and the unqualified matrix remainder.
 Do not treat the 412 required coverage labels as 412 implemented tests.
 
+[Road depot at an existing road junction (2026-09-06)](DEPOT_EXISTING_ROAD_JUNCTION_2026-09-06.md)
+records the post-0.44.0 manual failure, its pre-PREPARE neighborhood expansion,
+and the bilateral physical-UI regression pass. This shape was missing from
+the earlier mid-road-split bus/tram fixtures; it is not covered merely because
+those workflows passed.
+
 Last updated: 2026-09-06 (Europe/Amsterdam), experimental release
-`0.44.0-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+`0.44.1-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
 passenger-presentation schema `4`, cargo-presentation schema `2`,
 freight-industry schema `3`, edge proposal schema `6`, construction proposal
 schemas `8`/`9`, native edge-object inventory schema `3`, native hook `0.20.0`.

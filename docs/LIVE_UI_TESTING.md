@@ -66,6 +66,17 @@ fail independently of gameplay; those runs stop with retained evidence.
 
 ## Running
 
+For the existing-road-node depot regression, use
+`content/live-ui/depot-existing-node.json` with its pinned 1940 save. This is
+separate from the mid-road split exercised by `bus-native-route.json` and
+`tram-native-route.json`. It requires exactly one net native node and edge,
+not just a visible depot: a detached building or a residual micro-connector
+must fail. The fixed candidate passed on both peers in
+`localhost-ui-20260906-165104-29a35a`, including finance, native geometry,
+checkpoint, supervisor audit and cleanup. See the
+[incident and verification record](../investigation/DEPOT_EXISTING_ROAD_JUNCTION_2026-09-06.md).
+This does not expand the claimed coverage to every construction variant.
+
 Use an unlocked interactive Windows desktop, Windows Python with Pillow,
 Lua 5.1, Steam and the supported game binary. Close existing games first.
 Do not use the mouse/keyboard during an unattended run. No fullscreen or

@@ -11,7 +11,7 @@ Run from the repository root:
 
 ```powershell
 .\tools\run_tests.ps1
-.\tools\package_release.ps1 -Version 0.44.0-alpha
+.\tools\package_release.ps1 -Version 0.44.1-alpha
 ```
 
 The gate covers Lua/Python deterministic parity, proposal and operation codecs,
@@ -21,7 +21,7 @@ manifest checks, and a transactional clean install/uninstall.
 
 ## Native UI regression evidence
 
-`0.44.0-alpha` is explicitly published as an experimental testing release,
+`0.44.1-alpha` is explicitly published as an experimental testing release,
 not as completion of the full acceptance procedure below. Its release notes
 disclose missing construction, operational and persistence coverage. Preserve
 the full gate and report missing/current-source proof rather than treating

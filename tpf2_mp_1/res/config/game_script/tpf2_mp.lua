@@ -2513,14 +2513,23 @@ local function normaliseForNetwork(action)
     if not companyCid or copy.companyCid ~= companyCid then
       return nil, "proposal capture company does not match this peer's assigned company"
     end
-    local transaction, proposalError = proposalCodec.normalise(copy.proposalSnapshot, companyCid, {
+    local captureOptions = {
       resolveCanonical = proposalResolveCanonical,
       resourceName = proposalResourceName,
       entityPosition = proposalEntityPosition,
       entityKind = world.kindOf,
       constructionKind = world.constructionKindOf,
       requireResourceName = true,
-    })
+    }
+    local transaction, proposalError = proposalCodec.normalise(copy.proposalSnapshot, companyCid, captureOptions)
+    if transaction then
+      transaction, proposalError = require("tpf2_mp/proposal_depot_junction_capture").normalise(transaction, {
+        api = api, codec = proposalCodec, options = captureOptions,
+        resolveLocal = function(cid, kind)
+          return world.findPreExistingLocal(state.canonical, cid, kind, { worldState = state.world })
+        end,
+      })
+    end
     if transaction then
       local portable, portableError = proposalCodec.validatePortable(transaction)
       if not portable then transaction, proposalError = nil, portableError end
