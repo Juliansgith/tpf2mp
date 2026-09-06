@@ -8677,6 +8677,11 @@ class NetworkIntegrationTests(unittest.TestCase):
                     "127.0.0.1", 0, root / "audit.ndjson",
                     require_connected_peers=False,
                 )
+                # ConsensusTrackers captures its default clock at import time;
+                # patching time.monotonic above does not replace that default.
+                # All deadlines in this fixture must use the same fake clock,
+                # otherwise results depend on the test machine's real uptime.
+                host.consensus.monotonic = monotonic
                 host.clock_requested_speed = host.clock_effective_speed = 1
                 host._record_non_intent(vehicle_sync_record("player1", 1, "held"))
                 tracker = next(iter(host.vehicle_sync_rounds.values()))
@@ -8684,6 +8689,7 @@ class NetworkIntegrationTests(unittest.TestCase):
 
                 now[0] = 1_001.0
                 pause = host._emit_clock_commit_locked(1, 0, "long-user-pause")
+                self.assertEqual(host.clock_controls[pause["seq"]]["deadline"], 1_011.0)
                 self.assertFalse(host.clock_pause_acknowledged)
                 host._record_non_intent(proposal_prepare_ack("player1", 2, pause["seq"]))
                 host._record_non_intent(proposal_prepare_ack("player2", 1, pause["seq"]))
@@ -8698,8 +8704,13 @@ class NetworkIntegrationTests(unittest.TestCase):
                 self.assertIsNone(host.session_fault, "shared pause consumed active timeout budget")
 
                 resume = host._emit_clock_commit_locked(1, 1, "long-user-pause-ended")
-                now[0] = 1_451.0
+                self.assertEqual(host.clock_controls[resume["seq"]]["deadline"], 1_411.0)
+                # Exercise a pending resume inside its independent 10-second
+                # ACK deadline. Advancing 50 seconds tests clock-ACK failure,
+                # not vehicle timeout protection during an acknowledged pause.
+                now[0] = 1_406.0
                 host.synchronization.expire(now[0])
+                self.assertEqual(host.clock_controls[resume["seq"]]["status"], "pending")
                 self.assertTrue(
                     host.clock_pause_acknowledged,
                     "pending resume incorrectly restarted the vehicle timeout",
@@ -8708,11 +8719,11 @@ class NetworkIntegrationTests(unittest.TestCase):
                 host._record_non_intent(proposal_prepare_ack("player2", 2, resume["seq"]))
                 self.assertFalse(host.clock_pause_acknowledged)
                 self.assertEqual(host.clock_pause_acknowledged_generation, 2)
-                self.assertEqual(tracker["deadline"], 1_630.0)
+                self.assertEqual(tracker["deadline"], 1_585.0)
 
-                host.synchronization.vehicle.expire(1_629.999)
+                host.synchronization.vehicle.expire(1_584.999)
                 self.assertIsNone(host.session_fault)
-                host.synchronization.vehicle.expire(1_630.0)
+                host.synchronization.vehicle.expire(1_585.0)
                 self.assertEqual(
                     host.session_fault,
                     "vehicle-sync-timeout:vehicle:event:station-sync:1:1",
