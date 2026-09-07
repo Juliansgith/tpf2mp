@@ -8,6 +8,7 @@ from typing import Any
 
 from .bridge import AuditUnavailable
 from .protocol import ProtocolError
+from .transport import shutdown_connection
 
 
 def run_host(host: Any, poll_seconds: float = 0.1) -> None:
@@ -84,6 +85,7 @@ def run_host(host: Any, poll_seconds: float = 0.1) -> None:
         listener.close()
         with host.peers_lock:
             for peer in host.peers.values():
+                shutdown_connection(peer.sock)
                 peer.sock.close()
         host._write_status("stopped")
 
@@ -102,6 +104,7 @@ def _fence_failed_authority(
         host.peers.clear()
     for peer in connected:
         try:
+            shutdown_connection(peer.sock)
             peer.sock.close()
         except OSError:
             pass

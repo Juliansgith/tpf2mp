@@ -7,7 +7,7 @@ from typing import Any
 from .bridge import AuditUnavailable
 from .active_content import describe_content_mismatch
 from .protocol import PROTOCOL_VERSION, ProtocolError, sign, validate_envelope
-from .transport import ConnectedPeer, read_frame, send
+from .transport import ConnectedPeer, SocketReader, read_frame, send, shutdown_connection
 
 
 def serve_peer(host: Any, conn: socket.socket, address: tuple[str, int]) -> None:
@@ -15,7 +15,7 @@ def serve_peer(host: Any, conn: socket.socket, address: tuple[str, int]) -> None
 
     peer_name: str | None = None
     ready_connection = False
-    reader = conn.makefile("rb")
+    reader = SocketReader(conn)
     try:
         greeting = read_frame(reader)
         validate_envelope(greeting, host.bridge.session)
@@ -57,6 +57,7 @@ def serve_peer(host: Any, conn: socket.socket, address: tuple[str, int]) -> None
         with host.peers_lock:
             old = host.peers.pop(peer_name, None)
             if old:
+                shutdown_connection(old.sock)
                 old.sock.close()
         if old:
             with host.order_lock:

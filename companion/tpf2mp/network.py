@@ -41,7 +41,7 @@ from .protocol import (
 )
 from .client import CommitClient
 from .active_content import compact_content_inventory
-from .transport import ConnectedPeer, send as _send
+from .transport import ConnectedPeer, send as _send, shutdown_connection
 HOST_AUTHORITY_ACTIONS = {
     "match.initialise",
     "match.finish",
@@ -1465,26 +1465,23 @@ class CommitHost(HostIntentMixin):
                             )
 
     def _broadcast(self, message: Mapping[str, Any]) -> None:
-        failed: list[str] = []
+        failed: list[ConnectedPeer] = []
         with self.peers_lock:
             peers = list(self.peers.values())
         for peer in peers:
             try:
                 _send(peer.sock, message, peer.send_lock)
             except OSError:
-                failed.append(peer.peer)
-        if failed:
-            with self.peers_lock:
-                for peer_name in failed:
-                    item = self.peers.pop(peer_name, None)
-                    if item:
-                        try:
-                            item.sock.close()
-                        except OSError:
-                            pass
-            for peer_name in failed:
-                with self.order_lock:
-                    self.reconnect.disconnected(peer_name, "broadcast-failed")
+                failed.append(peer)
+        for peer in failed:
+            with self.order_lock:
+                with self.peers_lock:
+                    if self.peers.get(peer.peer) is not peer:
+                        continue
+                    self.peers.pop(peer.peer)
+                    shutdown_connection(peer.sock)
+                    peer.sock.close()
+                self.reconnect.disconnected(peer.peer, "broadcast-failed")
 
     def _serve_peer(self, conn: socket.socket, address: tuple[str, int]) -> None:
         serve_peer(self, conn, address)

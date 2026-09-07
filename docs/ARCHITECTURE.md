@@ -363,6 +363,12 @@ captured table reference would therefore mutate stale state after loading.
   `passenger_feeder_live_report.py` add only their domain proof ladders; they
   must not fork their own definitions of physical or checkpoint consensus.
 - `transport.py` owns framed socket I/O and connected-peer transport state.
+  Gameplay reads consume at most the 4 MiB frame limit plus one rejection
+  byte. Nonblocking socket writes have a five-second deadline including send
+  lock acquisition; expiry shuts down that stream and enters existing reconnect
+  handling. The matching socket reader preserves fragmented/coalesced frames
+  without using a buffered file reader on a nonblocking socket. Failed broadcasts
+  remove only the exact failed connection, never its replacement.
 - `native_mod_table.py` reads only the bounded native-save header needed to
   obtain the ordered active-mod/DLC table. `active_content.py` resolves official
   DLC, game/local mods, Workshop IDs, and the installed TPF2MP alias; hashes

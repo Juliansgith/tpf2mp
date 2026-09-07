@@ -8,7 +8,7 @@ from typing import Any
 from .anchor_io import validate_anchor_state
 from .active_content import describe_content_mismatch
 from .protocol import ProtocolError, hello, validate_envelope
-from .transport import read_frame, send
+from .transport import SocketReader, read_frame, send
 
 
 def run_client_session(client: Any, poll_seconds: float) -> None:
@@ -17,7 +17,7 @@ def run_client_session(client: Any, poll_seconds: float) -> None:
     sock = socket.create_connection((client.host, client.port), timeout=5)
     sock.settimeout(None)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    reader = sock.makefile("rb")
+    reader = SocketReader(sock)
     send_lock = threading.Lock()
     try:
         send(sock, hello(
