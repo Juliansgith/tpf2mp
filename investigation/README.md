@@ -12,11 +12,16 @@ and the bilateral physical-UI regression pass. This shape was missing from
 the earlier mid-road-split bus/tram fixtures; it is not covered merely because
 those workflows passed.
 
-Last updated: 2026-09-06 (Europe/Amsterdam), experimental release
-`0.44.1-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+Last updated: 2026-09-09 (Europe/Amsterdam), experimental release
+`0.44.2-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
 passenger-presentation schema `4`, cargo-presentation schema `2`,
 freight-industry schema `3`, edge proposal schema `6`, construction proposal
 schemas `8`/`9`, native edge-object inventory schema `3`, native hook `0.20.0`.
+
+[Save/load reliability](SAVE_LOAD_RELIABILITY_2026-09-08.md) records metadata
+validation and the passing paired save/reload/re-save cycle.
+[Host snapshot recovery](HOST_SNAPSHOT_RECOVERY_2026-09-08.md) records automated
+takeover checks and the blocked native attempt; it is not a live takeover pass.
 
 [Real native UI regression harness (2026-09-05)](REAL_UI_REGRESSION_HARNESS_2026-09-05.md)
 records the physical-input runner, bilateral acceptance oracle, harness
