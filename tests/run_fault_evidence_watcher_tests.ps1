@@ -204,7 +204,7 @@ try {
             -Session $latchedSession -Peer player1 -BoundarySeq 12
         $latchedSave = Join-Path $latchedSaveRoot ($latchedBaseName + '.sav')
         [IO.File]::WriteAllBytes($latchedSave, [byte[]](7, 7, 7))
-        [IO.File]::WriteAllText($latchedSave + '.lua', 'return { delayed = true }',
+        [IO.File]::WriteAllText($latchedSave + '.lua', 'function data() return { delayed = true } end',
             [Text.UTF8Encoding]::new($false))
         $deadline = (Get-Date).AddSeconds(12)
         do {
@@ -275,10 +275,10 @@ try {
     $receiptOriginal = Join-Path $automaticSaveRoot ($receiptPrefix + '_original.sav')
     $receiptOverwritten = Join-Path $automaticSaveRoot ($receiptPrefix + '_retry.sav')
     [IO.File]::WriteAllBytes($receiptOriginal, [byte[]](9, 8, 7))
-    [IO.File]::WriteAllText($receiptOriginal + '.lua', 'return { original = true }',
+    [IO.File]::WriteAllText($receiptOriginal + '.lua', 'function data() return { original = true } end',
         [Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllBytes($receiptOverwritten, [byte[]](3, 2, 1))
-    [IO.File]::WriteAllText($receiptOverwritten + '.lua', 'return { retry = true }',
+    [IO.File]::WriteAllText($receiptOverwritten + '.lua', 'function data() return { retry = true } end',
         [Text.UTF8Encoding]::new($false))
     $receipt = [pscustomobject]@{
         saveSha256 = (Get-FileHash -LiteralPath $receiptOriginal -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -318,7 +318,7 @@ if ($Action -eq 'click-ui' -and $ClientX -eq 1443 -and $ClientY -eq 858) {
                 ($env:TPF2MP_UI_TEST_SAVE + '.lua'), '-DelayMilliseconds', '11000') | Out-Null
     }
     else {
-        [IO.File]::WriteAllText($env:TPF2MP_UI_TEST_SAVE + '.lua', 'return { ui = true }')
+        [IO.File]::WriteAllText($env:TPF2MP_UI_TEST_SAVE + '.lua', 'function data() return { ui = true } end')
     }
 }
 if ($ResultPath) {
@@ -333,7 +333,7 @@ if ($ResultPath) {
 param([Parameter(Mandatory = $true)][string]$MetadataPath,
     [Parameter(Mandatory = $true)][int]$DelayMilliseconds)
 Start-Sleep -Milliseconds $DelayMilliseconds
-[IO.File]::WriteAllText($MetadataPath, 'return { ui = true }')
+[IO.File]::WriteAllText($MetadataPath, 'function data() return { ui = true } end')
 '@
     [IO.File]::WriteAllText(
         $delayedWriter, $delayedWriterSource, [Text.UTF8Encoding]::new($false))

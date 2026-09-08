@@ -20,7 +20,7 @@ def main() -> None:
     save = root / "player2.sav"
     save.write_bytes(b"synthetic-player2-receipt-bound-world")
     Path(str(save) + ".lua").write_text(
-        "return { syntheticBoundary = 9 }", encoding="utf-8"
+        "function data() return { syntheticBoundary = 9 } end", encoding="utf-8"
     )
     hashes = hash_load_bearing_save(save)
     boundary = 9

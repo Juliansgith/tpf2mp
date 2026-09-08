@@ -190,7 +190,8 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\public_snapshot.lua' = 285
     'tpf2_mp_1\res\scripts\tpf2_mp\capture_public_view.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\performance_runtime.lua' = 130
-    'tpf2_mp_1\res\scripts\tpf2_mp\network_pump_runtime.lua' = 130
+    # Includes launcher recovery prerequisite fences for content and freight state.
+    'tpf2_mp_1\res\scripts\tpf2_mp\network_pump_runtime.lua' = 136
     'tpf2_mp_1\res\scripts\tpf2_mp\network_clock_heartbeat.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\native_observation_telemetry.lua' = 70
     'tpf2_mp_1\res\scripts\tpf2_mp\native_fingerprint_runtime.lua' = 90

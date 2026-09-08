@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [switch]$HostSnapshotRecovery,
     [string]$Session,
     [ValidateRange(1024, 65535)][int]$Port = 29742,
     [ValidateRange(60, 3600)][int]$SoakTicks = 300,
@@ -129,6 +130,10 @@ if ($gameHash -ne $script:Tpf2ExeHash) {
 }
 if (Get-Process -Name TransportFever2 -ErrorAction SilentlyContinue) {
     throw 'Transport Fever 2 is already running; refusing to mix a disposable localhost lab with an interactive game.'
+}
+Assert-Tpf2mpSteamRunning
+if ($HostSnapshotRecovery -and (-not $StartingSave -or $RestorePlan -or -not $ManualOnly)) {
+    throw 'Host snapshot validation requires ManualOnly and one host StartingSave, without RestorePlan.'
 }
 
 $mods = Find-Tpf2mpLocalModsPath $LocalModsPath
@@ -351,6 +356,8 @@ function Start-GamePeer([string]$Peer, [string]$BridgePath) {
     $env:TPF2MP_TOWN_DEVELOPMENT = if ($TownDevelopment) { '1' } else { '0' }
     $env:TPF2MP_AGENT_MODE = $AgentMode
     $env:TPF2MP_RESTORE_RESUME = if ($script:restorePlanData) { '1' } else { '0' }
+    $env:TPF2MP_CONTINUE_SAVED_MATCH = if ($HostSnapshotRecovery) { '1' } else { '0' }
+    $env:TPF2MP_HOST_SNAPSHOT_RECOVERY = if ($HostSnapshotRecovery) { '1' } else { '0' }
     $env:TPF2MP_RESTORE_FROM_SESSION = if ($script:restorePlanData) {
         [string]$script:restorePlanData.session
     } else { '' }
@@ -1333,6 +1340,9 @@ try {
     if ($restorePlanData) {
         $p1Source = Resolve-Tpf2mpFullPath $Player1StartingSave
         $p2Source = Resolve-Tpf2mpFullPath $Player2StartingSave
+        foreach ($saveSource in @($p1Source, $p2Source)) {
+            Invoke-Companion -Arguments @('validate-save-metadata', $saveSource)
+        }
         Invoke-Companion -Arguments @(
             'verify-restore-plan', $restorePlanPath,
             '--save', "player1=$p1Source", '--save', "player2=$p2Source"
@@ -1368,13 +1378,20 @@ try {
     elseif ($StartingSave) {
         $startingCopy = Copy-StartingSaveTriplet $StartingSave (Join-Path $runRoot 'starting-save')
         $startingSaveCopy = $startingCopy.Save
+        Invoke-Companion -Arguments @('validate-save-metadata', $startingSaveCopy)
         $startingCompanyPlayerIds = Read-Tpf2mpStartingCompanyPlayerIds $startingSaveCopy
         $startingSaveManifest = $startingCopy.Manifest
         $startingSaveManifest | ConvertTo-Json -Depth 8 | Set-Content `
             -LiteralPath (Join-Path $runRoot 'starting-save-manifest.json') -Encoding UTF8
-        $stagedStartingSave = Stage-StartingSaveForConsole $startingSaveCopy $saveDirectory
+        # The native crash-save name includes the loaded filename and only
+        # second-resolution time. Shared names let two failing processes write
+        # the same crash sidecar; a longer writer can leave a trailing fragment.
+        foreach ($savePeer in @('player1', 'player2')) {
+            $peerStagedStartingSaves[$savePeer] = Stage-StartingSaveForConsole `
+                $startingSaveCopy $saveDirectory $savePeer
+        }
         Write-Host "Pinned a read-only working copy of the populated save: $startingSaveCopy"
-        Write-Host "Staged a uniquely named console-load copy: $stagedStartingSave"
+        Write-Host 'Staged distinct player1/player2 native load names from identical save bytes.'
     }
     if (-not $SkipTests) {
         & (Join-Path $PSScriptRoot 'run_tests.ps1')
@@ -1663,6 +1680,7 @@ try {
     )
     if ($LiveUiSuite) { $hostArgs += @('--automatic-recovery-interval', '0') }
     if ($restorePlanPath) { $hostArgs += @('--restore-plan', $restorePlanPath) }
+    if ($HostSnapshotRecovery) { $hostArgs += '--saved-match-auto' }
     $clientArgs = @(
         'client', '127.0.0.1', '--session', $Session, '--peer', 'player2',
         '--port', [string]$Port, '--bridge', $peer2Bridge, '--manifest', $manifestPath
@@ -1804,6 +1822,10 @@ try {
             if ($bootstrapReady -and $restorePlanData) {
                 $bootstrapReady = $hostStatus.restoreStatus -eq 'complete' `
                     -and [int64]$hostStatus.restoreCommitSeq -ge 1
+            }
+            if ($bootstrapReady -and $HostSnapshotRecovery) {
+                $bootstrapReady = $hostStatus.restoreStatus -eq 'complete' `
+                    -and $hostStatus.savedMatchStartAction -eq 'recovery.continue'
             }
             if (-not $bootstrapReady) { Start-Sleep -Milliseconds 500 }
         } while (-not $bootstrapReady -and (Get-Date) -lt $bootstrapDeadline)
@@ -2302,6 +2324,7 @@ finally {
         'TPF2MP_OPERATIONAL_SAMPLE_TICKS', 'TPF2MP_STARTING_CASH',
         'TPF2MP_TOWN_DEVELOPMENT', 'TPF2MP_AGENT_MODE',
         'TPF2MP_STAGED_SAVE_NAME', 'TPF2MP_STARTING_COMPANY_PLAYER_IDS',
+        'TPF2MP_HOST_SNAPSHOT_RECOVERY', 'TPF2MP_CONTINUE_SAVED_MATCH',
         'TPF2MP_RESTORE_RESUME', 'TPF2MP_RESTORE_FROM_SESSION',
         'TPF2MP_RESTORE_BOUNDARY', 'TPF2MP_RESTORE_CORE_DIGEST',
         'TPF2MP_RESTORE_CONVERGENCE_KEY', 'TPF2MP_RESTORE_PLAN_CHECKSUM',
@@ -2428,6 +2451,7 @@ $runStatus = [ordered]@{
     soakTicks = $SoakTicks
     clockRunTicks = $ClockRunTicks
     requireVehicleSyncRound = $RequireVehicleSyncRound.IsPresent
+    hostSnapshotRecovery = $HostSnapshotRecovery.IsPresent
     postBootstrapSoakSeconds = $PostBootstrapSoakSeconds
     postBootstrapSoak = $postBootstrapSoakEvidence
     interactiveAfterValidation = $InteractiveAfterValidation.IsPresent

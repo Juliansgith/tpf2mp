@@ -6,6 +6,7 @@ param(
     [ValidateRange(1, 65534)][int]$Port = 29742,
     [string]$StartingSave,
     [string]$RestorePlan,
+    [switch]$HostSnapshotRecovery,
     [string]$BundleRoot,
     [string]$GameExecutable,
     [string]$LocalModsPath,
@@ -171,6 +172,7 @@ try {
         Port = $Port
         StartingSave = $StartingSave
         RestorePlan = $RestorePlan
+        HostSnapshotRecovery = $HostSnapshotRecovery
         BundleRoot = $bundle
         GameExecutable = $GameExecutable
         LocalModsPath = $LocalModsPath

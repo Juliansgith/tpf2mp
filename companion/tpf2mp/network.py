@@ -245,7 +245,7 @@ class CommitHost(HostIntentMixin):
                         self._track_checkpoint_boundary(seq, "economy-settlement")
                     elif action.get("type") == "content.industry_attest":
                         self.industry_content_consensus.observe(
-                            action, origin_peer, restoring=True,
+                            action, origin_peer, restoring=True, boundary_seq=seq,
                         )
                     elif action.get("type") in PROBE_CHECKPOINT_REASONS:
                         self._track_checkpoint_boundary(
@@ -634,7 +634,7 @@ class CommitHost(HostIntentMixin):
             elif action["type"] == "economy.settle":
                 self._track_checkpoint_boundary(seq, "economy-settlement")
             elif action["type"] == "content.industry_attest":
-                self.industry_content_consensus.observe(action, origin)
+                self.industry_content_consensus.observe(action, origin, boundary_seq=seq)
             elif action["type"] in PROBE_CHECKPOINT_REASONS:
                 self._track_checkpoint_boundary(
                     seq, PROBE_CHECKPOINT_REASONS[action["type"]]

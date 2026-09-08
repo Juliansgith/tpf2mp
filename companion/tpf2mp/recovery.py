@@ -12,6 +12,7 @@ from .native_save import hash_load_bearing_save, sha256_file
 from .protocol import PROTOCOL_VERSION, ProtocolError, canonical_json, sign, validate_envelope, verify
 from .restore import verify_restore_plan
 from .session_identity import derive_resume_session, validate_session_id
+from .save_metadata import validate_metadata
 
 RECOVERY_PLAN_VERSION = 1
 RECOVERY_ARCHIVE_VERSION = 1
@@ -280,6 +281,9 @@ def write_recovery_archive(
                 }
             )
 
+        # Validate the immutable copied sidecar before publishing a manifest;
+        # stable hashes alone do not prove that the game can parse its data.
+        validate_metadata(output / source_save.name)
         manifest: dict[str, Any] = {
             "format": "tpf2mp-recovery-archive",
             "version": RECOVERY_ARCHIVE_VERSION,

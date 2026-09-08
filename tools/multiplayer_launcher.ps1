@@ -244,11 +244,18 @@ $lanLabel.Size = New-Object Drawing.Size(764, 22)
 $settingsPanel.Controls.Add($lanLabel)
 
 $hint = New-Object Windows.Forms.Label
-$hint.Text = 'Host selects a save and launches first. Join syncs that save, then launches. Preflight names any missing or different active mod/DLC before authority.'
+$hint.Text = 'Host selects a save and launches first. Join syncs the host save, then launches.'
 $hint.ForeColor = $muted
 $hint.Location = New-Object Drawing.Point(18, 178)
-$hint.Size = New-Object Drawing.Size(764, 40)
+$hint.Size = New-Object Drawing.Size(764, 20)
 $settingsPanel.Controls.Add($hint)
+
+$hostSnapshotCheck = New-Object Windows.Forms.CheckBox
+$hostSnapshotCheck.Text = 'Recover from HOST snapshot (both peers enable; discards old session faults/pending work; new session required)'
+$hostSnapshotCheck.ForeColor = $textColor
+$hostSnapshotCheck.Location = New-Object Drawing.Point(18, 199)
+$hostSnapshotCheck.Size = New-Object Drawing.Size(764, 20)
+$settingsPanel.Controls.Add($hostSnapshotCheck)
 
 $manualLabCheck = New-Object Windows.Forms.CheckBox
 $manualLabCheck.Text = 'After the automated proof, leave both connected game windows open for manual testing (up to 2 hours)'
@@ -468,6 +475,7 @@ function Clear-RestorePlanSelection([bool]$ClearSave = $true) {
 }
 
 function Set-VerifiedRestorePlan([string]$Path) {
+    $hostSnapshotCheck.Checked = $false
     $resolved = Resolve-Tpf2mpFullPath $Path
     if (-not (Test-Path -LiteralPath $resolved -PathType Leaf)) {
         throw "Restore plan does not exist: $resolved"
@@ -562,6 +570,9 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
 }
 
 function Get-ValidatedInputs([bool]$RequireSave = $false, [bool]$IgnoreSave = $false) {
+    if ($hostSnapshotCheck.Checked -and $script:restorePlanPath) {
+        throw 'Choose either host snapshot recovery or a verified paired restore plan, not both.'
+    }
     $session = Assert-Tpf2mpSessionId $sessionBox.Text.Trim()
     $port = 0
     if (-not [int]::TryParse($portBox.Text.Trim(), [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
@@ -748,6 +759,7 @@ $hostButton.Add_Click({
             }
             if ($input.Save) { $args += @('-StartingSave', $input.Save) }
             if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+            if ($hostSnapshotCheck.Checked) { $args += '-HostSnapshotRecovery' }
             $args = Add-LauncherSessionOwnership $args
             Start-LauncherWorker (Join-Path $PSScriptRoot 'start_relay_network_session.ps1') `
                 $args 'relay-host-launch'
@@ -758,6 +770,7 @@ $hostButton.Add_Click({
             '-BindAddress', '0.0.0.0', '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
         if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+        if ($hostSnapshotCheck.Checked) { $args += '-HostSnapshotRecovery' }
         $args = Add-LauncherSessionOwnership $args
         Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session_retry.ps1') $args 'host-launch'
         if (-not $script:restorePlanPath) {
@@ -790,6 +803,7 @@ $joinButton.Add_Click({
             }
             if ($input.Save) { $args += @('-StartingSave', $input.Save) }
             if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+            if ($hostSnapshotCheck.Checked) { $args += '-HostSnapshotRecovery' }
             $args = Add-LauncherSessionOwnership $args
             Start-LauncherWorker (Join-Path $PSScriptRoot 'start_relay_network_session.ps1') `
                 $args 'relay-join-launch'
@@ -803,6 +817,7 @@ $joinButton.Add_Click({
             '-Port', $input.Port, '-BundleRoot', $bundle)
         if ($input.Save) { $args += @('-StartingSave', $input.Save) }
         if ($script:restorePlanPath) { $args += @('-RestorePlan', $script:restorePlanPath) }
+        if ($hostSnapshotCheck.Checked) { $args += '-HostSnapshotRecovery' }
         $args = Add-LauncherSessionOwnership $args
         Start-LauncherWorker (Join-Path $PSScriptRoot 'start_network_session_retry.ps1') $args 'join-launch'
     }

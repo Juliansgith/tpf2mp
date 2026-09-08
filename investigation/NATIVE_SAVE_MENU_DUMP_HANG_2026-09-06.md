@@ -55,6 +55,10 @@ does not prove that game process crashed.
 
 ## Follow-up needed
 
+The [September 8 save/load investigation](SAVE_LOAD_RELIABILITY_2026-09-08.md)
+identified a concrete malformed lab crash-save sidecar and added preflight
+validation. It does not establish a fix for the native dump/overlay wait.
+
 Identify the native dump request's original message and compare equivalent
 launches with/without Steam overlay and native hook. Do not disable error
 reporting or suppress native assertions to make tests green. Any overlay A/B

@@ -98,6 +98,20 @@ try {
 catch { $failedFast = $_.Exception.Message -match 'vehicle phases are not restore-safe' }
 if (-not $failedFast) { throw 'Automatic restore capture ignored a failed phase proof.' }
 
+@{
+    anchorPreparationStatus = 'superseded'
+    sessionFault = $null
+} | ConvertTo-Json | Set-Content -LiteralPath `
+    (Join-Path $failedState 'companion_status.json') -Encoding UTF8
+$supersededFast = $false
+try {
+    Wait-Tpf2mpAutomaticRestoreCapture -Session 'capture-superseded' `
+        -HostBridgePath $failedBridge -TimeoutSeconds 300 `
+        -PollMilliseconds 50 -StatusReader $ready | Out-Null
+}
+catch { $supersededFast = $_.Exception.Message -match 'superseded by another checkpoint' }
+if (-not $supersededFast) { throw 'Automatic restore capture ignored a superseded preparation.' }
+
 $restartNamespace = {
     param($peer)
     return [pscustomobject]@{

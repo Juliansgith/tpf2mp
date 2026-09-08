@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.44.1-alpha',
+    [string]$Version = '0.44.2-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -232,7 +232,7 @@ road/rail attachment and terrain changes are not fully revalidated and may
 fail or fault the session. Some variants and save/load scenarios remain
 unverified; intermittent native Load Game stalls remain under investigation.
 Back up existing saves, update both players, and start a new session. See
-`docs/release-notes/RELEASE_NOTES_0.44.1-alpha.md` for the exact evidence limits.
+`docs/release-notes/RELEASE_NOTES_0.44.2-alpha.md` for the exact evidence limits.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 

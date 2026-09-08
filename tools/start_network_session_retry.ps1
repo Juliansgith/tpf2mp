@@ -7,6 +7,7 @@ param(
     [ValidateRange(1, 65535)][int]$Port = 29742,
     [string]$StartingSave,
     [string]$RestorePlan,
+    [switch]$HostSnapshotRecovery,
     [string]$ManifestPath,
     [string]$BundleRoot,
     [string]$GameExecutable,

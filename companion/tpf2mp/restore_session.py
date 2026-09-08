@@ -142,6 +142,14 @@ class RestoreSessionCoordinator:
         if boundary != self.commit_seq:
             return
         if action.get("success") is True:
+            if self.start_action_type == "recovery.continue" and self.state != "complete":
+                tracker = self.host.checkpoint_consensus[self.commit_seq]
+                snapshot = tracker["checkpoints"][self.host.bridge.peer]
+                self.host.synchronization.vehicle.restore_round_cursors([
+                    {"vehicleCid": item["vehicleCid"], "lineCid": item["lineCid"],
+                     "lastAuthorizedRound": item["lastAuthorizedRound"]}
+                    for item in snapshot["vehicleSynchronization"]["vehicles"]
+                ])
             self.state, self.error = "complete", None
         else:
             self.state = "faulted"

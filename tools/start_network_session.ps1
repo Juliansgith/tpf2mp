@@ -7,6 +7,7 @@ param(
     [ValidateRange(1, 65535)][int]$Port = 29742,
     [string]$StartingSave,
     [string]$RestorePlan,
+    [switch]$HostSnapshotRecovery,
     [string]$ManifestPath,
     [string]$BundleRoot,
     [string]$GameExecutable,
@@ -49,6 +50,9 @@ if ($RestorePlan) {
 }
 $safeSession = Assert-Tpf2mpSessionId $Session
 $peer = if ($Role -eq 'Host') { 'player1' } else { 'player2' }
+if ($HostSnapshotRecovery -and ($RestorePlan -or -not $StartingSave)) {
+    throw 'Host snapshot recovery requires the shared host StartingSave and cannot use a RestorePlan.'
+}
 $autosaveGuardLeasePath = Join-Path (Join-Path $env:LOCALAPPDATA 'TPF2MP') 'network-autosave-guard.json'
 if ($OwnerLauncherProcessId -gt 0 `
         -and (-not $OwnerLauncherExecutable -or -not $OwnerLauncherStartedAtUtc)) {
@@ -179,6 +183,9 @@ if ($StartingSave) {
     }
     $pinnedSave = Copy-Tpf2mpPinnedStartingSave $startingSaveOriginal (Join-Path $sessionRoot 'starting-save')
     $StartingSave = $pinnedSave.savePath
+    $metadataArguments = @($companion.Prefix) + @('validate-save-metadata', $StartingSave)
+    & $companion.FilePath @metadataArguments
+    if ($LASTEXITCODE -ne 0) { throw 'Save metadata validation failed before game launch. Select a verified restore point or another save.' }
     $startingCompanyPlayerIds = Read-Tpf2mpStartingCompanyPlayerIds $StartingSave
     if ($restorePlanData -and -not $startingCompanyPlayerIds) {
         throw 'The attested restore save does not expose exactly two native company-player identities.'
@@ -209,6 +216,11 @@ if ($StartingSave) {
     if (-not $restorePlanData) { $fingerprintArgs += @('--save', $StartingSave) }
 }
 if ($restorePlanPath) { $fingerprintArgs += @('--extra', $restorePlanPath) }
+if ($HostSnapshotRecovery) {
+    $takeoverPolicy = Join-Path $sessionRoot 'host-snapshot-policy.json'
+    [IO.File]::WriteAllText($takeoverPolicy, '{"hostSnapshotRecovery":1}', [Text.UTF8Encoding]::new($false))
+    $fingerprintArgs += @('--extra', $takeoverPolicy)
+}
 $invokeFingerprint = @($companion.Prefix) + $fingerprintArgs
 & $companion.FilePath @invokeFingerprint
 if ($LASTEXITCODE -ne 0) { throw "Match fingerprint generation failed with exit code $LASTEXITCODE" }
@@ -409,7 +421,8 @@ try {
             -MatchFingerprint $fingerprint `
             -RestorePlan $restorePlanData -RequireMenuEntry -StartNetwork `
             -ManualNetwork:([bool]$stagedSave) `
-            -ContinueSavedMatch:([bool]($stagedSave -and -not $restorePlanData))
+            -ContinueSavedMatch:([bool]($stagedSave -and -not $restorePlanData)) `
+            -HostSnapshotRecovery:$HostSnapshotRecovery
         $gameProcess = $launch.process
         $state.gamePid = $gameProcess.Id
         $state.gameStartedAtUtc = $gameProcess.StartTime.ToUniversalTime().ToString('o')

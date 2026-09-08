@@ -234,7 +234,10 @@ Runtime-controller modules:
   barrier back-pressure, bridge ingress, acknowledgement, and reset lifecycle.
   `network_busy_rejection.lua` is its fail-fast policy for suppressed
   construction input that must never become delayed physical work.
-- `network_pump_runtime.lua` owns the authority-preserving engine cadence for
+- `network_pump_runtime.lua` (136-line budget) also fences one-shot launcher
+  recovery preparation until content agreement and freight initialization are
+  ready, preventing their checkpoints from superseding the save boundary. It owns
+  the authority-preserving engine cadence for
   bridge ingress, clocks, deferred work, vehicle synchronization, and stable
   content/freight maintenance. `performance_runtime.lua` supplies bounded
   native-monotonic task timings plus explicit scheduler run/skip counters; its
@@ -437,6 +440,19 @@ captured table reference would therefore mutate stale state after loading.
   profile or an explicit opt-in to the weaker policy-unbound legacy plan.
   `native_save.py` owns stable `.sav`/`.sav.lua` hashing; v6 binds both, the
   source match profile, and the paused vehicle phase/cursor proof.
+  `save_metadata.py` validates the native serializer's bounded, data-only Lua
+  sidecar without executing it. Launchers check pinned saves before loading;
+  recovery archiving checks immutable copied metadata before publishing a
+  manifest. Damaged or unsupported metadata fails with recovery guidance and
+  leaves source saves unchanged. This is not a native world-integrity check.
+  `host_snapshot_recovery.lua` implements explicit identical-host-save
+  takeover before ordinary saved-match continuation validation. It retires
+  old session work/faults, preserves host durable state, and refuses unowned
+  native residue. Continuation seeds station-round cursors from its agreed
+  fresh checkpoint before opening gameplay. See [host snapshot recovery](HOST_SNAPSHOT_RECOVERY.md).
+  Industry-content consensus registers the game's late-content checkpoint
+  after a prior agreed checkpoint, in live ordering and journal recovery;
+  pre-initialization attestations remain covered by the first match checkpoint.
   `vehicle_phase_proof.py` and the matching Lua normalizer own that proof's
   exact cross-runtime schema. `session_identity.py` and the matching Lua
   `restore_session_identity.lua` keep derived resume identities portable and

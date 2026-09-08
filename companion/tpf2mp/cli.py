@@ -25,6 +25,7 @@ from .recovery import verify_recovery_archive, write_recovery_archive, write_rec
 from .research import write_report
 from .restore import confirm_restore_readiness, verify_restore_plan, write_restore_plan
 from .save_sync import SaveSyncServer, receive_save
+from .save_metadata import validate_metadata
 from .relay_api import RelayApiError
 from .relay_cli import configure_cli as configure_relay_cli
 from .relay_cli import run_cli as run_relay_cli
@@ -37,6 +38,8 @@ def default_bridge(peer: str) -> Path:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description="TPF2MP deterministic commit-ordering companion")
     commands = result.add_subparsers(dest="command", required=True)
+    metadata = commands.add_parser("validate-save-metadata", help="check native save Lua data without executing it")
+    metadata.add_argument("save", type=Path)
 
     host = commands.add_parser("host", help="run the authoritative commit sequencer")
     host.add_argument("--bind", default="127.0.0.1")
@@ -234,7 +237,9 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        if args.command == "host":
+        if args.command == "validate-save-metadata":
+            print(f"save_metadata_valid={validate_metadata(args.save)}")
+        elif args.command == "host":
             bridge_path = args.bridge or default_bridge(args.peer)
             game_bridge = GameBridge(bridge_path, args.session, args.peer)
             audit = args.audit or (game_bridge.audit_dir / f"{args.session}.ndjson")

@@ -18,7 +18,7 @@ New-Item -ItemType Directory -Force -Path $saveRoot | Out-Null
 function New-PointerFixtureSave([string]$Name, [byte]$Value) {
     $save = Join-Path $saveRoot ($Name + '.sav')
     [IO.File]::WriteAllBytes($save, [byte[]]($Value, $Value, $Value))
-    [IO.File]::WriteAllText($save + '.lua', 'return { pointerFixture = true }',
+    [IO.File]::WriteAllText($save + '.lua', 'function data() return { pointerFixture = true } end',
         [Text.UTF8Encoding]::new($false))
     return $save
 }
@@ -59,7 +59,25 @@ try {
         -or $candidate.promotedRestorePoint) {
         throw 'Unanchored recovery candidate was incorrectly marked restorable.'
     }
-    Write-Host 'PASS pending/unanchored archives preserve the last promoted restore pointer'
+    $damagedSave = New-PointerFixtureSave 'damaged' 8
+    $damagedMetadata = 'function data() return {} end = 0,'
+    [IO.File]::WriteAllText($damagedSave + '.lua', $damagedMetadata,
+        [Text.UTF8Encoding]::new($false))
+    $damagedRejected = $false
+    try {
+        & (Join-Path $ProjectRoot 'tools\archive_recovery_save.ps1') `
+            -Session $session -Peer player2 -SavePath $damagedSave -BoundarySeq 11 `
+            -BundleRoot $ProjectRoot | Out-Null
+    }
+    catch { $damagedRejected = $true }
+    if (-not $damagedRejected `
+        -or (Get-Content -LiteralPath $latestPointer -Raw) -ne $lastKnownGood `
+        -or (Get-Content -LiteralPath ($damagedSave + '.lua') -Raw) -ne $damagedMetadata) {
+        throw 'Damaged metadata was promoted or changed the last good pointer/source.'
+    }
+    # The intentionally rejected companion invocation leaves its exit code set.
+    $global:LASTEXITCODE = 0
+    Write-Host 'PASS pending/unanchored/damaged archives preserve the last promoted restore pointer'
 }
 finally {
     if (Test-Path -LiteralPath $sessionRoot -PathType Container) {

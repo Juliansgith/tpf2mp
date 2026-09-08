@@ -6634,6 +6634,36 @@ class HostLocalSequenceTests(unittest.TestCase):
 
 
 class IndustryContentConsensusTests(unittest.TestCase):
+    def test_late_content_checkpoint_completes_and_survives_host_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, session = Path(directory), "late-content-checkpoint"
+            audit = root / "audit.ndjson"
+            host = CommitHost(GameBridge(root / "host", session, "player1"),
+                              "127.0.0.1", 0, audit, require_connected_peers=False)
+            probe = host._commit(sign({
+                "protocol": 1, "session": session, "peer": "player1",
+                "local_seq": 1, "tick": 0, "kind": "intent",
+                "payload": {"action": {"type": "probe.native_fingerprint"}},
+            }))
+            boundary = int(probe["seq"])
+            reason = host.checkpoint_consensus[boundary]["reason"]
+            for peer in host.required_peers:
+                host._record_non_intent(consensus_checkpoint(session, peer, 2, boundary, reason))
+            self.assertIsNotNone(host.last_agreed_checkpoint)
+            host._commit(self._intent(session, "player1", 3, "edc7a517"))
+            ready = host._commit(self._intent(session, "player2", 3, "edc7a517"))
+            boundary = int(ready["seq"])
+            self.assertEqual(host.checkpoint_consensus[boundary]["status"], "pending")
+            restored = CommitHost(GameBridge(root / "host", session, "player1"),
+                                  "127.0.0.1", 0, audit, require_connected_peers=False)
+            self.assertEqual(restored.checkpoint_consensus[boundary]["status"], "pending")
+            for peer in restored.required_peers:
+                restored._record_non_intent(consensus_checkpoint(
+                    session, peer, 4, boundary, "industry-content-ready"))
+            self.assertEqual(restored.checkpoint_consensus[boundary]["status"], "complete")
+            self.assertIsNone(restored._pending_checkpoint())
+            self.assertIsNone(restored.session_fault)
+
     @staticmethod
     def _intent(session: str, peer: str, local_seq: int, digest: str) -> dict:
         return sign({
@@ -6658,6 +6688,8 @@ class IndustryContentConsensusTests(unittest.TestCase):
             host._commit(self._intent(session, "player2", 1, "edc7a517"))
             self.assertTrue(host.industry_content_consensus.result["ready"])
             self.assertEqual(host.industry_content_consensus.result["digest"], "edc7a517")
+            self.assertFalse(host.checkpoint_consensus,
+                             "pre-initialization content must not open a financial checkpoint")
             self.assertIsNone(host.session_fault)
             restored = CommitHost(
                 GameBridge(root / "host", session, "player1"),
@@ -6857,7 +6889,7 @@ class RecoveryArchiveTests(unittest.TestCase):
             root = Path(directory)
             save = root / "manual.sav"
             save.write_bytes(b"save")
-            Path(str(save) + ".lua").write_text("return {}", encoding="utf-8")
+            Path(str(save) + ".lua").write_text("function data() return {} end", encoding="utf-8")
             output = root / "manual-archive"
             manifest = write_recovery_archive(save, output, "manual", "player2")
             self.assertEqual(manifest["association"], "unanchored-native-save")
@@ -6869,7 +6901,7 @@ class RecoveryArchiveTests(unittest.TestCase):
             root = Path(directory)
             save = root / "player1.sav"
             save.write_bytes(b"player1-boundary-9")
-            Path(str(save) + ".lua").write_text("return {}", encoding="utf-8")
+            Path(str(save) + ".lua").write_text("function data() return {} end", encoding="utf-8")
             sha = hashlib.sha256(save.read_bytes()).hexdigest()
             peer_save = {
                 "saveSha256": sha, "savedAtUnix": 1000, "receiptCommitSeq": 10,
@@ -6914,7 +6946,7 @@ class RecoveryArchiveTests(unittest.TestCase):
             save = root / "player1-current.sav"
             metadata = Path(str(save) + ".lua")
             save.write_bytes(b"current-native-world")
-            metadata.write_text("return { state = 29 }", encoding="utf-8")
+            metadata.write_text("function data() return { state = 29 } end", encoding="utf-8")
             peer_save = {
                 "saveSha256": hashlib.sha256(save.read_bytes()).hexdigest(),
                 "metadataSha256": hashlib.sha256(metadata.read_bytes()).hexdigest(),
@@ -7024,12 +7056,12 @@ class LocalRestoreDiscoveryTests(unittest.TestCase):
             source = root / "source.sav"
             source.write_bytes(b"receipt-bound-world")
             metadata = Path(str(source) + ".lua")
-            metadata.write_text("return { boundary = 9 }", encoding="utf-8")
+            metadata.write_text("function data() return { boundary = 9 } end", encoding="utf-8")
             hashes = hash_load_bearing_save(source)
             source2 = root / "source-player2.sav"
             source2.write_bytes(b"receipt-bound-world-player2")
             metadata2 = Path(str(source2) + ".lua")
-            metadata2.write_text("return { boundary = 9, peer = 2 }", encoding="utf-8")
+            metadata2.write_text("function data() return { boundary = 9, peer = 2 } end", encoding="utf-8")
             hashes2 = hash_load_bearing_save(source2)
             plan = current_restore_plan(session)
             plan.pop("checksum")
@@ -7731,6 +7763,24 @@ class NetworkIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 releases[-1]["round"], 2,
             )
+
+    def test_continuation_seeds_vehicle_rounds_from_agreed_snapshot_once(self) -> None:
+        from tpf2mp.restore_session import RestoreSessionCoordinator
+        host = mock.Mock()
+        host.bridge.peer = "player1"
+        host.checkpoint_consensus = {1: {"checkpoints": {"player1": {
+            "vehicleSynchronization": {"vehicles": [
+                {"vehicleCid": "vehicle:1", "lineCid": "line:1", "lastAuthorizedRound": 17}
+            ]}}}}}
+        coordinator = RestoreSessionCoordinator(host, None, saved_match_auto=True)
+        coordinator.commit_seq = 1
+        coordinator.start_action_type = "recovery.continue"
+        coordinator.state = "awaiting-checkpoint"
+        outcome = {"boundarySeq": 1, "success": True}
+        coordinator.observe_checkpoint_outcome(outcome)
+        coordinator.observe_checkpoint_outcome(outcome)
+        host.synchronization.vehicle.restore_round_cursors.assert_called_once_with([
+            {"vehicleCid": "vehicle:1", "lineCid": "line:1", "lastAuthorizedRound": 17}])
 
     def test_exact_saved_match_is_fenced_until_its_new_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

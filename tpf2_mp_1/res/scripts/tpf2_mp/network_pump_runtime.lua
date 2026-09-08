@@ -36,6 +36,12 @@ function M.new(deps)
       or state.initialized ~= true or not state.match or state.match.status ~= "running" then
       return true
     end
+    -- Fresh content attestation and freight bootstrap author checkpoints;
+    -- both must finish before the one-shot launcher save request.
+    local content = state.world and state.world.industryContent
+    if type(content) ~= "table" or content.ready ~= true then return true end
+    local freight = state.world and state.world.freightIndustry
+    if type(freight) ~= "table" or freight.ready ~= true then return true end
     state.probes = type(state.probes) == "table" and state.probes or {}
     local marker = type(state.probes.launcherRecoveryPrepare) == "table"
       and state.probes.launcherRecoveryPrepare or {}

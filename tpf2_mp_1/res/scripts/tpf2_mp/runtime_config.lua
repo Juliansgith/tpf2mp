@@ -212,6 +212,7 @@ function M.read(options)
     continueSavedMatch = manualNetwork
       and environmentEnabled("TPF2MP_CONTINUE_SAVED_MATCH")
       and restoreResume == nil,
+    hostSnapshotRecovery = manualNetwork and environmentEnabled("TPF2MP_HOST_SNAPSHOT_RECOVERY"),
     matchFingerprint = matchFingerprint,
     operationalCapture = operationalCapture,
     -- Agent presentation policy is match content; the label and its

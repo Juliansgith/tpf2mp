@@ -15,6 +15,7 @@ local stateRetention = require "tpf2_mp/state_retention"
 local recoveryPhaseProof = require "tpf2_mp/recovery_phase_proof"
 local resourceCompatibility = require "tpf2_mp/resource_compatibility"
 local calendarModel = require "tpf2_mp/calendar_model"
+local hostSnapshotRecovery = require "tpf2_mp/host_snapshot_recovery"
 
 local M = {}
 
@@ -497,6 +498,11 @@ function M.migrate(saved, context)
   local legacyValuationTarget = saved.match and saved.match.rules
     and util.integer(saved.match.rules.valuationTargetCents, 0) or nil
   local cfg = config()
+  if cfg.hostSnapshotRecovery == true then
+    local adopted, adoptionError = hostSnapshotRecovery.prepare(saved, cfg, STATE_VERSION)
+    if not adopted then error("host snapshot recovery refused: " .. tostring(adoptionError)) end
+    saved = adopted
+  end
   -- A local/hot-seat state cannot be promoted in place, and a saved network
   -- match cannot donate its barriers/accounts to a differently identified
   -- network session. Retain the physical map in both cases but start a clean

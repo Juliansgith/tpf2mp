@@ -416,6 +416,7 @@ class IndustryContentConsensus:
         origin: str,
         *,
         restoring: bool = False,
+        boundary_seq: int | None = None,
     ) -> dict[str, Any]:
         self.before_commit(action, origin)
         if action.get("type") != "content.industry_attest":
@@ -463,6 +464,11 @@ class IndustryContentConsensus:
             self.host.session_fault = error
             if not restoring:
                 self.host.last_error = error
+        # Match the game's late-content checkpoint, including journal replay.
+        # Before initialization, the first match checkpoint covers this state.
+        if boundary_seq is not None and self.result["ready"] \
+                and self.host.last_agreed_checkpoint is not None:
+            self.host._track_checkpoint_boundary(boundary_seq, "industry-content-ready")
         return dict(self.result)
 
     def status(self) -> dict[str, Any]:

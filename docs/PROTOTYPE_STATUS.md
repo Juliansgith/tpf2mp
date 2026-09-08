@@ -1,8 +1,8 @@
 # TPF2MP prototype status
 
-Current release: `0.44.1-alpha` (experimental testing release)
+Current release: `0.44.2-alpha` (experimental testing release)
 
-Last reviewed: 2026-09-06
+Last reviewed: 2026-09-09
 
 Supported game: Transport Fever 2 Build 35924, Windows x64
 
@@ -19,9 +19,14 @@ This release has targeted real-game evidence, not a complete UI matrix PASS.
 Combined demolition/attachment/terrain cases, all construction variants and
 fresh save/load/recovery remain incomplete. Intermittent native Load Game
 stalls remain unresolved. Back up saves; see the
-[release notes](release-notes/RELEASE_NOTES_0.44.1-alpha.md).
+[release notes](release-notes/RELEASE_NOTES_0.44.2-alpha.md).
 
-The 0.44.1 patch fixes depot attachment to an existing public road junction,
+The 0.44.2 patch adds metadata validation, recovery-preparation fixes and
+opt-in host snapshot takeover. A paired native save/reload/re-save cycle
+passed in development; host takeover and moving-vehicle recovery still need
+live qualification. See [recovery instructions](HOST_SNAPSHOT_RECOVERY.md).
+
+The preceding 0.44.1 patch fixes depot attachment to an existing public road junction,
 with two targeted real two-player UI passes. Broader bus/tram reruns were
 blocked before gameplay by the separate native Load Game stall; they are not
 current-source passes. See the
@@ -206,7 +211,7 @@ finance/ownership, core digest `035ccd29`, and structural digest `9995a4be`.
 
 ## Release position
 
-`0.44.1-alpha` is an experimental release for external trusted-tester feedback,
+`0.44.2-alpha` is an experimental release for external trusted-tester feedback,
 not a fully qualified construction or persistence release. The previous
 `0.43.5-alpha` release remains available for rollback using backed-up saves.
 The next

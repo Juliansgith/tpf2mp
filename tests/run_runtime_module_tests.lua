@@ -2238,6 +2238,14 @@ do
   state.recovery.restoreResume.status = "committed"
   automaticRecoveryPrepare = true
   assert(pump.pump(true) == true and contentCalls == 1 and freightCalls == 1
+      and prepareCalls == 0,
+    "launcher save preparation raced the initial freight bootstrap checkpoint")
+  state.world.freightIndustry.ready = true
+  assert(pump.pump(true) == true and contentCalls == 2 and freightCalls == 2
+      and prepareCalls == 0,
+    "launcher save preparation raced fresh post-restore content attestation")
+  state.world.industryContent.ready = true
+  assert(pump.pump(true) == true and contentCalls == 3 and freightCalls == 3
       and prepareCalls == 1
       and state.probes.launcherRecoveryPrepare.submitted == true
       and state.probes.launcherRecoveryPrepare.localSeq == 41,
@@ -6890,6 +6898,66 @@ do
   local rebuilt = reader.read()
   assert(rebuilt ~= first and reads == 2,
     "a replacement mod-configuration source did not invalidate the cache")
+end
+
+do
+  local versions = { stateVersion = 23, checkpointVersion = 3 }
+  local snapshotModule = require "tpf2_mp/host_snapshot_recovery"
+  local hash = require "tpf2_mp/hash"
+  local sourceCfg = baseConfig({ sessionId = "faulted-host" })
+  local source = stateSchema.new(sourceCfg, versions)
+  source.initialized, source.match.status = true, "running"
+  source.finance.networkAccounts.initialized = true
+  source.finance.networkAccounts.accounts["company:1"] = {
+    balance = 123456, loan = 2500, creditLimit = 9000, insolventSettlements = 0 }
+  source.world.proposalConsensus.sessionFault = { errorCode = "proposal-completion-timeout" }
+  source.world.operationConsensus.sessionFault = { errorCode = "peer-native-operation-failed" }
+  source.world.checkpointConsensus.byBoundary["9"] = { status = "pending" }
+  source.world.proposals.byId.abandoned = { proposalId = "abandoned", status = "queued" }
+  source.world.operations.byId.abandoned = { status = "pending" }
+  local original = util.deepCopy(source)
+  local recovered = {}
+  for _, peer in ipairs({ "player1", "player2" }) do
+    local cfg = baseConfig({ sessionId = "host-takeover", peerId = peer,
+      hostSnapshotRecovery = true, continueSavedMatch = true,
+      matchFingerprint = string.rep("a", 64) })
+    recovered[peer] = stateSchema.migrate(source, {
+      newState = function() return stateSchema.new(cfg, versions) end,
+      config = function() return cfg end, stateVersion = 23, checkpointVersion = 3,
+    })
+    local state = recovered[peer]
+    assert(state.recovery.savedMatchContinuation.status == "validated"
+      and state.bridge.peerId == peer and state.bridge.sessionId == "host-takeover",
+      "host snapshot was not adopted with the receiving peer's new identity")
+    assert(next(state.world.proposals.byId) == nil and next(state.world.operations.byId) == nil
+      and state.world.proposalConsensus.sessionFault == nil
+      and state.world.operationConsensus.sessionFault == nil,
+      "host snapshot retained old-session work or faults")
+    assert(state.recovery.hostSnapshot.retiredProposals == 1,
+      "host takeover lost its discarded-work evidence")
+    assert(hash.value(state.finance.networkAccounts.accounts) == hash.value(original.finance.networkAccounts.accounts)
+      and hash.value(state.canonical) == hash.value(original.canonical),
+      "host takeover reset durable host finances or canonical identities")
+  end
+  assert(hash.value(source) == hash.value(original), "host snapshot adoption modified its source")
+  local bad = util.deepCopy(source); bad.bridge.peerId = "player2"
+  local cfg = baseConfig({ sessionId = "takeover-2", hostSnapshotRecovery = true,
+    continueSavedMatch = true, matchFingerprint = string.rep("a", 64) })
+  assert(snapshotModule.prepare(bad, cfg, 23) == nil, "takeover accepted a client snapshot")
+  cfg.sessionId = source.bridge.sessionId
+  assert(snapshotModule.prepare(source, cfg, 23) == nil, "takeover reused old session identity")
+  cfg.sessionId = "takeover-2"
+  assert(snapshotModule.prepare(source, cfg, 24) == nil, "takeover accepted an unsupported state version")
+  bad = util.deepCopy(source); bad.world.originResidueCustody.unowned = { nativeId = 123 }
+  assert(snapshotModule.prepare(bad, cfg, 23) == nil, "takeover silently discarded unowned native changes")
+  cfg.hostSnapshotRecovery = false
+  local ordinary = stateSchema.migrate(util.deepCopy(source), {
+    newState = function() return stateSchema.new(cfg, versions) end,
+    config = function() return cfg end, stateVersion = 23, checkpointVersion = 3,
+  })
+  assert(ordinary.recovery.savedMatchContinuation.status == "failed"
+    and ordinary.world.operationConsensus.sessionFault ~= nil,
+    "ordinary save loading silently adopted a faulted snapshot without consent")
 end
 
 do

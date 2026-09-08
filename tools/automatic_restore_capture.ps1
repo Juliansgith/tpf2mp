@@ -55,6 +55,9 @@ function Wait-Tpf2mpAutomaticRestoreCapture {
         if ($companionStatus -and $companionStatus.anchorPreparationStatus -eq 'failed') {
             throw "Recovery preparation was refused: $($companionStatus.anchorPreparationDetail)"
         }
+        if ($companionStatus -and $companionStatus.anchorPreparationStatus -eq 'superseded') {
+            throw 'Recovery preparation was superseded by another checkpoint. Prepare a new restore point after initialization completes.'
+        }
         $hostStatus = if ($useDefaultStatusReader) {
             Read-Tpf2mpRecoveryWatcherStatus -Session $Session -Peer 'player1'
         } else { & $StatusReader 'player1' }

@@ -546,6 +546,12 @@ function Get-Tpf2mpPeerStartingCompanyPlayerIds {
     return $result
 }
 
+function Assert-Tpf2mpSteamRunning {
+    if (-not (Get-Process -Name steam -ErrorAction SilentlyContinue)) {
+        throw 'Steam is not running. Start Steam, sign in, then try loading the multiplayer save again.'
+    }
+}
+
 function Start-Tpf2mpDirectGame {
     param(
         [Parameter(Mandatory = $true)][string]$GameExecutable,
@@ -560,10 +566,12 @@ function Start-Tpf2mpDirectGame {
         [switch]$RequireMenuEntry,
         [switch]$StartNetwork,
         [switch]$ManualNetwork,
-        [switch]$ContinueSavedMatch
+        [switch]$ContinueSavedMatch,
+        [switch]$HostSnapshotRecovery
     )
     $game = Resolve-Tpf2mpFullPath $GameExecutable
     $gameRoot = Split-Path -Parent $game
+    Assert-Tpf2mpSteamRunning
     $safeSession = Assert-Tpf2mpSessionId $Session
     if ($RestorePlan) { [void](Assert-Tpf2mpCurrentRestorePlan $RestorePlan) }
     $launcher = Initialize-Tpf2mpMenuBridge $BridgePath
@@ -588,6 +596,7 @@ function Start-Tpf2mpDirectGame {
         TPF2MP_STARTING_COMPANY_PLAYER_IDS = [string]$StartingCompanyPlayerIds
         TPF2MP_REQUIRE_MENU_ENTRY = if ($RequireMenuEntry) { '1' } else { '0' }
         TPF2MP_CONTINUE_SAVED_MATCH = if ($ContinueSavedMatch -and -not $RestorePlan) { '1' } else { '0' }
+        TPF2MP_HOST_SNAPSHOT_RECOVERY = if ($HostSnapshotRecovery) { '1' } else { '0' }
         TPF2MP_MATCH_FINGERPRINT = [string]$MatchFingerprint
         TPF2MP_RESTORE_RESUME = if ($RestorePlan) { '1' } else { '0' }
         TPF2MP_RESTORE_FROM_SESSION = if ($RestorePlan) { [string]$RestorePlan.session } else { '' }
