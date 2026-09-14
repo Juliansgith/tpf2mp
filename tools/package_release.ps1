@@ -363,7 +363,13 @@ $sidecar = $archive + '.sha256'
 [IO.File]::WriteAllText($sidecar, "$archiveHash  $([IO.Path]::GetFileName($archive))`n", [Text.UTF8Encoding]::new($false))
 
 if (-not $SkipPackageInstallTest) {
-    $testRoot = [IO.Path]::GetFullPath((Join-Path $projectRoot ('runtime\package-install-test-' + [guid]::NewGuid().ToString('N'))))
+    # Keep the disposable nested Steam/install layout independent of checkout
+    # path length. Windows PowerShell 5.1 Copy-Item still has MAX_PATH limits.
+    $testBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    $testRoot = [IO.Path]::GetFullPath((Join-Path $testBase ('tpfpkg-' + [guid]::NewGuid().ToString('N').Substring(0, 12))))
+    if (-not $testRoot.StartsWith($testBase + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Refusing package install-test path outside temporary directory.'
+    }
     $testMods = Join-Path $testRoot 'Steam\userdata\12345\1066780\local\mods'
     $testSupport = Join-Path $testRoot 'support'
     New-Item -ItemType Directory -Force -Path $testMods | Out-Null
