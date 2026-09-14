@@ -1,5 +1,27 @@
 # TPF2MP investigation record
 
+Current release: `0.44.3-alpha` (experimental).
+[Batched construction reads](CONSTRUCTION_BATCHED_READS_2026-09-13.md) records
+the reduced native checks, page-safety regressions and production build checks.
+
+[Seven performance avenues (2026-09-13)](PERFORMANCE_AVENUES_2026-09-13.md)
+records native scaling, callback ablation, one/two/one-instance contention,
+instruction sampling, Ghidra-correlated renderer paths and query-cost experiments.
+The ledger separates measured results from unqualified dense-world/preview/FPS work.
+
+[Native decompilation and render-worker experiment (2026-09-13)](NATIVE_DECOMPILATION_AND_RENDER_WORKERS_2026-09-13.md)
+records actual Ghidra analysis, native worker-pool findings, and the completed
+four-run experimental-binary comparison. No consistent performance gain was
+established; the binary patch is research-only and was not shipped.
+
+[Heap and performance investigation (2026-09-13)](HEAP_AND_PERFORMANCE_INVESTIGATION_2026-09-13.md)
+records live default-heap verification, the gameplay-neutral profiler optimization,
+164 core Lua passes, input-free native save benchmarks and their measurement limits.
+
+[Offline save-browser preflight (2026-09-12)](SAVE_BROWSER_OFFLINE_PREFLIGHT_2026-09-12.md)
+adds bounded, read-only diagnostics for unselected save metadata. No game was
+launched; native-hang reproduction and new transport tests await user approval.
+
 [Transport UI qualification (2026-09-06)](TRANSPORT_UI_QUALIFICATION_2026-09-06.md)
 is the current evidence ledger for the real two-instance construction and
 vehicle suite: fixed bus, truck, passenger ship and aircraft route passes,

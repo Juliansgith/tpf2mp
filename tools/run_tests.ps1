@@ -676,7 +676,8 @@ return { ["tpf2_mp.lua"] = { companies = {
 }
 finally {
     if (Test-Path -LiteralPath $temporary) {
-        Remove-Item -LiteralPath $temporary -Recurse -Force
+        try { Remove-Item -LiteralPath $temporary -Recurse -Force }
+        catch { Write-Warning "Test evidence cleanup failed at $temporary; preserving the original test outcome: $($_.Exception.Message)" }
     }
 }
 

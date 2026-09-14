@@ -391,6 +391,8 @@ try {
 
     $state.status = if ($Role -eq 'Host') { 'hosting' } else { 'joining' }
     if (-not $NoLaunchGame) {
+        & (Join-Path $PSScriptRoot 'inspect_save_browser.ps1') -Companion $companion `
+            -SaveDirectory $resolvedSaveDirectory -SessionRoot $sessionRoot
         $menuBootstrap = Install-Tpf2mpMenuBootstrap -BundleRoot $bundle -GameExecutable $game
         $runtimeOverlay = Install-Tpf2mpRuntimeOverlay -BundleRoot $bundle -GameExecutable $game
         $directLaunch = Enable-Tpf2mpDirectLaunch -GameExecutable $game

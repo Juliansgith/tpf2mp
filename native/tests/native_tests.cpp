@@ -614,6 +614,117 @@ int main(int argc, char** argv) {
                   tpf2mp::profile::kProposalConstructionsAddOffset,
               &captured_construction_layout, sizeof(captured_construction_layout));
   tpf2mp::native_build::BuildFactoryCaptureQueue factory_queue(4, 2);
+  {
+    // Batched reads must still validate every page, including bytes not used
+    // by individual decoded fields, and never cache permissions across calls.
+    SYSTEM_INFO system_info{};
+    GetSystemInfo(&system_info);
+    const auto page = static_cast<std::size_t>(system_info.dwPageSize);
+    auto* memory = static_cast<std::uint8_t*>(VirtualAlloc(
+        nullptr, page * 3, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    if (!memory) return 1;
+    bool passed = true;
+    for (const auto offset : {tpf2mp::profile::kProposalAddedNodesOffset,
+                              tpf2mp::profile::kProposalRemovedNodesOffset,
+                              tpf2mp::profile::kProposalAddedEdgesOffset,
+                              tpf2mp::profile::kProposalRemovedEdgesOffset}) {
+      const bool node = offset == tpf2mp::profile::kProposalAddedNodesOffset ||
+                        offset == tpf2mp::profile::kProposalRemovedNodesOffset;
+      const auto size = node ? captured_node.size() : captured_edge.size();
+      auto* record = memory + page - size / 2;
+      std::memcpy(record, node ? captured_node.data() : captured_edge.data(), size);
+      auto proposal = native_proposal;
+      const tpf2mp::native_command::NativeVectorLayout layout{
+          record, record + size, record + size};
+      std::memcpy(proposal.data() + offset, &layout, sizeof(layout));
+      const auto decode = [&]() {
+        return factory_queue.Decode(proposal.data(), 1, 0, 1, true, false);
+      };
+      passed = passed && decode().valid;
+      DWORD previous = 0;
+      for (const DWORD protection : {DWORD(PAGE_READONLY), DWORD(PAGE_NOACCESS),
+                                     DWORD(PAGE_READWRITE | PAGE_GUARD)}) {
+        if (!VirtualProtect(memory + page, page, protection, &previous)) {
+          passed = false;
+          break;
+        }
+        passed = passed && (decode().valid == (protection == PAGE_READONLY));
+      }
+      if (!VirtualProtect(memory + page, page, PAGE_READWRITE, &previous)) {
+        passed = false;
+        break;
+      }
+      passed = passed && decode().valid;
+      const float invalid = std::numeric_limits<float>::quiet_NaN();
+      std::memcpy(record + (node ? 0 : 0x10), &invalid, sizeof(invalid));
+      passed = passed && !decode().valid;
+    }
+    {
+      auto proposal = native_proposal;
+      const auto size = captured_edge.size();
+      const auto used = (page * 3 / size) * size;
+      for (std::size_t i = 0; i < used; i += size) {
+        std::memcpy(memory + i, captured_edge.data(), size);
+      }
+      const tpf2mp::native_command::NativeVectorLayout layout{
+          memory, memory + used, memory + used};
+      std::memcpy(proposal.data() + tpf2mp::profile::kProposalAddedEdgesOffset,
+                  &layout, sizeof(layout));
+      DWORD previous = 0;
+      if (!VirtualProtect(memory + page, page, PAGE_NOACCESS, &previous)) {
+        passed = false;
+      } else {
+        // Readable first and last pages cannot hide a forbidden interior page.
+        passed = passed && !factory_queue.Decode(
+            proposal.data(), 1, 0, 1, true, false).valid;
+      }
+    }
+    VirtualFree(memory, 0, MEM_RELEASE);
+    if (!passed) {
+      std::cerr << "batched proposal read page/finite-value safety failed\n";
+      return 1;
+    }
+    // Maximum-sized vectors must preserve every record, including ownership
+    // and tangents; added and removed use the same optimized decoder.
+    std::vector<std::uint8_t> edges(
+        captured_edge.size() * tpf2mp::profile::kMaximumProposalEdges);
+    for (std::size_t i = 0; i < tpf2mp::profile::kMaximumProposalEdges; ++i) {
+      std::memcpy(edges.data() + i * captured_edge.size(), captured_edge.data(),
+                  captured_edge.size());
+    }
+    const tpf2mp::native_command::NativeVectorLayout layout{
+        edges.data(), edges.data() + edges.size(), edges.data() + edges.size()};
+    auto proposal = native_proposal;
+    for (const auto offset : {tpf2mp::profile::kProposalAddedEdgesOffset,
+                              tpf2mp::profile::kProposalRemovedEdgesOffset}) {
+      std::memcpy(proposal.data() + offset, &layout, sizeof(layout));
+    }
+    const auto decoded = factory_queue.Decode(proposal.data(), 1, 0, 1, true, false);
+    if (!decoded.valid || decoded.added_edges.size() != tpf2mp::profile::kMaximumProposalEdges ||
+        decoded.removed_edges.size() != decoded.added_edges.size()) return 1;
+    for (const auto* vector : {&decoded.added_edges, &decoded.removed_edges}) {
+      for (const auto& edge : *vector) {
+        if (edge.entity != edge_entity || edge.node0 != edge_node0 ||
+            edge.node1 != edge_node1 || edge.tangent0_x != tangent ||
+            edge.tangent1_y != tangent || edge.track_type != track_type ||
+            edge.player != player || edge.player_owned != player_owned) return 1;
+      }
+    }
+    auto* invalid_pointer = reinterpret_cast<std::uint8_t*>(1);
+    for (const tpf2mp::native_command::NativeVectorLayout bad : {
+             tpf2mp::native_command::NativeVectorLayout{nullptr, edges.data(), edges.data()},
+             tpf2mp::native_command::NativeVectorLayout{edges.data() + 1, edges.data(), edges.data()},
+             tpf2mp::native_command::NativeVectorLayout{edges.data(), edges.data() + 1, edges.data() + 1},
+             tpf2mp::native_command::NativeVectorLayout{invalid_pointer,
+                 reinterpret_cast<std::uint8_t*>(1 + captured_edge.size()),
+                 reinterpret_cast<std::uint8_t*>(1 + captured_edge.size())}}) {
+      std::memcpy(proposal.data() + tpf2mp::profile::kProposalAddedEdgesOffset,
+                  &bad, sizeof(bad));
+      if (factory_queue.Decode(proposal.data(), 1, 0, 1, true, false).valid) return 1;
+    }
+  }
+  // Keep the existing lifecycle counter expectations independent of read tests.
+  factory_queue = tpf2mp::native_build::BuildFactoryCaptureQueue(4, 2);
   auto factory_capture = factory_queue.Decode(
       native_proposal.data(), 707, 0x459E97, 11, true, false);
   std::array<std::uint8_t, sizeof(void*)> command{};

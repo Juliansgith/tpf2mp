@@ -5,6 +5,7 @@
 #include "tpf2mp/native_common.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <iomanip>
@@ -18,6 +19,17 @@ namespace {
 
 using native_command::IsReadableRange;
 using native_command::NativeVectorLayout;
+
+// Only used on a local snapshot copied from a vector whose entire used range
+// ReadVectorLayout has validated. No cached page permissions survive a decode.
+// Native proposal storage must remain alive during the synchronous capture,
+// as it already must for ReadIntVector's checked-range memcpy.
+template <std::size_t Offset, std::size_t Size, typename Value>
+bool ReadRecordAt(const std::array<std::uint8_t, Size>& record, Value& output) {
+  static_assert(Offset <= Size && sizeof(Value) <= Size - Offset);
+  std::memcpy(&output, record.data() + Offset, sizeof(Value));
+  return true;
+}
 
 template <typename Value>
 bool ReadAt(const std::uint8_t* base, const std::size_t offset, Value& output) {
@@ -147,11 +159,12 @@ bool ReadNodes(const std::uint8_t* proposal, const std::size_t offset,
   output.clear();
   output.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {
-    const auto* record = layout.begin + index * profile::kProposalNodeRecordSize;
+    std::array<std::uint8_t, profile::kProposalNodeRecordSize> record{};
+    std::memcpy(record.data(), layout.begin + index * record.size(), record.size());
     ProposalNode node;
-    if (!ReadAt(record, 0x00, node.x) || !ReadAt(record, 0x04, node.y) ||
-        !ReadAt(record, 0x08, node.z) || !ReadAt(record, 0x0C, node.flags) ||
-        !ReadAt(record, 0x10, node.type) || !ReadAt(record, 0x14, node.entity) ||
+    if (!ReadRecordAt<0x00>(record, node.x) || !ReadRecordAt<0x04>(record, node.y) ||
+        !ReadRecordAt<0x08>(record, node.z) || !ReadRecordAt<0x0C>(record, node.flags) ||
+        !ReadRecordAt<0x10>(record, node.type) || !ReadRecordAt<0x14>(record, node.entity) ||
         !std::isfinite(node.x) || !std::isfinite(node.y) || !std::isfinite(node.z)) {
       error = "invalid node record at " + std::to_string(offset) + ":" +
               std::to_string(index);
@@ -174,20 +187,21 @@ bool ReadEdges(const std::uint8_t* proposal, const std::size_t offset,
   output.clear();
   output.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {
-    const auto* record = layout.begin + index * profile::kProposalEdgeRecordSize;
+    std::array<std::uint8_t, profile::kProposalEdgeRecordSize> record{};
+    std::memcpy(record.data(), layout.begin + index * record.size(), record.size());
     ProposalEdge edge;
     const bool read =
-        ReadAt(record, 0x00, edge.entity) &&
-        ReadAt(record, 0x08, edge.node0) && ReadAt(record, 0x0C, edge.node1) &&
-        ReadAt(record, 0x10, edge.tangent0_x) && ReadAt(record, 0x14, edge.tangent0_y) &&
-        ReadAt(record, 0x18, edge.tangent0_z) && ReadAt(record, 0x1C, edge.tangent1_x) &&
-        ReadAt(record, 0x20, edge.tangent1_y) && ReadAt(record, 0x24, edge.tangent1_z) &&
-        ReadAt(record, 0x28, edge.word_28) && ReadAt(record, 0x2C, edge.word_2c) &&
-        ReadAt(record, 0x48, edge.carrier) && ReadAt(record, 0x4C, edge.street_type) &&
-        ReadAt(record, 0x50, edge.word_50) && ReadAt(record, 0x54, edge.tram_track_type) &&
-        ReadAt(record, 0x60, edge.track_type) && ReadAt(record, 0x64, edge.flags_64) &&
-        ReadAt(record, 0x68, edge.construction) && ReadAt(record, 0x6C, edge.word_6c) &&
-        ReadAt(record, 0x70, edge.player) && ReadAt(record, 0x74, edge.player_owned);
+        ReadRecordAt<0x00>(record, edge.entity) &&
+        ReadRecordAt<0x08>(record, edge.node0) && ReadRecordAt<0x0C>(record, edge.node1) &&
+        ReadRecordAt<0x10>(record, edge.tangent0_x) && ReadRecordAt<0x14>(record, edge.tangent0_y) &&
+        ReadRecordAt<0x18>(record, edge.tangent0_z) && ReadRecordAt<0x1C>(record, edge.tangent1_x) &&
+        ReadRecordAt<0x20>(record, edge.tangent1_y) && ReadRecordAt<0x24>(record, edge.tangent1_z) &&
+        ReadRecordAt<0x28>(record, edge.word_28) && ReadRecordAt<0x2C>(record, edge.word_2c) &&
+        ReadRecordAt<0x48>(record, edge.carrier) && ReadRecordAt<0x4C>(record, edge.street_type) &&
+        ReadRecordAt<0x50>(record, edge.word_50) && ReadRecordAt<0x54>(record, edge.tram_track_type) &&
+        ReadRecordAt<0x60>(record, edge.track_type) && ReadRecordAt<0x64>(record, edge.flags_64) &&
+        ReadRecordAt<0x68>(record, edge.construction) && ReadRecordAt<0x6C>(record, edge.word_6c) &&
+        ReadRecordAt<0x70>(record, edge.player) && ReadRecordAt<0x74>(record, edge.player_owned);
     if (!read || !std::isfinite(edge.tangent0_x) || !std::isfinite(edge.tangent0_y) ||
         !std::isfinite(edge.tangent0_z) || !std::isfinite(edge.tangent1_x) ||
         !std::isfinite(edge.tangent1_y) || !std::isfinite(edge.tangent1_z)) {

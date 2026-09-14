@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.44.2-alpha',
+    [string]$Version = '0.44.3-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -184,6 +184,7 @@ $toolNames = @(
     'cleanup_localhost_runtime_overlay.ps1', 'network_autosave_guard.ps1',
     'session_lifecycle.ps1', 'watch_network_session_lifecycle.ps1',
     'watch_network_autosave_guard.ps1', 'start_network_session.ps1',
+    'inspect_save_browser.ps1',
     'start_network_session_retry.ps1', 'network_session_retry_cleanup.ps1',
     'sync_starting_save.ps1', 'stop_network_session.ps1',
     'new_relay_session.ps1', 'accept_relay_invite.ps1', 'start_relay_network_session.ps1',
@@ -232,7 +233,7 @@ road/rail attachment and terrain changes are not fully revalidated and may
 fail or fault the session. Some variants and save/load scenarios remain
 unverified; intermittent native Load Game stalls remain under investigation.
 Back up existing saves, update both players, and start a new session. See
-`docs/release-notes/RELEASE_NOTES_0.44.2-alpha.md` for the exact evidence limits.
+`docs/release-notes/RELEASE_NOTES_0.44.3-alpha.md` for the exact evidence limits.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 

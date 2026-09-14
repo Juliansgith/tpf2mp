@@ -8025,6 +8025,17 @@ test("engine active-record indexes sleep after proving an idle queue", function(
     "an explicit same-generation transition was not discovered")
 end)
 
+test("performance sample ring preserves rolling percentile results", function()
+  dofile(project .. "/tests/test_performance_sample_window.lua")
+end)
+
+test("native save benchmark uses bounded input-free lifecycle", function()
+  local priorArg = arg[1]
+  arg[1] = project .. "/tools/native_save_benchmark.lua"
+  dofile(project .. "/tests/run_native_save_benchmark_tests.lua")
+  arg[1] = priorArg
+end)
+
 for _, item in ipairs(tests) do
   local ok, err = xpcall(item.fn, debug.traceback)
   if not ok then

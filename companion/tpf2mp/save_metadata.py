@@ -1,13 +1,18 @@
 """Validate the native serializer's data-only Lua without executing a save."""
 from __future__ import annotations
 
+import os
 import re
+import time
 from pathlib import Path
 
 from .protocol import ProtocolError
 
 MAX_METADATA_BYTES = 32 * 1024 * 1024
 MAX_DEPTH = 128
+MAX_SCAN_FILES = 2048
+MAX_SCAN_BYTES = 64 * 1024 * 1024
+MAX_SCAN_SECONDS = 8
 _TOKEN = re.compile(
     r'''(?P<space>\s+)|(?P<comment>--[^\r\n]*)|'''
     r'''(?P<string>"(?:[^"\\\r\n]|\\(?:\r\n|[\s\S]))*"|'(?:[^'\\\r\n]|\\(?:\r\n|[\s\S]))*')|'''
@@ -109,3 +114,53 @@ def validate_metadata(save_path: Path | str) -> Path:
             "Use a verified restore point or another save; the original files were not changed."
         ) from exc
     return metadata
+
+
+def inspect_save_directory(directory: Path | str) -> dict:
+    """Bounded browser diagnostic, never execute, quarantine or repair saves.
+
+    A serializer-subset rejection is not proof of corruption: other mods may
+    write valid Lua outside our subset. Therefore this report is advisory.
+    """
+    root = Path(directory).expanduser().resolve()
+    report = {"schemaVersion": 1, "checked": 0, "bytesRead": 0,
+              "complete": True, "issues": [], "limits": []}
+    deadline = time.monotonic() + MAX_SCAN_SECONDS
+    with os.scandir(root) as entries:
+        for entry in entries:
+            if time.monotonic() >= deadline:
+                report["limits"].append("time budget")
+                break
+            if not entry.name.lower().endswith(".sav.lua"):
+                continue
+            if report["checked"] >= MAX_SCAN_FILES:
+                report["limits"].append("file budget")
+                break
+            remaining = MAX_SCAN_BYTES - report["bytesRead"]
+            if remaining <= 0:
+                report["limits"].append("byte budget")
+                break
+            report["checked"] += 1
+            try:
+                if entry.is_symlink() or not entry.is_file(follow_symlinks=False):
+                    raise MetadataError("not a regular local metadata file")
+                before = entry.stat(follow_symlinks=False)
+                if before.st_size > MAX_METADATA_BYTES:
+                    raise MetadataError("metadata exceeds per-file limit")
+                if before.st_size > remaining:
+                    report["limits"].append("byte budget")
+                    break
+                with open(entry.path, "rb") as handle:
+                    raw = handle.read(min(MAX_METADATA_BYTES + 1, remaining))
+                report["bytesRead"] += len(raw)
+                after = Path(entry.path).stat()
+                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise MetadataError("metadata changed during inspection; retry when saving finishes")
+                if len(raw) != before.st_size:
+                    raise MetadataError("metadata could not be read completely")
+                _Parser(raw.decode("utf-8-sig")).parse()
+            except (OSError, UnicodeError, MetadataError) as exc:
+                report["issues"].append({"file": entry.name, "reason": str(exc)})
+    report["complete"] = not report["limits"]
+    report["issues"].sort(key=lambda item: item["file"])
+    return report

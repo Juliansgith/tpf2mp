@@ -320,7 +320,7 @@ bool AtomicWriteUtf8(const std::filesystem::path& path, const std::string& value
   }
   const auto temporary = path.wstring() + L".tmp-" + std::to_wstring(GetCurrentThreadId());
   {
-    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    std::ofstream output(std::filesystem::path(temporary), std::ios::binary | std::ios::trunc);
     if (!output) {
       error = "cannot create temporary status file";
       return false;

@@ -1,13 +1,82 @@
 from pathlib import Path
+import contextlib
+import io
+import json
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from tpf2mp.save_metadata import MetadataError, validate_metadata
+from tpf2mp.save_metadata import MetadataError, inspect_save_directory, validate_metadata
 from tpf2mp.recovery import write_recovery_archive
 
 
 class SaveMetadataTests(unittest.TestCase):
+    def test_browser_diagnostic_cli_reports_unsupported_data_without_blocking(self):
+        from tpf2mp.cli import main
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "suspect.sav.lua").write_bytes(b"function data() return {} end = 0,")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertEqual(main(["inspect-save-directory", str(root)]), 0)
+            report = json.loads(output.getvalue())
+            self.assertTrue(report["complete"])
+            self.assertEqual(report["issues"][0]["file"], "suspect.sav.lua")
+
+    def test_browser_scan_reports_oversized_metadata_without_reading_it(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "large.sav.lua").write_bytes(b"x" * 16)
+            with patch("tpf2mp.save_metadata.MAX_METADATA_BYTES", 8):
+                report = inspect_save_directory(root)
+            self.assertEqual(report["bytesRead"], 0)
+            self.assertIn("per-file limit", report["issues"][0]["reason"])
+
+    def test_browser_scan_finds_bad_unselected_save_without_changing_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contents = {"selected.sav.lua": b"function data() return {} end",
+                        "old-crash.sav.lua": b"function data() return {} end\n = 0,",
+                        "empty.sav.lua": b"", "world.sav": b"untouched-binary",
+                        "unrelated.lua": b"not save metadata"}
+            for name, raw in contents.items():
+                (root / name).write_bytes(raw)
+            validate_metadata(root / "selected.sav")
+            report = inspect_save_directory(root)
+            self.assertTrue(report["complete"])
+            self.assertEqual(report["checked"], 3)
+            self.assertEqual([item["file"] for item in report["issues"]],
+                             ["empty.sav.lua", "old-crash.sav.lua"])
+            self.assertEqual({p.name: p.read_bytes() for p in root.iterdir()}, contents)
+
+    def test_browser_scan_is_nonrecursive_and_does_not_execute_lua(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "subdir").mkdir()
+            (root / "subdir" / "hidden.sav.lua").write_bytes(b"broken")
+            (root / "mod.sav.lua").write_text('function data() return os.execute("bad") end')
+            report = inspect_save_directory(root)
+            self.assertEqual(report["checked"], 1)
+            self.assertEqual(report["issues"][0]["file"], "mod.sav.lua")
+
+    def test_browser_scan_limits_are_not_reported_as_clean_complete_scans(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "test.sav.lua").write_text("function data() return {} end")
+            for limit in ("MAX_SCAN_FILES", "MAX_SCAN_BYTES", "MAX_SCAN_SECONDS"):
+                with self.subTest(limit=limit), patch("tpf2mp.save_metadata." + limit, 0):
+                    report = inspect_save_directory(root)
+                    self.assertFalse(report["complete"])
+                    self.assertTrue(report["limits"])
+
+    def test_browser_scan_rejects_non_utf8_and_missing_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "bad.sav.lua").write_bytes(b"\xff")
+            self.assertEqual(len(inspect_save_directory(root)["issues"]), 1)
+            with self.assertRaises(OSError):
+                inspect_save_directory(root / "missing")
+
     def check(self, text):
         with tempfile.TemporaryDirectory() as directory:
             save = Path(directory) / "world.sav"

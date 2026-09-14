@@ -17,13 +17,13 @@ local function nowMicroseconds()
   return nil
 end
 
-local function percentile(values, numerator, denominator)
-  if #values == 0 then return 0 end
+local function percentiles(values)
+  if #values == 0 then return 0, 0 end
   local copy = {}
   for index, value in ipairs(values) do copy[index] = value end
   table.sort(copy)
-  local position = math.max(1, math.ceil(#copy * numerator / denominator))
-  return copy[position]
+  return copy[math.max(1, math.ceil(#copy / 2))],
+    copy[math.max(1, math.ceil(#copy * 95 / 100))]
 end
 
 function M.new(deps)
@@ -91,13 +91,16 @@ function M.new(deps)
       task.totalUs = task.totalUs + elapsed
       task.maxUs = math.max(task.maxUs, elapsed)
       task.averageUs = math.floor(task.totalUs / task.measuredCalls + 0.5)
-      samples[name] = samples[name] or {}
-      local values = samples[name]
-      values[#values + 1] = elapsed
-      if #values > SAMPLE_LIMIT then table.remove(values, 1) end
+      samples[name] = samples[name] or { values = {}, nextSlot = 1 }
+      local window = samples[name]
+      local values = window.values
+      -- Percentiles need the last 128 values, not their chronological order.
+      -- Overwrite the oldest slot instead of shifting 127 array entries.
+      -- The cursor is local: persisted measuredCalls may outlive this window.
+      values[window.nextSlot] = elapsed
+      window.nextSlot = window.nextSlot % SAMPLE_LIMIT + 1
       if task.measuredCalls <= 4 or task.measuredCalls % 16 == 0 then
-        task.p50Us = percentile(values, 1, 2)
-        task.p95Us = percentile(values, 95, 100)
+        task.p50Us, task.p95Us = percentiles(values)
         task.sampleCount = #values
       end
     end
