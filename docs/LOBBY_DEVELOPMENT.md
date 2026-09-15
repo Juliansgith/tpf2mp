@@ -1,6 +1,6 @@
 # Native world lobby
 
-Available in 0.45.1-alpha with the matching relay lobby backend.
+Available in 0.45.2-alpha with the matching relay lobby backend.
 Both players must update before starting a lobby match.
 Older Host/Join + Launch and recovery flows remain available unchanged.
 
@@ -22,7 +22,7 @@ against the accepted preview, then uses the existing save/transfer/load flow.
 The generator still uses the installed engine in a disposable process; this is
 not a standalone reimplementation of terrain generation or a headless SDK.
 
-Preview protocol/UI changes require 0.45.1-alpha and the matching relay
+Preview protocol/UI changes require 0.45.2-alpha and the matching relay
 deployment. Existing-save hosting and the previous non-preview protocol remain
 supported.
 
@@ -35,10 +35,10 @@ also exercise relay save transfer and the two direct-loaded worlds.
 
 1. Host creates a relay room and privately shares its join code.
 2. Player 2 prepares that code. Both open **WORLD LOBBY** in the launcher.
-3. Host applies new-world settings/mods, or chooses an existing save.
-4. For a new world, host presses **GENERATE** and both review the native map
-   preview. **REGENERATE** chooses a new seed and generates another preview.
-5. Both press **VERIFY MODS / READY**. Missing/different content blocks Ready;
+3. Host chooses new-world settings/mods, or selects an existing save.
+4. For a new world, host presses **GENERATE PREVIEW** and both review the
+   native map. **NEW SEED** chooses a seed and generates another preview.
+5. Both press **READY**. Missing/different content blocks Ready;
    changing the configuration clears both players' readiness.
 6. Host presses **START MATCH** once. For a new map the engine generates a
    disposable world, saves it and exits automatically. The verified complete
@@ -52,15 +52,18 @@ and the supported executable are still required.
 
 ## New-world settings
 
-- Seed, starting year 1850–2050, square Small/Medium/Large.
-- Flat/hilly/mountainous terrain; low/medium/high towns and industries.
-- TPF2MP economy, native crowd policy, experimental physical town growth.
+- Seed, starting year 1850–2050, Small/Medium/Large and native 1:1–1:5 formats.
+- Temperate, dry and tropical native generators with their actual parameter
+  sets: hilliness/water/forest; canyon/mesa/ridge/water/forest; or
+  hilliness/mainland/forest/islands.
+- Town density, initial industry density and industry growth target.
+- Environment, vehicle region, native town-name list and native difficulty.
+- TPF2MP economy, native crowd policy and experimental physical town growth.
 - Ordered built-in/local mods, with fresh content verification on both peers.
 
-Initial fixed settings: temperate climate/environment, no water, normal forest
-cover, all vehicle regions, English names, native Easy difficulty (separate
-from the TPF2MP economy). Other climate/water/shape controls, third-party
-generator parameters and arbitrary per-mod options are not exposed yet.
+The lobby exposes the complete built-in Free Game generator surface used by
+this project. Arbitrary third-party generator parameters and arbitrary per-mod
+option pages are not exposed yet.
 Workshop entries with unknown native major versions are **existing-save only**:
 the launcher must not guess a version from a Workshop ID.
 
@@ -74,6 +77,9 @@ versions. The world is transferred, not generated independently from a seed.
 - Ready rehashes load-bearing installed content. Receiving the save does not
   install missing mods. Native namespace and load order are preserved.
 - Per-role launch lock and completion receipt prevent duplicate jobs.
+- Background presence and preview-download polling never disables editable
+  controls; a user action made during passive polling is queued rather than
+  discarded. The last valid lobby state remains visible during a retry.
 - Separate generator DLL, exact Build 35924 check, narrow data-only request:
   no arbitrary Lua, callbacks, native addresses or parameter names.
 - Generation is scheduled at the empty SDL event-poll boundary on the menu
@@ -84,8 +90,8 @@ versions. The world is transferred, not generated independently from a seed.
   overrides are restored; timeout/error closes the owned game. The current
   worker temporarily selects windowed mode and restores the original setting;
   no other game may be running when generation starts.
-- Save-ready requires clean exit, exact request hash, native parameter
-  observations, native year/dimensions, saved economy, matching mods, completed
+- Save-ready requires clean exit, exact request hash, native parameter and
+  resource observations, exact size/format dimensions, saved economy, matching mods, completed
   native save, validated metadata and preview. Terrain/agent/town settings are
   checked at native configuration handoff; this is not a separate spatial
   terrain or population census.

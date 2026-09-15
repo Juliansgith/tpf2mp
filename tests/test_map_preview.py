@@ -30,15 +30,17 @@ class MapPreviewTests(unittest.TestCase):
                 with self.assertRaises(RelayApiError): preview.pixels(bad)
 
     def test_native_evidence_pins_request_and_completed_renderer(self):
-        encoded = b'TPF2MP_WORLDGEN_1\n7 1950 0 0 1 1 0 0 0\n1\n!tpf2_mp 1\n'
-        config = {'world': {'size': 'small', 'seed': 7}}
+        encoded = b'TPF2MP_WORLDGEN_2\n7 1950 0 0 0 2 2 3 2 2 2 2 3 1 1 2 0 0 0 0 3 1 0\n1\n!tpf2_mp 1\n'
+        config = {'world': {'size': 'small', 'format': '1:1', 'seed': 7, 'climate': 'temperate',
+            'terrain': {'hilliness': 2, 'water': 2, 'forest': 3, 'canyon': 2,
+                        'mesa': 2, 'ridge': 2, 'land': 2, 'islands': 3}}}
         with tempfile.TemporaryDirectory() as directory, patch.object(world_generation, 'native_request', return_value=encoded.decode()):
             root = Path(directory)
             (root/'native-request.txt').write_bytes(encoded)
             report = dict(complete=True, exitCode=0, requestSha256=hashlib.sha256(encoded).hexdigest())
             (root/'report.json').write_text(json.dumps(report))
-            names = ['native-preview-ready','generator-resource-temperate.gen.lua','native-seed=7',
-                     'configured-dimensions-32x32','native-terrain-hilliness=0','native-terrain-water=0','native-terrain-forest=2']
+            names = ['native-preview-ready','generator-resource-temperate.gen.lua','native-seed=7','native-map-format=0',
+                     'configured-dimensions-32x32','native-terrain-hilliness=2','native-terrain-water=2','native-terrain-forest=3']
             (root/'native.jsonl').write_text('\n'.join(json.dumps({'event':name}) for name in names))
             (root/'preview-native.rgba').write_bytes(b'native pixels')
             (root/'preview-markers.json').write_bytes(b'[]')

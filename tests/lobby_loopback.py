@@ -54,8 +54,12 @@ async def main(root: Path) -> None:
 
         draft = root / "world.json"
         draft.write_text(json.dumps({"mods": [{"id": "tpf2_mp", "version": 1}], "world": {
-            "seed": 83921, "size": "medium", "terrain": "flat", "towns": "medium", "industries": "low",
-            "year": 1950, "difficulty": "easy", "agentMode": "skeleton", "townDevelopment": False}}))
+            "seed": 83921, "size": "medium", "format": "1:1", "climate": "temperate",
+            "terrain": {"hilliness": 2, "water": 2, "forest": 3, "canyon": 2, "mesa": 2,
+                "ridge": 2, "land": 2, "islands": 3}, "towns": "medium", "industries": "low",
+            "industryTarget": "medium", "vehicles": "all", "nameList": "england",
+            "environment": "temperate", "nativeDifficulty": "easy", "year": 1950,
+            "difficulty": "easy", "agentMode": "skeleton", "townDevelopment": False}}))
         state = await call("host", "presence")
         state = await call("host", "configure-new", state, ("--configuration", str(draft)))
         assert state["revision"] == 1 and state["config"]["world"]["seed"] == 83921

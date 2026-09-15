@@ -11,6 +11,9 @@ constexpr unsigned PreviewCrop(unsigned tiles, unsigned resolution, unsigned fac
 static_assert(PreviewCrop(32,6,2,1024) == 1024); // exact power-of-two + border
 static_assert(PreviewCrop(44,6,4,1024) == 705);
 static_assert(PreviewCrop(56,6,4,1024) == 897);
+static_assert(PreviewCrop(28,6,8,1024) == 225); // Large 1:4 width
+static_assert(PreviewCrop(112,6,8,1024) == 897); // Large 1:4 height
+static_assert(PreviewCrop(126,6,8,1024) == 1009); // Large 1:5 height
 void ExportNativeMapPreview(std::uintptr_t image, void* provider, void* climate,
                             void* map, const std::filesystem::path& directory) {
   if (!provider || !climate || !map) throw std::runtime_error("missing native preview inputs");
@@ -18,7 +21,9 @@ void ExportNativeMapPreview(std::uintptr_t image, void* provider, void* climate,
   const int tiles_x = *reinterpret_cast<const int*>(data);
   const int tiles_y = *reinterpret_cast<const int*>(data+4);
   const int resolution = *reinterpret_cast<const int*>(data+8);
-  if (tiles_x < 1 || tiles_x > 64 || tiles_y < 1 || tiles_y > 64 || resolution < 1 || resolution > 10)
+  // Standard rectangular maps reach 24x126 tiles (Large, 1:5). The original
+  // square-only lab guard incorrectly rejected valid native rectangles.
+  if (tiles_x < 1 || tiles_x > 126 || tiles_y < 1 || tiles_y > 126 || resolution < 1 || resolution > 10)
     throw std::runtime_error("unexpected generated map dimensions");
   const auto& heights = *reinterpret_cast<const std::vector<float>*>(data+0x20);
   const std::size_t expected = (std::size_t(tiles_x)*(std::size_t(1)<<resolution)+1)*(std::size_t(tiles_y)*(std::size_t(1)<<resolution)+1);

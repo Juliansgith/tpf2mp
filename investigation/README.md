@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Current release: `0.45.1-alpha` (experimental).
+Current release: `0.45.2-alpha` (experimental).
 [Batched construction reads](CONSTRUCTION_BATCHED_READS_2026-09-13.md) records
 the reduced native checks, page-safety regressions and production build checks.
 

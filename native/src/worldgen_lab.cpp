@@ -66,7 +66,7 @@ using ModParams = std::unordered_map<std::string, NativeTable>;
 static_assert(sizeof(Variant) == 40 && offsetof(Variant,tag) == 32);
 static_assert(sizeof(NativeTable) == 16 && sizeof(ModParams) == 64);
 ModParams mod_params;
-IntMap terrain_params{{"hilliness",0},{"water",0},{"forest",2}};
+IntMap terrain_params{{"hilliness",2},{"water",2},{"forest",3}};
 using GeneratorClosure = void*(*)(void*);
 GeneratorClosure original_generator{};
 using TerrainWidget = void(*)(void*,void*,const void*);
@@ -74,7 +74,8 @@ TerrainWidget original_terrain{};
 thread_local bool preparing{};
 bool configured{};
 bool terrain_applied{};
-unsigned world_seed{1234567}, world_year{1950}, world_size{};
+unsigned world_seed{1234567}, world_year{1950}, world_size{}, world_format{}, world_climate{};
+std::string generator_name{"temperate.gen.lua"};
 using LoadConfig = void(*)(void*, void*, void*, void*, void*);
 LoadConfig original_config{};
 using StartNew = void(*)(void*, void*, void*, void*, void*, void*, std::uint32_t, bool, void*);
@@ -89,12 +90,19 @@ bool ReadRequest(const std::filesystem::path& path) {
   if (!path.is_absolute() || std::filesystem::file_size(path) > 65536) return false;
   std::ifstream input(path);
   std::string magic;
-  unsigned terrain{}, towns{}, industries{}, economy{}, agents{}, growth{}, count{};
-  if (!(input >> magic >> world_seed >> world_year >> world_size >> terrain >> towns
-        >> industries >> economy >> agents >> growth >> count) || magic != "TPF2MP_WORLDGEN_1"
+  unsigned hilliness{}, water{}, forest{}, canyon{}, mesa{}, ridge{}, land{}, islands{};
+  unsigned towns{}, industries{}, target_industries{}, native_difficulty{}, economy{}, agents{}, growth{};
+  unsigned vehicles{}, names{}, environment{}, count{};
+  if (!(input >> magic >> world_seed >> world_year >> world_size >> world_format >> world_climate
+        >> hilliness >> water >> forest >> canyon >> mesa >> ridge >> land >> islands
+        >> towns >> industries >> target_industries >> native_difficulty >> economy >> agents >> growth
+        >> vehicles >> names >> environment >> count) || magic != "TPF2MP_WORLDGEN_2"
       || world_seed > 2147483647 || world_year < 1850 || world_year > 2050
-      || world_size > 2 || terrain > 3 || towns > 2 || industries > 2
-      || economy > 3 || agents > 2 || growth > 1 || count < 1 || count > 256) return false;
+      || world_size > 2 || world_format > 4 || world_climate > 2
+      || hilliness > 4 || water > 4 || forest > 6 || canyon > 4 || mesa > 4 || ridge > 4
+      || land > 4 || islands > 6 || towns > 2 || industries > 2 || target_industries > 3
+      || native_difficulty > 3 || economy > 3 || agents > 2 || growth > 1
+      || vehicles > 3 || names > 12 || environment > 2 || count < 1 || count > 256) return false;
   mods.clear(); unsigned multiplayer{};
   for (unsigned i=0;i<count;++i) {
     std::string id; unsigned version{};
@@ -107,14 +115,36 @@ bool ReadRequest(const std::filesystem::path& path) {
   }
   std::string extra;
   if (input >> extra || multiplayer != 1) return false;
-  terrain_params = {{"hilliness",static_cast<int>(terrain)},{"water",0},{"forest",2}};
+  if (world_climate == 0) {
+    generator_name = "temperate.gen.lua";
+    terrain_params = {{"hilliness",static_cast<int>(hilliness)}, {"water",static_cast<int>(water)},
+                      {"forest",static_cast<int>(forest)}};
+  } else if (world_climate == 1) {
+    generator_name = "desert.gen.lua";
+    terrain_params = {{"canyon",static_cast<int>(canyon)}, {"mesa",static_cast<int>(mesa)},
+                      {"ridge",static_cast<int>(ridge)}, {"water",static_cast<int>(water)},
+                      {"forest",static_cast<int>(forest)}};
+  } else {
+    generator_name = "tropical.gen.lua";
+    terrain_params = {{"hilliness",static_cast<int>(hilliness)}, {"land",static_cast<int>(land)},
+                      {"forest",static_cast<int>(forest)}, {"islands",static_cast<int>(islands)}};
+  }
+  static constexpr const char* climates[]{"temperate","dry","tropical"};
+  static constexpr const char* vehicle_sets[]{"europe","usa","asia","all"};
+  static constexpr const char* name_lists[]{"europe","england","france","germany","italy","korea",
+      "netherlands","norway","russia","spain","sweden","usa","asia"};
+  static constexpr const char* difficulties[]{"easy","medium","hard","very hard"};
+  world_resources = {{"climate",climates[world_climate]}, {"environment",climates[environment]},
+      {"vehicles",vehicle_sets[vehicles]}, {"nameList",name_lists[names]},
+      {"difficulty",difficulties[native_difficulty]}};
   mod_params.clear();
   mod_params["!tpf2_mp_1"] = {{"agentMode",static_cast<int>(agents)},
     {"economyDifficulty",static_cast<int>(economy)},{"townDevelopment",static_cast<int>(growth)},
     {"startupMode",0}};
   mod_params[""] = {{"locations.mapSize",static_cast<int>(world_size)},
     {"locations.towns.frequency",static_cast<int>(towns)},
-    {"locations.industry.maxNumberPerArea",static_cast<int>(industries)}};
+    {"locations.industry.maxNumberPerArea",static_cast<int>(industries)},
+    {"locations.industry.targetMaxNumberPerArea",static_cast<int>(target_industries)}};
   configured = true;
   return true;
 }
@@ -155,6 +185,9 @@ void Start(void* menu, void* active, void* resources, void* params, void* map,
     reinterpret_cast<void(*)(void*,const void*)>(base + 0x2a7210)(params,&mod_params);
     reinterpret_cast<void*(*)(void*,const void*)>(base + 0xaa150)(resources,&world_resources);
     seed = &seed_text;
+    const auto& copied_resources = *static_cast<const Resources*>(resources);
+    for (const auto& [key,value] : copied_resources)
+      Emit(("native-resource-"+key+"="+value).c_str());
     // Observe the game's destination object after its copy constructor, not
     // merely our source request. The verifier binds these to the output save.
     const auto& copied = *static_cast<const ModParams*>(params);
@@ -198,13 +231,13 @@ void* SelectGenerator(void* out,void* a,void* b,void* c,void* d) {
     auto& entries = *reinterpret_cast<std::vector<GeneratorEntry>*>(static_cast<std::byte*>(out)+0x28);
     bool selected = false;
     if (entries.size() <= 2048) for (auto& entry : entries) {
-      if (entry.name == "temperate.gen.lua") {
+      if (entry.name == generator_name) {
         std::swap(entries.front(),entry); selected = true; break;
       }
     }
-    if (!selected) { Emit("temperate-generator-missing"); ExitProcess(7); }
+    if (!selected) { Emit("selected-generator-missing"); ExitProcess(7); }
     generation_rep = out;
-    Emit("temperate-generator-selected");
+    Emit(("native-generator-selected=" + generator_name).c_str());
   }
   return result;
 }
@@ -236,15 +269,23 @@ void* Generator(void* closure) {
     preview_provider = *reinterpret_cast<void**>(bytes + 8);
     // Scalar fields in the native generation closure, before its std::function
     // wrapper adds a vtable. Keep all owning strings/vectors/native objects.
-    auto settings = reinterpret_cast<std::byte*(*)()>(base + 0x2a49c0)();
     std::array<std::byte, 0x30> no_override{};
     *reinterpret_cast<int*>(no_override.data()+0x28) = -1;
     *reinterpret_cast<int*>(no_override.data()+0x2c) = -1;
-    const auto index = world_size + (*reinterpret_cast<bool*>(settings+0x2fc) ? 1u : 0u);
-    const auto dimensions = reinterpret_cast<std::uint64_t(*)(unsigned,unsigned,void*)>(base + 0x674aa0)(index,0,no_override.data());
+    // Lobby sizes are the three standard native sizes. Do not let a peer's
+    // local experimental-map preference shift these indices independently.
+    const auto index = world_size + 1u;
+    for (unsigned format = 0; format < 5; ++format) {
+      const auto probed = reinterpret_cast<std::uint64_t(*)(unsigned,unsigned,void*)>(base + 0x674aa0)(index,format,no_override.data());
+      std::ostringstream probe;
+      probe << "dimension-probe-format-" << format << "=" << (probed & 0xffffffff) << "x" << (probed >> 32);
+      Emit(probe.str().c_str());
+    }
+    const auto dimensions = reinterpret_cast<std::uint64_t(*)(unsigned,unsigned,void*)>(base + 0x674aa0)(index,world_format,no_override.data());
     std::memcpy(bytes+0x38,&dimensions,sizeof(dimensions));
     *reinterpret_cast<unsigned*>(bytes+0x68) = world_seed;
     Emit(("native-seed="+std::to_string(*reinterpret_cast<unsigned*>(bytes+0x68))).c_str());
+    Emit(("native-map-format="+std::to_string(world_format)).c_str());
     const auto name = *reinterpret_cast<const std::string* const*>(bytes+0x28);
     Emit(("generator-resource-" + *name).c_str());
     std::ostringstream line; line << "configured-dimensions-" << (dimensions & 0xffffffff) << "x" << (dimensions >> 32);

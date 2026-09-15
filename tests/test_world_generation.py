@@ -27,20 +27,42 @@ class WorldGenerationTests(unittest.TestCase):
         (self.mod / "mod.lua").write_text("return {}")
         self.config = {"mode": "new", "release": __version__, "saveDigest": None,
             "mods": selected_content([{"id": "!tpf2_mp", "version": 1}], self.game, self.mod),
-            "world": {"seed": 7654321, "year": 1980, "size": "medium", "terrain": "hilly",
-                "towns": "low", "industries": "high", "difficulty": "relaxed", "agentMode": "vanilla",
+            "world": {"seed": 7654321, "year": 1980, "size": "medium", "format": "1:1",
+                "climate": "temperate", "terrain": {"hilliness": 2, "water": 2, "forest": 3,
+                    "canyon": 2, "mesa": 2, "ridge": 2, "land": 2, "islands": 3},
+                "towns": "low", "industries": "high", "industryTarget": "medium",
+                "vehicles": "all", "nameList": "england", "environment": "temperate",
+                "nativeDifficulty": "easy", "difficulty": "relaxed", "agentMode": "vanilla",
                 "townDevelopment": False}}
 
     def test_native_contract_maps_all_settings_and_namespaces(self):
         self.assertEqual(native_request(self.config,self.game,self.mod),
-            "TPF2MP_WORLDGEN_1\n7654321 1980 1 1 0 2 3 1 0\n1\n!tpf2_mp 1\n")
+            "TPF2MP_WORLDGEN_2\n7654321 1980 1 0 0 2 2 3 2 2 2 2 3 0 2 2 0 3 1 0 3 1 0\n1\n!tpf2_mp 1\n")
+
+    def test_native_contract_maps_climate_specific_terrain_and_rectangle(self):
+        config = copy.deepcopy(self.config)
+        config['world'].update(size='large', format='1:4', climate='dry', environment='tropical',
+                               vehicles='usa', nameList='germany', nativeDifficulty='hard')
+        config['world']['terrain'].update(canyon=4, mesa=1, ridge=3, water=0, forest=6)
+        request = native_request(config,self.game,self.mod).splitlines()[1].split()
+        self.assertEqual(request[2:5], ['2','3','1'])
+        self.assertEqual(request[6:13], ['0','6','4','1','3','2','3'])
+        self.assertEqual(request[16], '2')
+        self.assertEqual(request[20:23], ['1','3','2'])
 
     def test_invalid_world_never_emits_request(self):
         for key, value in [("seed",True),("seed",2147483648),("year",1849),
-                           ("size","huge"),("terrain",{}),("difficulty","cheat"),
+                           ("size","huge"),("format","2:3"),("climate","snow"),("terrain",{}),("difficulty","cheat"),
                            ("townDevelopment",1),("agentMode","disabled")]:
             config = copy.deepcopy(self.config); config["world"][key] = value
             with self.subTest(key=key,value=value), self.assertRaises(RelayApiError):
+                native_request(config,self.game,self.mod)
+
+    def test_every_terrain_value_is_bounded(self):
+        for key, limit in [('hilliness',4),('water',4),('forest',6),('canyon',4),
+                           ('mesa',4),('ridge',4),('land',4),('islands',6)]:
+            config = copy.deepcopy(self.config); config['world']['terrain'][key] = limit + 1
+            with self.subTest(key=key), self.assertRaisesRegex(RelayApiError, 'terrain'):
                 native_request(config,self.game,self.mod)
 
     def test_missing_extra_settings_and_aliases_rejected(self):
@@ -68,10 +90,13 @@ class WorldGenerationTests(unittest.TestCase):
         (self.root/'native-request.txt').write_bytes(request)
         (self.root/'report.json').write_text(json.dumps({'complete':True,'exitCode':0,
             'requestSha256':hashlib.sha256(request).hexdigest(),'savePath':str(save)}))
-        events = ['native-save-idle','generator-resource-temperate.gen.lua','native-seed=7654321',
-            'native-terrain-hilliness=1','native-terrain-water=0','native-terrain-forest=2',
+        events = ['native-save-idle','generator-resource-temperate.gen.lua','native-seed=7654321','native-map-format=0',
+            'native-terrain-hilliness=2','native-terrain-water=2','native-terrain-forest=3',
+            'native-resource-climate=temperate','native-resource-environment=temperate',
+            'native-resource-vehicles=all','native-resource-nameList=england','native-resource-difficulty=easy',
             'native-parameter-:locations.mapSize=1','native-parameter-:locations.towns.frequency=0',
             'native-parameter-:locations.industry.maxNumberPerArea=2',
+            'native-parameter-:locations.industry.targetMaxNumberPerArea=2',
             'native-parameter-!tpf2_mp_1:economyDifficulty=3','native-parameter-!tpf2_mp_1:agentMode=1',
             'native-parameter-!tpf2_mp_1:townDevelopment=0','configured-dimensions-44x44']
         (self.root/'native.jsonl').write_text('\n'.join(json.dumps({'event':e}) for e in events))
