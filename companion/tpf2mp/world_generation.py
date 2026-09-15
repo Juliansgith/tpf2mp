@@ -13,6 +13,33 @@ from .save_metadata import validate_metadata
 from .save_sync import build_save_sync_manifest
 
 
+def verify_preview(config: dict, evidence: Path, game: Path, mod: Path) -> str:
+    """Bind native pre-world rendering to the exact selected configuration."""
+    encoded = native_request(config, game, mod).encode('ascii')
+    report = json.loads((evidence / 'report.json').read_text(encoding='utf-8-sig'))
+    if report.get('complete') is not True or report.get('exitCode') != 0 \
+            or report.get('requestSha256') != hashlib.sha256(encoded).hexdigest() \
+            or (evidence / 'native-request.txt').read_bytes() != encoded:
+        raise RelayApiError('preview evidence belongs to an incomplete or different generation')
+    events = [json.loads(line) for line in (evidence / 'native.jsonl').read_text().splitlines()]
+    names = {e.get('event') for e in events}
+    dimension = {'small': 32, 'medium': 44, 'large': 56}[config['world']['size']]
+    hilliness = encoded.decode('ascii').splitlines()[1].split()[3]
+    if not {'native-preview-ready', 'generator-resource-temperate.gen.lua',
+            f"native-seed={config['world']['seed']}", f'configured-dimensions-{dimension}x{dimension}',
+            f'native-terrain-hilliness={hilliness}', 'native-terrain-water=0', 'native-terrain-forest=2'} <= names:
+        raise RelayApiError('native preview configuration observations are missing')
+    digest = hashlib.sha256()
+    for filename, limit in (('preview-native.rgba', 1024*1024*4+8), ('preview-markers.json', 2*1024*1024)):
+        with (evidence / filename).open('rb') as stream:
+            raw = stream.read(limit+1)
+        if not raw or len(raw) > limit:
+            raise RelayApiError('native preview evidence exceeds bounds')
+        digest.update(len(raw).to_bytes(8,'little'))
+        digest.update(raw)
+    return digest.hexdigest()
+
+
 def native_request(config: dict, game: Path, mod: Path) -> str:
     verify_content(config, game, mod)
     w = config.get("world")

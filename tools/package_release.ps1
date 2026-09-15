@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.45.0-alpha',
+    [string]$Version = '0.45.1-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -200,7 +200,7 @@ $toolNames = @(
     'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
     'analyze_feeder_live_evidence.ps1', 'start_feeder_live_acceptance.ps1',
     'multiplayer_launcher.ps1', 'multiplayer_lobby.ps1', 'start_lobby_match.ps1',
-    'run_native_worldgen_lab.ps1', 'native_worldgen_lab.lua', 'native_launch_save.ps1',
+    'run_native_worldgen_lab.ps1', 'native_worldgen_lab.lua', 'native_launch_save.ps1', 'export_lobby_map_preview.ps1',
     'watch_recovery_saves.ps1', 'recovery_plan_common.ps1', 'recovery_save_common.ps1',
     'save_recovery_via_ui.ps1',
     'run_localhost_live_validation.ps1', 'run_launcher_end_to_end.ps1',
@@ -238,7 +238,7 @@ road/rail attachment and terrain changes are not fully revalidated and may
 fail or fault the session. Some variants and save/load scenarios remain
 unverified; intermittent native Load Game stalls remain under investigation.
 Back up existing saves, update both players, and start a new session. See
-`docs/release-notes/RELEASE_NOTES_0.45.0-alpha.md` for the exact evidence limits.
+`docs/release-notes/RELEASE_NOTES_0.45.1-alpha.md` for the exact evidence limits.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 

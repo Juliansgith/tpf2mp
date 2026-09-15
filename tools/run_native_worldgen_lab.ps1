@@ -8,9 +8,12 @@ param(
     [switch]$WithMultiplayerMod,
     [switch]$SaveGeneratedWorld,
     [switch]$Configured,
+    [switch]$MapPreview,
+    [switch]$PreviewOnly,
     [string]$RequestPath
 )
 $ErrorActionPreference = 'Stop'
+if ($PreviewOnly -and ($SaveGeneratedWorld -or $MapPreview)) { throw 'Preview-only never saves or loads a playable world.' }
 if (@(Get-CimInstance Win32_Process -Filter "Name = 'TransportFever2.exe'").Count) {
     throw 'Close existing games before a disposable generator qualification.'
 }
@@ -74,6 +77,9 @@ try {
     $env:TPF2MP_WORLDGEN_LAB_LUA_MARKER = Join-Path $output 'script.log'
     $env:TPF2MP_WORLDGEN_LAB_MOD = if ($WithMultiplayerMod) { 'tpf2_mp' } else { '' }
     $env:TPF2MP_WORLDGEN_LAB_CONFIGURED = if ($Configured) { '1' } else { '' }
+    $env:TPF2MP_WORLDGEN_PREVIEW_ONLY = if ($PreviewOnly) { '1' } else { '' }
+    if (($MapPreview -or $PreviewOnly) -and -not $RequestPath) { throw 'Map preview requires a pinned generation request.' }
+    $env:TPF2MP_WORLDGEN_PREVIEW_EXPORT = if ($MapPreview) { '1' } else { '' }
     if ($RequestPath) {
         $pinnedRequest = Join-Path $output 'native-request.txt'
         Copy-Item -LiteralPath $RequestPath -Destination $pinnedRequest
@@ -81,7 +87,8 @@ try {
         $env:TPF2MP_WORLDGEN_REQUEST = $pinnedRequest
     } else { $env:TPF2MP_WORLDGEN_REQUEST = '' }
     $env:TPF2MP_WORLDGEN_LAB_SAVE = if ($SaveGeneratedWorld) { [IO.Path]::GetFileNameWithoutExtension($name) } else { '' }
-    $process = Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle Normal `
+    $workerStyle = if ($PreviewOnly) { 'Hidden' } else { 'Normal' }
+    $process = Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle $workerStyle `
         -ArgumentList @('--script', ('res/scripts/' + $name)) -PassThru
     Write-Output "worldgen_lab_pid=$($process.Id)"
     & $injector --pid $process.Id --dll $dll --wait-ms 30000 *> (Join-Path $output 'injector.log')
@@ -107,6 +114,12 @@ finally {
         foreach ($file in $backups) { Copy-Item -LiteralPath (Join-Path $output $file) -Destination (Join-Path $localRoot $file) }
     }
     foreach ($key in $savedEnvironment.Keys) { [Environment]::SetEnvironmentVariable($key, $savedEnvironment[$key], 'Process') }
+    if (-not $savedEnvironment.ContainsKey('TPF2MP_WORLDGEN_PREVIEW_EXPORT')) {
+        [Environment]::SetEnvironmentVariable('TPF2MP_WORLDGEN_PREVIEW_EXPORT', $null, 'Process')
+    }
+    if (-not $savedEnvironment.ContainsKey('TPF2MP_WORLDGEN_PREVIEW_ONLY')) {
+        [Environment]::SetEnvironmentVariable('TPF2MP_WORLDGEN_PREVIEW_ONLY', $null, 'Process')
+    }
     $log = Join-Path $localRoot 'crash_dump\stdout.txt'
     if (Test-Path -LiteralPath $log) { Copy-Item -LiteralPath $log -Destination (Join-Path $output 'stdout.txt') }
     if ($ownsGeneration) { $generationMutex.ReleaseMutex() }
@@ -114,6 +127,15 @@ finally {
 }
 $markers = if (Test-Path -LiteralPath (Join-Path $output 'script.log')) { Get-Content -LiteralPath (Join-Path $output 'script.log') } else { @() }
 $complete = -not $failure -and ($markers -contains 'world-ready') -and ($markers -contains 'quit-request')
+if ($PreviewOnly) {
+    $nativeEvents = @(Get-Content -LiteralPath (Join-Path $output 'native.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
+    $complete = -not $failure -and @($nativeEvents | Where-Object event -eq 'native-preview-ready').Count -eq 1 `
+        -and (Test-Path -LiteralPath (Join-Path $output 'preview-native.rgba')) `
+        -and ($markers -notcontains 'world-ready')
+}
+if ($MapPreview -and -not (Test-Path -LiteralPath (Join-Path $output 'preview-native.rgba'))) {
+    $complete = $false; $failure = 'Native terrain preview was unavailable.'
+}
 $generatedSave = $null
 if ($complete -and $SaveGeneratedWorld) {
     $saves = @(Get-ChildItem -LiteralPath (Join-Path $localRoot 'save') -Filter "autosave_${saveStem}_*.sav")

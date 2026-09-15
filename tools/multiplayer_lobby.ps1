@@ -28,7 +28,7 @@ Add-Type -AssemblyName System.Drawing
 
 $form = New-Object Windows.Forms.Form
 $form.Text = "TPF2MP Lobby - $supportId"
-$form.ClientSize = New-Object Drawing.Size(900, 740)
+$form.ClientSize = New-Object Drawing.Size(1180, 810)
 $form.MinimumSize = $form.Size
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
@@ -64,7 +64,7 @@ function Add-Choice([string]$Label, [int]$X, [int]$Y, [string[]]$Values, [string
     return $control
 }
 [void](Add-Label $(if ($isHost) { 'HOST / WORLD SETUP' } else { 'PLAYER 2 / WORLD SETUP' }) 20 15 850)
-$notice = Add-Label 'Review the settings, verify mods and Ready on both PCs. The host starts once; generation, save transfer and loading are automatic.' 20 46 855 48
+$notice = Add-Label 'Generate a map, inspect the shared preview and regenerate if wanted. Both players accept / Ready, then the host starts.' 20 46 1135 48
 $notice.ForeColor = [Drawing.Color]::FromArgb(245, 190, 92)
 $worldControls = @{}
 $worldControls.size = Add-Choice 'Map size' 20 102 @('small', 'medium', 'large') 'medium'
@@ -88,25 +88,34 @@ $growth = New-Object Windows.Forms.CheckBox
 $growth.Text = 'Physical town growth (experimental)'
 $growth.SetBounds(20, 365, 400, 28); $growth.Enabled = $isHost
 $form.Controls.Add($growth)
-[void](Add-Label 'Installed mods (checked order is load order)' 450 102 430)
+[void](Add-Label 'Installed mods (checked order is load order)' 20 410 425)
 $mods = New-Object Windows.Forms.CheckedListBox
-$mods.SetBounds(450, 132, 425, 261)
+$mods.SetBounds(20, 435, 395, 118)
 $mods.CheckOnClick = $true; $mods.Enabled = $isHost
 $form.Controls.Add($mods)
-$publish = Add-Button 'APPLY NEW WORLD SETTINGS' 20 408 270
-$existing = Add-Button 'USE EXISTING SAVE...' 310 408 220
+$publish = Add-Button 'APPLY SETTINGS' 20 575 190
+$existing = Add-Button 'USE EXISTING SAVE...' 220 575 195
 $publish.Enabled = $isHost; $existing.Enabled = $isHost
-$ready = Add-Button 'VERIFY MODS / READY' 550 408 220
-$unready = Add-Button 'NOT READY' 775 408 100
+$ready = Add-Button 'ACCEPT MAP / READY' 450 575 225
+$unready = Add-Button 'NOT READY' 690 575 130
 $ready.Enabled = $false; $unready.Enabled = $false
-$peerStatus = Add-Label 'Connecting to lobby...' 20 460 605 55
-$start = Add-Button 'START MATCH' 650 460 225
+$peerStatus = Add-Label 'Connecting to lobby...' 20 632 410 55
+$start = Add-Button 'START MATCH' 925 632 225
+$generate = Add-Button 'GENERATE MAP' 925 575 225
+$regenerate = Add-Button 'NEW SEED / REGENERATE' 450 632 300
+$generate.Enabled = $false; $regenerate.Enabled = $false
+$mapLabel = Add-Label 'Map preview - generate a world to begin' 450 102 700
+$mapImage = New-Object Windows.Forms.PictureBox
+$mapImage.SetBounds(450,132,700,394)
+$mapImage.SizeMode = 'Zoom'; $mapImage.BackColor = [Drawing.Color]::FromArgb(12,20,25)
+$form.Controls.Add($mapImage)
+[void](Add-Label 'Actual generated world. Both players review the same saved map; no second generation on Start.' 450 532 700 36)
 $start.Enabled = $false
 $summary = New-Object Windows.Forms.TextBox
 $summary.Multiline = $true; $summary.ReadOnly = $true; $summary.ScrollBars = 'Vertical'
-$summary.SetBounds(20, 520, 855, 128)
+$summary.SetBounds(20, 695, 1130, 66)
 $form.Controls.Add($summary)
-$errorLabel = Add-Label '' 20 660 855 65
+$errorLabel = Add-Label '' 20 766 1130 40
 $errorLabel.ForeColor = [Drawing.Color]::FromArgb(245, 190, 92)
 
 $script:lobbyState = $null
@@ -118,18 +127,25 @@ $script:lobbyDraftDirectory = $null
 $script:lobbyFailures = 0
 $script:lobbyStartingSave = $null
 $script:lobbyLaunchStarted = $false
+$script:lobbyPreviewDigest = $null
+$script:lobbyPreviewFiles = @()
+$script:lobbyGenerateAfterApply = $false
 
 function Update-Buttons {
     $busy = $null -ne $script:lobbyWorker
-    $configured = $script:lobbyState -and $script:lobbyState.config -and $script:lobbyState.phase -eq 'configuring'
+    $configured = $script:lobbyState -and $script:lobbyState.config -and $script:lobbyState.phase -in @('configuring','preview-ready')
     $publish.Enabled = $isHost -and -not $busy -and $script:lobbyMods.Count -gt 0 `
-        -and $script:lobbyState -and $script:lobbyState.phase -eq 'configuring'
+        -and $script:lobbyState -and $script:lobbyState.phase -in @('configuring','preview-ready')
     $existing.Enabled = $isHost -and -not $busy -and $script:lobbyState `
-        -and $script:lobbyState.phase -eq 'configuring'
-    $ready.Enabled = $configured -and -not $busy -and -not $script:lobbyDirty
+        -and $script:lobbyState.phase -in @('configuring','preview-ready')
+    $reviewed = $configured -and ($script:lobbyState.config.mode -eq 'existing' -or
+        ($script:lobbyState.phase -eq 'preview-ready' -and $script:lobbyPreviewDigest -ceq $script:lobbyState.previewDigest))
+    $ready.Enabled = $reviewed -and -not $busy -and -not $script:lobbyDirty
     $unready.Enabled = $configured -and -not $busy
-    $start.Enabled = $isHost -and $configured -and $script:lobbyState.canStart -and -not $busy -and -not $script:lobbyDirty
-    $editable = $isHost -and -not $busy -and $script:lobbyState -and $script:lobbyState.phase -eq 'configuring'
+    $start.Enabled = $isHost -and $reviewed -and $script:lobbyState.canStart -and -not $busy -and -not $script:lobbyDirty
+    $editable = $isHost -and -not $busy -and $script:lobbyState -and $script:lobbyState.phase -in @('configuring','preview-ready')
+    $generate.Enabled = $editable -and $script:lobbyMods.Count -gt 0
+    $regenerate.Enabled = $generate.Enabled -and $script:lobbyState.phase -eq 'preview-ready'
     foreach ($control in $worldControls.Values) { $control.Enabled = $editable }
     foreach ($control in @($seed, $year, $growth, $mods)) { $control.Enabled = $editable }
 }
@@ -153,7 +169,9 @@ function Start-LobbyMatchWorker {
         $script:lobbyWorker = [pscustomobject]@{ Process=$process; Operation='match-launch'
             Output=$process.StandardOutput.ReadToEndAsync(); Error=$process.StandardError.ReadToEndAsync() }
         $script:lobbyLaunchStarted = $true
-        $notice.Text = 'Preparing the world / transferring save / loading multiplayer. This can take a few minutes.'
+        $notice.Text = if ($script:lobbyState.phase -eq 'preview-generating') {
+            'Generating a map for review. Neither multiplayer game will launch until you accept / Ready and Start.'
+        } else { 'Transferring the accepted save / loading multiplayer. This can take a few minutes.' }
     } catch { $process.Dispose(); throw }
     Update-Buttons
 }
@@ -180,6 +198,7 @@ function Reviewed-Arguments {
     if (-not $script:lobbyState) { throw 'Wait for lobby status.' }
     $result = @('--revision', [string]$script:lobbyState.revision)
     if ($script:lobbyState.configDigest) { $result += @('--config-digest', [string]$script:lobbyState.configDigest) }
+    if ($script:lobbyState.phase -eq 'preview-ready') { $result += @('--preview-digest',[string]$script:lobbyState.previewDigest) }
     return $result
 }
 function Show-LobbyState($State) {
@@ -208,14 +227,28 @@ function Show-LobbyState($State) {
         $summary.Text = $details -join "`r`n"
     } else { $summary.Text = 'The host has not published world settings yet.' }
     Update-Buttons
-    if ($State.phase -in @('generating','preparing-save','save-ready')) { Start-LobbyMatchWorker }
+    if (-not $State.PSObject.Properties['previewDigest'] -or -not $State.previewDigest) {
+        $script:lobbyPreviewDigest = $null
+        if ($mapImage.Image) { $mapImage.Image.Dispose(); $mapImage.Image = $null }
+        $mapLabel.Text = if ($State.phase -eq 'preview-generating') { 'Generating native map overview...' } else { 'Map preview - generate a world to begin' }
+    }
+    if ($State.phase -eq 'preview-ready' -and $script:lobbyPreviewDigest -cne $State.previewDigest -and -not $SmokeTest) {
+        if (-not $script:lobbyDraftDirectory) {
+            $script:lobbyDraftDirectory = Join-Path ([IO.Path]::GetTempPath()) ('tpf2mp-lobby-' + [guid]::NewGuid().ToString('N'))
+            [void](New-Item -ItemType Directory -Path $script:lobbyDraftDirectory)
+        }
+        $script:lobbyNextPreview = Join-Path $script:lobbyDraftDirectory ([guid]::NewGuid().ToString('N') + '.bmp')
+        $script:lobbyPreviewFiles += $script:lobbyNextPreview
+        Start-LobbyRequest 'preview-download' ((Reviewed-Arguments) + @('--preview-file',$script:lobbyNextPreview))
+    }
+    if ($State.phase -in @('generating','preparing-save','save-ready') -or ($isHost -and $State.phase -eq 'preview-generating')) { Start-LobbyMatchWorker }
 }
 foreach ($control in $worldControls.Values) { $control.add_SelectedIndexChanged({ if ($isHost) { $script:lobbyDirty = $true }; Update-Buttons }) }
 $seed.add_ValueChanged({ if ($isHost) { $script:lobbyDirty = $true }; Update-Buttons })
 $year.add_ValueChanged({ if ($isHost) { $script:lobbyDirty = $true }; Update-Buttons })
 $growth.add_CheckedChanged({ if ($isHost) { $script:lobbyDirty = $true }; Update-Buttons })
 $mods.add_ItemCheck({ if ($isHost) { $script:lobbyDirty = $true }; Update-Buttons })
-$publish.add_Click({
+function Publish-LobbyWorld {
     try {
         $selected = @(foreach ($index in $mods.CheckedIndices) {
             $item = $script:lobbyMods[$index]
@@ -231,7 +264,13 @@ $publish.add_Click({
         $path = Join-Path $script:lobbyDraftDirectory 'world.json'
         [IO.File]::WriteAllText($path, (@{ world = $world; mods = $selected } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
         Start-LobbyRequest 'configure-new' ((Reviewed-Arguments) + @('--configuration', $path))
-    } catch { $errorLabel.Text = $_.Exception.Message }
+    } catch { $script:lobbyGenerateAfterApply = $false; $errorLabel.Text = $_.Exception.Message }
+}
+$publish.add_Click({ Publish-LobbyWorld })
+$generate.add_Click({ $script:lobbyGenerateAfterApply = $true; Publish-LobbyWorld })
+$regenerate.add_Click({
+    $seed.Value = Get-Random -Minimum 1 -Maximum 2147483647
+    $script:lobbyGenerateAfterApply = $true; Publish-LobbyWorld
 })
 $existing.add_Click({
     $picker = New-Object Windows.Forms.OpenFileDialog
@@ -267,6 +306,11 @@ $timer.add_Tick({
             if ($exitCode -ne 0) { throw "Lobby request failed: $stderr" }
             if ($worker.Operation -eq 'match-launch') {
                 $summary.Text = $stdout
+                if ($stdout -match '(?m)^lobby_preview_prepared=') {
+                    $script:lobbyLaunchStarted = $false
+                    $notice.Text = 'Map generated. Review the preview, regenerate or accept / Ready on both PCs.'
+                    Start-LobbyRequest 'presence'; return
+                }
                 $notice.Text = if ($stdout -match '(?m)^lobby_match_existing=') {
                     'This role was already launched. Return to its game, or stop it and create a new room.'
                 } else { 'The local multiplayer world is loaded. Check in-game readiness while the other player finishes loading.' }
@@ -274,7 +318,16 @@ $timer.add_Tick({
             }
             $value = $stdout | ConvertFrom-Json
             $script:lobbyFailures = 0; $errorLabel.Text = ''
-            if ($worker.Operation -eq 'catalogue') {
+            if ($worker.Operation -eq 'preview-download') {
+                $bitmap = [Drawing.Image]::FromFile($script:lobbyNextPreview)
+                try {
+                    if ($mapImage.Image) { $mapImage.Image.Dispose() }
+                    $mapImage.Image = New-Object Drawing.Bitmap($bitmap)
+                } finally { $bitmap.Dispose() }
+                $script:lobbyPreviewDigest = [string]$value.previewDigest
+                $mapLabel.Text = "Native map - seed $($value.config.world.seed) | White: towns / orange: industries"
+                Show-LobbyState $value
+            } elseif ($worker.Operation -eq 'catalogue') {
                 $script:lobbyMods = @($value.mods)
                 foreach ($item in $script:lobbyMods) {
                     $text = "$($item.id) v$($item.version) [$($item.source)]"
@@ -284,6 +337,10 @@ $timer.add_Tick({
             } else {
                 if ($worker.Operation -in @('configure-new', 'configure-save')) { $script:lobbyDirty = $false }
                 Show-LobbyState $value
+                if ($worker.Operation -eq 'configure-new' -and $script:lobbyGenerateAfterApply) {
+                    $script:lobbyGenerateAfterApply = $false
+                    Start-LobbyRequest 'generate' (Reviewed-Arguments)
+                }
             }
             Update-Buttons
         }
@@ -294,6 +351,7 @@ $timer.add_Tick({
         }
     } catch {
         $script:lobbyFailures++
+        $script:lobbyGenerateAfterApply = $false
         $script:lobbyLastPoll = [DateTime]::UtcNow
         $errorLabel.Text = $_.Exception.Message.Substring(0, [Math]::Min(850, $_.Exception.Message.Length))
         $script:lobbyState = $null
@@ -306,6 +364,13 @@ try {
         if ($form.Controls.Count -lt 25 -or $ready.Enabled) { throw 'Lobby control construction failed.' }
         Show-LobbyState ('{"schemaVersion":1,"revision":0,"config":null,"configDigest":null,"phase":"configuring","peers":{},"canStart":false}' | ConvertFrom-Json)
         if ($ready.Enabled -or $peerStatus.Text -notmatch 'not connected') { throw 'Empty lobby must not allow Ready.' }
+        $review = '{"schemaVersion":1,"revision":2,"config":{"mode":"new","world":{"seed":7,"year":1950,"size":"small","terrain":"flat","difficulty":"normal","towns":"low","industries":"low","agentMode":"skeleton","townDevelopment":false},"mods":[]},"configDigest":"config","previewDigest":"map","phase":"preview-ready","peers":{},"canStart":true}' | ConvertFrom-Json
+        $review.config | Add-Member -NotePropertyName release -NotePropertyValue 'test'
+        Show-LobbyState $review
+        if ($ready.Enabled -or $start.Enabled) { throw 'An undownloaded preview cannot be accepted.' }
+        $script:lobbyPreviewDigest = 'map'; $script:lobbyDirty = $false
+        Show-LobbyState $review
+        if (-not $ready.Enabled -or ($isHost -and -not $start.Enabled)) { throw 'Reviewed map readiness failed.' }
         Write-Output 'Lobby dialog smoke passed (no window shown, no network/game started).'
     } else {
         Start-LobbyRequest 'catalogue'
@@ -321,9 +386,11 @@ try {
     # Deliberately do not close the room or terminate a game on closing this
     # settings dialog. Its presence expires; launcher remains session owner.
     if ($script:lobbyDraftDirectory) {
+        foreach ($file in $script:lobbyPreviewFiles) { if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file } }
         $draftPath = Join-Path $script:lobbyDraftDirectory 'world.json'
         if (Test-Path -LiteralPath $draftPath) { Remove-Item -LiteralPath $draftPath }
         Remove-Item -LiteralPath $script:lobbyDraftDirectory # own empty unique directory only
     }
+    if ($mapImage.Image) { $mapImage.Image.Dispose() }
     $form.Dispose()
 }

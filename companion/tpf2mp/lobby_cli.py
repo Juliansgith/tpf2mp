@@ -14,7 +14,8 @@ from .relay_api import RelayApiError, read_credentials
 def configure_cli(commands: argparse._SubParsersAction) -> None:
     parser = commands.add_parser("relay-lobby", help="verify and update pre-game lobby settings")
     parser.add_argument("operation", choices=("status", "presence", "catalogue", "configure-new",
-        "configure-save", "ready", "unready", "start", "save-ready", "cancel", "failed", "generation-request", "generation-verify", "verify-launch"))
+        "configure-save", "ready", "unready", "start", "save-ready", "cancel", "failed", "generation-request", "generation-verify", "verify-launch",
+        "generate", "preview-ready", "preview-download"))
     parser.add_argument("--credentials", type=Path)
     parser.add_argument("--game-executable", type=Path)
     parser.add_argument("--mod-directory", type=Path)
@@ -25,6 +26,9 @@ def configure_cli(commands: argparse._SubParsersAction) -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--native-request", type=Path)
     parser.add_argument("--evidence", type=Path)
+    parser.add_argument('--preview-file', type=Path)
+    parser.add_argument('--preview-digest')
+    parser.add_argument('--generation-id', type=int)
     parser.add_argument("--failure-code", choices=("generation-failed", "save-verification-failed", "launch-failed"))
 
 
@@ -41,6 +45,16 @@ def execute(args: argparse.Namespace) -> dict:
         return {"schemaVersion": 1, "mods": catalogue(args.game_executable, args.mod_directory)}
     require(args, "credentials")
     credentials = read_credentials(args.credentials)
+    if op == 'preview-download':
+        require(args, 'config_digest', 'preview_digest', 'preview_file')
+        state = request(credentials, preview=True)
+        if state['configDigest'] != args.config_digest or state.get('previewDigest') != args.preview_digest \
+                or state['phase'] not in {'preview-ready', 'save-ready'}:
+            raise RelayApiError('map preview changed; refresh before viewing')
+        from .map_preview import write_bitmap
+        write_bitmap(state['preview'], args.preview_file)
+        state['preview'].pop('pixels', None)
+        return state
     if op in {"status", "presence"}:
         return request(credentials, {"op": "presence"} if op == "presence" else None)
     if op == "verify-launch":
@@ -59,7 +73,7 @@ def execute(args: argparse.Namespace) -> dict:
         from .world_generation import native_request, verify_generated
         require(args, "game_executable", "mod_directory", "config_digest")
         state = request(credentials)
-        if credentials.role != "host" or state["phase"] != "generating" or state["configDigest"] != args.config_digest:
+        if credentials.role != "host" or state["phase"] not in {"generating", "preview-generating"} or state["configDigest"] != args.config_digest:
             raise RelayApiError("generation requires the host's locked lobby configuration")
         config = state["config"]
         if op == "generation-request":
@@ -75,9 +89,9 @@ def execute(args: argparse.Namespace) -> dict:
     if state["revision"] != args.revision:
         raise RelayApiError("lobby revision changed; refresh before retrying")
     command = {"op": op, "revision": args.revision}
-    if op in {"configure-new", "configure-save", "start", "save-ready", "cancel", "failed"} and credentials.role != "host":
+    if op in {"configure-new", "configure-save", "start", "save-ready", "cancel", "failed", "generate", "preview-ready"} and credentials.role != "host":
         raise RelayApiError("only the host may change world setup")
-    if op in {"configure-new", "configure-save", "ready", "start", "save-ready"}:
+    if op in {"configure-new", "configure-save", "ready", "start", "save-ready", "generate", "preview-ready"}:
         require(args, "game_executable", "mod_directory")
     if op in {"configure-new", "configure-save"}:
         config = {"release": __version__, "mode": "new", "saveDigest": None, "world": None}
@@ -97,10 +111,15 @@ def execute(args: argparse.Namespace) -> dict:
             config.update(mode="existing", saveDigest=facts["sha256"])
         config["mods"] = selected_content(mods, args.game_executable, args.mod_directory)
         command.update(op="configure", config=config)
-    elif op in {"ready", "unready", "start", "save-ready"}:
+    elif op in {"ready", "unready", "start", "save-ready", "generate", "preview-ready"}:
         require(args, "config_digest")
         config = check_selection(state, args.revision, args.config_digest)
         command["configDigest"] = args.config_digest
+        if state['phase'] == 'preview-ready' and op in {'ready', 'unready', 'start'}:
+            require(args, 'preview_digest')
+            if args.preview_digest != state.get('previewDigest'):
+                raise RelayApiError('map preview changed')
+            command['previewDigest'] = args.preview_digest
         if op != "unready":
             verify_content(config, args.game_executable, args.mod_directory)
         if op in {"ready", "unready"}:
@@ -108,12 +127,24 @@ def execute(args: argparse.Namespace) -> dict:
             # Refresh our lease, but retain the original CAS revision/digest.
             request(credentials, {"op": "presence"})
             command.update(op="ready", ready=op == "ready")
+        elif op == 'preview-ready':
+            require(args, 'preview_file', 'generation_id', 'evidence')
+            if args.generation_id != state.get('generationId'):
+                raise RelayApiError('map generation changed')
+            from .map_preview import from_file
+            from .world_generation import verify_preview
+            native_digest = verify_preview(config, args.evidence, args.game_executable, args.mod_directory)
+            command.update(generationId=args.generation_id, preview=from_file(args.preview_file), nativeDigest=native_digest)
         elif op == "save-ready":
             require(args, "save")
             if config["mode"] == "new":
                 from .world_generation import verify_generated
                 require(args, "evidence")
                 verify_generated(config, args.save, args.evidence, args.game_executable, args.mod_directory, credentials.session_id)
+                if state.get('nativeDigest'):
+                    from .world_generation import verify_preview
+                    if verify_preview(config, args.evidence, args.game_executable, args.mod_directory) != state['nativeDigest']:
+                        raise RelayApiError('final native generation differs from the accepted map preview')
             facts, mods = save_facts(args.save)
             if config["mode"] == "existing" and facts["sha256"] != config["saveDigest"]:
                 raise RelayApiError("selected existing save changed after Ready")
@@ -126,7 +157,7 @@ def execute(args: argparse.Namespace) -> dict:
         require(args, "failure_code", "config_digest")
         check_selection(state, args.revision, args.config_digest)
         command.update(code=args.failure_code)
-    return request(credentials, command)
+    return request(credentials, command, preview=True) if op == 'preview-ready' else request(credentials, command)
 
 
 def run_cli(args: argparse.Namespace) -> bool:

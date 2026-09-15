@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Current release: `0.45.0-alpha` (experimental testing release)
+Current release: `0.45.1-alpha` (experimental testing release)
 
 Last reviewed: 2026-09-15
 
@@ -19,7 +19,7 @@ This release has targeted real-game evidence, not a complete UI matrix PASS.
 Combined demolition/attachment/terrain cases, all construction variants and
 fresh save/load/recovery remain incomplete. Intermittent native Load Game
 stalls remain unresolved. Back up saves; see the
-[release notes](release-notes/RELEASE_NOTES_0.45.0-alpha.md).
+[release notes](release-notes/RELEASE_NOTES_0.45.1-alpha.md).
 
 The 0.45.0 release adds the native World Lobby generation/transfer/direct-load
 flow. Two real local-relay pairs passed shared initialization checkpoints;
@@ -220,7 +220,7 @@ finance/ownership, core digest `035ccd29`, and structural digest `9995a4be`.
 
 ## Release position
 
-`0.45.0-alpha` is an experimental release for external trusted-tester feedback,
+`0.45.1-alpha` is an experimental release for external trusted-tester feedback,
 not a fully qualified construction or persistence release. The previous
 `0.43.5-alpha` release remains available for rollback using backed-up saves.
 The next

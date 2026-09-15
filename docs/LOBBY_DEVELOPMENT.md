@@ -1,17 +1,46 @@
 # Native world lobby
 
-Available in 0.45.0-alpha with the matching relay lobby backend.
+Available in 0.45.1-alpha with the matching relay lobby backend.
 Both players must update before starting a lobby match.
 Older Host/Join + Launch and recovery flows remain available unchanged.
+
+## Native map preview
+
+The lobby separates **Generate / Regenerate** from **Start Match**.
+New-world settings first run a preview-only native worker. It calls the game's
+MapPreviewComp terrain renderer on the generated map, exporting its whole-map
+pixels and native town/industry positions. This is not an in-world camera view
+or a screenshot. No CGameUI/playable world or save is created for a preview.
+Town names are not assigned at this native generation boundary; markers show
+locations (white towns, orange industries), not invented names.
+
+Both peers download the same authenticated, bounded image. Ready requires the
+current preview digest. Changing settings or regenerating clears both Ready
+votes, including a regeneration with the same seed. After both accept, Start
+generates the playable world, verifies the native terrain/landmark digest
+against the accepted preview, then uses the existing save/transfer/load flow.
+The generator still uses the installed engine in a disposable process; this is
+not a standalone reimplementation of terrain generation or a headless SDK.
+
+Preview protocol/UI changes require 0.45.1-alpha and the matching relay
+deployment. Existing-save hosting and the previous non-preview protocol remain
+supported.
+
+Test the preview, repeat-generation determinism, both peer downloads, and final
+save binding using `tests/lobby_native_live.py --preview --prepare-only` with
+the ordinary game/mod/configuration/output arguments. Omit `--prepare-only` to
+also exercise relay save transfer and the two direct-loaded worlds.
 
 ## Player flow
 
 1. Host creates a relay room and privately shares its join code.
 2. Player 2 prepares that code. Both open **WORLD LOBBY** in the launcher.
 3. Host applies new-world settings/mods, or chooses an existing save.
-4. Both press **VERIFY MODS / READY**. Missing/different content blocks Ready;
+4. For a new world, host presses **GENERATE** and both review the native map
+   preview. **REGENERATE** chooses a new seed and generates another preview.
+5. Both press **VERIFY MODS / READY**. Missing/different content blocks Ready;
    changing the configuration clears both players' readiness.
-5. Host presses **START MATCH** once. For a new map the engine generates a
+6. Host presses **START MATCH** once. For a new map the engine generates a
    disposable world, saves it and exits automatically. The verified complete
    bundle transfers through the relay and both games load it directly.
 

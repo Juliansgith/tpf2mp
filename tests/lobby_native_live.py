@@ -44,6 +44,7 @@ async def run(args):
             if state is not None:
                 argv += ['--revision',str(state['revision'])]
                 if state['configDigest']: argv += ['--config-digest',state['configDigest']]
+                if state['phase'] == 'preview-ready': argv += ['--preview-digest',state['previewDigest']]
             return await asyncio.to_thread(execute, parser().parse_args(argv+list(extra)))
         async def powershell(script, arguments, label):
             env = dict(os.environ)
@@ -60,6 +61,27 @@ async def run(args):
         try:
             state = await call('host','presence')
             state = await call('host','configure-new',state,('--configuration',str(args.configuration)))
+            if args.preview:
+                preview_results = []
+                for attempt in range(2):
+                    state = await call('host','generate',state)
+                    await powershell('start_lobby_match.ps1',[
+                        '-CredentialsPath',credentials['host'],'-GameExecutable',args.game,'-ModDirectory',args.mod,
+                        '-ConfigDigest',state['configDigest'],'-AllowInsecureLoopback','-PrepareOnly'],f'preview-{attempt}')
+                    state = await call('host','status')
+                    assert state['phase'] == 'preview-ready' and state['save'] is None
+                    for role in ('host','join'):
+                        await call(role,'preview-download',state,('--preview-file',str(root/f'{role}-{attempt}.bmp')))
+                    assert (root/f'host-{attempt}.bmp').read_bytes() == (root/f'join-{attempt}.bmp').read_bytes()
+                    preview_results.append({k:state[k] for k in ('generationId','previewDigest','nativeDigest')})
+                    assert all(not p['ready'] for p in state['peers'].values())
+                    if attempt == 0:
+                        await call('host','presence')
+                        state = await call('host','ready',state)
+                assert preview_results[0]['nativeDigest'] == preview_results[1]['nativeDigest']
+                assert preview_results[0]['previewDigest'] != preview_results[1]['previewDigest']
+                report['previews'] = preview_results
+                await call('host','presence')
             await call('join','presence')
             state = await call('host','ready',state)
             state = await call('join','ready',state)
@@ -75,6 +97,10 @@ async def run(args):
             prepared = Path(os.environ['LOCALAPPDATA'])/'TPF2MP/sessions'/session/'player1/lobby-prepared-world.json'
             world = json.loads(prepared.read_text(encoding='utf-8-sig'))
             report['world'] = world
+            if args.prepare_only:
+                report['passed'] = True
+                print('PASS native previews + regeneration + both peers download + accepted final generation',flush=True)
+                return
             print('Generated save verified; transferring through relay and loading both worlds',flush=True)
             pair_args = [
                 '-StartingSave',world['savePath'],'-GameExecutable',args.game,'-LocalModsPath',args.mod.parent,
@@ -100,4 +126,6 @@ if __name__ == '__main__':
     cli.add_argument('--mod',type=Path,required=True)
     cli.add_argument('--configuration',type=Path,required=True)
     cli.add_argument('--output',type=Path,required=True)
+    cli.add_argument('--preview',action='store_true')
+    cli.add_argument('--prepare-only',action='store_true')
     asyncio.run(run(cli.parse_args()))

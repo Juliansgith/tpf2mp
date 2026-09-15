@@ -66,14 +66,14 @@ def verify_content(config: dict, game: Path, mod_directory: Path) -> None:
             raise RelayApiError(f"installed files differ for {found['id']}; update that mod on both PCs")
 
 
-def request(credentials: RelayCredentials, command: dict | None = None) -> dict:
+def request(credentials: RelayCredentials, command: dict | None = None, *, preview: bool = False) -> dict:
     result = _request_json("GET" if command is None else "POST",
-        credentials.relay_url + f"/v1/sessions/{credentials.session_id}/lobby",
+        credentials.relay_url + f"/v1/sessions/{credentials.session_id}/" + ('lobby-preview' if preview else 'lobby'),
         token=credentials.token, payload=command, timeout=10)
     if result.get("schemaVersion") != 1 or result.get("sessionId") != credentials.session_id \
             or result.get("role") != credentials.role or type(result.get("revision")) is not int \
             or not 0 <= result["revision"] <= 2147483647 \
-            or result.get("phase") not in {"configuring", "generating", "preparing-save", "save-ready", "failed"}:
+            or result.get("phase") not in {"configuring", "generating", "preparing-save", "save-ready", "failed", "preview-generating", "preview-ready"}:
         raise RelayApiError("invalid lobby response identity")
     config = result.get("config")
     if config is not None:

@@ -12,6 +12,7 @@
 #include <map>
 #include <new>
 #include <memory>
+#include "worldgen_preview.hpp"
 
 namespace {
 using Update = void(__fastcall*)(void*, void*, void*, void*);
@@ -29,6 +30,11 @@ ULONGLONG world_frame{};
 std::string save_stem;
 bool save_issued{};
 bool save_completed{};
+bool preview_only{};
+bool preview_export{};
+void* preview_provider{};
+void* climate_rep{};
+void ExportNativeMapPreview(std::uintptr_t, void*, void*, void*, const std::filesystem::path&);
 void Emit(const char* event);
 struct Mod { std::string id; std::int32_t version; };
 static_assert(sizeof(Mod) == 40);
@@ -121,6 +127,20 @@ void Config(void* manager, void* config, void* active, void* resources, void* pa
 void Start(void* menu, void* active, void* resources, void* params, void* map,
            void* seed, std::uint32_t date, bool editor, void* callback) {
   if (!preparing) { original_start(menu,active,resources,params,map,seed,date,editor,callback); return; }
+  if (preview_only || preview_export) {
+    // Generation is complete, but CGameUI/World have not been constructed.
+    // Preview-only exits here without a save; accepted generation continues
+    // below after exporting the same data for the final comparison.
+    Emit("native-preview-render-enter");
+    try {
+      ExportNativeMapPreview(base, preview_provider, climate_rep, map, marker.parent_path());
+      Emit("native-preview-ready");
+    } catch (const std::exception& error) {
+      Emit((std::string("native-preview-failed:") + error.what()).c_str());
+      ExitProcess(8);
+    }
+    if (preview_only) ExitProcess(0);
+  }
   if (!mods.empty()) {
     // Incoming native vector is empty in the test backend. Let the game's own
     // copy constructor allocate it; StartNewGame owns/destructs that parameter.
@@ -152,6 +172,12 @@ struct GeneratorEntry { std::string name; std::shared_ptr<void> resource; };
 static_assert(sizeof(GeneratorEntry) == 48);
 using GeneratorRep = void*(*)(void*,void*,void*,void*,void*);
 GeneratorRep original_rep{};
+GeneratorRep original_climate{};
+void* ObserveClimate(void* out, void* a, void* b, void* c, void* d) {
+  auto result = original_climate(out,a,b,c,d);
+  if (preparing) climate_rep = out;
+  return result;
+}
 void* generation_rep{};
 using ResourceIndex = int(*)(void*,const std::string*);
 ResourceIndex original_index{};
@@ -207,6 +233,7 @@ void Terrain(void* widget, void* definitions, const void* values) {
 void* Generator(void* closure) {
   if (preparing && configured) {
     auto bytes = static_cast<std::byte*>(closure);
+    preview_provider = *reinterpret_cast<void**>(bytes + 8);
     // Scalar fields in the native generation closure, before its std::function
     // wrapper adds a vtable. Keep all owning strings/vectors/native objects.
     auto settings = reinterpret_cast<std::byte*(*)()>(base + 0x2a49c0)();
@@ -305,6 +332,9 @@ DWORD WINAPI Worker(void*) {
   if (!marker.is_absolute() || !std::filesystem::is_directory(marker.parent_path()) ||
       std::filesystem::exists(marker)) return 2;
   base = reinterpret_cast<std::uintptr_t>(module);
+  wchar_t preview_flag[8]{};
+  preview_only = GetEnvironmentVariableW(L"TPF2MP_WORLDGEN_PREVIEW_ONLY",preview_flag,8) && std::wstring(preview_flag) == L"1";
+  preview_export = GetEnvironmentVariableW(L"TPF2MP_WORLDGEN_PREVIEW_EXPORT",preview_flag,8) && std::wstring(preview_flag) == L"1";
   wchar_t save[128]{};
   if (GetEnvironmentVariableW(L"TPF2MP_WORLDGEN_LAB_SAVE", save, 128)) {
     save_stem = tpf2mp::WideToUtf8(save);
@@ -338,6 +368,7 @@ DWORD WINAPI Worker(void*) {
       MH_CreateHook(reinterpret_cast<void*>(base + 0x677d00), reinterpret_cast<void*>(Start), reinterpret_cast<void**>(&original_start)) != MH_OK ||
       MH_CreateHook(reinterpret_cast<void*>(base + 0xc10830), reinterpret_cast<void*>(Generator), reinterpret_cast<void**>(&original_generator)) != MH_OK ||
       MH_CreateHook(reinterpret_cast<void*>(base + 0x39b420), reinterpret_cast<void*>(SelectGenerator), reinterpret_cast<void**>(&original_rep)) != MH_OK ||
+      MH_CreateHook(reinterpret_cast<void*>(base + 0x36c2c0), reinterpret_cast<void*>(ObserveClimate), reinterpret_cast<void**>(&original_climate)) != MH_OK ||
       MH_CreateHook(reinterpret_cast<void*>(base + 0x2c61b0), reinterpret_cast<void*>(GenerationIndex), reinterpret_cast<void**>(&original_index)) != MH_OK ||
       MH_CreateHook(reinterpret_cast<void*>(base + 0x22e0c10), reinterpret_cast<void*>(Terrain), reinterpret_cast<void**>(&original_terrain)) != MH_OK ||
       MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {

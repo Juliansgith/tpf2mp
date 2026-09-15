@@ -556,7 +556,10 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
     $powershell = Join-Path $PSHOME 'powershell.exe'
     $allArguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $ScriptPath) + $Arguments
     $commandLine = ConvertTo-Tpf2mpCommandLine $allArguments
-    $script:worker = Start-Process -FilePath $powershell -ArgumentList $commandLine -PassThru -WindowStyle Hidden `
+    # The lobby is an interactive dialog, not a background helper. SW_HIDE can
+    # suppress its first native window even though ShowDialog is running.
+    $workerWindowStyle = if ($Name -eq 'world-lobby') { 'Normal' } else { 'Hidden' }
+    $script:worker = Start-Process -FilePath $powershell -ArgumentList $commandLine -PassThru -WindowStyle $workerWindowStyle `
         -RedirectStandardOutput $script:workerStdout -RedirectStandardError $script:workerStderr
     $script:workerName = $Name
     $hostButton.Enabled = $false

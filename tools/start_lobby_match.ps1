@@ -34,6 +34,7 @@ $sessionRoot = Get-Tpf2mpSessionRoot $session $peer
 $lock = [IO.File]::Open((Join-Path $sessionRoot 'lobby-start.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
 $previousLoopback = $env:TPF2MP_ALLOW_INSECURE_RELAY_LOOPBACK
 $failureCode = 'generation-failed'
+$generationId = $null
 $launchReceipt = Join-Path $sessionRoot 'lobby-launched.json'
 function Invoke-Lobby([string]$Operation, [string[]]$Extra = @()) {
     $arguments = @($companion.Prefix) + @('relay-lobby', $Operation, '--credentials', $CredentialsPath,
@@ -54,7 +55,7 @@ try {
         throw 'This role has a launch receipt for another configuration.'
     }
     $state = Invoke-Lobby 'status'
-    if ($state.configDigest -cne $ConfigDigest -or $state.phase -notin @('generating','preparing-save','save-ready')) {
+    if ($state.configDigest -cne $ConfigDigest -or $state.phase -notin @('generating','preparing-save','save-ready','preview-generating')) {
         throw 'Start requires the locked, reviewed lobby configuration.'
     }
     if ($role -eq 'Host' -and $state.phase -eq 'save-ready' -and -not $StartingSave) {
@@ -66,7 +67,12 @@ try {
         [void](Invoke-Lobby 'verify-launch' @('--config-digest',$ConfigDigest,'--save',$StartingSave))
     }
     $evidence = $null
-    if ($role -eq 'Host' -and $state.phase -eq 'generating') {
+    $previewGeneration = $state.phase -eq 'preview-generating'
+    if ($previewGeneration) {
+        if ($role -ne 'Host') { throw 'Only the host generates map previews.' }
+        $generationId = [int]$state.generationId
+    }
+    if ($role -eq 'Host' -and $state.phase -in @('generating','preview-generating')) {
         if (-not $NativeBuildDirectory) {
             $NativeBuildDirectory = Join-Path $bundle 'bin\native'
             if (-not (Test-Path -LiteralPath (Join-Path $NativeBuildDirectory 'tpf2mp_worldgen_lab.dll'))) {
@@ -81,8 +87,20 @@ try {
         Write-Host 'Generating the agreed native world. No manual menu or save steps are needed.'
         & (Join-Path $PSScriptRoot 'run_native_worldgen_lab.ps1') -GameExecutable $GameExecutable `
             -LocalDirectory $localRoot -NativeBuildDirectory $NativeBuildDirectory -OutputDirectory $evidence `
-            -RequestPath $requestPath -SaveGeneratedWorld -TimeoutSeconds 600
+            -RequestPath $requestPath -SaveGeneratedWorld:(-not $previewGeneration) -PreviewOnly:$previewGeneration `
+            -MapPreview:([bool]$state.nativeDigest -and -not $previewGeneration) -TimeoutSeconds 600
         $generated = Get-Content -LiteralPath (Join-Path $evidence 'report.json') -Raw | ConvertFrom-Json
+        if ($previewGeneration) {
+            if ($generated.complete -ne $true -or $generated.savePath) { throw 'Preview-only generation did not finish safely.' }
+            $previewPath = Join-Path $evidence 'map-preview.bgr'
+            & (Join-Path $PSScriptRoot 'export_lobby_map_preview.ps1') -EvidenceDirectory $evidence -OutputPath $previewPath
+            $state = Invoke-Lobby 'status'
+            if ([int]$state.generationId -ne $generationId) { throw 'Map generation changed.' }
+            [void](Invoke-Lobby 'preview-ready' @('--revision',[string]$state.revision,'--config-digest',$ConfigDigest,
+                '--generation-id',[string]$generationId,'--preview-file',$previewPath,'--evidence',$evidence))
+            Write-Host "lobby_preview_prepared=$session"
+            return
+        }
         if ($generated.complete -ne $true -or -not $generated.savePath) { throw 'Native generation did not produce a verified save.' }
         $StartingSave = [string]$generated.savePath
         $failureCode = 'save-verification-failed'
@@ -96,7 +114,7 @@ try {
         $state = Invoke-Lobby 'save-ready' $arguments
     }
     $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    while ($state.phase -ne 'save-ready') {
+    while ($state.phase -notin @('save-ready','preview-ready')) {
         if ($state.phase -eq 'failed' -or $state.configDigest -cne $ConfigDigest) { throw 'Host generation failed or lobby changed.' }
         if ([DateTime]::UtcNow -gt $deadline) { throw 'Timed out waiting for the host world.' }
         Start-Sleep -Seconds 3
@@ -106,6 +124,7 @@ try {
         @{schemaVersion=1; session=$session; configDigest=$ConfigDigest; savePath=$StartingSave; evidence=$evidence} |
             ConvertTo-Json | Set-Content -LiteralPath (Join-Path $sessionRoot 'lobby-prepared-world.json') -Encoding UTF8
     }
+    if ($state.phase -eq 'preview-ready') { Write-Host "lobby_preview_prepared=$session"; return }
     if ($PrepareOnly) { Write-Host "lobby_world_prepared=$session"; return }
     $failureCode = 'launch-failed'
     $launch = @{ Role=$role; Session=$session; RelayCredentials=$CredentialsPath; BundleRoot=$bundle
@@ -128,7 +147,8 @@ try {
     if ($role -eq 'Host') {
         try {
             $failedState = Invoke-Lobby 'status'
-            if ($failedState.configDigest -ceq $ConfigDigest -and $failedState.phase -ne 'failed') {
+            if ($failedState.configDigest -ceq $ConfigDigest -and $failedState.phase -ne 'failed' `
+                    -and ($null -eq $generationId -or [int]$failedState.generationId -eq $generationId)) {
                 [void](Invoke-Lobby 'failed' @('--revision',[string]$failedState.revision,
                     '--config-digest',$ConfigDigest,'--failure-code',$failureCode))
             }
