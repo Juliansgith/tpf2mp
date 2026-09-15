@@ -20,6 +20,11 @@ function data()
     return { update = function() end }
   end
   local expectedSave = tostring(os.getenv("TPF2MP_STAGED_SAVE_NAME") or "")
+  local automaticLoad = os.getenv("TPF2MP_AUTOMATIC_WORLD_LOAD") == "1"
+  local bootstrapBegan = os.time()
+  if automaticLoad and (expectedSave == "" or not expectedSave:match("^[%w_.%-]+$")) then
+    error("Automatic load requires a launcher-pinned save identifier")
+  end
   local requireMenuEntry = tostring(os.getenv("TPF2MP_REQUIRE_MENU_ENTRY") or "") == "1"
   local root = bridgeRoot:gsub("\\", "/"):gsub("/+$", "")
   local frames = 0
@@ -763,6 +768,7 @@ function data()
   end
 
   local function advanceLoadFlow()
+    if automaticLoad then return end
     if not loadRequested and exists(root .. "/launcher/load-request") then
       loadRequested = true
       stage = "open-free-game"
@@ -822,6 +828,23 @@ function data()
       if startClicked then pumpPausedNetwork() end
       if frames % 30 ~= 0 then return end
       local menuVisible = visible(item("menuUI"))
+      if automaticLoad and not startClicked and menuVisible and os.time() - bootstrapBegan >= 10 then
+        -- Native application API from the scheduled --script callback, never
+        -- from an interactive console command or a UI button's active callback.
+        -- Fence before invoking: loadGame can synchronously re-enter updates.
+        startClicked = true
+        entrySelected = true
+        local f = assert(io.open(root .. "/launcher/start-clicked", "wb"))
+        f:write("native-load"); f:close()
+        stage = "native-load-requested"
+        publish(true, menuVisible)
+        local ok, accepted = pcall(app.loadGame, expectedSave)
+        if not ok or accepted ~= true then
+          lastError = "Native automatic load rejected: " .. tostring(accepted)
+          stage = "native-load-failed"; publish(true, menuVisible)
+        end
+        return
+      end
       if menuVisible then
         if not treeDumped and item("create-new-game") then
           treeDumped = true

@@ -17,6 +17,7 @@ param(
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [switch]$TownDevelopment,
     [switch]$NoLaunchGame,
+    [switch]$AutomaticWorldLoad,
     [ValidateRange(0, [int]::MaxValue)][int]$OwnerLauncherProcessId = 0,
     [string]$OwnerLauncherExecutable,
     [string]$OwnerLauncherStartedAtUtc,
@@ -155,6 +156,7 @@ $pinnedSave = $null
 $stagedSave = $null
 $startingCompanyPlayerIds = ''
 $gameProcess = $null
+$companionStatus = $null
 $nativeStatusPath = $null
 $runtimeOverlay = $null
 $menuBootstrap = $null
@@ -299,7 +301,7 @@ $state = [ordered]@{
     launcherConfig = $launcherConfig
     companionPid = $companionProcess.Id
     companionLauncherPid = $companionProcess.Id
-    companionExecutable = (Resolve-Tpf2mpFullPath $companion.FilePath)
+    companionExecutable = (Resolve-Tpf2mpFullPath $(if ($companion.PSObject.Properties['RuntimeExecutable']) { $companion.RuntimeExecutable } else { $companion.FilePath }))
     gamePid = $null
     gameExecutable = $game
     gameStartedAtUtc = $null
@@ -421,7 +423,8 @@ try {
             -StagedSaveBaseName $(if ($stagedSave) { $stagedSave.baseName } else { $null }) `
             -StartingCompanyPlayerIds $startingCompanyPlayerIds `
             -MatchFingerprint $fingerprint `
-            -RestorePlan $restorePlanData -RequireMenuEntry -StartNetwork `
+            -RestorePlan $restorePlanData -RequireMenuEntry:(-not $AutomaticWorldLoad) -StartNetwork `
+            -AutomaticWorldLoad:$AutomaticWorldLoad `
             -ManualNetwork:([bool]$stagedSave) `
             -ContinueSavedMatch:([bool]($stagedSave -and -not $restorePlanData)) `
             -HostSnapshotRecovery:$HostSnapshotRecovery
@@ -465,14 +468,9 @@ try {
         $nativeStatusPath = Add-Tpf2mpNativeHook -GameProcess $gameProcess -NativePaths $native
         $state.nativeStatusPath = $nativeStatusPath
         if ($stagedSave) {
-            $menu = Wait-Tpf2mpMainMenuEntry -GameProcess $gameProcess -BridgePath $bridge `
-                -Session $safeSession -Peer $peer -TimeoutSeconds 120
-            $state.status = 'awaiting-multiplayer-selection'
-            [void](Write-Tpf2mpSessionState $safeSession $peer $state)
-            $loadReceipt = Invoke-Tpf2mpPinnedSaveLoad -GameProcess $gameProcess -BridgePath $bridge `
-                -Session $safeSession -Peer $peer -ExpectedSaveBaseName $stagedSave.baseName `
-                -EvidenceDirectory (Join-Path $sessionRoot 'native-save-load') -TimeoutSeconds 600
-            $state.nativeSaveLoadReceipt = Join-Path $sessionRoot 'native-save-load\native-save-load.json'
+            Invoke-Tpf2mpStagedWorldLoad -GameProcess $gameProcess -BridgePath $bridge `
+                -Session $safeSession -Peer $peer -SessionRoot $sessionRoot -SaveBaseName $stagedSave.baseName `
+                -State $state -AutomaticWorldLoad:$AutomaticWorldLoad
             $state.status = 'waiting-for-network-world'
             [void](Write-Tpf2mpSessionState $safeSession $peer $state)
             [void](Wait-Tpf2mpNativeWorld -GameProcess $gameProcess -NativeStatusPath $nativeStatusPath `

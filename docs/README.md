@@ -31,6 +31,7 @@ excluded from Git.
 - [Prototype status](PROTOTYPE_STATUS.md)
 - [Remaining work](REMAINING_FROM_BRIEF.md)
 - [Alpha release checklist](ALPHA_RELEASE_CHECKLIST.md)
+- [Lobby development and generation qualification](LOBBY_DEVELOPMENT.md) (not enabled in releases)
 
 ## Product and prior-art design
 
@@ -45,5 +46,5 @@ excluded from Git.
 
 ## Releases
 
-- [Current release: 0.44.3-alpha (experimental)](release-notes/RELEASE_NOTES_0.44.3-alpha.md)
+- [Current release: 0.45.0-alpha (experimental)](release-notes/RELEASE_NOTES_0.45.0-alpha.md)
 - [Complete release-note archive](release-notes/)

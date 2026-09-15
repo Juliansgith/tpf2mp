@@ -1,13 +1,21 @@
 # TPF2MP public alpha guide
 
-This guide is for the two-player `0.44.3-alpha` experimental release. It supports the
+This guide is for the two-player `0.45.0-alpha` experimental release. It supports the
 Windows x64 Transport Fever 2 **Build 35924** only. This is an early alpha:
 use a disposable or backed-up save and expect bugs.
 
 In this version, combined demolition, road/rail attachment and terrain work
 are not fully revalidated; some variants and save/load scenarios remain
 unverified. Native Load Game stalls are still under investigation. Read the
-[testing limits](release-notes/RELEASE_NOTES_0.44.3-alpha.md) before playing.
+[testing limits](release-notes/RELEASE_NOTES_0.45.0-alpha.md) before playing.
+
+## New: create the world in the lobby
+
+After installation, host creates a relay code and Player 2 prepares it. Both
+open **WORLD LOBBY**; host chooses settings and mods, both verify/Ready, then
+host presses Start Match. Native generation, save transfer and direct loading
+are automatic. Skip the manual starting-save preparation below when using
+this path. See [lobby settings and limits](LOBBY_DEVELOPMENT.md).
 
 ## 1. Install on both computers
 
@@ -16,7 +24,7 @@ unverified. Native Load Game stalls are still under investigation. Read the
 2. Close Transport Fever 2, then run `INSTALL_TPF2MP.cmd`.
 3. Accept the optional desktop shortcut if wanted.
 4. Open **TPF2MP Multiplayer** and confirm that it reports
-   `0.44.3-alpha` and a compatible native hook.
+   `0.45.0-alpha` and a compatible native hook.
 
 For the first test, enable only TPF2MP. Later tests may use identical
 data-only mods on both computers, with the same versions and load order.
@@ -184,7 +192,7 @@ start a new world.
 Please paste this template:
 
 ```text
-TPF2MP version: 0.44.3-alpha
+TPF2MP version: 0.45.0-alpha
 Support/session ID: mp-________________
 Player: P1/Host or P2/Join
 Approximate local time and timezone:

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.44.3-alpha',
+    [string]$Version = '0.45.0-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -113,7 +113,8 @@ $nativeBin = Join-Path $packageNativeBuild 'Release'
 $requiredBinaries = @(
     (Join-Path $companionDist 'tpf2mp.exe'),
     (Join-Path $nativeBin 'tpf2mp_injector.exe'),
-    (Join-Path $nativeBin 'tpf2mp_hook_build35924.dll')
+    (Join-Path $nativeBin 'tpf2mp_hook_build35924.dll'),
+    (Join-Path $nativeBin 'tpf2mp_worldgen_lab.dll')
 )
 foreach ($path in $requiredBinaries) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Release binary is missing: $path" }
@@ -139,6 +140,8 @@ if ($LASTEXITCODE -ne 0) { throw "Packaged companion relay API smoke test failed
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion relay-tunnel smoke test failed with exit code $LASTEXITCODE" }
 & (Join-Path $companionDist 'tpf2mp.exe') relay-diagnostics --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Packaged companion relay-diagnostics smoke test failed with exit code $LASTEXITCODE" }
+& (Join-Path $companionDist 'tpf2mp.exe') relay-lobby --help | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Packaged companion lobby smoke test failed with exit code $LASTEXITCODE" }
 
 $releaseName = "TPF2MP-$Version"
 $releaseRoot = [IO.Path]::GetFullPath((Join-Path $dist $releaseName))
@@ -169,6 +172,7 @@ Copy-Item -LiteralPath (Join-Path $projectRoot 'companion\pyproject.toml') -Dest
 New-Item -ItemType Directory -Force -Path (Join-Path $releaseRoot 'bin\native'), (Join-Path $releaseRoot 'tools'), (Join-Path $releaseRoot 'docs\investigation'), (Join-Path $releaseRoot 'licenses') | Out-Null
 Copy-Item -LiteralPath (Join-Path $companionDist 'tpf2mp.exe') -Destination (Join-Path $releaseRoot 'bin\tpf2mp.exe')
 Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_injector.exe') -Destination (Join-Path $releaseRoot 'bin\native\tpf2mp_injector.exe')
+Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_worldgen_lab.dll') -Destination (Join-Path $releaseRoot 'bin\native\tpf2mp_worldgen_lab.dll')
 Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_hook_build35924.dll') -Destination (Join-Path $releaseRoot 'bin\native\tpf2mp_hook_build35924.dll')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'native\third_party\minhook\LICENSE.txt') -Destination (Join-Path $releaseRoot 'licenses\MinHook-BSD-2-Clause.txt')
 
@@ -195,7 +199,8 @@ $toolNames = @(
     'verify_build_transition_gate.ps1',
     'analyze_freight_live_evidence.ps1', 'start_freight_live_acceptance.ps1',
     'analyze_feeder_live_evidence.ps1', 'start_feeder_live_acceptance.ps1',
-    'multiplayer_launcher.ps1',
+    'multiplayer_launcher.ps1', 'multiplayer_lobby.ps1', 'start_lobby_match.ps1',
+    'run_native_worldgen_lab.ps1', 'native_worldgen_lab.lua', 'native_launch_save.ps1',
     'watch_recovery_saves.ps1', 'recovery_plan_common.ps1', 'recovery_save_common.ps1',
     'save_recovery_via_ui.ps1',
     'run_localhost_live_validation.ps1', 'run_launcher_end_to_end.ps1',
@@ -233,7 +238,7 @@ road/rail attachment and terrain changes are not fully revalidated and may
 fail or fault the session. Some variants and save/load scenarios remain
 unverified; intermittent native Load Game stalls remain under investigation.
 Back up existing saves, update both players, and start a new session. See
-`docs/release-notes/RELEASE_NOTES_0.44.3-alpha.md` for the exact evidence limits.
+`docs/release-notes/RELEASE_NOTES_0.45.0-alpha.md` for the exact evidence limits.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 

@@ -118,7 +118,14 @@ function Get-Tpf2mpCompanionCommand {
         catch { }
     }
     if (-not $python) { throw 'Python 3 was not found for the development companion.' }
-    return [pscustomobject]@{ FilePath = $python; Prefix = @($entrypoint); Mode = 'source' }
+    # Windows venv python.exe may be a redirector: the serving child runs the
+    # base executable. Pin that identity before launch, not from an untrusted
+    # readiness JSON. Session/peer/command-line checks still apply to its PID.
+    $runtimePython = & $python -c 'import sys; print(sys._base_executable)'
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath ([string]$runtimePython) -PathType Leaf)) {
+        throw 'Cannot resolve the development Python runtime executable.'
+    }
+    return [pscustomobject]@{ FilePath = $python; Prefix = @($entrypoint); Mode = 'source'; RuntimeExecutable = [string]$runtimePython }
 }
 
 function Get-Tpf2mpLatestLocalRestore {

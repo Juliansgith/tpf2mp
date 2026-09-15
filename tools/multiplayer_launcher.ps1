@@ -247,8 +247,14 @@ $hint = New-Object Windows.Forms.Label
 $hint.Text = 'Host selects a save and launches first. Join syncs the host save, then launches.'
 $hint.ForeColor = $muted
 $hint.Location = New-Object Drawing.Point(18, 178)
-$hint.Size = New-Object Drawing.Size(764, 20)
+$hint.Size = New-Object Drawing.Size(595, 20)
 $settingsPanel.Controls.Add($hint)
+$lobbyButton = New-Object Windows.Forms.Button
+$lobbyButton.Text = 'WORLD LOBBY'
+$lobbyButton.Location = New-Object Drawing.Point(625, 168)
+$lobbyButton.Size = New-Object Drawing.Size(157, 31)
+Style-LauncherButton $lobbyButton $true
+$settingsPanel.Controls.Add($lobbyButton)
 
 $hostSnapshotCheck = New-Object Windows.Forms.CheckBox
 $hostSnapshotCheck.Text = 'Recover from HOST snapshot (both peers enable; discards old session faults/pending work; new session required)'
@@ -412,6 +418,8 @@ function Clear-RelayCredentials {
 
 function Update-TransportControls {
     $relay = $relayCheck.Checked
+    $lobbyButton.Enabled = $relay -and [bool]$script:relayCredentialsPath -and -not [bool]$script:worker `
+        -and -not [bool]$script:restorePlanPath -and -not $hostSnapshotCheck.Checked
     $relayUrlBox.Enabled = $relay
     $createRelayButton.Enabled = $relay -and -not [bool]$script:worker
     $prepareJoinButton.Enabled = $relay -and -not [bool]$script:worker
@@ -426,11 +434,11 @@ function Update-TransportControls {
         $hint.Text = if ([string]::IsNullOrWhiteSpace($relayUrlBox.Text)) {
             'Secure relay is built but this development bundle has no deployed HTTPS URL yet. Enter it after server setup.'
         } else {
-            'Relay mode: Host selects a save and creates a session. Player 2 pastes/prepares the code; Join receives the exact save automatically.'
+            'Create / prepare code, then WORLD LOBBY: generate a new map or select a save; both Ready, host Start.'
         }
         $saveLabel.Text = if ($script:restorePlanPath) {
             'This peer''s attested restore save (relay transfers ordinary starting saves only)'
-        } else { 'Starting save: required for Host; automatically received by Relay Join' }
+        } else { 'Optional existing save (or create a new world in WORLD LOBBY)' }
     }
     else {
         $hint.Text = 'Direct LAN: Host shares the session, address, port, and exact save; Join may use SYNC FROM HOST.'
@@ -565,9 +573,27 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
     $createRelayButton.Enabled = $false
     $prepareJoinButton.Enabled = $false
     $copyJoinButton.Enabled = $false
+    $lobbyButton.Enabled = $false
     $statusLabel.Text = "$Name running..."
     Append-LauncherLog "Started $Name (PID $($script:worker.Id))."
 }
+
+function Open-WorldLobby {
+    if (-not $relayCheck.Checked -or $script:restorePlanPath -or $hostSnapshotCheck.Checked) {
+        throw 'The world lobby is for ordinary relay matches. Use the existing restore controls for recovery.'
+    }
+    if ($script:relayCredentialRole -notin @('host','join')) { throw 'Create a room or prepare its join code first.' }
+    $selected = Get-RelayCredentialSelection $script:relayCredentialRole
+    $game = Find-Tpf2mpGameExecutable
+    if (-not $game) { throw 'Transport Fever 2 executable was not found.' }
+    $modsRoot = Find-Tpf2mpLocalModsPath
+    $arguments = @('-BundleRoot',$bundle,'-CredentialsPath',$selected.Path,
+        '-GameExecutable',$game,'-ModDirectory',(Join-Path $modsRoot 'tpf2_mp_1'))
+    if ($sourceTreeLauncher -and $selected.RelayUrl -match '^http://') { $arguments += '-AllowInsecureLoopback' }
+    $script:lastPeer = if ($script:relayCredentialRole -eq 'host') { 'player1' } else { 'player2' }
+    Start-LauncherWorker (Join-Path $PSScriptRoot 'multiplayer_lobby.ps1') $arguments 'world-lobby'
+}
+$lobbyButton.Add_Click({ try { Open-WorldLobby } catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message,'Cannot open world lobby') | Out-Null } })
 
 function Get-ValidatedInputs([bool]$RequireSave = $false, [bool]$IgnoreSave = $false) {
     if ($hostSnapshotCheck.Checked -and $script:restorePlanPath) {
@@ -1013,7 +1039,7 @@ $timer.Add_Tick({
                         $sessionBox.Text = [string]$verifiedRelayCreate.session
                     }
                     $statusLabel.Text = "Relay room ready. Support ID: $($verifiedRelayCreate.supportId)"
-                    Append-LauncherLog "Secure relay room $($verifiedRelayCreate.supportId) is ready; copy the join code, then Host + Launch."
+                    Append-LauncherLog "Secure relay room $($verifiedRelayCreate.supportId) is ready; copy the join code, then open WORLD LOBBY. No starting save is required."
                 }
                 elseif ($verifiedRelayJoin) {
                     $script:relayCredentialsPath = [string]$verifiedRelayJoin.credentialsPath
@@ -1024,7 +1050,7 @@ $timer.Add_Tick({
                     }
                     $joinCodeBox.Clear()
                     $statusLabel.Text = "Relay join prepared. Support ID: $($verifiedRelayJoin.supportId)"
-                    Append-LauncherLog "Relay join $($verifiedRelayJoin.supportId) is prepared; click Join + Launch."
+                    Append-LauncherLog "Relay join $($verifiedRelayJoin.supportId) is prepared; open WORLD LOBBY to review the host settings and Ready."
                 }
                 else {
                     $statusLabel.Text = 'Task completed successfully.'

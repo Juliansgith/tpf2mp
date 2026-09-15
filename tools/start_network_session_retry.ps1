@@ -17,6 +17,7 @@ param(
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [switch]$TownDevelopment,
     [switch]$NoLaunchGame,
+    [switch]$AutomaticWorldLoad,
     [ValidateRange(0, [int]::MaxValue)][int]$OwnerLauncherProcessId = 0,
     [string]$OwnerLauncherExecutable,
     [string]$OwnerLauncherStartedAtUtc,

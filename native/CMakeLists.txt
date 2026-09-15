@@ -66,6 +66,14 @@ foreach(target tpf2mp_native_common tpf2mp_hook_support tpf2mp_hook tpf2mp_injec
 endforeach()
 
 enable_testing()
+option(TPF2MP_BUILD_WORLDGEN_LAB "Build isolated pinned native world-generation worker" ON)
+if(TPF2MP_BUILD_WORLDGEN_LAB)
+  add_library(tpf2mp_worldgen_lab SHARED src/worldgen_lab.cpp)
+  target_link_libraries(tpf2mp_worldgen_lab PRIVATE tpf2mp_native_common minhook)
+  target_compile_options(tpf2mp_worldgen_lab PRIVATE /W4 /permissive- /EHsc /utf-8)
+  add_test(NAME worldgen_rejects_unpinned_process
+    COMMAND tpf2mp_dll_load_test $<TARGET_FILE:tpf2mp_worldgen_lab>)
+endif()
 add_test(NAME pinned_profile_usage COMMAND tpf2mp_native_tests)
 add_test(NAME dll_rejects_unpinned_process
   COMMAND tpf2mp_dll_load_test $<TARGET_FILE:tpf2mp_hook>

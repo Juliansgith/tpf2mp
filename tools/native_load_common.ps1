@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 
 . (Join-Path $PSScriptRoot 'network_common.ps1')
 . (Join-Path $PSScriptRoot 'runtime_overlay_common.ps1')
+. (Join-Path $PSScriptRoot 'native_launch_save.ps1')
 
 $script:Tpf2mpMenuBootstrapRelative = 'res/scripts/tpf2mp_multiplayer_menu_bootstrap.lua'
 
@@ -564,6 +565,7 @@ function Start-Tpf2mpDirectGame {
         [string]$MatchFingerprint,
         [object]$RestorePlan,
         [switch]$RequireMenuEntry,
+        [switch]$AutomaticWorldLoad,
         [switch]$StartNetwork,
         [switch]$ManualNetwork,
         [switch]$ContinueSavedMatch,
@@ -595,6 +597,7 @@ function Start-Tpf2mpDirectGame {
         TPF2MP_STAGED_SAVE_NAME = [string]$StagedSaveBaseName
         TPF2MP_STARTING_COMPANY_PLAYER_IDS = [string]$StartingCompanyPlayerIds
         TPF2MP_REQUIRE_MENU_ENTRY = if ($RequireMenuEntry) { '1' } else { '0' }
+        TPF2MP_AUTOMATIC_WORLD_LOAD = if ($AutomaticWorldLoad) { '1' } else { '0' }
         TPF2MP_CONTINUE_SAVED_MATCH = if ($ContinueSavedMatch -and -not $RestorePlan) { '1' } else { '0' }
         TPF2MP_HOST_SNAPSHOT_RECOVERY = if ($HostSnapshotRecovery) { '1' } else { '0' }
         TPF2MP_MATCH_FINGERPRINT = [string]$MatchFingerprint

@@ -19,6 +19,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('executable', type=Path)
     parser.add_argument('--function-va', action='append', type=lambda value: int(value, 0), default=[])
+    parser.add_argument('--string', action='append', default=[],
+                        help='restrict string-reference research to these substrings')
     args = parser.parse_args()
     data = args.executable.read_bytes()
     pe = pefile.PE(data=data, fast_load=True)
@@ -32,13 +34,13 @@ def main():
         targets[address] = 'function target ' + hex(address)
     for match in re.finditer(rb'[ -~]{8,}', data):
         label = match.group().decode()
-        if any(term in label for term in (
+        if any(term in label for term in (args.string or (
             'simPersonDestinationRecomputationProbability',
             'ecs::SimPersonSystem::', 'ecs::SimPersonAtTerminalSystem::',
             'ecs::SimPersonCacheSystem::', 'ThreadPool.cpp',
-            'PathFinder', 'BuildProposalVisitor')):
+            'PathFinder', 'BuildProposalVisitor'))):
             targets[base + pe.get_rva_from_offset(match.start())] = label
-    for library in pe.DIRECTORY_ENTRY_IMPORT:
+    for library in ([] if args.string else pe.DIRECTORY_ENTRY_IMPORT):
         for item in library.imports:
             if item.name and item.name.decode() in {'malloc', 'calloc', 'realloc', 'HeapAlloc', 'GetProcessHeap', '_aligned_malloc'}:
                 targets[item.address] = item.name.decode()

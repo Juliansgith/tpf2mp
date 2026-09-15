@@ -5,7 +5,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$caseRoot = Join-Path $TemporaryRoot 'network-session-retry'
+# Keep synthetic archive paths below PowerShell 5.1's legacy MAX_PATH. With
+# the long gate root, the old label produced 267/268-character paths: the
+# files existed, but Test-Path returned false. Do not weaken evidence checks.
+$caseRoot = Join-Path $TemporaryRoot 'retry'
 $localAppData = Join-Path $caseRoot 'local-app-data'
 $temporary = Join-Path $caseRoot 'temp'
 New-Item -ItemType Directory -Force -Path $localAppData, $temporary | Out-Null

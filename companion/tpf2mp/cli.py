@@ -30,6 +30,7 @@ from .save_metadata_cli import run_cli as run_save_metadata_cli
 from .relay_api import RelayApiError
 from .relay_cli import configure_cli as configure_relay_cli
 from .relay_cli import run_cli as run_relay_cli
+from .lobby_cli import configure_cli as configure_lobby_cli, run_cli as run_lobby_cli
 
 
 def default_bridge(peer: str) -> Path:
@@ -113,6 +114,7 @@ def parser() -> argparse.ArgumentParser:
     save_receive.add_argument("--transfer-timeout", type=float, default=600.0)
 
     configure_relay_cli(commands)
+    configure_lobby_cli(commands)
 
     replay = commands.add_parser("replay", help="verify and summarize an audit log")
     replay.add_argument("audit", type=Path)
@@ -237,7 +239,7 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        if run_save_metadata_cli(args):
+        if run_lobby_cli(args) or run_save_metadata_cli(args):
             return 0
         elif args.command == "host":
             bridge_path = args.bridge or default_bridge(args.peer)

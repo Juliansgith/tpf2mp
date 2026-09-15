@@ -20,7 +20,7 @@ if (-not (Test-Path -LiteralPath $game -PathType Leaf)) {
     throw "Transport Fever 2 executable not found: $game"
 }
 
-& cmake -S $source -B $build -G 'Visual Studio 17 2022' -A x64
+& cmake -S $source -B $build -G 'Visual Studio 17 2022' -A x64 -DTPF2MP_BUILD_WORLDGEN_LAB=ON
 if ($LASTEXITCODE -ne 0) { throw "Native CMake configure failed with exit code $LASTEXITCODE" }
 & cmake --build $build --config $Configuration --parallel
 if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCODE" }

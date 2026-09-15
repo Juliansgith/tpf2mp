@@ -1,0 +1,102 @@
+# Native world lobby
+
+Available in 0.45.0-alpha with the matching relay lobby backend.
+Both players must update before starting a lobby match.
+Older Host/Join + Launch and recovery flows remain available unchanged.
+
+## Player flow
+
+1. Host creates a relay room and privately shares its join code.
+2. Player 2 prepares that code. Both open **WORLD LOBBY** in the launcher.
+3. Host applies new-world settings/mods, or chooses an existing save.
+4. Both press **VERIFY MODS / READY**. Missing/different content blocks Ready;
+   changing the configuration clears both players' readiness.
+5. Host presses **START MATCH** once. For a new map the engine generates a
+   disposable world, saves it and exits automatically. The verified complete
+   bundle transfers through the relay and both games load it directly.
+
+No manual main-menu navigation, new-game setup, save naming, shutdown, transfer
+or Load Game selection is required. This is **native engine generation**, not a
+standalone terrain generator: a windowed game runs during generation. A menu or
+loading screen can appear while the engine starts. It is not headless; Steam
+and the supported executable are still required.
+
+## New-world settings
+
+- Seed, starting year 1850–2050, square Small/Medium/Large.
+- Flat/hilly/mountainous terrain; low/medium/high towns and industries.
+- TPF2MP economy, native crowd policy, experimental physical town growth.
+- Ordered built-in/local mods, with fresh content verification on both peers.
+
+Initial fixed settings: temperate climate/environment, no water, normal forest
+cover, all vehicle regions, English names, native Easy difficulty (separate
+from the TPF2MP economy). Other climate/water/shape controls, third-party
+generator parameters and arbitrary per-mod options are not exposed yet.
+Workshop entries with unknown native major versions are **existing-save only**:
+the launcher must not guess a version from a Workshop ID.
+
+Existing saves supply their native active-mod table, including Workshop
+versions. The world is transferred, not generated independently from a seed.
+
+## Safety and verification
+
+- Authenticated role-bound lobby, CAS revisions, configuration digest, expiring
+  presence, host-only Start, immutable settings after Start, bounded requests.
+- Ready rehashes load-bearing installed content. Receiving the save does not
+  install missing mods. Native namespace and load order are preserved.
+- Per-role launch lock and completion receipt prevent duplicate jobs.
+- Separate generator DLL, exact Build 35924 check, narrow data-only request:
+  no arbitrary Lua, callbacks, native addresses or parameter names.
+- Generation is scheduled at the empty SDL event-poll boundary on the menu
+  thread, outside active rendering. Qualified native copy/ownership contracts
+  preserve owning strings, maps and vectors.
+- Only a uniquely named generated world can be autosaved. Generation never
+  loads/overwrites an existing personal save. Preferences and environment
+  overrides are restored; timeout/error closes the owned game. The current
+  worker temporarily selects windowed mode and restores the original setting;
+  no other game may be running when generation starts.
+- Save-ready requires clean exit, exact request hash, native parameter
+  observations, native year/dimensions, saved economy, matching mods, completed
+  native save, validated metadata and preview. Terrain/agent/town settings are
+  checked at native configuration handoff; this is not a separate spatial
+  terrain or population census.
+- Receiver independently verifies configuration/content and save identity
+  before ordinary manifest checks, authority gates and initialization.
+- Direct load calls app.loadGame with the pinned save basename and a re-entry
+  fence. It does not synthesize clicks or bypass checkpoint consensus.
+
+## Implementation and failure handling
+
+The asynchronous dialog is tools/multiplayer_lobby.ps1; Start runs
+tools/start_lobby_match.ps1. Native generation uses run_native_worldgen_lab.ps1,
+native_worldgen_lab.lua and tpf2mp_worldgen_lab.dll (historical research names).
+Standard native builds and release packages include the isolated worker.
+companion/tpf2mp/world_generation.py validates requests and output evidence.
+
+Host failures publish bounded failure codes to the room. Detailed local logs
+stay in its world-generation-* directory. Failed generation cannot advertise a
+usable save. An already completed launch is not silently retried: return to its
+game or stop it and create a new room.
+
+## Checks
+
+The offline gate includes test_lobby.py, test_world_generation.py, host/join
+dialog smoke, Windows Python runtime identity and direct-load Lua tests.
+Native CTest verifies rejection of unsupported processes.
+tests/lobby_loopback.py checks the real HTTP protocol without launching games.
+
+Opt-in live test:
+
+    python tests/lobby_native_live.py --game <exe> --mod <tpf2_mp_1> --configuration <world-and-mods.json> --output <new-evidence-directory>
+
+Requires the companion and local relay/aiohttp packages and PowerShell 5.1.
+It uses an ephemeral local relay, the real host generation worker, authenticated
+WebSocket bundle transfer, two direct-loaded games and a shared checkpoint;
+then cleans up both games and session processes.
+
+The live harness uses the host worker's PrepareOnly acceptance seam, handing
+the verified save to one harness-owned autosave guard covering both local games.
+Normal two-PC launches each own their own guard. This is not a two-computer
+network qualification or a visual/click test of the WinForms dialog.
+
+Evidence: investigation/LOBBY_NATIVE_ACCEPTANCE_2026-09-15.md.

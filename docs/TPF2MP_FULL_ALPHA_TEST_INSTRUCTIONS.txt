@@ -4,7 +4,7 @@ TPF2MP FULL PLAYABLE-ALPHA TEST INSTRUCTIONS
 Target
 ------
 Transport Fever 2 Build 35924 (Windows x64)
-TPF2MP 0.44.3-alpha experimental release or the current development build
+TPF2MP 0.45.0-alpha experimental release or the current development build
 Two players over the secure relay, trusted LAN/private VPN, or two instances
 on one PC
 
@@ -12,6 +12,14 @@ This is the complete baseline test. For the first pass, load TPF2MP only.
 Do not deliberately enable any Workshop or third-party mods. TPF2MP itself is
 loaded by the launcher. Test data-only mods later in a separate match, with the
 exact same content and load order on both peers.
+
+NEW-WORLD LOBBY SHORTCUT (0.45.0)
+--------------------------------
+Host creates a relay room; Player 2 prepares its join code. Both open WORLD
+LOBBY. Host selects settings/mods; both VERIFY MODS / READY; host START MATCH.
+Generation, saving, relay transfer and direct loading are automatic. Skip the
+manual starting-save creation below for this path. See LOBBY_DEVELOPMENT.md
+for the initial generator limitations. Existing-save tests remain below.
 
 IMPORTANT FOR THE CURRENT ATTEMPT
 ---------------------------------

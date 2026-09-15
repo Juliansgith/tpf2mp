@@ -15,6 +15,8 @@ param(
     [ValidateSet('skeleton', 'vanilla', 'empty')][string]$AgentMode = 'skeleton',
     [switch]$TownDevelopment,
     [switch]$NoLaunchGame,
+    [switch]$AutomaticWorldLoad,
+    [ValidatePattern('^[0-9a-f]{64}$')][string]$LobbyConfigDigest,
     [switch]$AllowInsecureLoopback,
     [ValidateRange(0, [int]::MaxValue)][int]$OwnerLauncherProcessId = 0,
     [string]$OwnerLauncherExecutable,
@@ -152,6 +154,14 @@ try {
         }
     }
 
+    if ($LobbyConfigDigest) {
+        $lobbyArguments = @($companion.Prefix) + @('relay-lobby', 'verify-launch',
+            '--credentials', $credentialsPath, '--config-digest', $LobbyConfigDigest,
+            '--save', $StartingSave, '--game-executable', $GameExecutable, '--mod-directory', (Join-Path $LocalModsPath 'tpf2_mp_1'))
+        & $companion.FilePath @lobbyArguments | Out-Host
+        if ($LASTEXITCODE -ne 0) { throw 'Lobby world verification failed; game launch was blocked.' }
+    }
+
     # Capture menu/bootstrap failures before start_network_session reaches its
     # world-ready return. Missing source files are intentionally followed when
     # they appear, so the reporter can start before the game and companion.
@@ -181,6 +191,7 @@ try {
         AgentMode = $AgentMode
         TownDevelopment = $TownDevelopment
         NoLaunchGame = $NoLaunchGame
+        AutomaticWorldLoad = $AutomaticWorldLoad
         OwnerLauncherProcessId = $OwnerLauncherProcessId
         OwnerLauncherExecutable = $OwnerLauncherExecutable
         OwnerLauncherStartedAtUtc = $OwnerLauncherStartedAtUtc

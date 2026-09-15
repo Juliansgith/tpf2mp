@@ -92,6 +92,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Processed transport topology tests failed' }
     & $lua (Join-Path $projectRoot 'tests\run_airfield_capture_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw 'Airfield capture tests failed' }
+    & $lua (Join-Path $projectRoot 'tests\run_automatic_world_load_tests.lua') (Join-Path $projectRoot 'tools\multiplayer_menu_bootstrap.lua')
+    if ($LASTEXITCODE -ne 0) { throw 'Automatic native world-load tests failed.' }
     & $lua (Join-Path $projectRoot 'tests\run_construction_name_tests.lua') $projectRoot
     if ($LASTEXITCODE -ne 0) { throw 'Construction name tests failed' }
 
@@ -651,6 +653,9 @@ return { ["tpf2_mp.lua"] = { companies = {
 
     & (Join-Path $projectRoot 'tools\multiplayer_launcher.ps1') -BundleRoot $projectRoot -SmokeTest
     if ($LASTEXITCODE -ne 0) { throw "Multiplayer launcher smoke test failed with exit code $LASTEXITCODE" }
+    & (Join-Path $projectRoot 'tests\run_lobby_dialog_tests.ps1') -BundleRoot $projectRoot
+    & (Join-Path $projectRoot 'tests\run_companion_runtime_identity_tests.ps1') -BundleRoot $projectRoot
+    & (Join-Path $projectRoot 'tests\run_native_launch_save_tests.ps1')
 
     $previousPythonPath = $env:PYTHONPATH
     $env:PYTHONPATH = Join-Path $projectRoot 'companion'

@@ -1,11 +1,19 @@
 # TPF2MP playable-alpha quick start
 
-TPF2MP `0.44.3-alpha` is an experimental two-player competitive build for the
+TPF2MP `0.45.0-alpha` is an experimental two-player competitive build for the
 Windows x64 Transport Fever 2 Build 35924. It is intended for two people who
 trust each other. Its preferred transport is the TPF2MP secure relay: both
 players make outbound WSS connections, so neither player opens a port. Direct
 LAN/private-VPN mode remains available. It does not support hostile peers or
 host migration.
+
+## New-world shortcut (0.45.0)
+
+Create/prepare the relay code, then both open **WORLD LOBBY**. Host selects
+settings, both **VERIFY MODS / READY**, host **START MATCH**. Generation, saving,
+transfer and direct loading are automatic. No starting save is needed for this
+path. See [settings and limits](LOBBY_DEVELOPMENT.md). The instructions below
+also retain the existing-save workflow.
 
 ## Before the first match
 
@@ -13,7 +21,7 @@ Both computers need:
 
 - the exact supported game executable;
 - the same TPF2MP release;
-- one complete starting save on Host (`.sav`, `.sav.lua`, and optional `.jpg`);
+- either World Lobby generation or a complete starting save on Host;
 - identical enabled game content and data-only mods; and
 - outbound HTTPS/WebSocket access to the configured TPF2MP relay.
 
