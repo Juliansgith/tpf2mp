@@ -33,7 +33,7 @@ M.DEFAULT_EXPANDED = {
   ["Notices"] = true,
   ["Shared clock"] = true,
   ["Chat and pings"] = true,
-  ["Diagnostics and recovery"] = true,
+  ["Diagnostics and recovery"] = false,
 }
 -- Compact mode keeps only the badges, the next-action line and these.
 M.COMPACT_KEEP = { ["Notices"] = true }

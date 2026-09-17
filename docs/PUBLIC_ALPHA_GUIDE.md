@@ -146,6 +146,27 @@ protected.
   positions are cosmetic. Use TPF2MP's Multiplayer views for authoritative
   passenger, cargo, and financial values.
 
+### The multiplayer panel
+
+- The line under the status badges always says what to do next: wait for the
+  other player, press Speed 1, recover the session, and so on.
+- **Notices** lists the last few things TPF2MP refused or received, with a
+  plain reason ("Company 2 owns this station"), and a small pop-up shows the
+  newest one for a few seconds.
+- Section headings fold and unfold when clicked; **Compact** hides everything
+  except the badges, the next action and Notices. Your choices are remembered
+  on this computer.
+- **Scoreboard** shows both companies' value, settled revenue, demand, lines
+  and markets, marks the leader, and reports the winner and reason when the
+  match ends.
+- **Chat and pings**: type a line and press Enter, or send one of four pings
+  (Wait, Ready, Look here, Pause please). "Look here" marks the ground under
+  your cursor on the other player's map for ten seconds.
+- While you plan a road, track or building, the other player sees its outline
+  on the ground in your colour (red while the game marks it invalid). The
+  outline is advisory only: it does not reserve land, cost money or enter the
+  match, and it disappears when you build, cancel or close the tool.
+
 ## 5. Save and continue a healthy match
 
 TPF2MP prepares coordinated recovery points automatically, normally about

@@ -83,7 +83,9 @@ function M.reconnectWait(companion)
   return peers[1], seconds, grace
 end
 
-local function missingPeer(companion)
+-- The host lists itself among the required peers but never among the
+-- connected clients, so the local peer is never the one being waited for.
+local function missingPeer(companion, localPeer)
   local required = companion.requiredPeers
   if type(required) ~= "table" then return nil end
   local connected = {}
@@ -91,7 +93,9 @@ local function missingPeer(companion)
     for _, peer in ipairs(companion.connectedPeers) do connected[tostring(peer)] = true end
   end
   for _, peer in ipairs(required) do
-    if not connected[tostring(peer)] then return tostring(peer) end
+    if tostring(peer) ~= tostring(localPeer) and not connected[tostring(peer)] then
+      return tostring(peer)
+    end
   end
   return nil
 end
@@ -163,7 +167,7 @@ function M.text(snapshot)
     end
     return "Waiting for " .. other .. " to join (companion " .. link .. ")."
   end
-  local absent = missingPeer(companion)
+  local absent = missingPeer(companion, snapshot.peerId)
   if absent then
     return "Waiting for " .. M.peerLabel(absent) .. " to join."
   end
