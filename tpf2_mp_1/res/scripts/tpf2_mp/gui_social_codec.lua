@@ -39,8 +39,17 @@ end
 
 -- A reader must never see a half-written file: write beside the target and
 -- rename over it. Windows refuses a rename onto an existing name, so the
--- second attempt removes the target first.
+-- second attempt removes the target first. The game's script Lua exposes
+-- io.open but omits os.rename/os.remove (see bridge.lua), so there the body
+-- is written directly in one call; readers ignore a file that fails to parse.
 function M.write(path, body)
+  if not (os and type(os.remove) == "function" and type(os.rename) == "function") then
+    local direct = io.open(path, "wb")
+    if not direct then return false end
+    local ok = direct:write(body)
+    direct:close()
+    return ok ~= nil
+  end
   local temporary = path .. ".tmp"
   local file = io.open(temporary, "wb")
   if not file then return false end
