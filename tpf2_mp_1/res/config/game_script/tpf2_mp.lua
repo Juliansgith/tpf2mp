@@ -26,6 +26,7 @@ local nativeObservationTelemetry = require "tpf2_mp/native_observation_telemetry
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
 require "tpf2_mp/gui_window_chrome"  -- registers guiView.chrome; no new local (200-local cap)
+require "tpf2_mp/gui_social_runtime"  -- registers guiView.social
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiStockPresentation = require "tpf2_mp/gui_stock_presentation"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
@@ -3137,6 +3138,7 @@ local function ensureWindow()
     { "Prepare & Save Restore Point", function() return { type = "recovery.prepare" } end },
     { "Refresh", function() return { type = "snapshot.request", localOnly = true } end },
   })
+  pcall(guiView.social.addSection, gui, rootLayout, guiView.chrome)
   guiView.chrome.addSection(rootLayout, "Session")
   rootLayout:addItem(gui.details)
   gui.window = api.gui.comp.Window.new("TPF2MP Multiplayer", root)
@@ -3490,6 +3492,7 @@ local script = {
   guiUpdate = function()
     local result = guiEventRuntime.update()
     require("tpf2_mp/live_ui_observer").gui(gui)
+    pcall(guiView.social.tick, gui)
     if guiStockPresentation.due(gui, gui.snapshot or {}) then
       pcall(guiStockPresentation.update, gui, gui.snapshot or {})
     end
@@ -3499,6 +3502,7 @@ local script = {
   guiHandleEvent = function(id, name, param)
     local result = guiEventRuntime.handleEvent(id, name, param)
     pcall(guiStockPresentation.handleEvent, gui, gui.snapshot or {}, id, name, param)
+    pcall(guiView.social.observeBuilderEvent, gui, id, name, param)
     return result
   end,
 }

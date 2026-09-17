@@ -32,6 +32,7 @@ excluded from Git.
 - [Remaining work](REMAINING_FROM_BRIEF.md)
 - [Alpha release checklist](ALPHA_RELEASE_CHECKLIST.md)
 - [Lobby development and generation qualification](LOBBY_DEVELOPMENT.md) (not enabled in releases)
+- [Social channel: chat, pings and build previews](SOCIAL_CHANNEL.md)
 
 ## Product and prior-art design
 
