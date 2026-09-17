@@ -1309,7 +1309,7 @@ bool InstallHooks(HMODULE executable) {
   for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
     MH_QueueEnableHook(AtRva<void*>(executable, visitor.rva));
   }
-  g_hooks.terrain_fast = tpf2mp::terrain_fast::InstallFromEnvironment(executable); g_hooks.preview = tpf2mp::preview_render::InstallFromEnvironment(executable);
+  g_hooks.terrain_fast = tpf2mp::terrain_fast::InstallFromEnvironment(executable); g_hooks.preview = tpf2mp::preview_render::InstallFromEnvironment(executable, RequestStatusWrite);
   const auto apply = MH_ApplyQueued();
   if (apply != MH_OK) {
     StateLock lock;

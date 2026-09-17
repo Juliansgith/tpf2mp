@@ -60,7 +60,8 @@ Host LiveHost(HMODULE executable) {
 
 }  // namespace
 
-Status InstallFromEnvironment(HMODULE executable) {
+Status InstallFromEnvironment(HMODULE executable, void (*status_write_request)()) {
+  SetStatusWriteRequest(status_write_request);
   wchar_t value[64]{};
   const DWORD length = GetEnvironmentVariableW(L"TPF2MP_NATIVE_PREVIEW", value,
                                                static_cast<DWORD>(std::size(value)));

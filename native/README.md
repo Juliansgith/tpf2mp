@@ -344,12 +344,44 @@ construction with a plausible `.con` path and transform, 48 nodes and 24 edges
 edge-object vectors, and finite, non-degenerate vectors.
 
 `TPF2MP_NATIVE_PREVIEW=off` (also `0`, `false`, `none`, `stock`) skips
-installation; anything unparsable fails closed. Every pinned region is
-byte-verified first and the builder-renderer vtable must still start with the
-pinned destructor; a mismatch or a hook failure leaves previews off, keeps all
-seven detours inert, and records the reason while the rest of the hook arms
+installation; `nolua` installs the seven detours but registers no Lua globals,
+which bisects a live problem between the passive detours and the Lua entry
+points; anything unparsable fails closed. Every pinned region is byte-verified
+first and the builder-renderer vtable must still start with the pinned
+destructor; a mismatch or a hook failure leaves previews off, keeps all seven
+detours inert, and records the reason while the rest of the hook arms
 normally. The status JSON reports `hooks.preview` with `enabled`, `installed`,
-`reason`, `peers`, `drawn`, `requests` and `errors`.
+`reason`, `peers`, `drawn`, `requests`, `errors`, `session` and `trace`.
+
+Idle cost is deliberately near zero, because these detours sit on paths the
+game uses constantly. Until a peer renderer has been minted in the current
+scene, `BuilderRenderer::Clear`, `EndHeightMod` and the renderer destructor
+forward the call and return without touching any shared state; a conversion
+the game makes for its own reasons costs one atomic load in the `Convert`
+detour; and the swapped vtable is only ever written onto a preview renderer
+(its original vtable is kept and restored before that renderer is destroyed).
+A render pass that somehow reaches a renderer this module does not know is
+drawn normally through the stock slot rather than dropped. The list of local
+height renderers has its own lock, is capped at 64 entries, and no engine call
+is made while that lock is held.
+
+Locks in this module are `SRWLOCK`, like the rest of the injected code. The
+game ships `msvcp140.dll` 14.14 (VS 2017) beside its executable and that copy
+is loaded first, so the hook binds to it; a `std::mutex` built with a current
+toolset is constexpr-constructed and expects the runtime to finish
+initialising it at the first lock, which 14.14 cannot do. It dereferences the
+null pointer inside: the process dies with an access violation reading
+address 0. `tools\check_source_boundaries.ps1` fails any `#include <mutex>`
+under `native\src`.
+
+`hooks.preview.trace` is a bounded in-process event log (the last 48 entries,
+oldest first, each with a tick and the thread that recorded it). It records
+install decisions, the factory clone, scene adoption with the GUI thread id,
+Lua registration, the first entry and the first return of each Lua call, the
+first consumed conversion, request expiry, keep/clear, peer minting and scene
+disposal. Each site fires once, so a per-frame Lua poll cannot flood the ring,
+and a new event asks the hook to rewrite its status file. A live stall can be
+located by reading which of those events is missing.
 
 Pinned Build 35924 entry points (the first seven are hooked, the rest are
 called, and all of them are prologue-verified):

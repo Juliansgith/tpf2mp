@@ -76,15 +76,9 @@ std::string SerializeHookStatus(const HookStatusView& status) {
            << ",\"material\":" << timing.material_seconds << '}';
   }
   output << '}';
-  const auto previews = tpf2mp::preview_render::Snapshot();
-  output << ",\"preview\":{"
-         << "\"enabled\":" << (status.hooks.preview.enabled ? "true" : "false")
-         << ",\"installed\":" << (status.hooks.preview.installed ? "true" : "false")
-         << ",\"reason\":\"" << tpf2mp::JsonEscape(status.hooks.preview.reason) << "\""
-         << ",\"peers\":" << previews.peers
-         << ",\"drawn\":" << previews.drawn
-         << ",\"requests\":" << previews.requests
-         << ",\"errors\":" << previews.errors << '}';
+  // The preview object, including its bounded event trace, is serialized by
+  // the module that owns that state.
+  output << ",\"preview\":" << tpf2mp::preview_render::StatusJson(status.hooks.preview);
   output << ",\"sendCommandWrapping\":true"
          << ",\"enabled\":" << (status.hooks.enabled ? "true" : "false") << '}';
   output << ",\"setupCommandInterface\":{" 

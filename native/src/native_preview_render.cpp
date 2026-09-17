@@ -10,6 +10,8 @@
 
 #include "tpf2mp/native_preview_render.hpp"
 
+#include "tpf2mp/native_common.hpp"
+
 #include <intrin.h>
 
 #include <algorithm>
@@ -17,7 +19,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -75,6 +76,25 @@ constexpr std::size_t kMaxEdges = 24;
 constexpr std::size_t kMaxConstructionNodes = 384;
 constexpr std::size_t kMaxConstructionEdges = 192;
 
+// The game ships msvcp140.dll 14.14 (VS 2017) beside its executable and that
+// copy is already loaded, so this DLL binds to it. A std::mutex built with a
+// current toolset is constexpr-constructed: its storage stays zeroed for the
+// runtime to finish at the first lock, which that runtime cannot do -- it
+// dereferences the null pointer inside and the process dies. The rest of the
+// hook uses SRWLOCK for exactly this reason (see native_async_bridge.cpp);
+// so does this module. SRWLOCK is not recursive: nothing here takes a second
+// lock, and no engine or Lua call is ever made while one is held.
+class PreviewLock final {
+ public:
+  explicit PreviewLock(SRWLOCK& lock) : lock_(&lock) { AcquireSRWLockExclusive(lock_); }
+  ~PreviewLock() { ReleaseSRWLockExclusive(lock_); }
+  PreviewLock(const PreviewLock&) = delete;
+  PreviewLock& operator=(const PreviewLock&) = delete;
+
+ private:
+  SRWLOCK* lock_;
+};
+
 template <class T>
 T& Field(void* pointer, const std::size_t offset) {
   return *reinterpret_cast<T*>(static_cast<char*>(pointer) + offset);
@@ -87,8 +107,9 @@ const T& Field(const void* pointer, const std::size_t offset) {
 // -------------------------------------------------------------------- state
 std::uintptr_t g_base;
 Status g_status;
-bool g_active;      // every detour passes straight through until this is set
-bool g_installed;   // Install() ran to completion once
+bool g_active;           // every detour passes straight through until this is set
+bool g_installed;        // Install() ran to completion once
+bool g_lua_api_enabled;  // false under TPF2MP_NATIVE_PREVIEW=nolua
 
 FactoryFn g_original_factory;
 AddFn g_original_add;
@@ -118,6 +139,7 @@ bool g_factory_live;
 struct Peer {
   char origin[9]{};
   void* renderer{};
+  void** original_vtable{};  // restored before the renderer is destroyed
   std::uint64_t seen{};
   unsigned char original_palette[kPaletteSize]{};
 };
@@ -132,12 +154,15 @@ bool g_editing_remote;
 bool g_disposing;
 // Height uploads are global to the UI terrain, unlike the model renderers.
 // Local descriptors remain owned by their BuilderRenderer until Clear/destroy.
+// BuilderRenderer::Clear and the renderer destructor are not GUI-thread-only,
+// so this list has its own lock and no engine call is made while it is held.
+SRWLOCK g_local_height_lock = SRWLOCK_INIT;
 std::vector<void*> g_local_height_renderers;
 
 void* g_sender_color_renderer;
 int g_sender_error_color = -1;
 
-std::mutex g_request_mutex;
+SRWLOCK g_request_lock = SRWLOCK_INIT;
 struct Armed {
   bool armed{};
   char origin[9]{};
@@ -147,6 +172,9 @@ struct Armed {
 Armed g_armed;
 enum class ResultState { Idle, Pending, Ok, Error };
 ResultState g_result_state = ResultState::Idle;
+// Read by the Convert detour before anything else, so a conversion the game
+// makes for its own reasons costs one relaxed load and nothing more.
+std::atomic<bool> g_request_armed{false};
 std::atomic<std::uint64_t> g_requests{0};
 std::atomic<std::uint64_t> g_drawn{0};
 std::atomic<std::uint64_t> g_errors{0};
@@ -154,6 +182,59 @@ std::atomic<std::uint64_t> g_errors{0};
 LuaApi g_lua;
 
 std::uint64_t Now() { return g_clock != nullptr ? g_clock() : GetTickCount64(); }
+
+// -------------------------------------------------------------------- trace
+struct TraceEntry {
+  std::uint64_t tick{};
+  DWORD thread{};
+  char text[72]{};
+};
+SRWLOCK g_trace_lock = SRWLOCK_INIT;
+TraceEntry g_trace[kTraceSlots];
+std::size_t g_trace_next;
+std::size_t g_trace_count;
+
+std::atomic<void (*)()> g_status_write_request{nullptr};
+
+void Trace(const char* text) {
+  {
+    PreviewLock lock(g_trace_lock);
+    TraceEntry& entry = g_trace[g_trace_next];
+    entry.tick = Now();
+    entry.thread = GetCurrentThreadId();
+    std::size_t index = 0;
+    for (; text[index] != '\0' && index + 1 < sizeof entry.text; ++index) {
+      const char character = text[index];
+      entry.text[index] = character >= 0x20 && character < 0x7f && character != '"' &&
+                                  character != '\\'
+                              ? character
+                              : '?';
+    }
+    entry.text[index] = '\0';
+    g_trace_next = (g_trace_next + 1) % kTraceSlots;
+    if (g_trace_count < kTraceSlots) ++g_trace_count;
+  }
+  // Outside the lock: the status writer takes it while serializing.
+  const auto notify = g_status_write_request.load(std::memory_order_acquire);
+  if (notify != nullptr) notify();
+}
+
+void TraceValue(const char* text, const char* detail, const long long value) {
+  char buffer[72]{};
+  sprintf_s(buffer, "%.28s %.20s%lld", text, detail == nullptr ? "" : detail, value);
+  Trace(buffer);
+}
+
+// Fires the trace once per process for a given site, so a per-frame Lua poll
+// cannot flood the ring with one repeated outcome.
+bool FirstTime(bool& flag) {
+  if (flag) return false;
+  flag = true;
+  return true;
+}
+bool g_traced_expiry;
+bool g_traced_lua_missing;
+bool g_traced_lua_registered;
 
 // ------------------------------------------------------------------ palette
 // Only this peer's cosmetic renderer is changed. The receiver's own
@@ -205,6 +286,15 @@ bool HasRemoteTerrain() {
   return false;
 }
 
+// While this is false no remote preview has ever been minted in this scene,
+// so the Clear/EndHeightMod/destructor detours forward and touch nothing.
+bool HasPeerRenderer() {
+  for (const auto& peer : g_peers) {
+    if (peer.renderer != nullptr) return true;
+  }
+  return false;
+}
+
 void ClearPeer(Peer& peer) {
   peer.seen = 0;
   if (peer.renderer != nullptr && g_original_clear != nullptr) {
@@ -241,12 +331,17 @@ Peer* AcquirePeer(const char* origin) {
       peer.renderer = g_original_factory(g_factory);
       if (peer.renderer == nullptr) {
         peer.origin[0] = '\0';
+        Trace("peer factory returned null");
         return nullptr;
       }
       std::memcpy(peer.original_palette,
                   static_cast<char*>(peer.renderer) + kRendererPaletteOffset, kPaletteSize);
+      // Only this renderer's vtable is swapped; the game's own renderers keep
+      // theirs, and this one is put back before it is destroyed.
+      peer.original_vtable = Field<void**>(peer.renderer, kRendererVtableOffset);
       Field<void**>(peer.renderer, kRendererVtableOffset) = g_preview_vtable;
       g_original_add(g_scene, peer.renderer);
+      TraceValue("peer renderer minted", "origin=", static_cast<long long>(&peer - g_peers));
     }
     return &peer;
   }
@@ -268,26 +363,48 @@ void UploadRendererHeight(void* renderer) {
 
 void ComposeTerrainImpl() {
   if (g_terrain_target == nullptr || g_disposing || g_reset_height == nullptr) return;
+  std::vector<void*> locals;
+  {
+    PreviewLock lock(g_local_height_lock);
+    locals = g_local_height_renderers;  // no engine call is made under the lock
+  }
   g_reset_height(g_terrain_target, true);
   // Remote uploads first; one's own tool keeps priority where areas overlap.
   for (const auto& peer : g_peers) {
     if (PeerActive(peer)) UploadRendererHeight(peer.renderer);
   }
-  for (void* renderer : g_local_height_renderers) UploadRendererHeight(renderer);
+  for (void* renderer : locals) UploadRendererHeight(renderer);
 }
 
 void ForgetLocalHeight(void* renderer) {
+  PreviewLock lock(g_local_height_lock);
   g_local_height_renderers.erase(
       std::remove(g_local_height_renderers.begin(), g_local_height_renderers.end(), renderer),
       g_local_height_renderers.end());
 }
 
+void RememberLocalHeight(void* renderer) {
+  PreviewLock lock(g_local_height_lock);
+  if (std::find(g_local_height_renderers.begin(), g_local_height_renderers.end(), renderer) !=
+      g_local_height_renderers.end()) {
+    return;
+  }
+  if (g_local_height_renderers.size() >= kMaxLocalHeightRenderers) return;
+  g_local_height_renderers.push_back(renderer);
+}
+
 // ------------------------------------------------------------------ detours
+bool g_traced_clear;
+bool g_traced_end_height;
+
+// Until a peer renderer exists nothing here touches shared state: the three
+// renderer detours forward the call and return.
 void ClearDetour(void* renderer, bool models, bool terrain) {
-  if (!g_active) {
+  if (!g_active || !HasPeerRenderer()) {
     g_original_clear(renderer, models, terrain);
     return;
   }
+  if (FirstTime(g_traced_clear)) Trace("clear detour active");
   ForgetLocalHeight(renderer);
   g_original_clear(renderer, models, terrain);
   if (!g_editing_remote && !g_disposing && g_scene != nullptr &&
@@ -297,10 +414,11 @@ void ClearDetour(void* renderer, bool models, bool terrain) {
 }
 
 void EndHeightDetour(void* renderer) {
-  if (!g_active) {
+  if (!g_active || !HasPeerRenderer()) {
     g_original_end_height(renderer);
     return;
   }
+  if (FirstTime(g_traced_end_height)) Trace("end height detour active");
   const bool remote = IsPeerRenderer(renderer);
   const bool enabled = Field<bool>(renderer, kRendererHeightEnabledOffset);
   // AddHeightMod writes the error flag directly, bypassing the setter.
@@ -314,15 +432,12 @@ void EndHeightDetour(void* renderer) {
   if (remote) {
     Field<bool>(renderer, kRendererHeightEnabledOffset) = enabled;
   } else if (g_scene != nullptr && enabled && GetCurrentThreadId() == g_gui_thread) {
-    if (std::find(g_local_height_renderers.begin(), g_local_height_renderers.end(), renderer) ==
-        g_local_height_renderers.end()) {
-      g_local_height_renderers.push_back(renderer);
-    }
+    RememberLocalHeight(renderer);
   }
 }
 
 void RendererDestructorDetour(void* renderer) {
-  if (!g_active) {
+  if (!g_active || !HasPeerRenderer()) {
     g_original_renderer_destructor(renderer);
     return;
   }
@@ -334,33 +449,46 @@ void RendererDestructorDetour(void* renderer) {
   g_original_renderer_destructor(renderer);
 }
 
+bool g_traced_render;
+
 // Native render passes take this, the renderer component and a render helper.
 // Forward the fourth register too; short methods ignore the extra arguments.
+// Only a peer renderer ever carries this vtable, and a peer is skipped once
+// its preview is stale. Anything else reaching here is drawn normally: a
+// renderer must never be silently dropped because this module lost track of
+// it.
 template <int Slot>
 void RenderPass(void* self, void* first, void* second, void* third) {
   if constexpr (Slot == 1) {
     if (GetCurrentThreadId() == g_gui_thread && ExpirePeersImpl()) ComposeTerrainImpl();
   }
+  const auto original = reinterpret_cast<RenderFn*>(g_base + kBuilderRendererVtableRva)[Slot];
   for (const auto& peer : g_peers) {
     if (peer.renderer != self) continue;
-    if (PeerActive(peer)) {
-      reinterpret_cast<RenderFn*>(g_base + kBuilderRendererVtableRva)[Slot](self, first, second,
-                                                                           third);
-    }
+    if (PeerActive(peer)) original(self, first, second, third);
     return;
   }
+  if (FirstTime(g_traced_render)) Trace("render pass saw a renderer that is not a peer");
+  original(self, first, second, third);
 }
 
 void Dispose() {
+  Trace("scene dispose");
   g_disposing = true;
   if (g_terrain_target != nullptr && g_reset_height != nullptr) {
     g_reset_height(g_terrain_target, true);
   }
-  g_local_height_renderers.clear();
+  {
+    PreviewLock lock(g_local_height_lock);
+    g_local_height_renderers.clear();
+  }
   for (auto& peer : g_peers) {
     if (peer.renderer != nullptr) {
       if (g_scene != nullptr) g_remove_renderable(g_scene, peer.renderer);
       ClearPeer(peer);
+      if (peer.original_vtable != nullptr) {
+        Field<void**>(peer.renderer, kRendererVtableOffset) = peer.original_vtable;
+      }
       g_renderer_delete(peer.renderer, 1);
     }
     peer = Peer{};
@@ -370,8 +498,9 @@ void Dispose() {
   g_disposing = false;
   g_session = 0;
   {
-    std::lock_guard<std::mutex> lock(g_request_mutex);
+    PreviewLock lock(g_request_lock);
     g_armed = Armed{};
+    g_request_armed.store(false, std::memory_order_release);
     g_result_state = ResultState::Idle;
   }
   if (g_factory_live) {
@@ -399,6 +528,7 @@ void* FactoryDetour(void* source) {
               callable, g_factory + kFactoryInlineOffset);
     }
     g_factory_live = true;
+    TraceValue("factory cloned", "callable=", callable != nullptr ? 1 : 0);
   }
   return result;
 }
@@ -410,6 +540,7 @@ void AddRenderableDetour(void* target, void* object) {
     g_scene = target;
     g_gui_thread = GetCurrentThreadId();
     g_session = ++g_scene_generation;
+    TraceValue("scene adopted", "guiThread=", static_cast<long long>(g_gui_thread));
   }
 }
 
@@ -540,22 +671,24 @@ bool ValidMode(const char* mode) {
 bool IsDrawMode(const char* mode) { return std::strncmp(mode, "draw", 4) == 0; }
 
 void CompleteRequest(const bool ok) {
-  std::lock_guard<std::mutex> lock(g_request_mutex);
+  PreviewLock lock(g_request_lock);
   g_result_state = ok ? ResultState::Ok : ResultState::Error;
   (ok ? g_drawn : g_errors).fetch_add(1, std::memory_order_relaxed);
 }
 
 // True when a still-valid draw request was armed; it is consumed either way.
 bool TakeArmedRequest(char (&origin)[9], char (&mode)[8]) {
-  std::lock_guard<std::mutex> lock(g_request_mutex);
+  PreviewLock lock(g_request_lock);
   if (!g_armed.armed) return false;
   const bool expired = Now() - g_armed.tick > kRequestLifetimeMs;
   std::memcpy(origin, g_armed.origin, sizeof origin);
   std::memcpy(mode, g_armed.mode, sizeof mode);
   g_armed = Armed{};
+  g_request_armed.store(false, std::memory_order_release);
   if (expired) {
     g_result_state = ResultState::Error;
     g_errors.fetch_add(1, std::memory_order_relaxed);
+    if (FirstTime(g_traced_expiry)) Trace("armed request expired before a conversion");
   }
   return !expired;
 }
@@ -590,9 +723,20 @@ bool DrawPeer(const char* origin, const char* mode, void* toolkit, void* convert
   return true;
 }
 
+bool g_traced_convert;
+bool g_traced_convert_thread;
+
 void* ConvertDetour(void* result, void* toolkit, void* proposal) {
   void* converted = g_original_convert(result, toolkit, proposal);
-  if (!g_active || g_scene == nullptr || GetCurrentThreadId() != g_gui_thread) return converted;
+  // Nothing armed is the overwhelmingly common case: one relaxed load and out.
+  if (!g_active || !g_request_armed.load(std::memory_order_acquire)) return converted;
+  if (g_scene == nullptr || GetCurrentThreadId() != g_gui_thread) {
+    if (FirstTime(g_traced_convert_thread)) {
+      TraceValue("convert off the gui thread", "gui=", static_cast<long long>(g_gui_thread));
+    }
+    return converted;
+  }
+  if (FirstTime(g_traced_convert)) Trace("convert consumed a request");
   char origin[9]{};
   char mode[8]{};
   if (!TakeArmedRequest(origin, mode)) return converted;
@@ -630,28 +774,50 @@ bool RunImmediate(const char* origin, const char* mode) {
   return ok;
 }
 
+// Lua may poll these every frame, so each begin outcome is traced once.
+bool g_traced_begin_invalid;
+bool g_traced_begin_refused;
+bool g_traced_begin_thread;
+bool g_traced_begin_armed;
+bool g_traced_immediate;
+
 bool BeginImpl(const char* origin, const char* mode) {
-  if (!ValidOrigin(origin) || !ValidMode(mode)) return false;
-  if (!UnavailableReason().empty()) return false;
-  if (!IsDrawMode(mode)) {
-    if (GetCurrentThreadId() != g_gui_thread) return false;
-    return RunImmediate(origin, mode);
+  if (!ValidOrigin(origin) || !ValidMode(mode)) {
+    if (FirstTime(g_traced_begin_invalid)) Trace("begin rejected: origin or mode");
+    return false;
   }
-  std::lock_guard<std::mutex> lock(g_request_mutex);
+  const std::string reason = UnavailableReason();
+  if (!reason.empty()) {
+    if (FirstTime(g_traced_begin_refused)) Trace(("begin refused: " + reason).c_str());
+    return false;
+  }
+  if (!IsDrawMode(mode)) {
+    if (GetCurrentThreadId() != g_gui_thread) {
+      if (FirstTime(g_traced_begin_thread)) Trace("begin refused: keep/clear off the gui thread");
+      return false;
+    }
+    const bool ok = RunImmediate(origin, mode);
+    if (FirstTime(g_traced_immediate)) TraceValue(mode, "ok=", ok ? 1 : 0);
+    return ok;
+  }
+  if (FirstTime(g_traced_begin_armed)) Trace("draw request armed");
+  PreviewLock lock(g_request_lock);
   g_armed = Armed{};
   g_armed.armed = true;
   strcpy_s(g_armed.origin, origin);
   strcpy_s(g_armed.mode, mode);
   g_armed.tick = Now();
+  g_request_armed.store(true, std::memory_order_release);
   g_result_state = ResultState::Pending;
   g_requests.fetch_add(1, std::memory_order_relaxed);
   return true;
 }
 
 const char* ResultImpl() {
-  std::lock_guard<std::mutex> lock(g_request_mutex);
+  PreviewLock lock(g_request_lock);
   if (g_armed.armed && Now() - g_armed.tick > kRequestLifetimeMs) {
     g_armed = Armed{};
+    g_request_armed.store(false, std::memory_order_release);
     g_result_state = ResultState::Error;
     g_errors.fetch_add(1, std::memory_order_relaxed);
   }
@@ -707,24 +873,33 @@ bool ReadArgument(lua_State* state, const int index, char* out, const std::size_
   return true;
 }
 
+bool g_traced_status_enter;
+bool g_traced_status_left;
+bool g_traced_begin_enter;
+bool g_traced_begin_left;
+bool g_traced_result_enter;
+
+// The chunk takes the two strings this module controls. An empty reason is
+// passed as no argument at all, so the chunk needs no branch and the table's
+// reason field is simply absent.
 int NativePreviewStatus(lua_State* state) {
+  if (FirstTime(g_traced_status_enter)) Trace("lua status entered");
   const Counters counters = Snapshot();
   const std::string reason = UnavailableReason();
-  const std::string chunk =
-      "local a,b=...\n"
-      "local r\n"
-      "if b~=\"\" then r=b end\n"
-      "return {available=a==\"1\",reason=r,session=" +
-      std::to_string(counters.session) + ",peers=" + std::to_string(counters.peers) +
-      ",drawn=" + std::to_string(counters.drawn) + "}\n";
+  const std::string chunk = "local a,b=...\nreturn {available=a==\"1\",reason=b,session=" +
+                            std::to_string(counters.session) +
+                            ",peers=" + std::to_string(counters.peers) +
+                            ",drawn=" + std::to_string(counters.drawn) + "}\n";
   if (!PushChunkFunction(state, chunk.data(), chunk.size())) return 0;
   PushText(state, reason.empty() ? "1" : "0");
-  PushText(state, reason);
-  g_lua.call_k(state, 2, 1, 0, nullptr);
+  if (!reason.empty()) PushText(state, reason);
+  g_lua.call_k(state, reason.empty() ? 1 : 2, 1, 0, nullptr);
+  if (FirstTime(g_traced_status_left)) Trace("lua status returned a table");
   return 1;
 }
 
 int NativePreviewBegin(lua_State* state) {
+  if (FirstTime(g_traced_begin_enter)) Trace("lua begin entered");
   char origin[16]{};
   char mode[16]{};
   const bool ok = ReadArgument(state, 1, origin, sizeof origin) &&
@@ -732,10 +907,12 @@ int NativePreviewBegin(lua_State* state) {
   if (!PushChunkFunction(state, kBooleanChunk, sizeof kBooleanChunk - 1)) return 0;
   PushText(state, ok ? "1" : "0");
   g_lua.call_k(state, 1, 1, 0, nullptr);
+  if (FirstTime(g_traced_begin_left)) Trace("lua begin returned a boolean");
   return 1;
 }
 
 int NativePreviewResult(lua_State* state) {
+  if (FirstTime(g_traced_result_enter)) Trace("lua result entered");
   const char* text = ResultImpl();
   g_lua.push_string(state, text, std::strlen(text));
   return 1;
@@ -861,8 +1038,11 @@ Request ParseRequest(const std::wstring_view value) {
   request.raw = text.empty() ? "(default: on)" : text;
   if (text.empty() || text == "1" || text == "on" || text == "true" || text == "all") {
     request.enabled = true;
+    request.lua = true;
   } else if (text == "0" || text == "off" || text == "false" || text == "none" || text == "stock") {
     request.enabled = false;
+  } else if (text == "nolua") {
+    request.enabled = true;  // detours only, for bisecting a live problem
   } else {
     request.error = "unknown value '" + text + "'";  // fail closed
   }
@@ -885,18 +1065,22 @@ Status Install(const Host& host, const Request& request) {
   }
   if (!status.reason.empty()) {
     g_status = status;
+    Trace(("install refused: " + status.reason).c_str());
     return status;
   }
+  Trace(("install requested: " + request.raw).c_str());
   const std::uintptr_t base = host.module_base(host.context);
   if (base == 0) {
     status.reason = "module base unavailable";
     g_status = status;
+    Trace(status.reason.c_str());
     return status;
   }
   for (const auto& region : kPinnedRegions) {
     if (host.verify_bytes(host.context, region.rva, region.bytes, region.size) == 0) {
       status.reason = std::string("pinned bytes differ: ") + region.name + " at " + Hex(region.rva);
       g_status = status;
+      Trace(status.reason.c_str());
       return status;
     }
   }
@@ -956,13 +1140,16 @@ Status Install(const Host& host, const Request& request) {
     if (host.install_hook(host.context, base + hook.rva, hook.detour, hook.original) == 0) {
       status.reason = std::string("hook failed: ") + hook.name + " at " + Hex(hook.rva);
       g_status = status;
+      Trace(status.reason.c_str());
       return status;
     }
   }
   g_installed = true;
+  g_lua_api_enabled = request.lua;
   status.installed = true;
   g_status = status;
   g_active = true;
+  TraceValue("install complete hooks=7", "lua=", request.lua ? 1 : 0);
   return status;
 }
 
@@ -983,16 +1170,69 @@ Counters Snapshot() {
 std::string UnavailableReason() {
   if (!g_status.installed) return g_status.reason.empty() ? "not installed" : g_status.reason;
   if (g_lua_load == nullptr) return "lua chunk loader unavailable";
+  if (!g_lua_api_enabled) return "lua api disabled";
   if (g_scene == nullptr) return "no scene";
   return {};
 }
 
+void SetStatusWriteRequest(void (*status_write_request)()) {
+  g_status_write_request.store(status_write_request, std::memory_order_release);
+}
+
+std::string StatusJson(const Status& install) {
+  const Counters counters = Snapshot();
+  std::string json = "{\"enabled\":";
+  json += install.enabled ? "true" : "false";
+  json += ",\"installed\":";
+  json += install.installed ? "true" : "false";
+  json += ",\"reason\":\"" + JsonEscape(install.reason) + "\"";
+  json += ",\"peers\":" + std::to_string(counters.peers);
+  json += ",\"drawn\":" + std::to_string(counters.drawn);
+  json += ",\"requests\":" + std::to_string(counters.requests);
+  json += ",\"errors\":" + std::to_string(counters.errors);
+  json += ",\"session\":" + std::to_string(counters.session);
+  json += ",\"trace\":[";
+  const auto trace = TraceSnapshot();
+  for (std::size_t index = 0; index < trace.size(); ++index) {
+    if (index != 0) json += ',';
+    json += '"' + JsonEscape(trace[index]) + '"';
+  }
+  json += "]}";
+  return json;
+}
+
+std::vector<std::string> TraceSnapshot() {
+  std::vector<std::string> entries;
+  PreviewLock lock(g_trace_lock);
+  entries.reserve(g_trace_count);
+  const std::size_t first =
+      g_trace_count < kTraceSlots ? 0 : g_trace_next;  // oldest retained entry
+  for (std::size_t index = 0; index < g_trace_count; ++index) {
+    const TraceEntry& entry = g_trace[(first + index) % kTraceSlots];
+    char buffer[112]{};
+    sprintf_s(buffer, "%llu t%lu %s", static_cast<unsigned long long>(entry.tick),
+              static_cast<unsigned long>(entry.thread), entry.text);
+    entries.emplace_back(buffer);
+  }
+  return entries;
+}
+
 void RegisterLuaApi(lua_State* state, const LuaApi& api) {
   g_lua = api;
-  if (api.push_string == nullptr || api.push_closure == nullptr || api.raw_set == nullptr) return;
+  if (api.push_string == nullptr || api.push_closure == nullptr || api.raw_set == nullptr ||
+      api.call_k == nullptr || api.to_string == nullptr || api.get_top == nullptr) {
+    return;
+  }
+  // Without the chunk loader the globals could only ever return nil; leaving
+  // them unregistered lets Lua treat previews as an absent capability.
+  if (!g_lua_api_enabled || g_lua_load == nullptr) {
+    if (FirstTime(g_traced_lua_missing)) Trace("lua api not registered");
+    return;
+  }
   Register(state, "tpf2mp_native_preview_status", NativePreviewStatus);
   Register(state, "tpf2mp_native_preview_begin", NativePreviewBegin);
   Register(state, "tpf2mp_native_preview_result", NativePreviewResult);
+  if (FirstTime(g_traced_lua_registered)) Trace("lua api registered");
 }
 
 // --------------------------------------------------------------- test seam
@@ -1003,6 +1243,30 @@ void Reset() {
   g_status = Status{};
   g_active = false;
   g_installed = false;
+  g_lua_api_enabled = false;
+  g_traced_clear = false;
+  g_traced_end_height = false;
+  g_traced_render = false;
+  g_traced_convert = false;
+  g_traced_convert_thread = false;
+  g_traced_begin_invalid = false;
+  g_traced_begin_refused = false;
+  g_traced_begin_thread = false;
+  g_traced_begin_armed = false;
+  g_traced_immediate = false;
+  g_traced_status_enter = false;
+  g_traced_status_left = false;
+  g_traced_begin_enter = false;
+  g_traced_begin_left = false;
+  g_traced_result_enter = false;
+  g_traced_expiry = false;
+  g_traced_lua_missing = false;
+  g_traced_lua_registered = false;
+  {
+    PreviewLock lock(g_trace_lock);
+    g_trace_next = 0;
+    g_trace_count = 0;
+  }
   g_original_factory = nullptr;
   g_original_add = nullptr;
   g_original_scene_destructor = nullptr;
@@ -1031,11 +1295,16 @@ void Reset() {
   g_scene_generation = 0;
   g_editing_remote = false;
   g_disposing = false;
-  g_local_height_renderers.clear();
+  {
+    PreviewLock lock(g_local_height_lock);
+    g_local_height_renderers.clear();
+  }
   g_sender_color_renderer = nullptr;
   g_sender_error_color = -1;
-  std::lock_guard<std::mutex> lock(g_request_mutex);
+  g_status_write_request.store(nullptr, std::memory_order_release);
+  PreviewLock lock(g_request_lock);
   g_armed = Armed{};
+  g_request_armed.store(false, std::memory_order_release);
   g_result_state = ResultState::Idle;
   g_requests = 0;
   g_drawn = 0;
@@ -1068,6 +1337,7 @@ void SetScene(void* scene, void* terrain) {
   // only has to be non-null.
   g_status.installed = scene != nullptr;
   g_active = scene != nullptr;
+  g_lua_api_enabled = scene != nullptr;
   g_lua_load = scene != nullptr ? &TestChunkLoader : nullptr;
 }
 

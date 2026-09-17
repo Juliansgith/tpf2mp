@@ -176,6 +176,11 @@ bool RequestParsingValid() {
   }
   const Request unknown = ParseRequest(L"ghost");
   if (unknown.enabled || unknown.error.empty()) return Fail("unknown text must fail closed");
+  if (!ParseRequest(L"").lua || ParseRequest(L"off").lua) return Fail("lua follows the request");
+  const Request nolua = ParseRequest(L"NoLua");
+  if (!nolua.enabled || nolua.lua || !nolua.error.empty()) {
+    return Fail("nolua must install the detours without the Lua globals");
+  }
   return true;
 }
 
@@ -240,7 +245,18 @@ bool InstallerValid() {
   if (status.installed || status.reason.find("host services") == std::string::npos) {
     return Fail("incomplete host services must be refused");
   }
+  // Every refusal is on the record, and the status object is valid JSON-ish
+  // text carrying the same reason.
+  const auto trace = TraceSnapshot();
+  if (trace.empty()) return Fail("the trace must record the installer's decisions");
+  const std::string json = StatusJson(status);
+  if (json.find("\"installed\":false") == std::string::npos ||
+      json.find("\"trace\":[") == std::string::npos ||
+      json.find("host services") == std::string::npos) {
+    return Fail("the status object must carry the refusal and the trace");
+  }
   testing::Reset();
+  if (!TraceSnapshot().empty()) return Fail("the trace is bounded and resettable");
   g_fake_host = nullptr;
   return true;
 }
@@ -471,8 +487,23 @@ bool TerrainCompositionValid() {
   TestRenderer local(3, &terrain);
   int other_world = 0;
   TestRenderer foreign(4, &other_world);
+
+  // Until a peer renderer exists the renderer detours must forward and touch
+  // nothing at all: no registration, no composition, no shared state.
+  g_height_calls.clear();
+  testing::EndHeightMod(local.renderer);
+  testing::ClearRenderer(local.renderer, true, true);
+  testing::EndHeightMod(remote1.renderer);
+  if (!g_height_calls.empty()) return Fail("an idle module must not touch the shared terrain");
+  testing::ComposeTerrain();
+  if (g_height_calls != std::vector<int>{-1}) {
+    return Fail("an idle module must register no local renderer");
+  }
+
   testing::SetPeer(0, "a", remote1.renderer, g_now);
   testing::SetPeer(1, "b", remote2.renderer, g_now);
+  Poke<unsigned char*>(local.state, kHeightLastOffset,
+                       Peek<unsigned char*>(local.state, kHeightFirstOffset) + 6 * sizeof(int));
 
   testing::EndHeightMod(local.renderer);
   testing::EndHeightMod(local.renderer);  // registered only once

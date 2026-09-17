@@ -41,6 +41,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 struct lua_State;
 
@@ -61,12 +62,15 @@ struct Host {
 
 struct Request {
   bool enabled{};
+  bool lua{};  // register the Lua globals ("nolua" installs the detours only)
   std::string raw;
   std::string error;  // non-empty when the text was not understood; nothing is requested then
 };
 
 // Parses TPF2MP_NATIVE_PREVIEW. Empty (unset), "1", "on", "true" or "all"
-// request the previews; "0", "off", "false", "none" or "stock" request none.
+// request the previews; "0", "off", "false", "none" or "stock" request none;
+// "nolua" installs the detours but registers no Lua globals, which bisects a
+// live problem between the passive detours and the Lua entry points.
 // Unknown text fails closed: previews stay off and the error is recorded.
 Request ParseRequest(std::wstring_view value);
 
@@ -84,8 +88,10 @@ Status Install(const Host& host, const Request& request);
 // Defined in native_preview_render_hooks.cpp, which only the hook DLL links:
 // reads TPF2MP_NATIVE_PREVIEW and installs through MinHook. Call after
 // MH_Initialize; each hook it creates is enabled immediately, so a failure
-// stays confined to the previews.
-Status InstallFromEnvironment(HMODULE executable);
+// stays confined to the previews. `status_write_request`, when given, is
+// called after a new trace event so the status file carries the event log
+// while a live problem is being located; it must not block.
+Status InstallFromEnvironment(HMODULE executable, void (*status_write_request)() = nullptr);
 
 // Live state for the hook status JSON and the Lua status call.
 struct Counters {
@@ -100,6 +106,20 @@ Counters Snapshot();
 
 // Empty when previews are available; otherwise why they are not.
 std::string UnavailableReason();
+
+// A bounded in-process event log (the last kTraceSlots entries, oldest
+// first), published as hooks.preview.trace. Every entry is one short ASCII
+// line with the tick and the thread that recorded it. Recording is one-shot
+// or state-change only: nothing here runs per frame once a scene is live, so
+// a live stall can be located without a debugger.
+std::vector<std::string> TraceSnapshot();
+
+// Notified once per recorded trace event, outside every internal lock.
+void SetStatusWriteRequest(void (*status_write_request)());
+
+// The hooks.preview object of the hook status JSON: the install outcome
+// (enabled, installed, reason) plus the live counters and the trace.
+std::string StatusJson(const Status& install);
 
 // ------------------------------------------------------------------ Lua API
 // Three globals in every Lua state the hook registers into (the GUI state is
@@ -176,6 +196,11 @@ constexpr std::uintptr_t kMainSceneAddReturnRva = 0x56a532;
 constexpr std::size_t kMaxPeers = 16;
 constexpr std::uint64_t kPeerLifetimeMs = 4000;
 constexpr std::uint64_t kRequestLifetimeMs = 2000;
+constexpr std::size_t kTraceSlots = 48;
+// Local builder renderers whose height buffers are re-uploaded after a remote
+// preview changed the shared UI terrain. A hard cap keeps the list bounded no
+// matter what the game does.
+constexpr std::size_t kMaxLocalHeightRenderers = 64;
 
 // ------------------------------------------------------------- test seam
 // tests/native_preview_render_tests.cpp drives the module with stub engine

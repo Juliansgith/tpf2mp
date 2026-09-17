@@ -227,7 +227,14 @@ local function draw(peer, body)
   local ok, proposal = pcall(M.proposal, body)
   if not ok or proposal == nil then return false end
   local make = api and api.cmd and api.cmd.make
-  if type(make) ~= "table" or type(make.buildProposal) ~= "function" then return false end
+  -- api.cmd.make and its factories are bound as callable userdata in the game
+  -- and as plain tables/functions in the test fakes; accept both.
+  local makeType = type(make)
+  if makeType ~= "table" and makeType ~= "userdata" then return false end
+  local factoryType = type(make.buildProposal)
+  if factoryType ~= "function" and factoryType ~= "userdata" and factoryType ~= "table" then
+    return false
+  end
   local mode = "draw"
   if body.invalid == true then
     mode = "drawbad"

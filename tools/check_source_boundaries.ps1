@@ -116,7 +116,7 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_runtime.lua' = 530
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_preview.lua' = 400
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_codec.lua' = 200
-    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_native.lua' = 280
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_native.lua' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_params.lua' = 120
     'companion\tpf2mp\network.py' = 1460
     'companion\tpf2mp\fault_recovery.py' = 270
@@ -222,7 +222,7 @@ $budgets = [ordered]@{
     'native\src\native_material_fast.cpp' = 260
     # Remote builder-ghost previews: the ported renderer service plus the
     # pinned Build 35924 byte regions it verifies, and the MinHook glue.
-    'native\src\native_preview_render.cpp' = 1100
+    'native\src\native_preview_render.cpp' = 1300
     'native\src\native_preview_render_hooks.cpp' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_wrapper_selector.lua' = 100
@@ -801,6 +801,16 @@ foreach ($requiredHeader in @('native_command_codec.hpp', 'native_hook_status.hp
     'native_async_bridge.hpp')) {
     if (-not $nativeHookSource.Contains($requiredHeader)) {
         throw "Native hook no longer composes required support header $requiredHeader"
+    }
+}
+# Transport Fever 2 ships msvcp140.dll 14.14 (VS 2017) beside its executable
+# and that copy is loaded first, so the hook binds to it. A std::mutex built
+# with a current toolset is constexpr-constructed and expects the runtime to
+# finish initialising it at the first lock; 14.14 cannot, and dereferences the
+# null pointer inside. Every lock in the injected code uses SRWLOCK instead.
+foreach ($nativeSource in Get-ChildItem -LiteralPath (Join-Path $root 'native\src') -File -Filter '*.cpp') {
+    if ([IO.File]::ReadAllText($nativeSource.FullName) -match '#include\s*<mutex>') {
+        throw "Injected native code must not instantiate std::mutex against the game's msvcp140 14.14: $($nativeSource.Name). Use SRWLOCK."
     }
 }
 $nativeCmakeSource = Get-Content -LiteralPath (Join-Path $root 'native\CMakeLists.txt') -Raw

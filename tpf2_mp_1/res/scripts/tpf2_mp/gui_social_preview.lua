@@ -99,7 +99,12 @@ local function repFunction(name, key)
   if resources == nil then return nil end
   local rep = field(resources, name)
   local value = field(rep, key)
-  if type(value) ~= "function" then return nil end
+  -- The game binds repository functions as callable userdata, not Lua
+  -- functions (see util.isCallable), so accept any callable type.
+  local valueType = type(value)
+  if valueType ~= "function" and valueType ~= "userdata" and valueType ~= "table" then
+    return nil
+  end
   return value
 end
 M.repFunction = repFunction
