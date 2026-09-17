@@ -103,7 +103,10 @@ versions. The world is transferred, not generated independently from a seed.
 ## Implementation and failure handling
 
 The asynchronous dialog is tools/multiplayer_lobby.ps1; Start runs
-tools/start_lobby_match.ps1. Native generation uses run_native_worldgen_lab.ps1,
+tools/start_lobby_match.ps1. The dialog and the launcher share one WinForms
+look through tools/launcher_theme.ps1 (palette, fonts, cards, buttons, pills,
+flat tabs); the in-game window is styled by the mod's style sheet and
+res/scripts/tpf2_mp/gui_window_chrome.lua. Native generation uses run_native_worldgen_lab.ps1,
 native_worldgen_lab.lua and tpf2mp_worldgen_lab.dll (historical research names).
 Standard native builds and release packages include the isolated worker.
 companion/tpf2mp/world_generation.py validates requests and output evidence.

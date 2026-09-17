@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Current release: `0.45.3-alpha` (experimental testing release)
+Current release: `0.45.4-alpha` (experimental testing release)
 
 Last reviewed: 2026-09-15
 
@@ -19,7 +19,13 @@ This release has targeted real-game evidence, not a complete UI matrix PASS.
 Combined demolition/attachment/terrain cases, all construction variants and
 fresh save/load/recovery remain incomplete. Intermittent native Load Game
 stalls remain unresolved. Back up saves; see the
-[release notes](release-notes/RELEASE_NOTES_0.45.3-alpha.md).
+[release notes](release-notes/RELEASE_NOTES_0.45.4-alpha.md).
+
+The 0.45.4 patch restyles the launcher, the world lobby and the in-game
+window on one shared dark theme (status badges, section captions, wrapped
+button rows, sentence-case actions). Behaviour, protocol, schemas and the
+native hook are unchanged; see the
+[0.45.4 notes](release-notes/RELEASE_NOTES_0.45.4-alpha.md).
 
 The 0.45.3 patch turns on four bit-identical terrain fast paths in the native
 hook (alignment, bicubic refinement, tile min/max with block copy, and
@@ -228,7 +234,7 @@ finance/ownership, core digest `035ccd29`, and structural digest `9995a4be`.
 
 ## Release position
 
-`0.45.3-alpha` is an experimental release for external trusted-tester feedback,
+`0.45.4-alpha` is an experimental release for external trusted-tester feedback,
 not a fully qualified construction or persistence release. The previous
 `0.43.5-alpha` release remains available for rollback using backed-up saves.
 The next

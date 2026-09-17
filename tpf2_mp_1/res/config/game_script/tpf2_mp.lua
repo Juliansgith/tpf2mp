@@ -25,6 +25,7 @@ local nativeCommandSafety = require "tpf2_mp/native_command_safety_registry"
 local nativeObservationTelemetry = require "tpf2_mp/native_observation_telemetry"
 local guiState = require "tpf2_mp/gui_state"
 local guiView = require "tpf2_mp/gui_view"
+require "tpf2_mp/gui_window_chrome"  -- registers guiView.chrome; no new local (200-local cap)
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiStockPresentation = require "tpf2_mp/gui_stock_presentation"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
@@ -2956,6 +2957,7 @@ local function renderGui()
   local result = guiView.render(gui, snapshot, {
     maxDeferredNetworkIntents = networkIntentRuntimeModule.MAX_DEFERRED_INTENTS,
   })
+  guiView.chrome.renderBadges(gui, snapshot)
   return result
 end
 local function queueAction(action)
@@ -2991,13 +2993,7 @@ local function button(label, actionFactory)
   return value
 end
 
-local function addRow(rootLayout, definitions)
-  local layout = api.gui.layout.BoxLayout.new("HORIZONTAL")
-  local component = api.gui.comp.Component.new("")
-  component:setLayout(layout)
-  for _, definition in ipairs(definitions) do layout:addItem(button(definition[1], definition[2])) end
-  rootLayout:addItem(component)
-end
+local function addRow(rootLayout, definitions) guiView.chrome.addRows(rootLayout, definitions, button) end
 
 local function ensureWindow()
   if gui.window then
@@ -3006,15 +3002,19 @@ local function ensureWindow()
     return
   end
   local rootLayout = api.gui.layout.BoxLayout.new("VERTICAL")
-  local root = api.gui.comp.Component.new("tpf2mp.root")
+  local root = guiView.chrome.styled(api.gui.comp.Component.new("tpf2mp.root"), "tpf2mp-root")
   if type(root.setId) == "function" then pcall(root.setId, root, "tpf2mp.root") end
   root:setLayout(rootLayout)
-  gui.status = api.gui.comp.TextView.new("TPF2MP starting...")
-  gui.details = api.gui.comp.TextView.new("")
+  gui.status = guiView.chrome.styled(api.gui.comp.TextView.new("TPF2MP starting..."), "tpf2mp-summary")
+  gui.details = guiView.chrome.styled(api.gui.comp.TextView.new(""), "tpf2mp-details")
+  guiView.chrome.addHeader(gui, rootLayout)
   rootLayout:addItem(gui.status)
+  guiView.chrome.addSection(rootLayout, "Match")
   guiMatchControls.add(rootLayout, addRow, config())
+  guiView.chrome.addSection(rootLayout, "Transport manager")
   addRow(rootLayout, guiView.managerButtons(gui))
   if config().developerEconomyControls then
+    guiView.chrome.addSection(rootLayout, "Developer economy")
     addRow(rootLayout, {
       { "Seed Demo Market (Dev)", function() return { type = "economy.seed_demo" } end },
       { "Settle Epoch (Dev Host)", function()
@@ -3025,6 +3025,7 @@ local function ensureWindow()
       end },
     })
   end
+  guiView.chrome.addSection(rootLayout, "Lines and route draft")
   addRow(rootLayout, {
     { "Add Selected Stop", function()
       gui.routeDraft[#gui.routeDraft + 1] = assert(gui.selectedEntityId,
@@ -3053,6 +3054,7 @@ local function ensureWindow()
       } }
     end },
   })
+  guiView.chrome.addSection(rootLayout, "Vehicles")
   addRow(rootLayout, {
     { "Assign Vehicle to Line", function() return { type = "operation.capture", capture = {
       kind = "vehicle.assign",
@@ -3080,6 +3082,7 @@ local function ensureWindow()
       kind = "line.delete", targetLocalId = assert(gui.selectedLineId, "select a line first"),
     } } end },
   })
+  guiView.chrome.addSection(rootLayout, "Assets and fares")
   addRow(rootLayout, {
     -- Registration is automatic after any line or assignment change; this
     -- stays as a manual re-derive for lines that predate the match or whose
@@ -3089,6 +3092,7 @@ local function ensureWindow()
     { "Fare -1.00", function() return { type = "fare.adjust", localLineId = assert(gui.selectedLineId, "select a line first"), deltaCents = -100 } end },
     { "Fare +1.00", function() return { type = "fare.adjust", localLineId = assert(gui.selectedLineId, "select a line first"), deltaCents = 100 } end },
   })
+  guiView.chrome.addSection(rootLayout, "World and finance")
   addRow(rootLayout, {
     { "Freeze / Unfreeze", function()
       local snapshot = gui.snapshot or publicSnapshot()
@@ -3101,12 +3105,14 @@ local function ensureWindow()
     { "Toggle Income Neutralizer", function() return { type = "finance.toggle_neutralizer" } end },
     { "Repair Starting Cash", function() return { type = "finance.repair_starting_cash", localOnly = true } end },
   })
+  guiView.chrome.addSection(rootLayout, "Shared clock")
   addRow(rootLayout, {
     { "Pause", function() return { type = "clock.request", requestedSpeed = 0 } end },
     { "Speed 1", function() return { type = "clock.request", requestedSpeed = 1 } end },
     { "Speed 2", function() return { type = "clock.request", requestedSpeed = 2 } end },
     { "Speed 3", function() return { type = "clock.request", requestedSpeed = 4 } end },
   })
+  guiView.chrome.addSection(rootLayout, "Native gate (testing)")
   addRow(rootLayout, {
     { "Toggle Build Gate (Test)", function()
       local snapshot = gui.snapshot or publicSnapshot()
@@ -3118,6 +3124,7 @@ local function ensureWindow()
       return { type = "native.build_authorize", localOnly = true }
     end },
   })
+  guiView.chrome.addSection(rootLayout, "Diagnostics and recovery")
   addRow(rootLayout, {
     { "Run Sync Probe", function() return { type = "probe.run" } end },
     { "Sample Pax / Cargo", function() return { type = "probe.mobility" } end },
@@ -3130,6 +3137,7 @@ local function ensureWindow()
     { "Prepare & Save Restore Point", function() return { type = "recovery.prepare" } end },
     { "Refresh", function() return { type = "snapshot.request", localOnly = true } end },
   })
+  guiView.chrome.addSection(rootLayout, "Session")
   rootLayout:addItem(gui.details)
   gui.window = api.gui.comp.Window.new("TPF2MP Multiplayer", root)
   if type(gui.window.setId) == "function" then

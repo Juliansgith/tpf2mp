@@ -36,198 +36,53 @@ if (-not $defaultRelayUrl) {
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+. (Join-Path $PSScriptRoot 'launcher_theme.ps1')
 [Windows.Forms.Application]::EnableVisualStyles()
 
-$background = [Drawing.Color]::FromArgb(20, 30, 36)
-$panelColor = [Drawing.Color]::FromArgb(31, 45, 52)
-$fieldColor = [Drawing.Color]::FromArgb(42, 58, 66)
-$accent = [Drawing.Color]::FromArgb(70, 190, 157)
-$muted = [Drawing.Color]::FromArgb(164, 181, 187)
-$textColor = [Drawing.Color]::FromArgb(239, 245, 246)
-$danger = [Drawing.Color]::FromArgb(229, 115, 115)
+$theme = Get-Tpf2mpTheme
+$accent = $theme.Accent
+$muted = $theme.Muted
+$danger = $theme.Danger
 
 $form = New-Object Windows.Forms.Form
-$form.Text = 'TPF2MP Multiplayer'
-$form.ClientSize = New-Object Drawing.Size(850, 925)
-$form.BackColor = $background
-$form.ForeColor = $textColor
-$form.Font = New-Object Drawing.Font('Segoe UI', 10)
+Set-Tpf2mpFormStyle $form 'TPF2MP Multiplayer'
+$form.ClientSize = New-Object Drawing.Size(940, 970)
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
-$form.StartPosition = 'CenterScreen'
 
 $launcherOwner = Get-Process -Id $PID -ErrorAction Stop
 $script:launcherOwnerProcessId = $launcherOwner.Id
 $script:launcherOwnerExecutable = [string]$launcherOwner.Path
 $script:launcherOwnerStartedAtUtc = $launcherOwner.StartTime.ToUniversalTime().ToString('o')
-$title = New-Object Windows.Forms.Label
-$title.Text = "TPF2MP $bundleVersion  /  MULTIPLAYER"
-$title.Font = New-Object Drawing.Font('Segoe UI Semibold', 18)
-$title.ForeColor = $textColor
-$title.Location = New-Object Drawing.Point(24, 18)
-$title.AutoSize = $true
-$form.Controls.Add($title)
 
-$subtitle = New-Object Windows.Forms.Label
-$subtitle.Text = 'Host or join a trusted two-company world. Keep this launcher open; closing it cleanly ends its game and session.'
-$subtitle.ForeColor = $muted
-$subtitle.Location = New-Object Drawing.Point(27, 56)
-$subtitle.Size = New-Object Drawing.Size(790, 30)
-$form.Controls.Add($subtitle)
-
-$updateButton = New-Object Windows.Forms.Button
+# Header: product mark, bundle version pill, one-line promise, update action.
+$title = New-Tpf2mpLabel $form 'TPF2MP' 28 18 130 34 'Title'
+$versionPill = New-Tpf2mpPill $form $bundleVersion 158 23 124 24
+Set-Tpf2mpPill $versionPill $bundleVersion 'Accent'
+$subtitle = New-Tpf2mpLabel $form ('Host or join a trusted two-company world. Keep this launcher open; ' +
+    'closing it cleanly ends its game and session.') 30 58 880 18 'Muted'
 $sourceTreeLauncher = -not (Test-Path -LiteralPath (Join-Path $bundle 'release-manifest.json') -PathType Leaf)
-$updateButton.Text = if ($sourceTreeLauncher) { 'UPDATE INSTALLED RELEASE' } else { 'CHECK / INSTALL UPDATE' }
-$updateButton.Location = New-Object Drawing.Point(642, 15)
-$updateButton.Size = New-Object Drawing.Size(184, 36)
-$updateButton.FlatStyle = 'Flat'
-$updateButton.FlatAppearance.BorderSize = 1
-$updateButton.FlatAppearance.BorderColor = $accent
-$updateButton.BackColor = [Drawing.Color]::FromArgb(38, 104, 89)
-$updateButton.ForeColor = $textColor
-$updateButton.Cursor = [Windows.Forms.Cursors]::Hand
-$form.Controls.Add($updateButton)
+$updateText = if ($sourceTreeLauncher) { 'Update installed release' } else { 'Check / install update' }
+$updateButton = New-Tpf2mpButton $form $updateText 702 18 210 36 'Ghost'
 
-function Style-LauncherButton($Button, [bool]$Primary = $false) {
-    $Button.FlatStyle = 'Flat'
-    $Button.FlatAppearance.BorderSize = 1
-    $Button.FlatAppearance.BorderColor = if ($Primary) { $accent } else { [Drawing.Color]::FromArgb(78, 99, 108) }
-    $Button.BackColor = if ($Primary) { [Drawing.Color]::FromArgb(38, 104, 89) } else { $fieldColor }
-    $Button.ForeColor = $textColor
-    $Button.Cursor = [Windows.Forms.Cursors]::Hand
-}
-
-$relayPanel = New-Object Windows.Forms.Panel
-$relayPanel.Location = New-Object Drawing.Point(24, 92)
-$relayPanel.Size = New-Object Drawing.Size(802, 116)
-$relayPanel.BackColor = $panelColor
-$form.Controls.Add($relayPanel)
-
-$relayCheck = New-Object Windows.Forms.CheckBox
-$relayCheck.Text = 'Use secure relay (recommended) - no port forwarding; redacted diagnostics enabled'
-$relayCheck.ForeColor = $textColor
-$relayCheck.Location = New-Object Drawing.Point(18, 8)
-$relayCheck.Size = New-Object Drawing.Size(505, 24)
+# Connection: how the two computers reach each other.
+$connectionCard = New-Tpf2mpCard $form 28 88 884 156 'Connection'
+$relayCheck = New-Tpf2mpCheckBox $connectionCard `
+    'Use secure relay (recommended) - no port forwarding; redacted diagnostics enabled' 18 36 820 22
 $relayCheck.Checked = $true
-$relayPanel.Controls.Add($relayCheck)
-
-$relayUrlLabel = New-Object Windows.Forms.Label
-$relayUrlLabel.Text = 'Relay URL'
-$relayUrlLabel.ForeColor = $muted
-$relayUrlLabel.Location = New-Object Drawing.Point(18, 38)
-$relayUrlLabel.Size = New-Object Drawing.Size(100, 22)
-$relayPanel.Controls.Add($relayUrlLabel)
-$relayUrlBox = New-Object Windows.Forms.TextBox
-$relayUrlBox.Text = $defaultRelayUrl
-$relayUrlBox.Location = New-Object Drawing.Point(18, 62)
-$relayUrlBox.Size = New-Object Drawing.Size(344, 27)
-$relayUrlBox.BackColor = $fieldColor
-$relayUrlBox.ForeColor = $textColor
-$relayUrlBox.BorderStyle = 'FixedSingle'
-$relayPanel.Controls.Add($relayUrlBox)
-
-$createRelayButton = New-Object Windows.Forms.Button
-$createRelayButton.Text = 'CREATE SESSION'
-$createRelayButton.Location = New-Object Drawing.Point(373, 60)
-$createRelayButton.Size = New-Object Drawing.Size(145, 30)
-Style-LauncherButton $createRelayButton $true
-$relayPanel.Controls.Add($createRelayButton)
-
-$joinCodeLabel = New-Object Windows.Forms.Label
-$joinCodeLabel.Text = 'Join code (secret; paste on Player 2)'
-$joinCodeLabel.ForeColor = $muted
-$joinCodeLabel.Location = New-Object Drawing.Point(530, 8)
-$joinCodeLabel.Size = New-Object Drawing.Size(252, 22)
-$relayPanel.Controls.Add($joinCodeLabel)
-$joinCodeBox = New-Object Windows.Forms.TextBox
-$joinCodeBox.Location = New-Object Drawing.Point(530, 31)
-$joinCodeBox.Size = New-Object Drawing.Size(252, 27)
-$joinCodeBox.BackColor = $fieldColor
-$joinCodeBox.ForeColor = $textColor
-$joinCodeBox.BorderStyle = 'FixedSingle'
+New-Tpf2mpLabel $connectionCard 'Relay URL' 18 68 200 18 'Muted' | Out-Null
+$relayUrlBox = New-Tpf2mpTextBox $connectionCard $defaultRelayUrl 18 86 260 32
+$createRelayButton = New-Tpf2mpButton $connectionCard 'Create session' 286 84 144 36 'Ghost'
+New-Tpf2mpLabel $connectionCard 'Join code (secret; paste on Player 2)' 458 68 300 18 'Muted' | Out-Null
+$joinCodeBox = New-Tpf2mpTextBox $connectionCard '' 458 86 190 32
 $joinCodeBox.UseSystemPasswordChar = $true
-$relayPanel.Controls.Add($joinCodeBox)
+$prepareJoinButton = New-Tpf2mpButton $connectionCard 'Prepare join' 656 84 110 36 'Ghost'
+$copyJoinButton = New-Tpf2mpButton $connectionCard 'Copy code' 774 84 92 36 'Ghost'
+$relayDisclosure = New-Tpf2mpLabel $connectionCard ('Support ID and redacted structured logs are retained ' +
+    'by the relay; raw crash dumps are never automatic.') 18 130 848 18 'Faint'
 
-$prepareJoinButton = New-Object Windows.Forms.Button
-$prepareJoinButton.Text = 'PREPARE JOIN'
-$prepareJoinButton.Location = New-Object Drawing.Point(530, 60)
-$prepareJoinButton.Size = New-Object Drawing.Size(122, 30)
-Style-LauncherButton $prepareJoinButton $true
-$relayPanel.Controls.Add($prepareJoinButton)
-
-$copyJoinButton = New-Object Windows.Forms.Button
-$copyJoinButton.Text = 'COPY CODE'
-$copyJoinButton.Location = New-Object Drawing.Point(660, 60)
-$copyJoinButton.Size = New-Object Drawing.Size(122, 30)
-Style-LauncherButton $copyJoinButton
-$relayPanel.Controls.Add($copyJoinButton)
-
-$relayDisclosure = New-Object Windows.Forms.Label
-$relayDisclosure.Text = 'Support ID and redacted structured logs are retained by the relay; raw crash dumps are never automatic.'
-$relayDisclosure.ForeColor = $muted
-$relayDisclosure.Location = New-Object Drawing.Point(18, 92)
-$relayDisclosure.Size = New-Object Drawing.Size(764, 20)
-$relayPanel.Controls.Add($relayDisclosure)
-
-$settingsPanel = New-Object Windows.Forms.Panel
-$settingsPanel.Location = New-Object Drawing.Point(24, 218)
-$settingsPanel.Size = New-Object Drawing.Size(802, 250)
-$settingsPanel.BackColor = $panelColor
-$form.Controls.Add($settingsPanel)
-
-function Add-LauncherLabel([string]$Text, [int]$X, [int]$Y, [int]$Width = 150) {
-    $label = New-Object Windows.Forms.Label
-    $label.Text = $Text
-    $label.ForeColor = $muted
-    $label.Location = New-Object Drawing.Point($X, $Y)
-    $label.Size = New-Object Drawing.Size($Width, 22)
-    $settingsPanel.Controls.Add($label)
-    return $label
-}
-
-function Add-LauncherTextBox([int]$X, [int]$Y, [int]$Width, [string]$Value) {
-    $box = New-Object Windows.Forms.TextBox
-    $box.Text = $Value
-    $box.Location = New-Object Drawing.Point($X, $Y)
-    $box.Size = New-Object Drawing.Size($Width, 27)
-    $box.BackColor = $fieldColor
-    $box.ForeColor = $textColor
-    $box.BorderStyle = 'FixedSingle'
-    $settingsPanel.Controls.Add($box)
-    return $box
-}
-
+# Session: the match identity, its starting save, and the shared world.
 $defaultSession = 'match-' + (Get-Date -Format 'yyyyMMdd-HHmm')
-Add-LauncherLabel 'Session name' 18 16 | Out-Null
-$sessionBox = Add-LauncherTextBox 18 39 350 $defaultSession
-$newSessionButton = New-Object Windows.Forms.Button
-$newSessionButton.Text = 'New name'
-$newSessionButton.Location = New-Object Drawing.Point(378, 38)
-$newSessionButton.Size = New-Object Drawing.Size(92, 29)
-Style-LauncherButton $newSessionButton
-$settingsPanel.Controls.Add($newSessionButton)
-
-Add-LauncherLabel 'Host address (Join)' 490 16 180 | Out-Null
-$hostBox = Add-LauncherTextBox 490 39 190 '127.0.0.1'
-Add-LauncherLabel 'TCP port' 690 16 80 | Out-Null
-$portBox = Add-LauncherTextBox 690 39 92 '29742'
-
-$saveLabel = Add-LauncherLabel 'Starting save: Host selects it; Join can receive the exact set automatically' 18 84 650
-$saveBox = Add-LauncherTextBox 18 107 500 ''
-$browseButton = New-Object Windows.Forms.Button
-$browseButton.Text = 'Browse...'
-$browseButton.Location = New-Object Drawing.Point(528, 106)
-$browseButton.Size = New-Object Drawing.Size(94, 29)
-Style-LauncherButton $browseButton
-$settingsPanel.Controls.Add($browseButton)
-
-$syncSaveButton = New-Object Windows.Forms.Button
-$syncSaveButton.Text = 'SYNC FROM HOST'
-$syncSaveButton.Location = New-Object Drawing.Point(632, 106)
-$syncSaveButton.Size = New-Object Drawing.Size(150, 29)
-Style-LauncherButton $syncSaveButton $true
-$settingsPanel.Controls.Add($syncSaveButton)
-
 $addressText = 'LAN addresses: '
 try {
     $addresses = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
@@ -236,138 +91,55 @@ try {
     $addressText += if ($addresses.Count) { $addresses -join ', ' } else { 'none detected' }
 }
 catch { $addressText += 'unavailable' }
-$lanLabel = New-Object Windows.Forms.Label
-$lanLabel.Text = $addressText
-$lanLabel.ForeColor = $muted
-$lanLabel.Location = New-Object Drawing.Point(18, 145)
-$lanLabel.Size = New-Object Drawing.Size(764, 22)
-$settingsPanel.Controls.Add($lanLabel)
-
-$hint = New-Object Windows.Forms.Label
-$hint.Text = 'Host selects a save and launches first. Join syncs the host save, then launches.'
-$hint.ForeColor = $muted
-$hint.Location = New-Object Drawing.Point(18, 178)
-$hint.Size = New-Object Drawing.Size(595, 20)
-$settingsPanel.Controls.Add($hint)
-$lobbyButton = New-Object Windows.Forms.Button
-$lobbyButton.Text = 'WORLD LOBBY'
-$lobbyButton.Location = New-Object Drawing.Point(625, 168)
-$lobbyButton.Size = New-Object Drawing.Size(157, 31)
-Style-LauncherButton $lobbyButton $true
-$settingsPanel.Controls.Add($lobbyButton)
-
-$hostSnapshotCheck = New-Object Windows.Forms.CheckBox
-$hostSnapshotCheck.Text = 'Recover from HOST snapshot (both peers enable; discards old session faults/pending work; new session required)'
-$hostSnapshotCheck.ForeColor = $textColor
-$hostSnapshotCheck.Location = New-Object Drawing.Point(18, 199)
-$hostSnapshotCheck.Size = New-Object Drawing.Size(764, 20)
-$settingsPanel.Controls.Add($hostSnapshotCheck)
-
-$manualLabCheck = New-Object Windows.Forms.CheckBox
-$manualLabCheck.Text = 'After the automated proof, leave both connected game windows open for manual testing (up to 2 hours)'
-$manualLabCheck.ForeColor = $textColor
-$manualLabCheck.Location = New-Object Drawing.Point(18, 220)
-$manualLabCheck.Size = New-Object Drawing.Size(764, 24)
+$sessionCard = New-Tpf2mpCard $form 28 258 884 248 'Session'
+New-Tpf2mpLabel $sessionCard 'Session name' 18 36 200 18 'Muted' | Out-Null
+$sessionBox = New-Tpf2mpTextBox $sessionCard $defaultSession 18 54 300 32
+$newSessionButton = New-Tpf2mpButton $sessionCard 'New name' 326 52 110 36 'Ghost'
+New-Tpf2mpLabel $sessionCard 'Host address (Join)' 560 36 180 18 'Muted' | Out-Null
+$hostBox = New-Tpf2mpTextBox $sessionCard '127.0.0.1' 560 54 170 32
+New-Tpf2mpLabel $sessionCard 'TCP port' 746 36 120 18 'Muted' | Out-Null
+$portBox = New-Tpf2mpTextBox $sessionCard '29742' 746 54 120 32
+$lanLabel = New-Tpf2mpLabel $sessionCard $addressText 560 98 306 18 'Faint'
+$saveLabel = New-Tpf2mpLabel $sessionCard `
+    'Starting save: Host selects it; Join can receive the exact set automatically' 18 98 520 18 'Muted'
+$saveBox = New-Tpf2mpTextBox $sessionCard '' 18 116 420 32
+$browseButton = New-Tpf2mpButton $sessionCard 'Browse...' 446 114 104 36 'Ghost'
+$syncSaveButton = New-Tpf2mpButton $sessionCard 'Sync from host' 558 114 150 36 'Ghost'
+$lobbyButton = New-Tpf2mpButton $sessionCard 'Open world lobby' 716 114 150 36 'Secondary'
+$hostSnapshotCheck = New-Tpf2mpCheckBox $sessionCard ('Recover from HOST snapshot (both peers enable; ' +
+    'discards old session faults/pending work; new session required)') 18 162 848 22
+$manualLabCheck = New-Tpf2mpCheckBox $sessionCard ('After the automated proof, leave both connected game ' +
+    'windows open for manual testing (up to 2 hours)') 18 188 848 22
 $manualLabCheck.Checked = $false
-$settingsPanel.Controls.Add($manualLabCheck)
+$hint = New-Tpf2mpLabel $sessionCard `
+    'Host selects a save and launches first. Join syncs the host save, then launches.' 18 220 848 18 'Muted'
 
-$hostButton = New-Object Windows.Forms.Button
-$hostButton.Text = 'HOST + LAUNCH GAME'
-$hostButton.Location = New-Object Drawing.Point(24, 486)
-$hostButton.Size = New-Object Drawing.Size(245, 48)
-Style-LauncherButton $hostButton $true
-$form.Controls.Add($hostButton)
+# Launch: the two real entry points, then the ways out of a running match.
+$launchCard = New-Tpf2mpCard $form 28 520 884 138 'Launch'
+$hostButton = New-Tpf2mpButton $launchCard 'Host and launch game' 18 36 265 44 'Primary'
+$joinButton = New-Tpf2mpButton $launchCard 'Join and launch game' 291 36 265 44 'Secondary'
+$localhostButton = New-Tpf2mpButton $launchCard 'Run 2-instance localhost test' 564 36 302 44 'Ghost'
+$stopButton = New-Tpf2mpButton $launchCard 'Stop session / lab' 18 92 170 36 'Danger'
+$openButton = New-Tpf2mpButton $launchCard 'Open session files' 196 92 180 36 'Ghost'
 
-$joinButton = New-Object Windows.Forms.Button
-$joinButton.Text = 'JOIN + LAUNCH GAME'
-$joinButton.Location = New-Object Drawing.Point(280, 486)
-$joinButton.Size = New-Object Drawing.Size(245, 48)
-Style-LauncherButton $joinButton $true
-$form.Controls.Add($joinButton)
+# Recovery and tools: evidence collection and the attested restore path.
+$toolsCard = New-Tpf2mpCard $form 28 672 884 130 'Recovery and tools'
+$evidenceButton = New-Tpf2mpButton $toolsCard 'Check playable alpha' 18 36 200 36 'Ghost'
+$operationalButton = New-Tpf2mpButton $toolsCard 'Run populated capture lab (local only)' 230 36 300 36 'Ghost'
+$archiveButton = New-Tpf2mpButton $toolsCard 'Archive recovery save' 542 36 210 36 'Ghost'
+$restoreButton = New-Tpf2mpButton $toolsCard 'Select restore plan...' 18 82 210 36 'Ghost'
+$latestRestoreButton = New-Tpf2mpButton $toolsCard 'Load latest restore' 240 82 210 36 'Ghost'
+$recoveryHint = New-Tpf2mpLabel $toolsCard ('Archive a current save, or select a verified restore plan ' +
+    'and then this peer''s attested save.') 462 74 404 46 'Faint'
 
-$localhostButton = New-Object Windows.Forms.Button
-$localhostButton.Text = 'RUN 2-INSTANCE LOCALHOST TEST'
-$localhostButton.Location = New-Object Drawing.Point(536, 486)
-$localhostButton.Size = New-Object Drawing.Size(290, 48)
-Style-LauncherButton $localhostButton
-$form.Controls.Add($localhostButton)
-
-$stopButton = New-Object Windows.Forms.Button
-$stopButton.Text = 'Stop session / lab'
-$stopButton.Location = New-Object Drawing.Point(24, 546)
-$stopButton.Size = New-Object Drawing.Size(150, 34)
-Style-LauncherButton $stopButton
-$form.Controls.Add($stopButton)
-
-$openButton = New-Object Windows.Forms.Button
-$openButton.Text = 'Open session files'
-$openButton.Location = New-Object Drawing.Point(184, 546)
-$openButton.Size = New-Object Drawing.Size(165, 34)
-Style-LauncherButton $openButton
-$form.Controls.Add($openButton)
-
-$evidenceButton = New-Object Windows.Forms.Button
-$evidenceButton.Text = 'CHECK PLAYABLE ALPHA'
-$evidenceButton.Location = New-Object Drawing.Point(359, 546)
-$evidenceButton.Size = New-Object Drawing.Size(165, 34)
-Style-LauncherButton $evidenceButton
-$form.Controls.Add($evidenceButton)
-
-$operationalButton = New-Object Windows.Forms.Button
-$operationalButton.Text = 'RUN POPULATED CAPTURE LAB (LOCAL ONLY)'
-$operationalButton.Location = New-Object Drawing.Point(535, 546)
-$operationalButton.Size = New-Object Drawing.Size(291, 34)
-Style-LauncherButton $operationalButton
-$form.Controls.Add($operationalButton)
-
-$archiveButton = New-Object Windows.Forms.Button
-$archiveButton.Text = 'ARCHIVE RECOVERY SAVE'
-$archiveButton.Location = New-Object Drawing.Point(24, 590)
-$archiveButton.Size = New-Object Drawing.Size(210, 34)
-Style-LauncherButton $archiveButton
-$form.Controls.Add($archiveButton)
-
-$restoreButton = New-Object Windows.Forms.Button
-$restoreButton.Text = 'SELECT RESTORE PLAN...'
-$restoreButton.Location = New-Object Drawing.Point(244, 590)
-$restoreButton.Size = New-Object Drawing.Size(210, 34)
-Style-LauncherButton $restoreButton
-$form.Controls.Add($restoreButton)
-
-$latestRestoreButton = New-Object Windows.Forms.Button
-$latestRestoreButton.Text = 'LOAD LATEST RESTORE'
-$latestRestoreButton.Location = New-Object Drawing.Point(464, 590)
-$latestRestoreButton.Size = New-Object Drawing.Size(210, 34)
-Style-LauncherButton $latestRestoreButton $true
-$form.Controls.Add($latestRestoreButton)
-
-$recoveryHint = New-Object Windows.Forms.Label
-$recoveryHint.Text = 'Archive a current save, or select a verified restore plan and then this peer''s attested save.'
-$recoveryHint.ForeColor = $muted
-$recoveryHint.Location = New-Object Drawing.Point(24, 631)
-$recoveryHint.Size = New-Object Drawing.Size(802, 34)
-$form.Controls.Add($recoveryHint)
-
-$statusLabel = New-Object Windows.Forms.Label
-$statusLabel.Text = 'Ready. Build 35924 is required for network mode.'
+$statusPill = New-Tpf2mpPill $form 'Ready' 28 815 76 24
+Set-Tpf2mpPill $statusPill 'Ready' 'Accent'
+$statusLabel = New-Tpf2mpLabel $form 'Ready. Build 35924 is required for network mode.' 116 814 796 26
 $statusLabel.ForeColor = $accent
-$statusLabel.Location = New-Object Drawing.Point(24, 668)
-$statusLabel.Size = New-Object Drawing.Size(802, 24)
 $statusLabel.TextAlign = 'MiddleLeft'
-$form.Controls.Add($statusLabel)
 
-$logBox = New-Object Windows.Forms.TextBox
-$logBox.Location = New-Object Drawing.Point(24, 700)
-$logBox.Size = New-Object Drawing.Size(802, 195)
-$logBox.Multiline = $true
-$logBox.ReadOnly = $true
-$logBox.ScrollBars = 'Vertical'
-$logBox.BackColor = [Drawing.Color]::FromArgb(12, 20, 24)
-$logBox.ForeColor = [Drawing.Color]::FromArgb(190, 218, 211)
-$logBox.BorderStyle = 'FixedSingle'
-$logBox.Font = New-Object Drawing.Font('Cascadia Mono', 9)
+$logBox = New-Tpf2mpLogBox $form 28 850 884 100
 $logBox.Text = "This control panel pins the role/session/save, starts the companion, launches the exact game process, drives the native Load Game page, and verifies authority gates before reporting world-ready.`r`n"
-$form.Controls.Add($logBox)
 
 $script:worker = $null
 $script:workerStdout = $null

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.45.3-alpha',
+    [string]$Version = '0.45.4-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
@@ -185,7 +185,7 @@ $toolNames = @(
     'new_match_manifest.ps1', 'new_recovery_plan.ps1',
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
     'network_common.ps1', 'relay_port_common.ps1',
-    'launcher_worker_result.ps1', 'launcher_update_controller.ps1',
+    'launcher_worker_result.ps1', 'launcher_update_controller.ps1', 'launcher_theme.ps1',
     'native_load_common.ps1', 'runtime_overlay_common.ps1',
     'cleanup_localhost_runtime_overlay.ps1', 'network_autosave_guard.ps1',
     'session_lifecycle.ps1', 'watch_network_session_lifecycle.ps1',
@@ -240,7 +240,7 @@ road/rail attachment and terrain changes are not fully revalidated and may
 fail or fault the session. Some variants and save/load scenarios remain
 unverified; intermittent native Load Game stalls remain under investigation.
 Back up existing saves, update both players, and start a new session. See
-`docs/release-notes/RELEASE_NOTES_0.45.3-alpha.md` for the exact evidence limits.
+`docs/release-notes/RELEASE_NOTES_0.45.4-alpha.md` for the exact evidence limits.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 

@@ -316,8 +316,11 @@ function Start-Companion([string]$Role, [string[]]$Arguments, [string]$LogBase) 
     $oldPythonPath = $env:PYTHONPATH
     if ($companionCommand.IsPython) { $env:PYTHONPATH = Join-Path $projectRoot 'companion' }
     try {
+        # Quote explicitly: Start-Process flattens an argument array on spaces,
+        # which split the manifest path once the repository lived in a folder
+        # with spaces in its name.
         return Start-Process -FilePath $companionCommand.File `
-            -ArgumentList @($companionCommand.Prefix + $Arguments) `
+            -ArgumentList (ConvertTo-Tpf2mpCommandLine @($companionCommand.Prefix + $Arguments)) `
             -WorkingDirectory $projectRoot -WindowStyle Hidden -PassThru `
             -RedirectStandardOutput ($LogBase + '.stdout.txt') `
             -RedirectStandardError ($LogBase + '.stderr.txt')
