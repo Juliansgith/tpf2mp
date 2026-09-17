@@ -35,7 +35,7 @@ remains an experimental two-player testing release.
   `tools\build_native_hook.ps1` now runs that proof against the installed
   executable (`-SkipTerrainFastProof` to skip; it needs numpy, capstone and
   pefile in the gate's Python).
-- Measured in game on a generated 56 × 56-tile world (Ryzen 9 5900X, 24
+- Measured in game on a generated 56x56-tile world (Ryzen 9 5900X, 24
   threads): the four routines drop from about 15.8 to 11.4 worker-seconds per
   warm load. Wall-clock load stayed at 14 to 15 seconds in every run at the
   benchmark's one-second resolution, because the terrain phase is spread over

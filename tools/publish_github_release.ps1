@@ -81,9 +81,12 @@ try {
         prerelease = @($semanticVersion.prerelease).Count -gt 0
         generate_release_notes = $false
     } | ConvertTo-Json -Depth 4
+    # Send explicit UTF-8 bytes: Windows PowerShell otherwise encodes a string
+    # body as Latin-1, and any non-ASCII character in the notes reaches GitHub
+    # as invalid UTF-8 ("Problems parsing JSON", HTTP 400).
     $publishedRelease = Invoke-RestMethod -Method Post `
         -Uri "https://api.github.com/repos/$Repository/releases" -Headers $headers `
-        -ContentType 'application/json' -Body $createBody
+        -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes([string]$createBody))
     $uploadBase = ([string]$publishedRelease.upload_url) -replace '\{.*$', ''
     if ($uploadBase -notmatch '^https://uploads\.github\.com/') { throw 'GitHub returned an unsafe release upload URL.' }
     foreach ($asset in @(
