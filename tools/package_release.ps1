@@ -186,6 +186,8 @@ $toolNames = @(
     'start_host_release.ps1', 'start_client_release.ps1', 'start_hooked_game.ps1',
     'network_common.ps1', 'relay_port_common.ps1',
     'launcher_worker_result.ps1', 'launcher_update_controller.ps1', 'launcher_theme.ps1',
+    'launcher_invite_link.ps1', 'launcher_mod_precheck.ps1',
+    'launcher_checklist.ps1', 'launcher_sessions.ps1', 'launcher_content_digest.ps1',
     'native_load_common.ps1', 'runtime_overlay_common.ps1',
     'cleanup_localhost_runtime_overlay.ps1', 'network_autosave_guard.ps1',
     'session_lifecycle.ps1', 'watch_network_session_lifecycle.ps1',
@@ -386,8 +388,11 @@ if (-not $SkipPackageInstallTest) {
         $env:TPF2MP_NO_PAUSE = '1'
         $env:TPF2MP_TEST_SKIP_RUNTIME_OVERLAY_CLEANUP = '1'
         try {
+            # -NoInviteProtocol keeps packaging on a developer machine out of
+            # the real per-user HKCU tpf2mp:// registration.
             & (Join-Path $releaseRoot 'INSTALL_TPF2MP.cmd') `
-                -LocalModsPath $testMods -InstallRoot $testSupport -NoDesktopShortcut
+                -LocalModsPath $testMods -InstallRoot $testSupport -NoDesktopShortcut `
+                -NoInviteProtocol
             if ($LASTEXITCODE -ne 0) { throw "Packaged INSTALL_TPF2MP.cmd failed with exit code $LASTEXITCODE" }
         }
         finally {
@@ -396,7 +401,7 @@ if (-not $SkipPackageInstallTest) {
         }
         & (Join-Path $releaseRoot 'tools\verify_install.ps1') -BundleRoot $releaseRoot -LocalModsPath $testMods -GameExecutable $game -StrictNative
         & (Join-Path $releaseRoot 'tools\uninstall.ps1') -LocalModsPath $testMods `
-            -InstallRoot $testSupport -SkipRuntimeOverlayCleanup
+            -InstallRoot $testSupport -SkipRuntimeOverlayCleanup -NoInviteProtocol
         if (Test-Path -LiteralPath (Join-Path $testMods 'tpf2_mp_1')) { throw 'Package uninstall self-test left the mod active.' }
     }
     finally {

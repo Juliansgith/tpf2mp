@@ -3,7 +3,8 @@ param(
     [string]$LocalModsPath,
     [string]$InstallRoot,
     [string]$GameExecutable,
-    [switch]$SkipRuntimeOverlayCleanup
+    [switch]$SkipRuntimeOverlayCleanup,
+    [switch]$NoInviteProtocol
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,5 +40,14 @@ if (Test-Path -LiteralPath $target) {
 }
 else {
     Write-Host "TPF2MP mod is not installed at: $target"
+}
+if (-not $NoInviteProtocol -and $env:TPF2MP_NO_INVITE_PROTOCOL -ne '1') {
+    try {
+        . (Join-Path $PSScriptRoot 'launcher_invite_link.ps1')
+        if ((Unregister-Tpf2mpInviteProtocol) -eq 'removed') {
+            Write-Host 'Removed the per-user tpf2mp:// invite handler.'
+        }
+    }
+    catch { Write-Warning "Could not remove the tpf2mp:// invite handler: $($_.Exception.Message)" }
 }
 Write-Host "Support tools remain at: $install"

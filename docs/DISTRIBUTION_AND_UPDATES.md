@@ -9,7 +9,10 @@ Extract the release ZIP and double-click `INSTALL_TPF2MP.cmd`. The installer:
 - stages and verifies the mod before replacing an older install;
 - preserves recoverable backups if anything is replaced;
 - installs versioned support files under `%LOCALAPPDATA%\TPF2MP`;
-- creates stable Launch, Update, Verify, and Uninstall commands there; and
+- creates stable Launch, Update, Verify, and Uninstall commands there;
+- registers the `tpf2mp://` invite-link handler for the current user only
+  (`HKCU`, no administrator rights), which `UNINSTALL_TPF2MP.cmd` removes
+  again; and
 - on the first normal per-user install, asks whether to add
   `TPF2MP Multiplayer.lnk` to the desktop.
 

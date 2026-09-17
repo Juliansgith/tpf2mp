@@ -2405,4 +2405,457 @@ assert(materialiseFailure and materialiseFailure.name == "operation.result"
 
 assert(enabled["finances.borrow"] == false and enabled["finances.repay"] == false, "finance controls were not disabled")
 
+-- The four panel features below need more locals than Lua 5.1 leaves in this
+-- chunk, so they run in their own scope. The leading semicolon closes the
+-- statement above it.
+;(function()
+  -- The next-action line is a pure function of the public snapshot, so every
+  -- state a player can be stuck in is directly testable.
+  local guiViewModule = require "tpf2_mp/gui_view"
+  local nextActionModule = require "tpf2_mp/gui_next_action"
+  local noticesModule = require "tpf2_mp/gui_notices"
+  local scoreboardModule = require "tpf2_mp/gui_scoreboard"
+  local chrome = guiViewModule.chrome
+
+  local function nextActionCase(snapshot, expected, message)
+    local actual = nextActionModule.text(snapshot)
+    assert(actual:find(expected, 1, true), message .. " (got: " .. actual .. ")")
+  end
+
+  nextActionCase({ networkMode = "standalone" }, "Local mode: nothing is shared",
+    "local mode did not say that nothing is shared")
+  nextActionCase({
+    networkMode = "network", peerId = "player1",
+    bridge = { companion = { connected = true, reconnect = {
+      graceSeconds = 120, waitingPeers = { player2 = { secondsRemaining = 84 } },
+    } } },
+  }, "Waiting for Player 2 to reconnect (84 s left)",
+    "a reconnect grace countdown was not surfaced")
+  nextActionCase({
+    networkMode = "network", peerId = "player1",
+    bridge = { companion = { connected = true, reconnect = {
+      waitingPeers = { player2 = {} },
+    } } },
+  }, "Waiting for Player 2 to reconnect (up to 120 s)",
+    "a reconnect without a published countdown did not fall back to the documented grace")
+  nextActionCase({
+    networkMode = "network", peerId = "player1",
+    bridge = { companion = { connected = true } },
+  }, "Waiting for Player 2's world to load",
+    "a peer whose world is still loading was not named")
+  nextActionCase({
+    networkMode = "network", peerId = "player1", initialized = true,
+    checkpointConsensus = { lastAgreed = { boundarySeq = 4 } },
+    bridge = { companion = { connected = true } },
+    networkClock = { effectiveSpeed = 0 },
+  }, "Both worlds are ready. Build freely; the shared clock is paused until you press Speed 1",
+    "a ready, paused session did not invite the player to build")
+  nextActionCase({
+    networkMode = "network", peerId = "player2", initialized = true,
+    checkpointConsensus = { lastAgreed = { boundarySeq = 4 } },
+    bridge = { companion = { connected = true } },
+    deferredNetworkQueue = { awaitingOrder = { localSeq = 12, type = "operation.capture" } },
+  }, "Your last build is waiting for the host's order",
+    "an outbound intent awaiting the host order was not surfaced")
+  nextActionCase({
+    networkMode = "network", peerId = "player1",
+    proposalConsensus = { sessionFault = true },
+    bridge = { companion = { connected = true } },
+  }, "The session is faulted. Use Recover / Resync Session.",
+    "a faulted session did not name its recovery control")
+  nextActionCase({
+    networkMode = "network", peerId = "player1",
+    companies = { ["company:1"] = { name = "Company 1" } },
+    match = { status = "finished", winnerCid = "company:1", finishReason = "valuation-target" },
+  }, "Match over: Company 1 won by valuation target",
+    "a finished match did not report its winner in words")
+
+  local liveGui = chrome.gui
+  assert(type(liveGui) == "table" and liveGui.nextActionView and liveGui.noticesView,
+    "the panel did not build its next-action line and notices feed")
+  assert(liveGui.nextActionView.text ~= "", "the next-action line was never rendered")
+
+  -- A staged rejection must reach both the dated feed and the floating toast.
+  liveGui.lastError = nil
+  liveGui.notices = { items = {} }
+  noticesModule.observe(liveGui, { proposalConsensus = { rejected = 0 } })
+  noticesModule.observe(liveGui, { proposalConsensus = {
+    rejected = 1, lastOutcome = { reason = "native-proposal-rejected" },
+  } })
+  noticesModule.render(liveGui, { proposalConsensus = { rejected = 1 } })
+  assert(liveGui.noticesView.text:find(
+      "The game refused this build on the other computer", 1, true)
+    and liveGui.noticesView.text:find("s ago", 1, true),
+    "a staged rejection did not reach the dated Notices feed")
+  assert(liveGui.noticeToast and liveGui.noticeToast.window.visible == true
+    and liveGui.noticeToast.view.text:find("The game refused this build", 1, true),
+    "a staged rejection did not reach the floating toast")
+  noticesModule.observeVeto(liveGui, { errorMessages = {
+    "TPF2MP: entity 701 belongs to Company 2",
+  } })
+  assert(liveGui.notices.items[1].text == "TPF2MP: entity 701 belongs to Company 2",
+    "an ownership veto was not kept verbatim")
+  assert(noticesModule.explain("the network companion is disconnected")
+      == "You are disconnected; builds are not queued."
+    and noticesModule.explain("some-new-code") == "Rejected: some-new-code",
+    "reason-code translation lost its table or its fallback")
+  for index = 1, noticesModule.LIMIT + 3 do
+    noticesModule.push(liveGui, { kind = "info", text = "notice " .. tostring(index) })
+  end
+  assert(#liveGui.notices.items == noticesModule.LIMIT, "the notice feed is not bounded")
+
+  -- Collapsible sections, compact mode, and preferences round-tripping through a
+  -- temporary %LOCALAPPDATA%.
+  local preferenceRoot = (os.getenv("TEMP") or os.getenv("TMP") or "."):gsub("\\", "/")
+    .. "/tpf2mp-gui-preference-tests"
+  os.execute('rmdir /s /q "' .. preferenceRoot:gsub("/", "\\") .. '" 2>nul')
+  os.execute('mkdir "' .. (preferenceRoot .. "/TPF2MP"):gsub("/", "\\") .. '" 2>nul')
+  local realGetenv = os.getenv
+  os.getenv = function(name)
+    if name == "LOCALAPPDATA" then return preferenceRoot end
+    return realGetenv(name)
+  end
+  chrome.preferences, chrome.preferencesWrittenAt, chrome.preferencesDirty = nil, nil, false
+
+  local vehicleSection = chrome.sections["Vehicles"]
+  assert(vehicleSection and #vehicleSection.rows > 0, "the Vehicles section tracked no row components")
+  assert(chrome.sections["Match"] and #chrome.sections["Match"].rows > 0,
+    "the Match section tracked no row components")
+  assert(chrome.sections["Native gate (testing)"] == nil,
+    "the native testing gate was built without developer economy controls")
+  assert(vehicleSection.expanded == false, "a secondary section did not default to collapsed")
+  assert(vehicleSection.rows[1].visible == false, "a collapsed section left its rows visible")
+  assert(chrome.toggleSection("Vehicles") == true, "a section header click did not expand the section")
+  assert(vehicleSection.rows[1].visible == true, "expanding a section did not reveal its rows")
+  assert(vehicleSection.label.text:find("v ", 1, true) == 1,
+    "the section header marker did not follow the expanded state")
+  assert(chrome.sections["Notices"].expanded == true and chrome.sections["Shared clock"].expanded == true,
+    "a section a player needs on sight defaulted to collapsed")
+
+  chrome.setCompact(liveGui, true)
+  assert(chrome.sections["Notices"].rows[1].visible == true,
+    "compact mode hid the notices feed")
+  assert(chrome.sections["Shared clock"].rows[1].visible == false
+      and vehicleSection.rows[1].visible == false,
+    "compact mode left an ordinary section visible")
+  assert(liveGui.status.visible == false, "compact mode kept the full summary line")
+  chrome.setCompact(liveGui, false)
+  assert(liveGui.status.visible == true and vehicleSection.rows[1].visible == true,
+    "leaving compact mode did not restore the expanded sections")
+
+  chrome.flushPreferences(true)
+  chrome.preferences = nil
+  local reloadedPreferences = chrome.loadPreferences(liveGui)
+  assert(type(reloadedPreferences.peers) == "table"
+      and type(reloadedPreferences.peers["player1"]) == "table",
+    "user interface preferences were not written per player")
+  assert(reloadedPreferences.peers["player1"].sections["Vehicles"] == true
+      and reloadedPreferences.peers["player1"].sections["Lines and route draft"] == false
+      and reloadedPreferences.peers["player1"].compact == false,
+    "expanded/collapsed state and compact mode did not round-trip through the preferences file")
+  chrome.preferencesDirty = false
+  os.getenv = realGetenv
+  chrome.preferences = nil
+
+  -- Scoreboard and end-of-match summary from a staged finished match.
+  local finishedSnapshot = {
+    networkMode = "network", peerId = "player1",
+    companyOrder = { "company:1", "company:2" },
+    companies = {
+      ["company:1"] = { cid = "company:1", name = "Company 1", balance = 90000 },
+      ["company:2"] = { cid = "company:2", name = "Company 2", balance = 40000 },
+    },
+    scoreboard = {
+      ["company:1"] = {
+        companyCid = "company:1", name = "Company 1", modelValueCents = 123456789,
+        settledNetRevenueCents = 4567800, settledDemand = 12345,
+        activeLines = 7, marketsReached = 4, marketWins = 3,
+      },
+      ["company:2"] = {
+        companyCid = "company:2", name = "Company 2", modelValueCents = 2345600,
+        settledNetRevenueCents = 120000, settledDemand = 900,
+        activeLines = 2, marketsReached = 1, marketWins = 0,
+      },
+    },
+    match = { status = "finished", winnerCid = "company:1", finishReason = "valuation-target" },
+  }
+  liveGui.scoreboardFinishAnnounced = false
+  liveGui.notices = { items = {} }
+  scoreboardModule.render(liveGui, finishedSnapshot)
+  local scoreboardText = liveGui.scoreboardView.text
+  assert(scoreboardText:find("Match over: Company 1 won by valuation target", 1, true),
+    "the end-of-match summary did not head the scoreboard")
+  assert(scoreboardText:find("$1,234,567.89", 1, true)
+      and scoreboardText:find("$45,678.00", 1, true)
+      and scoreboardText:find("12,345", 1, true),
+    "scoreboard money or counts lost their thousands separators")
+  assert(scoreboardText:find("* Company 1  (leader)", 1, true)
+      and scoreboardText:find("markets 4", 1, true)
+      and scoreboardText:find("lines 7", 1, true),
+    "the scoreboard did not mark the leader with its model value inputs")
+  assert(scoreboardText:find("  1. Company 1", 1, true)
+      and scoreboardText:find("  2. Company 2", 1, true),
+    "the end-of-match summary did not rank both companies")
+  assert(#liveGui.notices.items == 1 and liveGui.notices.items[1].kind == "info"
+      and liveGui.notices.items[1].ttl == 20
+      and liveGui.notices.items[1].text:find("Match over: Company 1", 1, true),
+    "the finished match was not announced once as a toast")
+  scoreboardModule.render(liveGui, finishedSnapshot)
+  assert(#liveGui.notices.items == 1, "the finished match was announced more than once")
+  noticesModule.render(liveGui, finishedSnapshot)
+  assert(liveGui.noticeToast.view.text:find("Match over: Company 1", 1, true)
+      and liveGui.noticeToast.window.visible == true,
+    "the end-of-match announcement did not reach the toast")
+end)()
+
 print("PASS GUI/native commit bridge, strict rival proposal/entity veto, shared-state refresh, and proxy finance locks")
+
+-- Social channel: chat, canned pings and the other player's build preview.
+-- The channel is a side channel by design (docs/SOCIAL_CHANNEL.md), so it is
+-- driven here through its own five-hertz pump against a temporary bridge root
+-- rather than through the ordered outbox.
+;(function()
+  local guiView = require "tpf2_mp/gui_view"
+  local social = require "tpf2_mp/gui_social_runtime"
+  local runtimeConfig = require "tpf2_mp/runtime_config"
+  local chrome = guiView.chrome
+  local restoreConfig = game.config.tpf2mp
+  local root = (os.getenv("TEMP") or os.getenv("TMP") or "."):gsub("\\", "/")
+    .. "/tpf2mp-gui-social-tests"
+  os.execute('rmdir /s /q "' .. root:gsub("/", "\\") .. '" 2>nul')
+  os.execute('mkdir "' .. (root .. "/companion_state"):gsub("/", "\\") .. '" 2>nul')
+  local outPath = root .. "/companion_state/social_out.json"
+  local inPath = root .. "/companion_state/social_in.json"
+
+  local zoneCalls, zoneState = {}, {}
+  game.interface.setZone = function(key, zone)
+    zoneCalls[#zoneCalls + 1] = { key = key, zone = zone }
+    zoneState[key] = zone
+  end
+
+  -- TextInputField is a stock component that no shipped Lua script uses, so
+  -- the fake mirrors exactly the usertype methods the runtime calls.
+  local inputFields = {}
+  api.gui.comp.TextInputField = { new = function(placeholder)
+    local field = object({ text = "", placeholder = placeholder })
+    function field:setText(value) self.text = tostring(value) end
+    function field:getText() return self.text end
+    function field:onEnter(callback) self.enter = callback end
+    function field:setMaxLength(value) self.maxLength = value end
+    inputFields[#inputFields + 1] = field
+    return field
+  end }
+
+  game.config.tpf2mp = {
+    protocolVersion = 1, peerId = "player1", sessionId = "gui-social-test",
+    bridgeDir = root, updateStride = 15, maxEvents = 64,
+    startNetwork = true, localProxyEnabled = false,
+  }
+  assert(runtimeConfig.read().root == root,
+    "the social tests could not point the runtime configuration at a temporary bridge root")
+
+  local socialGui = { snapshot = { networkMode = "network", peerId = "player1" } }
+  -- os.clock() is processor time: two synthetic GUI frames would not advance
+  -- it past the five-hertz gate, so the poll clock is driven explicitly.
+  local fakeClock = 1000
+  social.clock = function() return fakeClock end
+  local function poll(step)
+    fakeClock = fakeClock + (step or 0.25)
+    social.tick(socialGui)
+  end
+  local function readOut()
+    local file = io.open(outPath, "rb")
+    if not file then return nil end
+    local body = file:read("*a")
+    file:close()
+    return json.decode(body)
+  end
+  local function writeIn(document)
+    local file = assert(io.open(inPath, "wb"), "social_in.json fixture is not writable")
+    file:write(json.encode(document))
+    file:close()
+  end
+  local function lastItem(document, channel)
+    for index = #document.items, 1, -1 do
+      if document.items[index].channel == channel then return document.items[index] end
+    end
+    return nil
+  end
+
+  -- The panel section: a chat transcript, an input row and the four pings.
+  local panel = BoxLayout.new("VERTICAL")
+  social.addSection(socialGui, chrome.tracked(panel), chrome)
+  assert(panel:getNumItems() == 4,
+    "the social section did not add a caption, a transcript, an input row and a ping row")
+  assert(socialGui.socialChat and socialGui.socialChat.text:find("No messages yet", 1, true),
+    "the chat transcript was not created with its empty-state hint")
+  local inputRow, pingRow = panel:getItem(2):getLayout(), panel:getItem(3):getLayout()
+  local inputField, sendButton = inputRow:getItem(0), inputRow:getItem(1)
+  assert(inputField == inputFields[1] and inputField.maxLength == 240,
+    "the chat input field was not created and bounded at 240 characters")
+  assert(pingRow:getNumItems() == 4, "the four canned pings were not added")
+  assert(type(inputField.enter) == "function", "the chat field has no Enter handler")
+
+  poll()
+
+  -- (1) A road proposal becomes one preview item; a replacement segment and a
+  -- track segment inside the same proposal are not part of the planned road.
+  local roadParam = {
+    data = { errorState = { messages = {} } },
+    proposal = { proposal = {
+      addedNodes = {
+        { entity = -1, comp = { position = { x = 100, y = 200, z = 0 } } },
+        { entity = -2, comp = { position = { x = 300, y = 260, z = 0 } } },
+        { entity = -3, comp = { position = { x = 500, y = 200, z = 0 } } },
+      },
+      addedSegments = {
+        { entity = -11, type = 0, comp = { node0 = -1, node1 = -2,
+          tangent0 = { x = 200, y = 0, z = 0 }, tangent1 = { x = 200, y = 60, z = 0 } } },
+        { entity = -12, type = 0, comp = { node0 = -2, node1 = -3,
+          tangent0 = { x = 200, y = 60, z = 0 }, tangent1 = { x = 200, y = 0, z = 0 } } },
+        { entity = -13, type = 0, comp = { node0 = -1, node1 = -3,
+          tangent0 = { x = 1, y = 0, z = 0 }, tangent1 = { x = 1, y = 0, z = 0 } } },
+        { entity = -14, type = 1, comp = { node0 = -1, node1 = -2,
+          tangent0 = { x = 1, y = 0, z = 0 }, tangent1 = { x = 1, y = 0, z = 0 } } },
+      },
+      new2oldSegments = { [-13] = 77 },
+    } },
+  }
+  assert(select("#", social.observeBuilderEvent(
+      socialGui, "streetBuilder", "builder.proposalCreate", roadParam)) == 0,
+    "the builder observer returned a value and could alter the builder's own validation")
+  poll()
+  local published = assert(readOut(), "a captured road proposal did not reach social_out.json")
+  assert(published.schemaVersion == 1 and published.peer == "player1"
+      and published.session == "gui-social-test" and published.seq >= 1,
+    "social_out.json lost its envelope")
+  local previewItem = assert(lastItem(published, "preview"),
+    "no preview item was published for the captured road proposal")
+  assert(previewItem.id > math.floor(os.time()) * 100,
+    "outgoing item ids were not seeded above a previous GUI state's ids")
+  assert(previewItem.body.kind == "road" and previewItem.body.invalid == false,
+    "the published preview was not a valid road preview")
+  assert(#previewItem.body.curves == 2,
+    "the road preview did not carry exactly the two new road curves")
+  assert(previewItem.body.curves[1][1] == 100 and previewItem.body.curves[1][2] == 200
+      and previewItem.body.curves[1][3] == 300 and previewItem.body.curves[1][5] == 200,
+    "the road preview lost its Hermite endpoints or tangents")
+  assert(previewItem.body.curves[2][3] == 500, "the second road curve was dropped")
+
+  -- An error state on the same proposal marks the preview invalid.
+  roadParam.data.errorState.messages = { "the slope is too steep" }
+  social.observeBuilderEvent(socialGui, "streetBuilder", "builder.proposalCreate", roadParam)
+  poll()
+  assert(lastItem(assert(readOut()), "preview").body.invalid == true,
+    "a builder error state did not mark the shared preview invalid")
+
+  -- Applying the build turns the preview off, and the ring keeps one preview.
+  social.observeBuilderEvent(socialGui, "streetBuilder", "builder.apply", { result = {} })
+  poll()
+  published = assert(readOut(), "the preview was not republished after builder.apply")
+  local previewCount = 0
+  for _, item in ipairs(published.items) do
+    if item.channel == "preview" then previewCount = previewCount + 1 end
+  end
+  assert(previewCount == 1, "the outgoing ring kept more than the newest preview item")
+  assert(lastItem(published, "preview").body.kind == "off",
+    "builder.apply did not turn the shared preview off")
+
+  -- Chat and pings leave through the same ring.
+  inputField.text = "watch this junction\007"
+  sendButton.callback()
+  local restoreGameUi = api.gui.util.getGameUI
+  api.gui.util.getGameUI = function()
+    return object({ getMainRendererComponent = function()
+      return object({ getTerrainPos = function() return { x = 512.5, y = -256.25, z = 40 } end })
+    end })
+  end
+  pingRow:getItem(2).callback()
+  api.gui.util.getGameUI = restoreGameUi
+  pingRow:getItem(0).callback()
+  poll()
+  published = assert(readOut(), "chat and pings did not reach social_out.json")
+  local chatItem = assert(lastItem(published, "chat"), "the Send button published no chat item")
+  assert(chatItem.body.text == "watch this junction",
+    "outgoing chat was not stripped of control characters")
+  assert(inputField.text == "", "the chat field was not cleared after sending")
+  local pingItem = assert(lastItem(published, "ping"), "no ping item was published")
+  assert(pingItem.body.kind == "wait" and pingItem.body.x == nil,
+    "the Wait ping was published with a position or with the wrong kind")
+  local lookItem
+  for _, item in ipairs(published.items) do
+    if item.channel == "ping" and item.body.kind == "look" then lookItem = item end
+  end
+  assert(lookItem and lookItem.body.x == 512.5 and lookItem.body.y == -256.25,
+    "the Look here ping did not carry the ground cursor position")
+  assert(socialGui.socialChat.text:find("Player 1: watch this junction", 1, true)
+      and socialGui.socialChat.text:find("Player 1: look here", 1, true),
+    "locally sent chat and pings were not echoed into the transcript")
+
+  -- (2) A hand-written social_in.json draws the remote preview and the chat.
+  writeIn({
+    schemaVersion = 1, session = "gui-social-test", peer = "player2", seq = 4,
+    items = {
+      { id = 11, peer = "player2", channel = "chat", at = os.time(),
+        body = { text = "give me the north bank" } },
+      { id = 12, peer = "player2", channel = "ping", at = os.time(),
+        body = { kind = "look", x = 640, y = 128 } },
+      { id = 13, peer = "player2", channel = "preview", at = os.time(),
+        body = { kind = "road", invalid = false, curves = {
+          { 0, 0, 120, 40, 120, 0, 120, 40 },
+          { 120, 40, 260, 40, 140, 0, 140, 0 },
+        } } },
+      { id = 14, peer = "player1", channel = "chat", at = os.time(),
+        body = { text = "this peer's own item must never be echoed back" } },
+      { id = 15, peer = "player2", channel = "preview", at = os.time(),
+        body = { kind = "road", curves = { { 0, 0, 1 } } } },
+    },
+  })
+  poll()
+  assert(socialGui.socialChat.text:find("Player 2: give me the north bank", 1, true),
+    "a received chat line did not reach the transcript")
+  assert(not socialGui.socialChat.text:find("never be echoed back", 1, true),
+    "an item claiming this peer as its origin was accepted")
+  assert(socialGui.notices and socialGui.notices.items
+      and #socialGui.notices.items >= 2,
+    "received chat and pings did not reach the notice feed")
+  for index = 1, 2 do
+    local zone = zoneState["tpf2mp_preview_player2_" .. index]
+    assert(zone and zone.draw == true and type(zone.polygon) == "table"
+        and #zone.polygon >= 18 and #zone.drawColor == 4 and zone.drawColor[4] == 0.8,
+      "remote road curve " .. index .. " was not drawn as a tinted ground ribbon")
+  end
+  assert(zoneState["tpf2mp_preview_player2_3"] == nil,
+    "a malformed later preview replaced the valid one with extra zones")
+  local marker = zoneState["tpf2mp_marker_player2"]
+  assert(marker and type(marker.polygon) == "table" and #marker.polygon == 50,
+    "a received look ping did not draw a ground marker ring")
+
+  -- The remote preview is cleared once it goes stale.
+  poll(5)
+  assert(zoneState["tpf2mp_preview_player2_1"] == nil
+      and zoneState["tpf2mp_preview_player2_2"] == nil,
+    "a stale remote preview was not cleared from the ground")
+
+  -- (3) Without a bridge root the module is inert: nothing is written, and
+  -- any zone it still owned is taken down.
+  assert(os.remove(outPath), "the social output file could not be removed")
+  game.config.tpf2mp = {
+    protocolVersion = 1, peerId = "player1", sessionId = "gui-social-test",
+    bridgeDir = ".", startNetwork = false,
+  }
+  socialGui.snapshot = { networkMode = "standalone", peerId = "player1" }
+  for _ = 1, 4 do poll() end
+  social.observeBuilderEvent(socialGui, "streetBuilder", "builder.proposalCreate", roadParam)
+  for _ = 1, 4 do poll() end
+  assert(io.open(outPath, "rb") == nil,
+    "the social channel wrote social_out.json without an active network bridge root")
+  assert(zoneState["tpf2mp_marker_player2"] == nil,
+    "going inert left a social zone painted on the ground")
+  assert(#zoneCalls > 0, "the social channel never reached game.interface.setZone")
+
+  game.config.tpf2mp = restoreConfig
+  os.execute('rmdir /s /q "' .. root:gsub("/", "\\") .. '" 2>nul')
+end)()
+
+print("PASS social channel chat, canned pings, and shared build previews")

@@ -163,6 +163,65 @@ function New-Tpf2mpTextBox($Parent, [string]$Value, [int]$X, [int]$Y, [int]$Widt
     return $box
 }
 
+# The system combo box paints light flat chrome that no colour property
+# overrides, so it is owner-drawn and overhangs a hairline field frame by three
+# pixels on every edge plus the drop-down button's width, where the chrome is
+# clipped away. Clicks still land on the combo box, which draws its own chevron.
+$script:Tpf2mpComboPainter = {
+    param($sender, $e)
+    $colors = $script:Tpf2mpTheme
+    $isEdit = ($e.State -band [Windows.Forms.DrawItemState]::ComboBoxEdit) -ne 0
+    $isHot = (-not $isEdit) -and (($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0)
+    $fill = New-Object Drawing.SolidBrush($(if ($isHot) { $colors.SurfaceAlt } else { $colors.Field }))
+    if ($isEdit) { $e.Graphics.FillRectangle($fill, 0, 0, $sender.Width, $sender.Height) }
+    else { $e.Graphics.FillRectangle($fill, $e.Bounds) }
+    $fill.Dispose()
+    $color = if ($sender.Enabled) { $colors.Text } else { $colors.Disabled }
+    if ($e.Index -ge 0) {
+        $bounds = [Drawing.Rectangle]::new(($e.Bounds.X + 8), $e.Bounds.Y,
+            ($e.Bounds.Width - 10), $e.Bounds.Height)
+        [Windows.Forms.TextRenderer]::DrawText($e.Graphics, [string]$sender.Items[$e.Index],
+            $sender.Font, $bounds, $color,
+            ([Windows.Forms.TextFormatFlags]::VerticalCenter -bor [Windows.Forms.TextFormatFlags]::EndEllipsis))
+    }
+    if ($isEdit -and $sender.Parent) {
+        $arrow = New-Object Drawing.SolidBrush($(if ($sender.Enabled) { $colors.Muted } else { $colors.Disabled }))
+        $e.Graphics.SmoothingMode = 'AntiAlias'
+        $x = $sender.Parent.ClientSize.Width - $sender.Left - 14
+        $y = [int]($sender.Height / 2)
+        $e.Graphics.FillPolygon($arrow, @([Drawing.Point]::new(($x - 4), ($y - 2)),
+            [Drawing.Point]::new(($x + 4), ($y - 2)), [Drawing.Point]::new($x, ($y + 3))))
+        $arrow.Dispose()
+    }
+}
+
+function New-Tpf2mpComboBox($Parent, [int]$X, [int]$Y, [int]$Width, [int]$Height = 32) {
+    $frame = New-Object Windows.Forms.Panel
+    $frame.SetBounds($X, $Y, $Width, $Height)
+    $frame.BackColor = $script:Tpf2mpTheme.Field
+    $border = $script:Tpf2mpTheme.FieldBorder
+    $frame.Add_Paint({
+        param($sender, $e)
+        $pen = New-Object Drawing.Pen($border)
+        $e.Graphics.DrawRectangle($pen, 0, 0, ($sender.Width - 1), ($sender.Height - 1))
+        $pen.Dispose()
+    }.GetNewClosure())
+    $combo = New-Object Windows.Forms.ComboBox
+    $combo.DropDownStyle = 'DropDownList'
+    $combo.FlatStyle = 'Flat'
+    $combo.DrawMode = 'OwnerDrawFixed'
+    $combo.ItemHeight = $Height
+    $combo.Font = $script:Tpf2mpFonts.Base
+    $combo.BackColor = $script:Tpf2mpTheme.Field
+    $combo.ForeColor = $script:Tpf2mpTheme.Text
+    $combo.SetBounds(-3, -3, ($Width + 28), ($Height + 6))
+    $combo.Add_DrawItem($script:Tpf2mpComboPainter)
+    $frame.Controls.Add($combo)
+    $Parent.Controls.Add($frame)
+    $combo | Add-Member -NotePropertyName Frame -NotePropertyValue $frame -Force
+    return $combo
+}
+
 function New-Tpf2mpCheckBox($Parent, [string]$Text, [int]$X, [int]$Y, [int]$Width, [int]$Height = 24) {
     $check = New-Object Windows.Forms.CheckBox
     $check.Text = $Text

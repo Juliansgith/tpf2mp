@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
     [string]$BundleRoot,
+    # A protected private file holding one join code or tpf2mp:// invite link,
+    # written by the installed entrypoint. It is read once and deleted.
+    [string]$JoinInputFile,
+    [string]$JoinContentDigest,
     [switch]$SmokeTest
 )
 
@@ -8,6 +12,16 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'network_common.ps1')
 . (Join-Path $PSScriptRoot 'launcher_worker_result.ps1')
 . (Join-Path $PSScriptRoot 'launcher_update_controller.ps1')
+. (Join-Path $PSScriptRoot 'launcher_checklist.ps1')
+. (Join-Path $PSScriptRoot 'launcher_sessions.ps1')
+# Invite links and the content precheck are separate optional modules: a bundle
+# without them still launches, with those affordances simply absent.
+foreach ($optionalModule in @('launcher_invite_link.ps1', 'launcher_mod_precheck.ps1')) {
+    $optionalPath = Join-Path $PSScriptRoot $optionalModule
+    if (Test-Path -LiteralPath $optionalPath -PathType Leaf) { . $optionalPath }
+}
+$script:inviteLinksAvailable = [bool](Get-Command ConvertFrom-Tpf2mpInviteInput -ErrorAction SilentlyContinue)
+$script:contentPrecheckAvailable = [bool](Get-Command Compare-Tpf2mpContentDigest -ErrorAction SilentlyContinue)
 if (-not $BundleRoot) { $BundleRoot = Split-Path -Parent $PSScriptRoot }
 $bundle = Resolve-Tpf2mpFullPath $BundleRoot
 [void](Remove-Tpf2mpExpiredRelayDrafts)
@@ -46,7 +60,7 @@ $danger = $theme.Danger
 
 $form = New-Object Windows.Forms.Form
 Set-Tpf2mpFormStyle $form 'TPF2MP Multiplayer'
-$form.ClientSize = New-Object Drawing.Size(940, 970)
+$form.ClientSize = New-Object Drawing.Size(940, 1032)
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 
@@ -65,21 +79,25 @@ $sourceTreeLauncher = -not (Test-Path -LiteralPath (Join-Path $bundle 'release-m
 $updateText = if ($sourceTreeLauncher) { 'Update installed release' } else { 'Check / install update' }
 $updateButton = New-Tpf2mpButton $form $updateText 702 18 210 36 'Ghost'
 
+# Onboarding checklist: one slim strip that says how far this match has got.
+$checklist = New-Tpf2mpChecklistStrip $form 84
+
 # Connection: how the two computers reach each other.
-$connectionCard = New-Tpf2mpCard $form 28 88 884 156 'Connection'
+$connectionCard = New-Tpf2mpCard $form 28 116 884 152 'Connection'
 $relayCheck = New-Tpf2mpCheckBox $connectionCard `
     'Use secure relay (recommended) - no port forwarding; redacted diagnostics enabled' 18 36 820 22
 $relayCheck.Checked = $true
 New-Tpf2mpLabel $connectionCard 'Relay URL' 18 68 200 18 'Muted' | Out-Null
-$relayUrlBox = New-Tpf2mpTextBox $connectionCard $defaultRelayUrl 18 86 260 32
-$createRelayButton = New-Tpf2mpButton $connectionCard 'Create session' 286 84 144 36 'Ghost'
-New-Tpf2mpLabel $connectionCard 'Join code (secret; paste on Player 2)' 458 68 300 18 'Muted' | Out-Null
-$joinCodeBox = New-Tpf2mpTextBox $connectionCard '' 458 86 190 32
+$relayUrlBox = New-Tpf2mpTextBox $connectionCard $defaultRelayUrl 18 86 200 32
+$createRelayButton = New-Tpf2mpButton $connectionCard 'Create session' 224 84 120 36 'Ghost'
+New-Tpf2mpLabel $connectionCard 'Join code or invite link (secret)' 352 68 300 18 'Muted' | Out-Null
+$joinCodeBox = New-Tpf2mpTextBox $connectionCard '' 352 86 150 32
 $joinCodeBox.UseSystemPasswordChar = $true
-$prepareJoinButton = New-Tpf2mpButton $connectionCard 'Prepare join' 656 84 110 36 'Ghost'
-$copyJoinButton = New-Tpf2mpButton $connectionCard 'Copy code' 774 84 92 36 'Ghost'
+$prepareJoinButton = New-Tpf2mpButton $connectionCard 'Prepare join' 508 84 104 36 'Ghost'
+$copyJoinButton = New-Tpf2mpButton $connectionCard 'Copy code' 618 84 92 36 'Ghost'
+$copyInviteButton = New-Tpf2mpButton $connectionCard 'Copy invite link' 716 84 150 36 'Ghost'
 $relayDisclosure = New-Tpf2mpLabel $connectionCard ('Support ID and redacted structured logs are retained ' +
-    'by the relay; raw crash dumps are never automatic.') 18 130 848 18 'Faint'
+    'by the relay; raw crash dumps are never automatic.') 18 126 848 18 'Faint'
 
 # Session: the match identity, its starting save, and the shared world.
 $defaultSession = 'match-' + (Get-Date -Format 'yyyyMMdd-HHmm')
@@ -91,7 +109,7 @@ try {
     $addressText += if ($addresses.Count) { $addresses -join ', ' } else { 'none detected' }
 }
 catch { $addressText += 'unavailable' }
-$sessionCard = New-Tpf2mpCard $form 28 258 884 248 'Session'
+$sessionCard = New-Tpf2mpCard $form 28 280 884 330 'Session'
 New-Tpf2mpLabel $sessionCard 'Session name' 18 36 200 18 'Muted' | Out-Null
 $sessionBox = New-Tpf2mpTextBox $sessionCard $defaultSession 18 54 300 32
 $newSessionButton = New-Tpf2mpButton $sessionCard 'New name' 326 52 110 36 'Ghost'
@@ -106,16 +124,23 @@ $saveBox = New-Tpf2mpTextBox $sessionCard '' 18 116 420 32
 $browseButton = New-Tpf2mpButton $sessionCard 'Browse...' 446 114 104 36 'Ghost'
 $syncSaveButton = New-Tpf2mpButton $sessionCard 'Sync from host' 558 114 150 36 'Ghost'
 $lobbyButton = New-Tpf2mpButton $sessionCard 'Open world lobby' 716 114 150 36 'Secondary'
+New-Tpf2mpLabel $sessionCard 'Recent matches on this computer' 18 156 320 18 'Muted' | Out-Null
+$recentCombo = New-Tpf2mpComboBox $sessionCard 18 174 300 32
+$resumeButton = New-Tpf2mpButton $sessionCard 'Resume last match' 326 172 170 36 'Ghost'
+$contentPill = New-Tpf2mpPill $sessionCard 'Mods' 18 218 92 24
+Set-Tpf2mpPill $contentPill 'Mods' 'Muted'
+$contentLabel = New-Tpf2mpLabel $sessionCard `
+    'Active mods are compared with the host once an invite link is prepared.' 118 220 748 18 'Faint'
 $hostSnapshotCheck = New-Tpf2mpCheckBox $sessionCard ('Recover from HOST snapshot (both peers enable; ' +
-    'discards old session faults/pending work; new session required)') 18 162 848 22
+    'discards old session faults/pending work; new session required)') 18 246 848 22
 $manualLabCheck = New-Tpf2mpCheckBox $sessionCard ('After the automated proof, leave both connected game ' +
-    'windows open for manual testing (up to 2 hours)') 18 188 848 22
+    'windows open for manual testing (up to 2 hours)') 18 272 848 22
 $manualLabCheck.Checked = $false
 $hint = New-Tpf2mpLabel $sessionCard `
-    'Host selects a save and launches first. Join syncs the host save, then launches.' 18 220 848 18 'Muted'
+    'Host selects a save and launches first. Join syncs the host save, then launches.' 18 302 848 18 'Muted'
 
 # Launch: the two real entry points, then the ways out of a running match.
-$launchCard = New-Tpf2mpCard $form 28 520 884 138 'Launch'
+$launchCard = New-Tpf2mpCard $form 28 622 884 138 'Launch'
 $hostButton = New-Tpf2mpButton $launchCard 'Host and launch game' 18 36 265 44 'Primary'
 $joinButton = New-Tpf2mpButton $launchCard 'Join and launch game' 291 36 265 44 'Secondary'
 $localhostButton = New-Tpf2mpButton $launchCard 'Run 2-instance localhost test' 564 36 302 44 'Ghost'
@@ -123,7 +148,7 @@ $stopButton = New-Tpf2mpButton $launchCard 'Stop session / lab' 18 92 170 36 'Da
 $openButton = New-Tpf2mpButton $launchCard 'Open session files' 196 92 180 36 'Ghost'
 
 # Recovery and tools: evidence collection and the attested restore path.
-$toolsCard = New-Tpf2mpCard $form 28 672 884 130 'Recovery and tools'
+$toolsCard = New-Tpf2mpCard $form 28 772 884 130 'Recovery and tools'
 $evidenceButton = New-Tpf2mpButton $toolsCard 'Check playable alpha' 18 36 200 36 'Ghost'
 $operationalButton = New-Tpf2mpButton $toolsCard 'Run populated capture lab (local only)' 230 36 300 36 'Ghost'
 $archiveButton = New-Tpf2mpButton $toolsCard 'Archive recovery save' 542 36 210 36 'Ghost'
@@ -132,13 +157,13 @@ $latestRestoreButton = New-Tpf2mpButton $toolsCard 'Load latest restore' 240 82 
 $recoveryHint = New-Tpf2mpLabel $toolsCard ('Archive a current save, or select a verified restore plan ' +
     'and then this peer''s attested save.') 462 74 404 46 'Faint'
 
-$statusPill = New-Tpf2mpPill $form 'Ready' 28 815 76 24
+$statusPill = New-Tpf2mpPill $form 'Ready' 28 914 76 24
 Set-Tpf2mpPill $statusPill 'Ready' 'Accent'
-$statusLabel = New-Tpf2mpLabel $form 'Ready. Build 35924 is required for network mode.' 116 814 796 26
+$statusLabel = New-Tpf2mpLabel $form 'Ready. Build 35924 is required for network mode.' 116 913 796 26
 $statusLabel.ForeColor = $accent
 $statusLabel.TextAlign = 'MiddleLeft'
 
-$logBox = New-Tpf2mpLogBox $form 28 850 884 100
+$logBox = New-Tpf2mpLogBox $form 28 948 884 64
 $logBox.Text = "This control panel pins the role/session/save, starts the companion, launches the exact game process, drives the native Load Game page, and verifies authority gates before reporting world-ready.`r`n"
 
 $script:worker = $null
@@ -156,6 +181,18 @@ $script:relayCredentialRole = $null
 $script:relaySupportId = $null
 $script:relayInviteReceiptPath = $null
 $script:pendingRelayInviteFile = $null
+$script:localContentDigest = $null
+$script:joinContentDigest = $null
+$script:contentDigestWorker = $null
+$script:contentDigestStdout = $null
+$script:lobbyWorldReady = $false
+$script:sessionStatus = ''
+$script:networkLink = ''
+$script:recentSessions = @()
+$script:pendingJoinInput = $null
+if ($JoinContentDigest -match '^(?i:[0-9a-f]{8,64})$') {
+    $script:joinContentDigest = $JoinContentDigest.ToLowerInvariant()
+}
 
 function Append-LauncherLog([string]$Text) {
     if (-not $Text) { return }
@@ -188,6 +225,81 @@ function Clear-RelayCredentials {
     $script:relayInviteReceiptPath = $null
 }
 
+function Update-Checklist {
+    Update-Tpf2mpChecklistStrip $checklist @{
+        CredentialRole = $script:relayCredentialRole
+        HasSave = [bool]$saveBox.Text.Trim()
+        LobbyWorldReady = $script:lobbyWorldReady
+        SessionStatus = $script:sessionStatus
+        NetworkLink = $script:networkLink
+    }
+}
+
+function Update-RecentSessions {
+    try { $script:recentSessions = @(Get-Tpf2mpRecentSessions -Limit 5) }
+    catch { $script:recentSessions = @() }
+    $recentCombo.Items.Clear()
+    foreach ($record in $script:recentSessions) {
+        [void]$recentCombo.Items.Add(('{0}  {1}  ({2}, {3})' -f `
+            $record.StartedAtUtc.ToLocalTime().ToString('yyyy-MM-dd HH:mm'),
+            $record.Session, $record.Role, $record.Status))
+    }
+    if ($recentCombo.Items.Count -gt 0) { $recentCombo.SelectedIndex = 0 }
+}
+
+# The precheck never blocks a launch: the lobby is still the authority that
+# refuses to start a mismatched match. This is the early, readable warning.
+function Set-ContentPrecheckResult([string]$Digest) {
+    $script:localContentDigest = $Digest
+    $verdict = 'unknown'
+    if ($Digest -and $script:contentPrecheckAvailable -and $script:joinContentDigest) {
+        $verdict = [string](Compare-Tpf2mpContentDigest -Local $Digest -Remote $script:joinContentDigest)
+    }
+    $pillState = 'Muted'
+    $color = $muted
+    if (-not $Digest) {
+        $text = 'Active-mod fingerprint unavailable; the world lobby still enforces the match content.'
+    }
+    elseif ($verdict -eq 'mismatch') {
+        $pillState = 'Warning'
+        $color = $theme.Warning
+        $text = 'Your active mods differ from the host''s; the lobby will refuse to start.'
+        Append-LauncherLog ('Mod precheck: this computer''s active content does not match the host invite. ' +
+            'Match the host''s mod list and versions before opening the world lobby.')
+    }
+    elseif ($verdict -eq 'match') {
+        $pillState = 'Success'
+        $text = 'Mods match the host.'
+    }
+    else { $text = "Active mods fingerprinted ($($Digest.Substring(0, 8))...); share the invite link." }
+    Set-Tpf2mpPill $contentPill $(if ($pillState -eq 'Warning') { 'Warning' } else { 'Mods' }) $pillState
+    $contentLabel.ForeColor = $color
+    $contentLabel.Text = $text
+}
+
+# The fingerprint runs a companion pass over the active content set and can
+# take seconds, so it never blocks the UI thread: it is an ordinary side worker
+# whose one parsable stdout line the timer reads back.
+function Start-ContentDigestWorker {
+    if ($SmokeTest -or $script:contentDigestWorker -or -not $script:contentPrecheckAvailable) { return }
+    try {
+        $logRoot = Join-Path (Get-Tpf2mpSupportRoot) 'launcher-logs'
+        New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+        $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+        $script:contentDigestStdout = Join-Path $logRoot "$stamp-content-digest.stdout.log"
+        $commandLine = ConvertTo-Tpf2mpCommandLine @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            (Join-Path $PSScriptRoot 'launcher_content_digest.ps1'), '-BundleRoot', $bundle)
+        $script:contentDigestWorker = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') `
+            -ArgumentList $commandLine -PassThru -WindowStyle Hidden `
+            -RedirectStandardOutput $script:contentDigestStdout `
+            -RedirectStandardError (Join-Path $logRoot "$stamp-content-digest.stderr.log")
+        Set-Tpf2mpPill $contentPill 'Checking' 'Info'
+        $contentLabel.ForeColor = $muted
+        $contentLabel.Text = 'Fingerprinting this computer''s active mods...'
+    }
+    catch { $script:contentDigestWorker = $null }
+}
+
 function Update-TransportControls {
     $relay = $relayCheck.Checked
     $lobbyButton.Enabled = $relay -and [bool]$script:relayCredentialsPath -and -not [bool]$script:worker `
@@ -196,6 +308,11 @@ function Update-TransportControls {
     $createRelayButton.Enabled = $relay -and -not [bool]$script:worker
     $prepareJoinButton.Enabled = $relay -and -not [bool]$script:worker
     $copyJoinButton.Enabled = $relay -and $joinCodeBox.TextLength -gt 0 -and -not [bool]$script:worker
+    $copyInviteButton.Enabled = $relay -and $script:inviteLinksAvailable `
+        -and [bool]$script:relayInviteReceiptPath -and $joinCodeBox.TextLength -gt 0 `
+        -and -not [bool]$script:worker
+    $resumeButton.Enabled = $script:recentSessions.Count -gt 0 -and -not [bool]$script:worker
+    $recentCombo.Enabled = $script:recentSessions.Count -gt 0
     $hostBox.Enabled = -not $relay
     $newSessionButton.Enabled = -not $relay -and -not [bool]$script:restorePlanPath
     $sessionBox.ReadOnly = $relay -or [bool]$script:restorePlanPath
@@ -218,6 +335,7 @@ function Update-TransportControls {
             'This peer''s attested restore save (Host=player1 / Join=player2)'
         } else { 'Starting save: Host selects it; Join can receive the exact set automatically' }
     }
+    Update-Checklist
 }
 
 function Get-RelayCredentialSelection([ValidateSet('host', 'join')][string]$Role) {
@@ -348,6 +466,8 @@ function Start-LauncherWorker([string]$ScriptPath, [object[]]$Arguments, [string
     $createRelayButton.Enabled = $false
     $prepareJoinButton.Enabled = $false
     $copyJoinButton.Enabled = $false
+    $copyInviteButton.Enabled = $false
+    $resumeButton.Enabled = $false
     $lobbyButton.Enabled = $false
     $statusLabel.Text = "$Name running..."
     Append-LauncherLog "Started $Name (PID $($script:worker.Id))."
@@ -423,6 +543,7 @@ $relayCheck.Add_CheckedChanged({
 })
 
 $joinCodeBox.Add_TextChanged({ Update-TransportControls })
+$saveBox.Add_TextChanged({ Update-Checklist })
 
 $createRelayButton.Add_Click({
     try {
@@ -443,8 +564,19 @@ $prepareJoinButton.Add_Click({
         if (-not $relayCheck.Checked) { throw 'Enable secure relay first.' }
         $relayUrl = Get-ValidatedRelayUrl
         $joinCode = $joinCodeBox.Text.Trim()
+        # The box accepts either the raw code or a pasted tpf2mp:// invite link;
+        # a link also carries the host's content digest for the mod precheck.
+        if ($script:inviteLinksAvailable) {
+            $parsedInvite = ConvertFrom-Tpf2mpInviteInput -Text $joinCode
+            if ($parsedInvite) {
+                $joinCode = [string]$parsedInvite.JoinCode
+                if ([string]$parsedInvite.Kind -eq 'link') {
+                    $script:joinContentDigest = [string]$parsedInvite.ContentDigest
+                }
+            }
+        }
         if ($joinCode -notmatch '^TPF2MP1\.[A-Za-z0-9_-]{32,256}$') {
-            throw 'Paste the complete TPF2MP1 join code from the host.'
+            throw 'Paste the complete TPF2MP1 join code, or the invite link, from the host.'
         }
         Clear-RelayCredentials
         $draft = Join-Path (Get-Tpf2mpSupportRoot) (
@@ -471,6 +603,58 @@ $copyJoinButton.Add_Click({
         Append-LauncherLog 'Copied the secret join code. Share it privately with Player 2; use only the support ID in bug reports.'
     }
     catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot copy join code') | Out-Null }
+})
+
+$copyInviteButton.Add_Click({
+    try {
+        if (-not $script:inviteLinksAvailable) { throw 'This bundle does not support invite links.' }
+        if (-not $script:relayInviteReceiptPath -or -not $joinCodeBox.Text) {
+            throw 'Create a relay session first.'
+        }
+        $link = if ($script:localContentDigest) {
+            New-Tpf2mpInviteLink -JoinCode $joinCodeBox.Text.Trim() -ContentDigest $script:localContentDigest
+        } else { New-Tpf2mpInviteLink -JoinCode $joinCodeBox.Text.Trim() }
+        [Windows.Forms.Clipboard]::SetText($link)
+        $statusLabel.Text = "Invite link copied. Support ID: $script:relaySupportId"
+        Append-LauncherLog ('Copied a one-click invite link. It carries the secret code, so send it privately ' +
+            'to Player 2 and never paste it into a public channel.')
+    }
+    catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot copy invite link') | Out-Null }
+})
+
+$resumeButton.Add_Click({
+    try {
+        Update-RecentSessions
+        if ($script:recentSessions.Count -eq 0) { throw 'No previous TPF2MP match was found on this computer.' }
+        $record = $script:recentSessions[[Math]::Max(0, $recentCombo.SelectedIndex)]
+        Clear-RestorePlanSelection
+        # Resuming is a fresh relay session started from the newest save that
+        # match produced; the old session identity is never reused.
+        $sessionBox.Text = 'match-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+        $candidate = $null
+        try {
+            $candidate = Get-Tpf2mpResumeCandidate -Session $record `
+                -SaveDirectory (Join-Path (Split-Path -Parent (Find-Tpf2mpLocalModsPath)) 'save')
+        }
+        catch { $candidate = $null }
+        $detail = 'no save newer than that match was found; select the one to continue'
+        if ($candidate) {
+            $saveBox.Text = [string]$candidate.Path
+            $detail = "selected the $($candidate.Source) $($candidate.Path)"
+        }
+        Append-LauncherLog "Resume $($record.Session) ($($record.Role)): fresh session name, $detail."
+        $statusLabel.ForeColor = $accent
+        if ($record.Role -ceq 'host') {
+            $statusLabel.Text = 'Resume ready: CREATE SESSION, copy the code or link, then HOST + LAUNCH GAME.'
+            [void]$createRelayButton.Focus()
+        }
+        else {
+            $statusLabel.Text = 'Ask the host for a new code or link, then click PREPARE JOIN.'
+            [void]$joinCodeBox.Focus()
+        }
+        Update-TransportControls
+    }
+    catch { [Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Cannot resume the last match') | Out-Null }
 })
 
 $syncSaveButton.Add_Click({
@@ -749,6 +933,23 @@ $archiveButton.Add_Click({
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 1000
 $timer.Add_Tick({
+    if ($script:contentDigestWorker) {
+        $script:contentDigestWorker.Refresh()
+        if ($script:contentDigestWorker.HasExited) {
+            $digestExit = Get-Tpf2mpCompletedProcessExitCode $script:contentDigestWorker
+            $script:contentDigestWorker = $null
+            $digest = $null
+            try {
+                if ($digestExit -eq 0 -and $script:contentDigestStdout) {
+                    $digestMatch = [regex]::Match([IO.File]::ReadAllText($script:contentDigestStdout),
+                        '(?m)^local_content_digest=([0-9a-f]{8,128})\s*$')
+                    if ($digestMatch.Success) { $digest = $digestMatch.Groups[1].Value }
+                }
+            }
+            catch { $digest = $null }
+            Set-ContentPrecheckResult $digest
+        }
+    }
     if ($script:worker) {
         Flush-LauncherWorkerLogs
         $script:worker.Refresh()
@@ -815,6 +1016,7 @@ $timer.Add_Tick({
                     }
                     $statusLabel.Text = "Relay room ready. Support ID: $($verifiedRelayCreate.supportId)"
                     Append-LauncherLog "Secure relay room $($verifiedRelayCreate.supportId) is ready; copy the join code, then open WORLD LOBBY. No starting save is required."
+                    Start-ContentDigestWorker
                 }
                 elseif ($verifiedRelayJoin) {
                     $script:relayCredentialsPath = [string]$verifiedRelayJoin.credentialsPath
@@ -826,8 +1028,10 @@ $timer.Add_Tick({
                     $joinCodeBox.Clear()
                     $statusLabel.Text = "Relay join prepared. Support ID: $($verifiedRelayJoin.supportId)"
                     Append-LauncherLog "Relay join $($verifiedRelayJoin.supportId) is prepared; open WORLD LOBBY to review the host settings and Ready."
+                    if ($script:joinContentDigest) { Start-ContentDigestWorker }
                 }
                 else {
+                    if ($completedName -eq 'world-lobby') { $script:lobbyWorldReady = $true }
                     $statusLabel.Text = 'Task completed successfully.'
                     Append-LauncherLog "Completed $completedName with exit 0."
                 }
@@ -855,6 +1059,7 @@ $timer.Add_Tick({
             $restoreButton.Enabled = $true
             $latestRestoreButton.Enabled = $true
             $updateButton.Enabled = $true
+            Update-RecentSessions
             Update-TransportControls
         }
     }
@@ -862,6 +1067,9 @@ $timer.Add_Tick({
         $session = $sessionBox.Text.Trim()
         if ($session -match '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') {
             $state = Read-Tpf2mpSessionState $session $script:lastPeer
+            $script:sessionStatus = if ($state -and $state.PSObject.Properties['status']) {
+                [string]$state.status
+            } else { '' }
             if ($state -and $state.bridgePath) {
                 $statusPath = Join-Path ([string]$state.bridgePath) 'companion_state\companion_status.json'
                 if (Test-Path -LiteralPath $statusPath -PathType Leaf) {
@@ -869,6 +1077,7 @@ $timer.Add_Tick({
                     $link = if ($network.PSObject.Properties['connected'] -and $network.connected) { 'CONNECTED' }
                         elseif ($network.PSObject.Properties['listening'] -and $network.listening) { 'HOST LISTENING' }
                         else { [string]$network.status }
+                    $script:networkLink = $link
                     $sequence = if ($network.PSObject.Properties['nextCommitSeq']) { " next commit $($network.nextCommitSeq)" }
                         elseif ($network.PSObject.Properties['lastCommitSeq']) { " commit $($network.lastCommitSeq)" } else { '' }
                     $clock = if ($network.PSObject.Properties['clock'] -and $network.clock) {
@@ -941,12 +1150,33 @@ $timer.Add_Tick({
         }
     }
     catch { }
+    Update-Checklist
 })
 $relayCheck.Checked = $true
+Update-RecentSessions
 Update-TransportControls
 if ([string]::IsNullOrWhiteSpace($defaultRelayUrl)) {
     Append-LauncherLog 'Secure relay is enabled, but relay-config.json has no production URL yet. Direct LAN remains available by unchecking relay.'
 }
+# A tpf2mp:// link opened in the browser reaches us as a protected private file
+# holding the code or link. Consume and delete it; never write it to the log.
+if ($JoinInputFile) {
+    try {
+        $joinInputPath = Resolve-Tpf2mpFullPath $JoinInputFile
+        if (Test-Path -LiteralPath $joinInputPath -PathType Leaf) {
+            $script:pendingJoinInput = ([IO.File]::ReadAllText($joinInputPath)).Trim()
+            Remove-Item -LiteralPath $joinInputPath -Force
+            Append-LauncherLog 'Received a private join handoff from an invite link; preparing the join now.'
+        }
+    }
+    catch { $script:pendingJoinInput = $null }
+}
+$form.Add_Shown({
+    if (-not $script:pendingJoinInput) { return }
+    $joinCodeBox.Text = $script:pendingJoinInput
+    $script:pendingJoinInput = $null
+    $prepareJoinButton.PerformClick()
+})
 $timer.Start()
 
 $form.Add_FormClosed({

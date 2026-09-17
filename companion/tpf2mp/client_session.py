@@ -8,6 +8,7 @@ from typing import Any
 from .anchor_io import validate_anchor_state
 from .active_content import describe_content_mismatch
 from .protocol import ProtocolError, hello, validate_envelope
+from .social import social_relay
 from .transport import SocketReader, read_frame, send
 
 
@@ -77,6 +78,8 @@ def run_client_session(client: Any, poll_seconds: float) -> None:
                     client.bridge.write_inbound(message)
                 elif kind == "anchor_state":
                     client.anchor_state = validate_anchor_state(message)
+                elif kind == "social":
+                    social_relay(client).accept_frame(message)
                 elif kind == "restore_plan":
                     client.restore_plan_exchange.accept(message)
                 elif kind == "sync_ready":
@@ -99,6 +102,10 @@ def run_client_session(client: Any, poll_seconds: float) -> None:
                         send(sock, message, send_lock)
                         sent_pending.add(local_seq)
                         had_work = True
+                if social_relay(client).pump_outgoing(
+                    lambda frame: send(sock, frame, send_lock)
+                ):
+                    had_work = True
                 now = time.monotonic()
                 if now >= next_anchor_poll:
                     for message in client.anchor_requests.client_intents(client.anchor_state):

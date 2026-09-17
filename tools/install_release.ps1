@@ -6,6 +6,7 @@ param(
     [switch]$ResetBridge,
     [switch]$SkipVerification,
     [switch]$NoDesktopShortcut,
+    [switch]$NoInviteProtocol,
     [Parameter(ValueFromRemainingArguments = $true)][object[]]$LegacyArguments,
     [switch]$CreateDesktopShortcut
 )
@@ -273,6 +274,18 @@ finally {
             }
         }
     }
+}
+
+# Per-user invite handler. It needs no elevation, touches only HKCU, and is
+# registered after the commit point so a failure here cannot undo the install.
+if (-not $NoInviteProtocol -and $env:TPF2MP_NO_INVITE_PROTOCOL -ne '1' `
+        -and (Test-Path -LiteralPath (Join-Path $install 'installed_entrypoint.ps1') -PathType Leaf)) {
+    try {
+        . (Join-Path $versionRoot 'tools\launcher_invite_link.ps1')
+        $inviteProtocol = Register-Tpf2mpInviteProtocol -InstallRoot $install
+        Write-Host "Invite links (tpf2mp://) registered for this user: $($inviteProtocol.KeyPath)"
+    }
+    catch { Write-Warning "Could not register the tpf2mp:// invite handler: $($_.Exception.Message)" }
 }
 
 $shouldCreateDesktopShortcut = [bool]$CreateDesktopShortcut

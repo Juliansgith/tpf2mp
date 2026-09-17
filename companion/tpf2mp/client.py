@@ -9,6 +9,7 @@ from .anchor_io import AnchorRequestStore
 from .industry_content import IndustryContentCoordinator
 from .protocol import ProtocolError
 from .client_session import run_client_session
+from .social import social_relay
 from .restore_plan_exchange import RestorePlanExchange
 from .active_content import compact_content_inventory
 
@@ -64,6 +65,7 @@ class CommitClient:
                 "outboxEphemeralRetention": self.bridge.outbox_ephemeral_retention,
                 "lastCommitSeq": self._last_commit(),
                 "lastError": self.last_error,
+                "social": social_relay(self).status(),
                 "retryAttempts": self.retry_attempts,
                 "retryDelaySeconds": self.retry_delay_seconds,
                 "matchFingerprint": self.match_fingerprint,

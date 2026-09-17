@@ -7,6 +7,7 @@ from typing import Any
 from .bridge import AuditUnavailable
 from .active_content import describe_content_mismatch
 from .protocol import PROTOCOL_VERSION, ProtocolError, sign, validate_envelope
+from .social import social_relay
 from .transport import ConnectedPeer, SocketReader, read_frame, send, shutdown_connection
 
 
@@ -127,6 +128,10 @@ def serve_peer(host: Any, conn: socket.socket, address: tuple[str, int]) -> None
             validate_envelope(message, host.bridge.session)
             if str(message.get("peer")) != peer_name:
                 raise ProtocolError("connected peer changed identity")
+            if message.get("kind") == "social":
+                # Advisory side channel: never ordered, never receipted.
+                social_relay(host).accept_frame(message)
+                continue
             accepted, reason, commit_seq = True, None, None
             try:
                 if message.get("kind") == "intent":

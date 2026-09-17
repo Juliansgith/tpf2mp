@@ -80,6 +80,11 @@ cannot safely be retrofitted into an existing full-population save.
 
 Keep the TPF2MP launcher open for the entire match on both computers.
 
+The strip under the launcher title is a live checklist of the four steps below:
+create or paste a code, open the world lobby (or choose a save), both players
+ready, host starts the match. Each step ticks over on its own as the launcher
+proves it, so at any moment it shows which step is still outstanding.
+
 ### Player 1 / Host
 
 1. Leave **Use secure relay** checked.
@@ -97,6 +102,16 @@ Keep the TPF2MP launcher open for the entire match on both computers.
    empty.
 4. After Player 1 reaches the title screen, click **JOIN + LAUNCH GAME**. The
    starting save is downloaded and verified automatically.
+
+Player 1 can send an invite link instead of a bare code. The link looks like
+`tpf2mp://join?code=TPF2MP1...`, and it is exactly as private as the code, so
+send it the same way. Clicking it on a computer where TPF2MP is installed opens
+the launcher with the join already prepared, so Player 2 only confirms the
+`mp-...` ID and clicks **JOIN + LAUNCH GAME**. An invite link also carries a
+short fingerprint of Player 1's active mods and DLC: if Player 2's enabled
+content differs, the launcher warns before launching instead of letting the
+match desynchronise, and both players should enable exactly the same mods in
+the same order before trying again.
 
 ### Both players
 
@@ -145,6 +160,14 @@ For an ordinary clean continuation:
 4. Exit both games and close both launchers.
 5. Next time, Player 1 creates a **new relay session** and selects that save.
    Player 2 prepares the new join code and receives the save automatically.
+
+**RESUME LAST MATCH** in the Session card does step 5's bookkeeping for you.
+Pick a match from the **Recent matches on this computer** list, or leave the
+newest selected, and the launcher takes a fresh session name and fills in the
+newest save made after that match began (falling back to the save it started
+from). Player 1 then creates the new relay session as usual; on Player 2 it
+only prepares the launcher, who still needs a new code or invite link from the
+host. Resuming never reuses the old session identity.
 
 Never use a save made while disconnected, faulted, or while physical work is
 still pending. A healthy initialized multiplayer save preserves both company

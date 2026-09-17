@@ -8,6 +8,7 @@ from typing import Any
 
 from .bridge import AuditUnavailable
 from .protocol import ProtocolError
+from .social import social_relay
 from .transport import shutdown_connection
 
 
@@ -62,6 +63,9 @@ def run_host(host: Any, poll_seconds: float = 0.1) -> None:
                     had_work = True
                 next_anchor_poll = now + 0.5
             host._expire_proposals()
+            # Advisory only: one recipient, no re-broadcast, no ordered record.
+            if social_relay(host).pump_outgoing(host._broadcast):
+                had_work = True
             if host.anchor_preparation.maintain():
                 had_work = True
             if host.automatic_recovery.maintain():

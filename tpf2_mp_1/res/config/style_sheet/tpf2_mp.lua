@@ -98,6 +98,23 @@ function data()
   add("!tpf2mp-root Button:active", {
     backgroundColor = ssu.makeColor(45, 190, 168, 140),
   })
+  -- The social channel: chat lines and pings from the other player. Quiet
+  -- surface, same measure as the details block, so it reads as a transcript
+  -- rather than as authoritative match state.
+  add("!tpf2mp-chat", {
+    fontSize = 12,
+    color = body,
+    padding = { 8, 10, 8, 10 },
+    margin = { 4, 4, 2, 4 },
+    backgroundColor = ssu.makeColor(0, 0, 0, 70),
+  })
+  -- The stock TextInputField has no minimum width, so an empty chat field
+  -- would collapse to a sliver next to the Send button.
+  add("!tpf2mp-chat-input", {
+    fontSize = 12,
+    minSize = { 260, -1 },
+    margin = { 2, 2, 2, 4 },
+  })
   -- The details block: secondary text on its own quiet surface.
   add("!tpf2mp-details", {
     fontSize = 12,
@@ -105,6 +122,62 @@ function data()
     padding = { 8, 10, 8, 10 },
     margin = { 4, 4, 4, 4 },
     backgroundColor = ssu.makeColor(0, 0, 0, 70),
+  })
+  -- The next-action line: the one sentence that says what to do now, so it
+  -- reads as an instruction rather than as one more diagnostic.
+  add("!tpf2mp-next", {
+    fontSize = 13,
+    color = body,
+    padding = { 4, 10, 4, 10 },
+    margin = { 2, 4, 2, 4 },
+    backgroundColor = ssu.makeColor(45, 190, 168, 38),
+  })
+  -- Section captions are clickable headers; the marker plus the caption stays
+  -- uppercase even though the Lua caption is written in sentence case.
+  add("!tpf2mp-section-header", {
+    backgroundColor = ssu.makeColor(255, 255, 255, 10),
+    margin = { 4, 0, 1, 0 },
+    padding = { 0, 0, 0, 0 },
+  })
+  add("!tpf2mp-section-header::Text", {
+    fontSize = 11,
+    textTransform = "UPPERCASE",
+    color = muted,
+    padding = { 4, 10, 4, 10 },
+  })
+  add("!tpf2mp-root !tpf2mp-section-header::Text", {
+    fontSize = 11,
+    textTransform = "UPPERCASE",
+    color = muted,
+    padding = { 4, 10, 4, 10 },
+  })
+  add("!tpf2mp-compact::Text", {
+    fontSize = 11,
+    textTransform = "NONE",
+    color = muted,
+    padding = { 3, 10, 3, 10 },
+  })
+  -- Notices: the rejection feed, and the floating toast that carries the
+  -- newest one where a player is actually looking.
+  add("!tpf2mp-notices", {
+    fontSize = 12,
+    color = body,
+    padding = { 4, 10, 6, 10 },
+    backgroundColor = ssu.makeColor(0, 0, 0, 55),
+  })
+  add("!tpf2mp-toast", {
+    padding = { 6, 12, 6, 12 },
+    backgroundColor = ssu.makeColor(14, 40, 48, 235),
+  })
+  add("!tpf2mp-toast-text", {
+    fontSize = 13,
+    color = ssu.makeColor(252, 222, 150),
+  })
+  add("!tpf2mp-scoreboard", {
+    fontSize = 12,
+    color = body,
+    padding = { 4, 10, 6, 10 },
+    backgroundColor = ssu.makeColor(0, 0, 0, 55),
   })
 
   return result

@@ -19,6 +19,11 @@ function Get-Process {
     Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
 }
 
+# The fixture installs only beneath TemporaryRoot, so it must never register
+# the real per-user tpf2mp:// handler under HKCU:\Software\Classes.
+$previousInviteProtocolGuard = $env:TPF2MP_NO_INVITE_PROTOCOL
+$env:TPF2MP_NO_INVITE_PROTOCOL = '1'
+
 $caseRoot = Join-Path $TemporaryRoot 'release-install-transaction'
 $bundle = Join-Path $caseRoot 'bundle'
 $installRoot = Join-Path $caseRoot 'support'
@@ -47,7 +52,7 @@ foreach ($name in @(
         'install_release.ps1', 'verify_install.ps1', 'uninstall.ps1', 'release_common.ps1',
         'runtime_overlay_common.ps1',
         'update_release.ps1', 'update_common.ps1', 'github_release_common.ps1',
-        'installed_entrypoint.ps1', 'installed_command.cmd')) {
+        'installed_entrypoint.ps1', 'installed_command.cmd', 'launcher_invite_link.ps1')) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot "tools\$name") -Destination (Join-Path $bundle "tools\$name")
 }
 
@@ -142,7 +147,7 @@ try {
     $env:TPF2MP_DESKTOP_DIRECTORY_OVERRIDE = $desktopRoot
     & (Join-Path $ProjectRoot 'tools\install_release.ps1') `
         -BundleRoot $bundle -InstallRoot $installRoot -LocalModsPath $modsRoot -SkipVerification `
-        -CreateDesktopShortcut
+        -CreateDesktopShortcut -NoInviteProtocol
 }
 finally { $env:TPF2MP_DESKTOP_DIRECTORY_OVERRIDE = $previousDesktopOverride }
 $installedCurrent = Get-Content -LiteralPath $currentPath -Raw | ConvertFrom-Json
@@ -198,5 +203,7 @@ if ([string]$legacyCurrent.version -ne '0.38.0-alpha' `
         -or (Get-Content -LiteralPath (Join-Path $legacyModsRoot 'tpf2_mp_1\mod.lua') -Raw) -ne 'new-mod') {
     throw 'Legacy array-splatted updater arguments did not bootstrap the corrected installer.'
 }
+
+$env:TPF2MP_NO_INVITE_PROTOCOL = $previousInviteProtocolGuard
 
 Write-Host 'PASS release install rolls back failures, commits provenance, offers a stable desktop shortcut, and accepts the bounded legacy updater handoff'

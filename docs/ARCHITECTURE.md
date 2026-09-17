@@ -372,6 +372,15 @@ captured table reference would therefore mutate stale state after loading.
   handling. The matching socket reader preserves fragmented/coalesced frames
   without using a buffered file reader on a nonblocking socket. Failed broadcasts
   remove only the exact failed connection, never its replacement.
+- `social.py` owns the advisory `social` frame kind (chat, pings, build
+  previews) specified in `SOCIAL_CHANNEL.md`. It relays
+  `companion_state/social_out.json` to the one other peer and publishes
+  received items to `companion_state/social_in.json`; it never enters the
+  numbered outbox/inbox, an intent, a commit, an event record, a checkpoint
+  digest or the audit replay, and is therefore excluded from every digest and
+  from the replay authority. Every field is bounded and strictly validated,
+  the host never re-broadcasts, and a malformed file or frame is counted and
+  dropped instead of faulting the session.
 - `native_mod_table.py` reads only the bounded native-save header needed to
   obtain the ordered active-mod/DLC table. `active_content.py` resolves official
   DLC, game/local mods, Workshop IDs, and the installed TPF2MP alias; hashes

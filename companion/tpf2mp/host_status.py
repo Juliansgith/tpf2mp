@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from .anchor_state import anchor_state_message
+from .social import social_relay
 
 
 def write_host_status(host: Any, status: str | None = None) -> None:
@@ -77,6 +78,7 @@ def write_host_status(host: Any, status: str | None = None) -> None:
         "vehicleRestoreSafety": dict(host.vehicle_restore_safety),
         "vehiclePhaseDivergenceStreak": host.vehicle_phase_divergence_streak,
         "vehiclePhaseState": host.vehicle_phase_state,
+        "social": social_relay(host).status(),
         **host.synchronization.status(),
         **host.reconnect.status(),
         **host.restore_session.status(),

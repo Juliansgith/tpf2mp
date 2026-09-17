@@ -88,12 +88,29 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_reference_guard.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_replay_work_index.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_view.lua' = 605
+    # The panel window itself: chrome owns the section/row list the window is
+    # built from (it cannot live in the game script, which is at the 200-local
+    # cap), collapsible headers and the per-player interface preferences. The
+    # three surfaces beside it are each one concern and each independently
+    # testable without any GUI.
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_window_chrome.lua' = 480
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_next_action.lua' = 220
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_notices.lua' = 270
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_scoreboard.lua' = 180
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_recovery_status_text.lua' = 30
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_fault_recovery.lua' = 40
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_text.lua' = 300
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_station_access_text.lua' = 50
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_authoritative_lists.lua' = 120
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
+    # The social channel is split by concern: the runtime owns the panel
+    # controls, the item ring and the five-hertz pump; the preview module owns
+    # proposal geometry and the ground outlines drawn for a remote peer; the
+    # codec module owns the two atomic JSON documents and the bounded item
+    # shapes that cross them.
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_runtime.lua' = 520
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_preview.lua' = 240
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_codec.lua' = 150
     'companion\tpf2mp\network.py' = 1460
     'companion\tpf2mp\fault_recovery.py' = 270
     'companion\tpf2mp\fault_recovery_evidence.py' = 130
@@ -165,7 +182,15 @@ $budgets = [ordered]@{
     'tools\update_release.ps1' = 260
     'tools\github_release_common.ps1' = 80
     'tools\publish_github_release.ps1' = 180
-    'tools\installed_entrypoint.ps1' = 70
+    'tools\installed_entrypoint.ps1' = 90
+    'tools\launcher_invite_link.ps1' = 200
+    'tools\launcher_mod_precheck.ps1' = 200
+    # Launcher quality-of-life boundaries: the onboarding checklist (pure step
+    # derivation plus the strip that paints it), recent-session discovery and
+    # resume-save selection, and the out-of-process content fingerprint worker.
+    'tools\launcher_checklist.ps1' = 140
+    'tools\launcher_sessions.ps1' = 150
+    'tools\launcher_content_digest.ps1' = 60
     'companion\tpf2mp\recovery_receipt_protocol.py' = 70
     'companion\tpf2mp\consensus.py' = 300
     'companion\tpf2mp\consensus_registry_index.py' = 80
@@ -263,6 +288,7 @@ $budgets = [ordered]@{
     'companion\tpf2mp\reconnect.py' = 210
     'companion\tpf2mp\peer_session.py' = 190
     'companion\tpf2mp\client_session.py' = 180
+    'companion\tpf2mp\social.py' = 330
     'companion\tpf2mp\alpha_acceptance.py' = 300
     'companion\tpf2mp\vehicle_phase_proof.py' = 60
     'companion\tpf2mp\mobility_telemetry.py' = 110

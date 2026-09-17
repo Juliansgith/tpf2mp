@@ -53,7 +53,8 @@ holds at most 32 items in `social_out.json` and 64 in `social_in.json`.
 - `body`: channel-specific, exact key set per channel:
   - `chat`: `{"text": <1..240 printable characters>}`.
   - `ping`: `{"kind": "wait"|"ready"|"look"|"pause"}` plus, for `look`
-    only, `"x"` and `"y"` world coordinates (finite numbers).
+    only, optional `"x"` and `"y"` world coordinates (finite numbers, both
+    present or both absent).
   - `preview`: one of
     - `{"kind": "off"}`;
     - `{"kind": "road"|"rail", "invalid": true|false,

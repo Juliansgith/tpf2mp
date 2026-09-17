@@ -30,7 +30,6 @@ require "tpf2_mp/gui_social_runtime"  -- registers guiView.social
 local guiLoadRuntimeModule = require "tpf2_mp/gui_load_runtime"
 local guiStockPresentation = require "tpf2_mp/gui_stock_presentation"
 local guiEntryPointsModule = require "tpf2_mp/gui_entry_points"
-local guiMatchControls = require "tpf2_mp/gui_match_controls"
 local guiCaptureModule = require "tpf2_mp/gui_capture"
 local proposalRuntimeModule = require "tpf2_mp/proposal_runtime"
 local operationRuntimeModule = require "tpf2_mp/operation_runtime"
@@ -2994,8 +2993,6 @@ local function button(label, actionFactory)
   return value
 end
 
-local function addRow(rootLayout, definitions) guiView.chrome.addRows(rootLayout, definitions, button) end
-
 local function ensureWindow()
   if gui.window then
     pcall(gui.window.setVisible, gui.window, true, false)
@@ -3010,137 +3007,11 @@ local function ensureWindow()
   gui.details = guiView.chrome.styled(api.gui.comp.TextView.new(""), "tpf2mp-details")
   guiView.chrome.addHeader(gui, rootLayout)
   rootLayout:addItem(gui.status)
-  guiView.chrome.addSection(rootLayout, "Match")
-  guiMatchControls.add(rootLayout, addRow, config())
-  guiView.chrome.addSection(rootLayout, "Transport manager")
-  addRow(rootLayout, guiView.managerButtons(gui))
-  if config().developerEconomyControls then
-    guiView.chrome.addSection(rootLayout, "Developer economy")
-    addRow(rootLayout, {
-      { "Seed Demo Market (Dev)", function() return { type = "economy.seed_demo" } end },
-      { "Settle Epoch (Dev Host)", function()
-      local snapshot = gui.snapshot or {}
-      assert(snapshot.networkMode ~= "network" or snapshot.peerId == "player1",
-        "only Player 1 (the host) can settle the authoritative economy")
-      return { type = "economy.settle" }
-      end },
-    })
-  end
-  guiView.chrome.addSection(rootLayout, "Lines and route draft")
-  addRow(rootLayout, {
-    { "Add Selected Stop", function()
-      gui.routeDraft[#gui.routeDraft + 1] = assert(gui.selectedEntityId,
-        "select a station-group icon first")
-      return { type = "snapshot.request", localOnly = true }
-    end },
-    { "Undo Draft Stop", function()
-      if #gui.routeDraft > 0 then table.remove(gui.routeDraft) end
-      return { type = "snapshot.request", localOnly = true }
-    end },
-    { "Clear Route Draft", function()
-      gui.routeDraft = {}
-      return { type = "snapshot.request", localOnly = true }
-    end },
-    { "Create Draft Line", function()
-      assert(#gui.routeDraft >= 2, "add at least two station groups to the route draft")
-      return { type = "operation.capture", capture = {
-        kind = "line.create", stationGroupLocalIds = util.deepCopy(gui.routeDraft),
-      } }
-    end },
-    { "Update Selected Line", function()
-      assert(#gui.routeDraft >= 2, "add at least two station groups to the route draft")
-      return { type = "operation.capture", capture = {
-        kind = "line.update", targetLocalId = assert(gui.selectedLineId, "select a line first"),
-        stationGroupLocalIds = util.deepCopy(gui.routeDraft),
-      } }
-    end },
-  })
-  guiView.chrome.addSection(rootLayout, "Vehicles")
-  addRow(rootLayout, {
-    { "Assign Vehicle to Line", function() return { type = "operation.capture", capture = {
-      kind = "vehicle.assign",
-      targetLocalId = assert(gui.selectedVehicleId, "select a vehicle first"),
-      lineLocalId = assert(gui.selectedLineId, "select a line first"),
-      stopIndex = 0,
-    } } end },
-    { "Stop Vehicle", function() return { type = "operation.capture", capture = {
-      kind = "vehicle.stop", targetLocalId = assert(gui.selectedVehicleId, "select a vehicle first"),
-      stopped = true,
-    } } end },
-    { "Start Vehicle", function() return { type = "operation.capture", capture = {
-      kind = "vehicle.stop", targetLocalId = assert(gui.selectedVehicleId, "select a vehicle first"),
-      stopped = false,
-    } } end },
-    { "Send Vehicle to Depot", function() return { type = "operation.capture", capture = {
-      kind = "vehicle.send_to_depot",
-      targetLocalId = assert(gui.selectedVehicleId, "select a vehicle first"),
-      sellOnArrival = false,
-    } } end },
-    { "Sell Vehicle", function() return { type = "operation.capture", capture = {
-      kind = "vehicle.sell", targetLocalId = assert(gui.selectedVehicleId, "select a vehicle first"),
-    } } end },
-    { "Delete Selected Line", function() return { type = "operation.capture", capture = {
-      kind = "line.delete", targetLocalId = assert(gui.selectedLineId, "select a line first"),
-    } } end },
-  })
-  guiView.chrome.addSection(rootLayout, "Assets and fares")
-  addRow(rootLayout, {
-    -- Registration is automatic after any line or assignment change; this
-    -- stays as a manual re-derive for lines that predate the match or whose
-    -- facts a player wants refreshed on demand.
-    { "Re-check Selected Line", function() return { type = "line.register", localLineId = assert(gui.selectedLineId, "select a line first") } end },
-    { "Claim Selected Asset", function() return { type = "world.claim", ids = { assert(gui.selectedEntityId, "select an entity first") } } end },
-    { "Fare -1.00", function() return { type = "fare.adjust", localLineId = assert(gui.selectedLineId, "select a line first"), deltaCents = -100 } end },
-    { "Fare +1.00", function() return { type = "fare.adjust", localLineId = assert(gui.selectedLineId, "select a line first"), deltaCents = 100 } end },
-  })
-  guiView.chrome.addSection(rootLayout, "World and finance")
-  addRow(rootLayout, {
-    { "Freeze / Unfreeze", function()
-      local snapshot = gui.snapshot or publicSnapshot()
-      return { type = "world.freeze", freeze = not snapshot.autonomyFrozen }
-    end },
-    { "Network Mode (pre-match)", function()
-      local snapshot = gui.snapshot or publicSnapshot()
-      return { type = "network.set_mode", mode = snapshot.networkMode == "network" and "standalone" or "network" }
-    end },
-    { "Toggle Income Neutralizer", function() return { type = "finance.toggle_neutralizer" } end },
-    { "Repair Starting Cash", function() return { type = "finance.repair_starting_cash", localOnly = true } end },
-  })
-  guiView.chrome.addSection(rootLayout, "Shared clock")
-  addRow(rootLayout, {
-    { "Pause", function() return { type = "clock.request", requestedSpeed = 0 } end },
-    { "Speed 1", function() return { type = "clock.request", requestedSpeed = 1 } end },
-    { "Speed 2", function() return { type = "clock.request", requestedSpeed = 2 } end },
-    { "Speed 3", function() return { type = "clock.request", requestedSpeed = 4 } end },
-  })
-  guiView.chrome.addSection(rootLayout, "Native gate (testing)")
-  addRow(rootLayout, {
-    { "Toggle Build Gate (Test)", function()
-      local snapshot = gui.snapshot or publicSnapshot()
-      local gate = snapshot.probes and snapshot.probes.nativeHook
-        and snapshot.probes.nativeHook.gates and snapshot.probes.nativeHook.gates.buildProposal or {}
-      return { type = "native.build_gate", enabled = gate.enabled ~= true, localOnly = true }
-    end },
-    { "Authorize Next Build", function()
-      return { type = "native.build_authorize", localOnly = true }
-    end },
-  })
-  guiView.chrome.addSection(rootLayout, "Diagnostics and recovery")
-  addRow(rootLayout, {
-    { "Run Sync Probe", function() return { type = "probe.run" } end },
-    { "Sample Pax / Cargo", function() return { type = "probe.mobility" } end },
-    { "Refresh Passenger Display", function()
-      return { type = "probe.passenger_cosmetics", localOnly = true }
-    end },
-    { "Export Research", function() return { type = "probe.export_research" } end },
-    { "Export Snapshot", function() return { type = "snapshot.export" } end },
-    { "Recover / Resync Session", function() return { type = "recovery.requalify" } end },
-    { "Prepare & Save Restore Point", function() return { type = "recovery.prepare" } end },
-    { "Refresh", function() return { type = "snapshot.request", localOnly = true } end },
-  })
-  pcall(guiView.social.addSection, gui, rootLayout, guiView.chrome)
+  guiView.chrome.buildSections(gui, rootLayout,
+    { button = button, config = config, publicSnapshot = publicSnapshot })
+  pcall(guiView.social.addSection, gui, guiView.chrome.tracked(rootLayout), guiView.chrome)
   guiView.chrome.addSection(rootLayout, "Session")
-  rootLayout:addItem(gui.details)
+  guiView.chrome.addItem(rootLayout, gui.details)
   gui.window = api.gui.comp.Window.new("TPF2MP Multiplayer", root)
   if type(gui.window.setId) == "function" then
     pcall(gui.window.setId, gui.window, "tpf2mp.window")
@@ -3503,6 +3374,7 @@ local script = {
     local result = guiEventRuntime.handleEvent(id, name, param)
     pcall(guiStockPresentation.handleEvent, gui, gui.snapshot or {}, id, name, param)
     pcall(guiView.social.observeBuilderEvent, gui, id, name, param)
+    pcall(guiView.notices.observeVeto, gui, result)
     return result
   end,
 }
