@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Current release: `0.45.2-alpha` (experimental testing release)
+Current release: `0.45.3-alpha` (experimental testing release)
 
 Last reviewed: 2026-09-15
 
@@ -19,7 +19,15 @@ This release has targeted real-game evidence, not a complete UI matrix PASS.
 Combined demolition/attachment/terrain cases, all construction variants and
 fresh save/load/recovery remain incomplete. Intermittent native Load Game
 stalls remain unresolved. Back up saves; see the
-[release notes](release-notes/RELEASE_NOTES_0.45.2-alpha.md).
+[release notes](release-notes/RELEASE_NOTES_0.45.3-alpha.md).
+
+The 0.45.3 patch turns on four bit-identical terrain fast paths in the native
+hook (alignment, bicubic refinement, tile min/max with block copy, and
+material-index selection, ported from tpf2-bigmap). They are proved against
+the executable's original machine code and measured to remove about 4.4 of
+15.8 worker-seconds per warm load of a 56 × 56 world; wall-clock load did not
+change at one-second resolution on 24 threads. `TPF2MP_NATIVE_TERRAIN_FAST=off`
+restores stock code. No new live qualification accompanies the patch.
 
 The 0.45.0 release adds the native World Lobby generation/transfer/direct-load
 flow. Two real local-relay pairs passed shared initialization checkpoints;
@@ -220,7 +228,7 @@ finance/ownership, core digest `035ccd29`, and structural digest `9995a4be`.
 
 ## Release position
 
-`0.45.2-alpha` is an experimental release for external trusted-tester feedback,
+`0.45.3-alpha` is an experimental release for external trusted-tester feedback,
 not a fully qualified construction or persistence release. The previous
 `0.43.5-alpha` release remains available for rollback using backed-up saves.
 The next

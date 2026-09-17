@@ -183,6 +183,11 @@ $budgets = [ordered]@{
     'native\src\native_command_codec.cpp' = 350
     'native\src\native_vehicle_command_codec.cpp' = 180
     'native\src\native_hook_status.cpp' = 300
+    # Opt-in bit-identical terrain fast paths: the pure implementations plus
+    # the pinned Build 35924 byte regions they verify, and the MinHook glue.
+    'native\src\native_terrain_fast.cpp' = 1250
+    'native\src\native_terrain_fast_hooks.cpp' = 240
+    'native\src\native_material_fast.cpp' = 260
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_wrapper_selector.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080

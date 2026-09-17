@@ -1,6 +1,14 @@
 # TPF2MP investigation record
 
-Current release: `0.45.2-alpha` (experimental).
+Current release: `0.45.3-alpha` (experimental).
+[Terrain load fast paths ported from tpf2-bigmap (2026-09-17)](TERRAIN_LOAD_FAST_PATHS_2026-09-17.md)
+records the evaluation of silver2127's big-map performance work, the
+bit-identical alignment/refinement/min-max/material fast paths now on by
+default in the native hook (`TPF2MP_NATIVE_TERRAIN_FAST=off` restores stock
+code), their original-machine-code proofs, and the in-game measurement on a
+56 × 56 generated world (about 4.4 of 15.8 worker-seconds per load removed,
+wall-clock load unchanged at one-second resolution on 24 threads).
+
 [Batched construction reads](CONSTRUCTION_BATCHED_READS_2026-09-13.md) records
 the reduced native checks, page-safety regressions and production build checks.
 
@@ -34,8 +42,8 @@ and the bilateral physical-UI regression pass. This shape was missing from
 the earlier mid-road-split bus/tram fixtures; it is not covered merely because
 those workflows passed.
 
-Last updated: 2026-09-09 (Europe/Amsterdam), experimental release
-`0.44.2-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+Last updated: 2026-09-17 (Europe/Amsterdam), experimental release
+`0.45.3-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
 passenger-presentation schema `4`, cargo-presentation schema `2`,
 freight-industry schema `3`, edge proposal schema `6`, construction proposal
 schemas `8`/`9`, native edge-object inventory schema `3`, native hook `0.20.0`.

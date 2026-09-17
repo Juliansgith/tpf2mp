@@ -245,6 +245,54 @@ native/GUI capture, two-computer relay use, and automatic paired save recovery
 are implemented; multi-hour certification and arbitrary scripted-content
 compatibility remain open.
 
+## Terrain fast paths (on by default, bit-identical)
+
+`native_terrain_fast.cpp` carries three bit-identical replacements for stock
+terrain routines that dominate the terrain phase of a save or world load,
+ported from silver2127's tpf2-bigmap plugin (MIT; see
+`third_party/tpf2-bigmap/TPF2MP_PIN.txt`):
+
+- `align`: `terrain_alignment_util::CalculateHeightMod` (RVA `0x3b3470`)
+  with pooled rasterisation targets and an SSE2 blend; the stock rasteriser
+  still draws every triangle;
+- `refine`: `sub_terrain_util::InternBicubicRefine` (RVA `0x3ac6c0`) with
+  per-call constants and a four-wide Hermite evaluation in the stock operation
+  order;
+- `minmax`: an SSE2 replacement for the inlined `CalcMinMaxHeight` scan
+  inside terrain publication (69 bytes at RVA `0x33cec1`) plus a per-row
+  `memcpy` for the uint16 height block copy (RVA `0x30a540`);
+- `material` (`native_material_fast.cpp`): the `MaterialIndexManager` pixel
+  selection (RVA `0x315f20`) visited pixel-major instead of once per batch of
+  eight layers, with the same overlap, precedence, sentinel and interpolation
+  order.
+
+All four paths are active whenever the hook arms.
+`TPF2MP_NATIVE_TERRAIN_FAST` in the game process's environment changes that:
+`off` (or `stock`) restores the stock code, a comma-separated subset of
+`align`, `refine`, `minmax`, `material` selects paths, and `timing` adds
+per-call wall-clock accounting to the status JSON (`stock,timing` measures
+the originals through pass-through detours). Whether `material` is part of
+the default is `kMaterialDefaultOn` in `native_terrain_fast.hpp`.
+The launcher and injector pass the environment through. Every site is
+byte-verified first (prologues, whole function bodies, constants and both
+predicate vtables). A mismatch, an unparseable request, or a hook failure
+leaves that fast path off and records the reason; the rest of the hook arms
+normally. The status JSON reports the outcome under `hooks.terrainFast`.
+
+Because the outputs are identical bytes, the two peers may run different
+settings without diverging, and nothing here enters a digest. The hook
+version stays `0.20.0`: the Lua/PowerShell contract is unchanged, as with the
+0.44.3 capture optimisation. Two proofs back the claim: CTest compares the
+SSE2 paths with scalar transcriptions and checks the installer's refusals
+against a fake host, and `tests\native_terrain_fast\` maps the pinned
+executable inside a Python process, runs the original routines as machine
+code beside the DLL's replacements, and compares complete output buffers
+(thousands of cases, three rounding modes). The in-game measurement that
+justified the default is in
+`investigation/TERRAIN_LOAD_FAST_PATHS_2026-09-17.md`; rerun it with
+`tools\run_native_save_benchmark.ps1 -NativeHookDll` after touching these
+paths.
+
 ## Build and verify
 
 From the project root in PowerShell:
@@ -254,9 +302,11 @@ From the project root in PowerShell:
 ```
 
 This configures CMake, builds Release binaries, runs CTest (including a DLL
-load into an unpinned helper process which must reject safely), and verifies
-the installed game executable and every unique signature. Outputs are below
-`runtime\native-build\Release`.
+load into an unpinned helper process which must reject safely), verifies the
+installed game executable and every unique signature, and runs the terrain
+fast-path proof against that executable (`tools\verify_native_terrain_fast.ps1`;
+needs numpy, capstone and pefile in the gate's Python, or pass
+`-SkipTerrainFastProof`). Outputs are below `runtime\native-build\Release`.
 
 To rerun the disposable-world live proof:
 

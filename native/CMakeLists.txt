@@ -29,6 +29,8 @@ add_library(tpf2mp_hook_support STATIC
   src/native_vehicle_command_codec.cpp
   src/native_hook_status.cpp
   src/native_launcher_barrier.cpp
+  src/native_terrain_fast.cpp
+  src/native_material_fast.cpp
 )
 target_link_libraries(tpf2mp_hook_support PUBLIC tpf2mp_native_common)
 target_include_directories(tpf2mp_hook_support PUBLIC include)
@@ -37,6 +39,7 @@ target_compile_definitions(tpf2mp_hook_support PUBLIC UNICODE _UNICODE WIN32_LEA
 add_library(tpf2mp_hook SHARED
   src/hook_dll.cpp
   src/native_build_hook_bridge.cpp
+  src/native_terrain_fast_hooks.cpp
 )
 target_include_directories(tpf2mp_hook PRIVATE include)
 target_compile_definitions(tpf2mp_hook PRIVATE TPF2MP_HOOK_EXPORTS)
@@ -51,6 +54,7 @@ target_link_libraries(tpf2mp_injector PRIVATE tpf2mp_native_common)
 
 add_executable(tpf2mp_native_tests
   tests/native_tests.cpp
+  tests/native_terrain_fast_tests.cpp
 )
 target_include_directories(tpf2mp_native_tests PRIVATE include)
 target_link_libraries(tpf2mp_native_tests PRIVATE tpf2mp_native_common tpf2mp_hook_support)

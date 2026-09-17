@@ -1,0 +1,22 @@
+tpf2-bigmap (silver2127), MIT License
+Source: https://github.com/silver2127/tpf2-bigmap
+Pinned commit: 4f0de6f ("release 0.4.0: material-index paging, terrain codec
+format 3 and engine speedups")
+
+Nothing from the plugin is vendored verbatim. The following files were ported
+into TPF2MP, replacing the plugin-host ABI with the Host seam in
+native/include/tpf2mp/native_terrain_fast.hpp and keeping the arithmetic
+operation for operation:
+
+  src/terrain_align_fast.h  -> native/src/native_terrain_fast.cpp (CalculateHeightMod)
+  src/terrain_refine.h      -> native/src/native_terrain_fast.cpp (BicubicRefine)
+  src/terrain_minmax.h      -> native/src/native_terrain_fast.cpp (MinMaxScan, BlockCopy)
+  src/material_index.h      -> native/src/native_material_fast.cpp (MaterialIndex)
+  tools/test_terrain_align_fast.py -> tests/native_terrain_fast/align_proof.py
+  tools/test_terrain_refine.py     -> tests/native_terrain_fast/refine_proof.py
+  tools/test_terrain_minmax.py     -> tests/native_terrain_fast/minmax_proof.py
+  tools/test_material_index.py     -> tests/native_terrain_fast/material_proof.py
+
+The Build 35924 byte regions those files pin (function bodies, constants and
+vtables) are copied unchanged. LICENSE.txt beside this file is the upstream
+license and ships in packaged releases as licenses/tpf2-bigmap-MIT.txt.

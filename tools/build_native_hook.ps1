@@ -3,7 +3,10 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [string]$GameExecutable = 'F:\SteamLibrary\steamapps\common\Transport Fever 2\TransportFever2.exe',
-    [string]$BuildDirectory
+    [string]$BuildDirectory,
+    # The optional terrain fast paths are proved against the executable's
+    # original machine code (tests\native_terrain_fast). Skipping is explicit.
+    [switch]$SkipTerrainFastProof
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +42,13 @@ foreach ($path in @($profileTest, $injector, $dll)) {
 if ($LASTEXITCODE -ne 0) { throw "Pinned binary/signature test failed with exit code $LASTEXITCODE" }
 & $injector --verify $game
 if ($LASTEXITCODE -ne 0) { throw "Injector build gate failed with exit code $LASTEXITCODE" }
+
+if ($SkipTerrainFastProof) {
+    Write-Host 'SKIPPED terrain fast-path proof (-SkipTerrainFastProof)'
+} else {
+    & (Join-Path $PSScriptRoot 'verify_native_terrain_fast.ps1') -GameExecutable $game -HookDll $dll
+    if (-not $?) { throw 'Terrain fast-path proof failed' }
+}
 
 [pscustomobject]@{
     Configuration = $Configuration

@@ -120,6 +120,8 @@ bool TestLauncherPump() {
 
 }  // namespace
 
+bool TerrainFastPathsValid();  // native_terrain_fast_tests.cpp
+
 int main(int argc, char** argv) {
   static_assert(sizeof(void*) == 8, "native probe must be built for x64");
   const int script_event_binding = tpf2mp::native_binding::Index("sendScriptEvent");
@@ -1071,6 +1073,7 @@ int main(int argc, char** argv) {
       return 1;
     }
   }
+  if (!TerrainFastPathsValid()) return 1;
   if (argc == 1) {
     std::cout << "pinned profile constants are internally valid\n";
     return 0;

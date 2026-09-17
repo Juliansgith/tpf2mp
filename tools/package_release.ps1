@@ -1,10 +1,11 @@
 [CmdletBinding()]
 param(
-    [string]$Version = '0.45.2-alpha',
+    [string]$Version = '0.45.3-alpha',
     [string]$OutputDirectory,
     [string]$GameExecutable,
     [switch]$SkipTests,
     [switch]$SkipNativeBuild,
+    [switch]$SkipTerrainFastProof,
     [switch]$SkipPackageInstallTest,
     [switch]$AllowDirtySource
 )
@@ -79,7 +80,7 @@ if (-not $SkipNativeBuild) {
     # Release compilation uses a distinct root so Windows cannot make a running
     # old test session block creation of the next package.
     & (Join-Path $PSScriptRoot 'build_native_hook.ps1') -GameExecutable $game `
-        -BuildDirectory $packageNativeBuild
+        -BuildDirectory $packageNativeBuild -SkipTerrainFastProof:$SkipTerrainFastProof
     if ($LASTEXITCODE -ne 0) { throw "Native build failed with exit code $LASTEXITCODE" }
 }
 
@@ -175,6 +176,7 @@ Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_injector.exe') -Destination
 Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_worldgen_lab.dll') -Destination (Join-Path $releaseRoot 'bin\native\tpf2mp_worldgen_lab.dll')
 Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_hook_build35924.dll') -Destination (Join-Path $releaseRoot 'bin\native\tpf2mp_hook_build35924.dll')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'native\third_party\minhook\LICENSE.txt') -Destination (Join-Path $releaseRoot 'licenses\MinHook-BSD-2-Clause.txt')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'native\third_party\tpf2-bigmap\LICENSE.txt') -Destination (Join-Path $releaseRoot 'licenses\tpf2-bigmap-MIT.txt')
 
 $toolNames = @(
     'release_common.ps1', 'install_release.ps1', 'verify_install.ps1', 'uninstall.ps1',
@@ -238,7 +240,7 @@ road/rail attachment and terrain changes are not fully revalidated and may
 fail or fault the session. Some variants and save/load scenarios remain
 unverified; intermittent native Load Game stalls remain under investigation.
 Back up existing saves, update both players, and start a new session. See
-`docs/release-notes/RELEASE_NOTES_0.45.2-alpha.md` for the exact evidence limits.
+`docs/release-notes/RELEASE_NOTES_0.45.3-alpha.md` for the exact evidence limits.
 
 Install by double-clicking `INSTALL_TPF2MP.cmd`, or from PowerShell:
 

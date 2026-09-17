@@ -9,7 +9,12 @@ param(
     [ValidateSet('steady','scaling')][string]$Workload = 'steady',
     [int]$ConcurrentPeerPid = 0,
     [ValidatePattern('^[0-9a-fA-F]{64}$')][string]$ExpectedExecutableSha256 = '782b904a8f7bbdac1f7a18528f1a5c778691e5aa3087c37c351bf6912585175c',
-    [string]$Label = 'native-save-benchmark'
+    [string]$Label = 'native-save-benchmark',
+    # Optional: launch through the pinned injector with this hook DLL so the
+    # load runs with the native hook armed (for example to compare the terrain
+    # fast paths, TPF2MP_NATIVE_TERRAIN_FAST, against "stock,timing"). The
+    # hook's status JSON is copied into the evidence as native-hook-status.json.
+    [string]$NativeHookDll
 )
 
 $ErrorActionPreference = 'Stop'
@@ -53,8 +58,25 @@ try {
     $env:TPF2MP_BENCH_RUN_TOKEN = $scriptName
     $env:TPF2MP_BENCH_WORKLOAD = $Workload
     $env:TPF2MP_BENCH_MARKER_PATH = Join-Path $output 'native-markers.log'
-    $process = Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle Normal `
-        -ArgumentList @('--script', ('res/scripts/' + $scriptName)) -PassThru
+    if ($NativeHookDll) {
+        $dll = (Get-Item -LiteralPath $NativeHookDll).FullName
+        $injector = Join-Path (Split-Path $dll) 'tpf2mp_injector.exe'
+        if (-not (Test-Path -LiteralPath $injector -PathType Leaf)) { throw "Injector is missing beside the hook DLL: $injector" }
+        # The injector starts the game suspended, arms the hook, resumes, and
+        # returns once the hook publishes an active status; the game outlives it.
+        $injectorOutput = @(& $injector --launch $game --dll $dll --workdir $gameRoot --wait-ms 60000 -- '--script' ('res/scripts/' + $scriptName) 2>&1 |
+            ForEach-Object { [string]$_ })
+        $injectorOutput | ForEach-Object { Write-Output $_ }
+        if ($LASTEXITCODE -ne 0) { throw "Native hook launch failed with exit code $LASTEXITCODE" }
+        $pidLine = $injectorOutput | Where-Object { $_ -match 'launched pinned game suspended as pid (\d+)' } | Select-Object -First 1
+        if (-not $pidLine) { throw 'The injector did not report the game PID.' }
+        $process = Get-Process -Id ([int]$Matches[1])
+        $nativeStatusPath = Join-Path (Join-Path ([IO.Path]::GetTempPath()) 'tpf2mp_native') "status-$($process.Id).json"
+    } else {
+        $process = Start-Process -FilePath $game -WorkingDirectory $gameRoot -WindowStyle Normal `
+            -ArgumentList @('--script', ('res/scripts/' + $scriptName)) -PassThru
+        $nativeStatusPath = $null
+    }
     Write-Output "benchmark_pid=$($process.Id) label=$Label"
     $timer = [Diagnostics.Stopwatch]::StartNew()
     while (-not $process.HasExited) {
@@ -77,10 +99,17 @@ try {
             })
         })
         Start-Sleep -Milliseconds 1000
+        # The hook rewrites its status at most once a second; keep the newest
+        # copy so the final terrain timing survives the game's exit.
+        if ($nativeStatusPath -and (Test-Path -LiteralPath $nativeStatusPath -PathType Leaf)) {
+            try { Copy-Item -LiteralPath $nativeStatusPath -Destination (Join-Path $output 'native-hook-status.json') -Force } catch { }
+        }
     }
     $process.WaitForExit()
-    $exitCode = $process.ExitCode
-    if ($exitCode -ne 0) { throw "Game exited with code $exitCode." }
+    # A process adopted from the injector (Get-Process) may expose no exit
+    # code; the marker log then decides completeness on its own.
+    $exitCode = try { $process.ExitCode } catch { $null }
+    if ($null -ne $exitCode -and $exitCode -ne 0) { throw "Game exited with code $exitCode." }
 } catch { $failure = $_.Exception.Message }
 finally {
     if ($process) {

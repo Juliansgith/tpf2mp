@@ -12,6 +12,16 @@ copied from another project.
   texts are in `native/third_party/minhook/LICENSE.txt`, and packaged releases
   ship that file as `licenses/MinHook-BSD-2-Clause.txt`. The hook DLL links
   MinHook statically.
+- **tpf2-bigmap** (ported, not vendored) — Copyright (c) 2026 silver2127. MIT.
+  The terrain fast paths in `native/src/native_terrain_fast.cpp` and
+  `native/src/native_material_fast.cpp` and their original-machine-code proof
+  scripts in `tests/native_terrain_fast/` are ports of that plugin's
+  `terrain_align_fast.h`, `terrain_refine.h`, `terrain_minmax.h`,
+  `material_index.h` and their tests (commit `4f0de6f`), adapted to TPF2MP's
+  hook. The pinned Build 35924 byte regions are copied unchanged. The upstream
+  license and the exact file mapping are in
+  `native/third_party/tpf2-bigmap/`, and packaged releases ship the license as
+  `licenses/tpf2-bigmap-MIT.txt`.
 
 ## Python dependencies (not vendored)
 

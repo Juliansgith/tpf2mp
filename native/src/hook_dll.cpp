@@ -1210,12 +1210,10 @@ bool InstallHooks(HMODULE executable) {
   tpf2mp::native_build_hook::Configure(
       executable, BuildCaptureGateSnapshot, RequestStatusWrite);
   constexpr std::array<std::string_view, 19> required_signatures{
-      "luaB_print",          "lua_setfield", "SetupCommandInterface", "lua_pushcclosure",
-      "lua_pushvalue",       "lua_insert",   "lua_callk",              "lua_gettop",
-      "lua_settop",          "lua_rawgeti",  "lua_rawseti",            "lua_rawset",
-      "lua_pushlstring",     "lua_tolstring", "CommandList::Swap",      "ApplyCommand",
-      "BuildProposalVisitor", "make_cmd::BuildProposal", "CommandList::Add",
-  };
+      "luaB_print", "lua_setfield", "SetupCommandInterface", "lua_pushcclosure", "lua_pushvalue",
+      "lua_insert", "lua_callk", "lua_gettop", "lua_settop", "lua_rawgeti", "lua_rawseti",
+      "lua_rawset", "lua_pushlstring", "lua_tolstring", "CommandList::Swap", "ApplyCommand",
+      "BuildProposalVisitor", "make_cmd::BuildProposal", "CommandList::Add"};
   for (const auto name : required_signatures) {
     if (ValidatedRva(name) == 0) {
       StateLock lock;
@@ -1311,6 +1309,7 @@ bool InstallHooks(HMODULE executable) {
   for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
     MH_QueueEnableHook(AtRva<void*>(executable, visitor.rva));
   }
+  g_hooks.terrain_fast = tpf2mp::terrain_fast::InstallFromEnvironment(executable);
   const auto apply = MH_ApplyQueued();
   if (apply != MH_OK) {
     StateLock lock;

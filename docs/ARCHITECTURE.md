@@ -523,6 +523,14 @@ captured table reference would therefore mutate stale state after loading.
 - `native_command_safety.generated.hpp` is generated from
   `content/native-command-safety-v1.json`; detours consume its suppression and
   pass-through policy as compile-time constants.
+- `native_terrain_fast.cpp` owns the bit-identical terrain fast paths
+  (alignment, bicubic refinement, tile min/max and block copy) and their
+  pinned byte regions, `native_material_fast.cpp` the material-index
+  selection path, and `native_terrain_fast_hooks.cpp` supplies the live
+  MinHook/patch services and the test entry points. The terrain paths are on
+  by default, `TPF2MP_NATIVE_TERRAIN_FAST=off` restores stock code, `timing`
+  publishes per-routine accounting, they fail closed per path, never change
+  an output byte, and never enter a digest.
 - `injector.cpp` owns exact-profile verification and DLL injection.
 - `hook_dll.cpp` owns hook installation, visitor gates, capture queues, Lua
   bindings, and the synchronized native state presented to the support modules.
@@ -613,7 +621,9 @@ and the 2,848-case static construction corpus. Static corpus coverage and live
 physical proof are reported as separate tiers; see
 `CONSTRUCTION_AUTHORITY.md`.
 
-Native changes additionally require `tools/build_native_hook.ps1`. Release-tree
+Native changes additionally require `tools/build_native_hook.ps1`, which also
+proves the optional terrain fast paths against the pinned executable's own
+machine code (`tests/native_terrain_fast/`). Release-tree
 or installer changes require `tools/package_release.ps1`, which performs an
 install/verify/uninstall round trip. New release manifests use format 2 and bind
 every file set to the exact 40-character Git commit plus an explicit clean/dirty

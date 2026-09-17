@@ -57,6 +57,25 @@ std::string SerializeHookStatus(const HookStatusView& status) {
          << (status.hooks.command_list_add_created ? "true" : "false")
          << ",\"authorityCommandVisitors\":"
          << status.hooks.authority_command_visitors_created
+         << ",\"terrainFast\":{"
+         << "\"requested\":\"" << tpf2mp::JsonEscape(status.hooks.terrain_fast.requested) << "\""
+         << ",\"align\":" << (status.hooks.terrain_fast.align ? "true" : "false")
+         << ",\"refine\":" << (status.hooks.terrain_fast.refine ? "true" : "false")
+         << ",\"minMaxScan\":" << (status.hooks.terrain_fast.minmax_scan ? "true" : "false")
+         << ",\"blockCopy\":" << (status.hooks.terrain_fast.block_copy ? "true" : "false")
+         << ",\"material\":" << (status.hooks.terrain_fast.material ? "true" : "false")
+         << ",\"timing\":" << (status.hooks.terrain_fast.timing ? "true" : "false")
+         << ",\"error\":\"" << tpf2mp::JsonEscape(status.hooks.terrain_fast.error) << "\"";
+  if (status.hooks.terrain_fast.timing) {
+    const auto timing = tpf2mp::terrain_fast::Timing();
+    output << ",\"calls\":{\"align\":" << timing.align_calls << ",\"refine\":" << timing.refine_calls
+           << ",\"blockCopy\":" << timing.block_copy_calls << ",\"scan\":" << timing.scan_calls
+           << ",\"material\":" << timing.material_calls << '}'
+           << ",\"seconds\":{\"align\":" << timing.align_seconds << ",\"refine\":" << timing.refine_seconds
+           << ",\"blockCopy\":" << timing.block_copy_seconds << ",\"scan\":" << timing.scan_seconds
+           << ",\"material\":" << timing.material_seconds << '}';
+  }
+  output << '}'
          << ",\"sendCommandWrapping\":true"
          << ",\"enabled\":" << (status.hooks.enabled ? "true" : "false") << '}';
   output << ",\"setupCommandInterface\":{" 
