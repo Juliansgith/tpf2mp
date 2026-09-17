@@ -1,0 +1,25 @@
+tpf2-multiplayer (silver2127), MIT License
+Source: https://github.com/silver2127/tpf2-multiplayer
+Pinned commit: 7e6e498 ("tools: the relay deploy installs zstandard")
+
+Nothing from that project is vendored verbatim. Its optional native build
+preview plugin was ported into TPF2MP, replacing the plugin-host ABI and the
+request/ack text files with the Host seam and the Lua entry points in
+native/include/tpf2mp/native_preview_render.hpp, and keeping the renderer,
+terrain and proposal-guard behaviour operation for operation:
+
+  native/src/preview_plugin.cpp    -> native/src/native_preview_render.cpp
+                                      native/src/native_preview_render_hooks.cpp
+  tools/preview_native_test.cpp    -> native/tests/native_preview_render_tests.cpp
+  docs/BUILD_PREVIEWS.md           -> native/README.md (native preview section)
+
+The Build 35924 byte regions the port pins (hooked prologues, the entry points
+it calls, the builder-renderer vtable and the structure offsets) are copied
+unchanged. Deliberate behaviour changes on TPF2MP's side are the per-mode
+palette policy (draw/drawok keep the renderer's stock palette so a remote
+preview looks exactly like the local builder ghost; only drawbad selects the
+stock error palette) and the in-process request state machine that replaces
+the plugin's request/ack/ready files.
+
+LICENSE beside this file is the upstream license and ships in packaged
+releases as licenses/tpf2-multiplayer-MIT.txt.

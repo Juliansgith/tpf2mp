@@ -25,9 +25,17 @@ PING_KINDS = ("wait", "ready", "look", "pause")
 MAX_TEXT_CHARACTERS = 240
 MAX_CURVES = 24
 CURVE_LENGTH = 8
+DETAIL_LENGTH = 10
+DETAIL_HEIGHTS = 4
 TRANSF_LENGTH = 16
 MAX_FILE_CHARACTERS = 128
+MAX_PARAMS_CHARACTERS = 4096
+NAME_PATTERN = re.compile(r"^[A-Za-z0-9_./-]+$")
 FILE_PATTERN = re.compile(r"^[A-Za-z0-9_./-]+\.con$")
+TERRAIN_ALIGNMENTS = (0, 1, 2)
+BUS_STOPS = (0, 1)
+TRAM_TRACKS = (0, 1, 2)
+CATENARY_STATES = (0, 1)
 MAX_FRAME_ITEMS = 32
 MAX_FRAME_BYTES = 32 * 1024
 MAX_OUTGOING_ITEMS = 32
@@ -66,6 +74,21 @@ def _flag(value: Any, label: str) -> bool:
     return value
 
 
+def _choice(value: Any, allowed: tuple[int, ...], label: str) -> int:
+    # `bool` is an `int` subclass, so an unguarded membership test would accept
+    # `True` wherever 1 is legal and change the meaning of a replayed detail.
+    if not isinstance(value, int) or isinstance(value, bool) or value not in allowed:
+        raise ProtocolError(f"social {label} must be one of {allowed}")
+    return value
+
+
+def _name(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_FILE_CHARACTERS \
+            or NAME_PATTERN.fullmatch(value) is None:
+        raise ProtocolError(f"social {label} is empty, oversized or off-charset")
+    return value
+
+
 def _chat_body(body: Mapping[str, Any]) -> dict[str, Any]:
     if set(body) != {"text"}:
         raise ProtocolError("social chat body has an unexpected key set")
@@ -95,6 +118,95 @@ def _ping_body(body: Mapping[str, Any]) -> dict[str, Any]:
     return {"kind": kind, "x": x, "y": y}
 
 
+def _detail(value: Any) -> list[Any]:
+    """One optional per-curve segment detail, in the documented slot order.
+
+    `[z0, z1, tz0, tz1, terrain, file, bus, tram, catenary, structure]` is what
+    the game's builder proposal carries beside the XY curve, so a receiver with
+    the native preview renderer can rebuild the proposal instead of drawing a
+    flat ribbon. `structure` names the bridge or tunnel type and is empty
+    exactly when the segment sits on the ground (`terrain == 0`).
+    """
+    if not isinstance(value, list) or len(value) != DETAIL_LENGTH:
+        raise ProtocolError(
+            f"social preview detail must hold exactly {DETAIL_LENGTH} values"
+        )
+    heights = [
+        _number(item, "preview detail height") for item in value[:DETAIL_HEIGHTS]
+    ]
+    terrain = _choice(value[4], TERRAIN_ALIGNMENTS, "preview detail terrain")
+    structure = value[9]
+    if terrain == 0:
+        if structure != "":
+            raise ProtocolError("social preview ground detail names a structure")
+        structure = ""
+    else:
+        structure = _name(structure, "preview detail structure")
+    return heights + [
+        terrain,
+        _name(value[5], "preview detail file"),
+        _choice(value[6], BUS_STOPS, "preview detail bus stop"),
+        _choice(value[7], TRAM_TRACKS, "preview detail tram track"),
+        _choice(value[8], CATENARY_STATES, "preview detail catenary"),
+        structure,
+    ]
+
+
+def _params(value: Any) -> str:
+    # Construction parameters are an opaque ordered blob to the companion; only
+    # printable ASCII crosses the wire so a Lua byte scan agrees with this one.
+    if not isinstance(value, str) or not 1 <= len(value) <= MAX_PARAMS_CHARACTERS \
+            or any(not 0x20 <= ord(char) <= 0x7E for char in value):
+        raise ProtocolError("social preview construction params are invalid")
+    return value
+
+
+def _path_body(kind: str, body: Mapping[str, Any]) -> dict[str, Any]:
+    keys = set(body)
+    if keys not in ({"kind", "invalid", "curves"},
+                    {"kind", "invalid", "curves", "details"}):
+        raise ProtocolError("social preview body has an unexpected key set")
+    curves = body["curves"]
+    if not isinstance(curves, list) or not 1 <= len(curves) <= MAX_CURVES:
+        raise ProtocolError("social preview curve count is out of range")
+    validated = {
+        "kind": kind,
+        "invalid": _flag(body["invalid"], "preview validity"),
+        "curves": [
+            _numbers(curve, CURVE_LENGTH, "preview curve") for curve in curves
+        ],
+    }
+    if "details" in keys:
+        details = body["details"]
+        if not isinstance(details, list) or len(details) != len(curves):
+            raise ProtocolError("social preview details do not match their curves")
+        validated["details"] = [_detail(detail) for detail in details]
+    return validated
+
+
+def _construction_body(kind: str, body: Mapping[str, Any]) -> dict[str, Any]:
+    keys = set(body)
+    exact = {"kind", "invalid", "file", "x", "y", "z", "transf"}
+    if keys != exact and keys != exact | {"params"}:
+        raise ProtocolError("social preview body has an unexpected key set")
+    name = body["file"]
+    if not isinstance(name, str) or len(name) > MAX_FILE_CHARACTERS \
+            or FILE_PATTERN.fullmatch(name) is None:
+        raise ProtocolError("social preview construction file is invalid")
+    validated = {
+        "kind": kind,
+        "invalid": _flag(body["invalid"], "preview validity"),
+        "file": name,
+        "x": _number(body["x"], "preview x"),
+        "y": _number(body["y"], "preview y"),
+        "z": _number(body["z"], "preview z"),
+        "transf": _numbers(body["transf"], TRANSF_LENGTH, "preview transf"),
+    }
+    if "params" in keys:
+        validated["params"] = _params(body["params"])
+    return validated
+
+
 def _preview_body(body: Mapping[str, Any]) -> dict[str, Any]:
     kind = body.get("kind")
     if kind == "off":
@@ -102,34 +214,9 @@ def _preview_body(body: Mapping[str, Any]) -> dict[str, Any]:
             raise ProtocolError("social preview body has an unexpected key set")
         return {"kind": kind}
     if kind in {"road", "rail"}:
-        if set(body) != {"kind", "invalid", "curves"}:
-            raise ProtocolError("social preview body has an unexpected key set")
-        curves = body["curves"]
-        if not isinstance(curves, list) or not 1 <= len(curves) <= MAX_CURVES:
-            raise ProtocolError("social preview curve count is out of range")
-        return {
-            "kind": kind,
-            "invalid": _flag(body["invalid"], "preview validity"),
-            "curves": [
-                _numbers(curve, CURVE_LENGTH, "preview curve") for curve in curves
-            ],
-        }
+        return _path_body(kind, body)
     if kind == "construction":
-        if set(body) != {"kind", "invalid", "file", "x", "y", "z", "transf"}:
-            raise ProtocolError("social preview body has an unexpected key set")
-        name = body["file"]
-        if not isinstance(name, str) or len(name) > MAX_FILE_CHARACTERS \
-                or FILE_PATTERN.fullmatch(name) is None:
-            raise ProtocolError("social preview construction file is invalid")
-        return {
-            "kind": kind,
-            "invalid": _flag(body["invalid"], "preview validity"),
-            "file": name,
-            "x": _number(body["x"], "preview x"),
-            "y": _number(body["y"], "preview y"),
-            "z": _number(body["z"], "preview z"),
-            "transf": _numbers(body["transf"], TRANSF_LENGTH, "preview transf"),
-        }
+        return _construction_body(kind, body)
     raise ProtocolError("social preview kind is unknown")
 
 

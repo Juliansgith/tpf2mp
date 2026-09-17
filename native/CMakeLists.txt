@@ -31,6 +31,7 @@ add_library(tpf2mp_hook_support STATIC
   src/native_launcher_barrier.cpp
   src/native_terrain_fast.cpp
   src/native_material_fast.cpp
+  src/native_preview_render.cpp
 )
 target_link_libraries(tpf2mp_hook_support PUBLIC tpf2mp_native_common)
 target_include_directories(tpf2mp_hook_support PUBLIC include)
@@ -40,6 +41,7 @@ add_library(tpf2mp_hook SHARED
   src/hook_dll.cpp
   src/native_build_hook_bridge.cpp
   src/native_terrain_fast_hooks.cpp
+  src/native_preview_render_hooks.cpp
 )
 target_include_directories(tpf2mp_hook PRIVATE include)
 target_compile_definitions(tpf2mp_hook PRIVATE TPF2MP_HOOK_EXPORTS)
@@ -65,7 +67,16 @@ add_executable(tpf2mp_dll_load_test
 target_include_directories(tpf2mp_dll_load_test PRIVATE include)
 target_link_libraries(tpf2mp_dll_load_test PRIVATE tpf2mp_native_common)
 
-foreach(target tpf2mp_native_common tpf2mp_hook_support tpf2mp_hook tpf2mp_injector tpf2mp_native_tests tpf2mp_dll_load_test)
+# Offline contracts for the vanilla builder-ghost previews. With the game
+# executable as its argument it also verifies every pinned prologue against a
+# mapped, relocated copy of the pinned image (tools/build_native_hook.ps1).
+add_executable(tpf2mp_preview_render_tests
+  tests/native_preview_render_tests.cpp
+)
+target_include_directories(tpf2mp_preview_render_tests PRIVATE include)
+target_link_libraries(tpf2mp_preview_render_tests PRIVATE tpf2mp_native_common tpf2mp_hook_support)
+
+foreach(target tpf2mp_native_common tpf2mp_hook_support tpf2mp_hook tpf2mp_injector tpf2mp_native_tests tpf2mp_dll_load_test tpf2mp_preview_render_tests)
   target_compile_options(${target} PRIVATE /W4 /permissive- /EHsc /utf-8)
 endforeach()
 
@@ -79,6 +90,7 @@ if(TPF2MP_BUILD_WORLDGEN_LAB)
     COMMAND tpf2mp_dll_load_test $<TARGET_FILE:tpf2mp_worldgen_lab>)
 endif()
 add_test(NAME pinned_profile_usage COMMAND tpf2mp_native_tests)
+add_test(NAME preview_render_contracts COMMAND tpf2mp_preview_render_tests)
 add_test(NAME dll_rejects_unpinned_process
   COMMAND tpf2mp_dll_load_test $<TARGET_FILE:tpf2mp_hook>
 )

@@ -32,14 +32,19 @@ if ($LASTEXITCODE -ne 0) { throw "Native CTest failed with exit code $LASTEXITCO
 
 $bin = Join-Path $build $Configuration
 $profileTest = Join-Path $bin 'tpf2mp_native_tests.exe'
+$previewTest = Join-Path $bin 'tpf2mp_preview_render_tests.exe'
 $injector = Join-Path $bin 'tpf2mp_injector.exe'
 $dll = Join-Path $bin 'tpf2mp_hook_build35924.dll'
-foreach ($path in @($profileTest, $injector, $dll)) {
+foreach ($path in @($profileTest, $previewTest, $injector, $dll)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Expected native artifact is missing: $path" }
 }
 
 & $profileTest $game
 if ($LASTEXITCODE -ne 0) { throw "Pinned binary/signature test failed with exit code $LASTEXITCODE" }
+# Maps and relocates the pinned executable, then runs the preview installer
+# against it: every hooked and called prologue is compared with shipped code.
+& $previewTest $game
+if ($LASTEXITCODE -ne 0) { throw "Preview renderer pinned-prologue proof failed with exit code $LASTEXITCODE" }
 & $injector --verify $game
 if ($LASTEXITCODE -ne 0) { throw "Injector build gate failed with exit code $LASTEXITCODE" }
 

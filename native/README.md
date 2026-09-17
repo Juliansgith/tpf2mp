@@ -293,6 +293,102 @@ justified the default is in
 `tools\run_native_save_benchmark.ps1 -NativeHookDll` after touching these
 paths.
 
+## Remote build previews (on by default)
+
+`native_preview_render.cpp` draws the other player's unconfirmed build with
+the game's own builder ghost instead of a flat ground ribbon, so the remote
+preview carries stock materials, bridges, tunnels and terrain deformation. It
+is a port of silver2127's tpf2-multiplayer preview plugin (MIT; see
+`third_party/tpf2-multiplayer/TPF2MP_PIN.txt`).
+
+The receiving GUI Lua state rebuilds the remote geometry as a `SimpleProposal`
+with negative temporary entity ids and calls
+`api.cmd.make.buildProposal(sp, nil, false)` **only** so that the engine runs
+`scripting::Convert`. The command is never sent: this module has no
+command-dispatch or `applyProposal` path, and the Lua side must never call
+`api.cmd.sendCommand` for a preview. The `Convert` detour, on the GUI thread,
+consumes the request armed from Lua, bounds the converted proposal, builds
+`ProposalData` with the engine's `CreateProposalData` and uploads it with
+`AddToRenderer` into a per-origin `BuilderRenderer` minted from the game's
+cloned renderer factory. That renderer carries a copied vtable whose render
+passes are gated, so stale geometry disappears after four seconds even if Lua
+stops polling. Shared UI terrain height buffers are recomposed after every
+change with the local builder uploaded last, so one's own tool keeps priority
+where areas overlap. Scene destruction removes and destroys every preview
+renderer and the retained factory before the stock destructor runs.
+
+Three globals are registered into every Lua state the hook reaches:
+
+- `tpf2mp_native_preview_status()` returns
+  `{ available, reason, session, peers, drawn }`; `session` changes when a new
+  scene is adopted and is `0` without one.
+- `tpf2mp_native_preview_begin(origin, mode)` returns a boolean. `origin`
+  matches `^[a-z0-9]{1,8}$`; `mode` is `draw`, `drawok`, `drawbad`, `keep` or
+  `clear`. `keep` (refresh that origin's timestamp; refused once its preview
+  expired, so Lua resends the geometry) and `clear` (drop that origin's
+  renderer content) run immediately on the GUI thread. The three draw modes
+  arm a one-shot request for the next conversion; an unconsumed request
+  expires after two seconds and a new `begin` replaces a still-armed one.
+- `tpf2mp_native_preview_result()` returns `ok`, `error`, `pending` or `idle`
+  for the last armed draw request; a terminal result is reported once.
+
+`draw` and `drawok` upload the renderer's stock palette and leave the
+receiver's own evaluation alone, so an accepted remote preview is
+indistinguishable from the local builder ghost. Only `drawbad` selects the
+stock error palette and the renderer-wide error flag that the terrain overlay
+bakes, which is what the sender is seeing.
+
+Input from the network is bounded before anything is evaluated: at most one
+construction with a plausible `.con` path and transform, 48 nodes and 24 edges
+(384/192 with a construction), negative entity ids only, empty removal and
+edge-object vectors, and finite, non-degenerate vectors.
+
+`TPF2MP_NATIVE_PREVIEW=off` (also `0`, `false`, `none`, `stock`) skips
+installation; anything unparsable fails closed. Every pinned region is
+byte-verified first and the builder-renderer vtable must still start with the
+pinned destructor; a mismatch or a hook failure leaves previews off, keeps all
+seven detours inert, and records the reason while the rest of the hook arms
+normally. The status JSON reports `hooks.preview` with `enabled`, `installed`,
+`reason`, `peers`, `drawn`, `requests` and `errors`.
+
+Pinned Build 35924 entry points (the first seven are hooked, the rest are
+called, and all of them are prologue-verified):
+
+| Entry | RVA |
+|---|---|
+| Renderer factory | `859240` |
+| `Scene::AddRenderable` | `6d32e0` |
+| Scene destructor body | `6d22d0` |
+| `scripting::Convert` | `20e72f0` |
+| `BuilderRenderer::Clear` | `817f70` |
+| `EndHeightMod` | `8191d0` |
+| Renderer destructor body | `814b20` |
+| `Scene::RemoveRenderable` | `6d9290` |
+| Renderer deleting destructor | `8163c0` |
+| Convert context / its destructor | `431560` / `3e3d30` |
+| `CreateProposalData` / its destructor | `a072b0` / `3e5030` |
+| `AddToRenderer` | `48d8e0` |
+| Upload / reset UI terrain heights | `34cd90` / `34e5a0` |
+| Error-colour setter | `81df00` |
+| `luaB_load` | `75890` |
+| Builder-renderer vtable | `30665e0` |
+
+`luaB_load` is read out of the base library's `luaL_Reg` table beside the
+pinned `luaB_print`: the Lua C API the hook resolves has no table or boolean
+push, so the two calls that must return one build it from a short chunk that
+uses no globals and no string-to-number coercion. Factory and scene adoption
+also compare the caller's return address with `445897` (CGameUI construction)
+and `56a532` (the main scene) to pick exactly one factory and one scene.
+
+`ctest` runs `preview_render_contracts`, which exercises request parsing, the
+installer's refusals, the proposal guard, the request state machine with its
+expiry, the per-mode palette policy and the shared terrain composition against
+fake renderer memory and stub engine routines.
+`tools\build_native_hook.ps1` additionally runs that binary with the game
+executable, which maps and relocates the pinned image and runs the real
+installer against it, comparing every pinned prologue with shipped code.
+Native rendering itself still needs a live two-player check.
+
 ## Build and verify
 
 From the project root in PowerShell:
@@ -358,7 +454,11 @@ world while this component is experimental.
 - `src/native_build_hook_bridge.cpp`: factory-or-Add/visitor correlation queue.
 - `include/tpf2mp/native_command_safety.generated.hpp`: generated 37-tag
   suppression, UI-result, replay, ownership, cost, and postcondition policy.
+- `src/native_preview_render.cpp` / `src/native_preview_render_hooks.cpp`:
+  the remote builder-ghost preview renderer service and its MinHook glue.
 - `tests/`: profile and fail-closed-load tests.
+- `third_party/tpf2-multiplayer`: upstream MIT license and the port mapping
+  for the preview renderer.
 - `third_party/minhook`: official MinHook v1.3.4 at commit
   `c3fcafdc10146beb5919319d0683e44e3c30d537`, BSD-2-Clause.
 

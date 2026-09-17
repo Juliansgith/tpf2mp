@@ -22,6 +22,17 @@ copied from another project.
   license and the exact file mapping are in
   `native/third_party/tpf2-bigmap/`, and packaged releases ship the license as
   `licenses/tpf2-bigmap-MIT.txt`.
+- **tpf2-multiplayer** (ported, not vendored) — Copyright (c) 2026 silver2127.
+  MIT. The remote build previews in `native/src/native_preview_render.cpp`,
+  `native/src/native_preview_render_hooks.cpp` and their offline contract test
+  `native/tests/native_preview_render_tests.cpp` are ports of that project's
+  `native/src/preview_plugin.cpp` and `tools/preview_native_test.cpp` (commit
+  `7e6e498`), adapted to TPF2MP's hook: the plugin-host ABI and its
+  request/ack files are replaced by the Host seam and three Lua globals. The
+  pinned Build 35924 byte regions are copied unchanged. The upstream license
+  and the exact file mapping are in `native/third_party/tpf2-multiplayer/`,
+  and packaged releases ship the license as
+  `licenses/tpf2-multiplayer-MIT.txt`.
 
 ## Python dependencies (not vendored)
 

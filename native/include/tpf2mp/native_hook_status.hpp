@@ -3,6 +3,7 @@
 #include "tpf2mp/native_command_codec.hpp"
 #include "tpf2mp/native_common.hpp"
 #include "tpf2mp/native_build_capture.hpp"
+#include "tpf2mp/native_preview_render.hpp"
 #include "tpf2mp/native_terrain_fast.hpp"
 
 #include <Windows.h>
@@ -62,6 +63,7 @@ struct HookFlags {
   bool command_list_add_created{};
   std::uint64_t authority_command_visitors_created{};
   terrain_fast::Status terrain_fast;  // opt-in, bit-identical, off unless requested
+  preview_render::Status preview;     // remote builder-ghost previews, on unless refused
   bool enabled{};
 };
 

@@ -13,7 +13,9 @@ from tpf2mp.client import CommitClient
 from tpf2mp.network import CommitHost
 from tpf2mp.protocol import ProtocolError, canonical_json, sign
 from tpf2mp.social import (
+    MAX_FILE_CHARACTERS,
     MAX_INCOMING_ITEMS,
+    MAX_PARAMS_CHARACTERS,
     SocialRelay,
     social_frame,
     validate_social_document,
@@ -72,10 +74,40 @@ def curve(offset: float = 0.0) -> list:
     return [offset + index * 1.5 for index in range(8)]
 
 
+def detail(
+    terrain: int = 0,
+    file: str = "street/town_small_new.lua",
+    bus: int = 1,
+    tram: int = 2,
+    catenary: int = 1,
+    structure: str | None = None,
+) -> list:
+    if structure is None:
+        structure = "" if terrain == 0 else "bridge/stone_new.module"
+    return [0.5, -12.25, 0.125, -0.0625, terrain, file, bus, tram, catenary,
+            structure]
+
+
 def wide_preview(identifier: int, peer: str = "player1") -> dict:
     return social_item(identifier, peer, "preview", {
         "kind": "rail", "invalid": False,
         "curves": [curve(123456.78125 + index) for index in range(24)],
+    })
+
+
+def maximal_preview(identifier: int, peer: str = "player1") -> dict:
+    """The largest road/rail preview the contract permits, detail included."""
+
+    wide = [-123456.78901234567 - index / 3.0 for index in range(8)]
+    entry = [
+        -98765.43210987654, 87654.32109876543, -0.33333333333333331,
+        0.66666666666666663, 2, "a" * MAX_FILE_CHARACTERS, 1, 2, 1,
+        "b" * MAX_FILE_CHARACTERS,
+    ]
+    return social_item(identifier, peer, "preview", {
+        "kind": "rail", "invalid": True,
+        "curves": [list(wide) for _ in range(24)],
+        "details": [list(entry) for _ in range(24)],
     })
 
 
@@ -189,6 +221,125 @@ class SocialItemValidationTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             validate_social_item(social_item(channel="preview", body=short))
 
+    def test_path_preview_details_are_optional_and_curve_aligned(self) -> None:
+        def body(count: int, details: object) -> dict:
+            return {
+                "kind": "road", "invalid": False,
+                "curves": [curve(float(index)) for index in range(count)],
+                "details": details,
+            }
+
+        plain = validate_social_item(social_item(channel="preview", body={
+            "kind": "road", "invalid": False, "curves": [curve()],
+        }))
+        self.assertEqual(set(plain["body"]), {"kind", "invalid", "curves"})
+        for count in (1, 24):
+            item = validate_social_item(social_item(
+                channel="preview",
+                body=body(count, [detail(index % 3) for index in range(count)]),
+            ))
+            self.assertEqual(set(item["body"]),
+                             {"kind", "invalid", "curves", "details"})
+            self.assertEqual(len(item["body"]["details"]), count)
+            self.assertEqual(item["body"]["details"][0], detail(0))
+        tunnelled = validate_social_item(social_item(
+            channel="preview",
+            body=body(2, [detail(1), detail(2, structure="tunnel/x-1.module")]),
+        ))
+        self.assertEqual(tunnelled["body"]["details"][1][9], "tunnel/x-1.module")
+        for broken in (
+            body(2, [detail()]),
+            body(1, [detail(), detail()]),
+            body(1, []),
+            body(1, detail()),
+            body(1, "details"),
+            body(1, [detail()[:9]]),
+            body(1, [detail() + [0]]),
+            body(1, [tuple(detail())]),
+        ):
+            with self.assertRaises(ProtocolError):
+                validate_social_item(social_item(channel="preview", body=broken))
+
+    def test_path_preview_detail_slots_are_typed_and_bounded(self) -> None:
+        def body(entry: list) -> dict:
+            return {
+                "kind": "rail", "invalid": False, "curves": [curve()],
+                "details": [entry],
+            }
+
+        for slot in range(4):
+            for bad in (float("inf"), float("nan"), "0", True, None):
+                entry = detail()
+                entry[slot] = bad
+                with self.assertRaises(ProtocolError):
+                    validate_social_item(
+                        social_item(channel="preview", body=body(entry))
+                    )
+        accepted = validate_social_item(social_item(
+            channel="preview", body=body(detail(2, "a" * MAX_FILE_CHARACTERS)),
+        ))
+        self.assertEqual(len(accepted["body"]["details"][0][5]),
+                         MAX_FILE_CHARACTERS)
+        for entry in (
+            detail(3),
+            detail(-1),
+            detail(0.0),
+            detail(True),
+            detail(0, structure="bridge/stone_new.module"),
+            detail(1, structure=""),
+            detail(2, structure="a" * (MAX_FILE_CHARACTERS + 1)),
+            detail(1, structure="bridge stone.module"),
+            detail(1, structure=7),
+            detail(file="street/sma ll.lua"),
+            detail(file="street/small.lua\n"),
+            detail(file="street/sm" + chr(228) + "ll.lua"),
+            detail(file=""),
+            detail(file="a" * (MAX_FILE_CHARACTERS + 1)),
+            detail(file=5),
+            detail(bus=2),
+            detail(bus=True),
+            detail(bus=-1),
+            detail(tram=3),
+            detail(tram=1.0),
+            detail(catenary=2),
+            detail(catenary=False),
+        ):
+            with self.assertRaises(ProtocolError):
+                validate_social_item(social_item(channel="preview", body=body(entry)))
+
+    def test_construction_preview_params_are_optional_and_printable(self) -> None:
+        def body(params: object = None) -> dict:
+            value = {
+                "kind": "construction", "invalid": False, "file": "asset/x.con",
+                "x": 0.0, "y": 0.0, "z": 0.0, "transf": [0.0] * 16,
+            }
+            if params is not None:
+                value["params"] = params
+            return value
+
+        plain = validate_social_item(social_item(channel="preview", body=body()))
+        self.assertEqual(
+            set(plain["body"]),
+            {"kind", "invalid", "file", "x", "y", "z", "transf"},
+        )
+        for params in ("p", "1;2;3 module=4", "~" * MAX_PARAMS_CHARACTERS):
+            item = validate_social_item(
+                social_item(channel="preview", body=body(params))
+            )
+            self.assertEqual(
+                set(item["body"]),
+                {"kind", "invalid", "file", "x", "y", "z", "transf", "params"},
+            )
+            self.assertEqual(item["body"]["params"], params)
+        for params in (
+            "", "x" * (MAX_PARAMS_CHARACTERS + 1), "two\nlines", "bell\x07",
+            "tab\there", "wide" + chr(233), "trail\x7f", 5, True, None, ["1"],
+        ):
+            broken = body()
+            broken["params"] = params
+            with self.assertRaises(ProtocolError):
+                validate_social_item(social_item(channel="preview", body=broken))
+
     def test_item_envelope_rejects_unknown_keys_peers_channels_and_ids(self) -> None:
         accepted = validate_social_item(social_item(0, "player1"), "player1")
         self.assertEqual(accepted["id"], 0)
@@ -276,6 +427,17 @@ class SocialFrameValidationTests(unittest.TestCase):
         small = social_frame(SESSION, "player2", items[:4])
         self.assertLessEqual(len(canonical_json(small).encode("utf-8")), 32 * 1024)
         self.assertEqual(len(validate_social_frame(small, SESSION, "player1")["items"]), 4)
+
+    def test_a_maximal_detailed_preview_still_fits_one_frame(self) -> None:
+        frame = social_frame(SESSION, "player2", [maximal_preview(1, "player2")])
+        size = len(canonical_json(frame).encode("utf-8"))
+        self.assertLessEqual(size, 32 * 1024)
+        accepted = validate_social_frame(frame, SESSION, "player1")
+        body = accepted["items"][0]["body"]
+        self.assertEqual(len(body["curves"]), 24)
+        self.assertEqual(len(body["details"]), 24)
+        self.assertEqual(len(body["details"][0][5]), MAX_FILE_CHARACTERS)
+        self.assertEqual(len(body["details"][0][9]), MAX_FILE_CHARACTERS)
 
 
 class SocialDocumentValidationTests(unittest.TestCase):

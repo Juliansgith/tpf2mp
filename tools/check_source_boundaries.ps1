@@ -105,12 +105,19 @@ $budgets = [ordered]@{
     'tpf2_mp_1\res\scripts\tpf2_mp\gui_stock_presentation.lua' = 350
     # The social channel is split by concern: the runtime owns the panel
     # controls, the item ring and the five-hertz pump; the preview module owns
-    # proposal geometry and the ground outlines drawn for a remote peer; the
-    # codec module owns the two atomic JSON documents and the bounded item
-    # shapes that cross them.
-    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_runtime.lua' = 520
-    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_preview.lua' = 240
-    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_codec.lua' = 150
+    # what is read out of a builder proposal (the flat curves and the optional
+    # 3D detail set) and the ground outlines drawn for a remote peer; the codec
+    # module owns the two atomic JSON documents and the bounded item shapes
+    # that cross them; the native module owns the hook's 3D preview handshake
+    # and the SimpleProposal it converts, and is the only one of the five that
+    # touches api.type/api.res; the params module owns the typed construction
+    # parameter codec alone, because the capture, the wire validation and the
+    # native renderer all need it and none of them owns it.
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_runtime.lua' = 530
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_preview.lua' = 400
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_codec.lua' = 200
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_native.lua' = 280
+    'tpf2_mp_1\res\scripts\tpf2_mp\gui_social_params.lua' = 120
     'companion\tpf2mp\network.py' = 1460
     'companion\tpf2mp\fault_recovery.py' = 270
     'companion\tpf2mp\fault_recovery_evidence.py' = 130
@@ -213,6 +220,10 @@ $budgets = [ordered]@{
     'native\src\native_terrain_fast.cpp' = 1250
     'native\src\native_terrain_fast_hooks.cpp' = 240
     'native\src\native_material_fast.cpp' = 260
+    # Remote builder-ghost previews: the ported renderer service plus the
+    # pinned Build 35924 byte regions it verifies, and the MinHook glue.
+    'native\src\native_preview_render.cpp' = 1100
+    'native\src\native_preview_render_hooks.cpp' = 90
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_codec.lua' = 2400
     'tpf2_mp_1\res\scripts\tpf2_mp\proposal_wrapper_selector.lua' = 100
     'tpf2_mp_1\res\scripts\tpf2_mp\world.lua' = 2080
@@ -288,7 +299,10 @@ $budgets = [ordered]@{
     'companion\tpf2mp\reconnect.py' = 210
     'companion\tpf2mp\peer_session.py' = 190
     'companion\tpf2mp\client_session.py' = 180
-    'companion\tpf2mp\social.py' = 330
+    # Holds the whole advisory item contract: chat, pings and the preview
+    # bodies, including the optional per-curve segment details and the
+    # construction parameter blob a native-preview receiver rebuilds from.
+    'companion\tpf2mp\social.py' = 410
     'companion\tpf2mp\alpha_acceptance.py' = 300
     'companion\tpf2mp\vehicle_phase_proof.py' = 60
     'companion\tpf2mp\mobility_telemetry.py' = 110
@@ -791,7 +805,7 @@ foreach ($requiredHeader in @('native_command_codec.hpp', 'native_hook_status.hp
 }
 $nativeCmakeSource = Get-Content -LiteralPath (Join-Path $root 'native\CMakeLists.txt') -Raw
 foreach ($requiredSource in @('src/native_command_codec.cpp', 'src/native_vehicle_command_codec.cpp',
-    'src/native_async_bridge.cpp')) {
+    'src/native_async_bridge.cpp', 'src/native_preview_render.cpp')) {
     if (-not $nativeCmakeSource.Contains($requiredSource)) {
         throw "Native hook support library no longer composes required source $requiredSource"
     }

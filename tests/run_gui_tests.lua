@@ -2646,6 +2646,84 @@ print("PASS GUI/native commit bridge, strict rival proposal/entity veto, shared-
     return field
   end }
 
+  -- The hook's 3D preview renderer, the resource repositories it resolves
+  -- names through, and the engine types its SimpleProposal is built from. The
+  -- indices below deliberately differ from the names, so an assertion that
+  -- sees the right index proves the receiver resolved the name for itself.
+  local socialCodec = require "tpf2_mp/gui_social_codec"
+  local socialParams = require "tpf2_mp/gui_social_params"
+  local socialRepNames = {
+    streetTypeRep = { ["standard/country_new.lua"] = 4, ["standard/town_small_new.lua"] = 9 },
+    trackTypeRep = { ["standard.lua"] = 2, ["high_speed.lua"] = 6 },
+    bridgeTypeRep = { ["z_concrete_new.lua"] = 3 },
+    tunnelTypeRep = { ["rock.lua"] = 5 },
+    constructionRep = { ["station/rail/mock_station.con"] = 12 },
+  }
+  for key, names in pairs(socialRepNames) do
+    local byIndex = {}
+    for name, index in pairs(names) do byIndex[index] = name end
+    api.res[key] = {
+      find = function(name)
+        if names[name] then return names[name] end
+        return -1
+      end,
+      getName = function(index) return byIndex[index] end,
+    }
+  end
+  local restoreVec3f = api.type.Vec3f
+  api.type.Vec3f = { new = function(x, y, z) return { x = x, y = y, z = z } end }
+  api.type.Vec4f = { new = function(x, y, z, w) return { x = x, y = y, z = z, w = w } end }
+  api.type.Mat4f = { new = function(a, b, c, d) return { a, b, c, d } end }
+  api.type.NodeAndEntity = { new = function() return { comp = {} } end }
+  api.type.SegmentAndEntity = { new = function() return { comp = {} } end }
+  api.type.BaseEdgeStreet = { new = function() return {} end }
+  api.type.BaseEdgeTrack = { new = function() return {} end }
+  api.type.SimpleProposal = {
+    new = function()
+      return { streetProposal = { nodesToAdd = {}, edgesToAdd = {} }, constructionsToAdd = {} }
+    end,
+    ConstructionEntity = { new = function() return {} end },
+  }
+  api.engine.util = { getPlayer = function() return 100 end }
+
+  local nativePreview = {
+    available = true, session = 7, result = "ok", accept = true,
+    armed = false, calls = {}, builds = {},
+  }
+  local function nativeModes(peer)
+    local modes = {}
+    for _, call in ipairs(nativePreview.calls) do
+      if call.peer == peer then modes[#modes + 1] = call.mode end
+    end
+    return table.concat(modes, ",")
+  end
+  tpf2mp_native_preview_status = function()
+    return {
+      available = nativePreview.available, session = nativePreview.session,
+      peers = 1, drawn = 0,
+    }
+  end
+  tpf2mp_native_preview_begin = function(peer, mode)
+    nativePreview.calls[#nativePreview.calls + 1] = { peer = peer, mode = mode }
+    -- "keep" and "clear" execute at once; a draw mode arms the one-shot the
+    -- next conversion on this thread consumes.
+    if mode == "keep" or mode == "clear" then return true end
+    nativePreview.armed = nativePreview.accept
+    return nativePreview.accept
+  end
+  tpf2mp_native_preview_result = function()
+    if not nativePreview.armed then return "idle" end
+    nativePreview.armed = false
+    return nativePreview.result
+  end
+  local restoreSocialBuildFactory = api.cmd.make.buildProposal
+  api.cmd.make.buildProposal = function(proposal, context, ignoreErrors)
+    nativePreview.builds[#nativePreview.builds + 1] = {
+      proposal = proposal, context = context, ignoreErrors = ignoreErrors,
+    }
+    return { kind = "build-proposal" }
+  end
+
   game.config.tpf2mp = {
     protocolVersion = 1, peerId = "player1", sessionId = "gui-social-test",
     bridgeDir = root, updateStride = 15, maxEvents = 64,
@@ -2705,14 +2783,20 @@ print("PASS GUI/native commit bridge, strict rival proposal/entity veto, shared-
     proposal = { proposal = {
       addedNodes = {
         { entity = -1, comp = { position = { x = 100, y = 200, z = 0 } } },
-        { entity = -2, comp = { position = { x = 300, y = 260, z = 0 } } },
+        { entity = -2, comp = { position = { x = 300, y = 260, z = 12 } } },
         { entity = -3, comp = { position = { x = 500, y = 200, z = 0 } } },
       },
+      -- The second road segment climbs onto a bridge, so the capture has to
+      -- carry a terrain class and a structure name as well as the heights.
       addedSegments = {
-        { entity = -11, type = 0, comp = { node0 = -1, node1 = -2,
-          tangent0 = { x = 200, y = 0, z = 0 }, tangent1 = { x = 200, y = 60, z = 0 } } },
-        { entity = -12, type = 0, comp = { node0 = -2, node1 = -3,
-          tangent0 = { x = 200, y = 60, z = 0 }, tangent1 = { x = 200, y = 0, z = 0 } } },
+        { entity = -11, type = 0,
+          comp = { node0 = -1, node1 = -2, type = 0,
+            tangent0 = { x = 200, y = 0, z = 0 }, tangent1 = { x = 200, y = 60, z = 4 } },
+          streetEdge = { streetType = 4, hasBus = true, tramTrackType = 1 } },
+        { entity = -12, type = 0,
+          comp = { node0 = -2, node1 = -3, type = 1, typeIndex = 3,
+            tangent0 = { x = 200, y = 60, z = 4 }, tangent1 = { x = 200, y = 0, z = 0 } },
+          streetEdge = { streetType = 4, hasBus = false, tramTrackType = 0 } },
         { entity = -13, type = 0, comp = { node0 = -1, node1 = -3,
           tangent0 = { x = 1, y = 0, z = 0 }, tangent1 = { x = 1, y = 0, z = 0 } } },
         { entity = -14, type = 1, comp = { node0 = -1, node1 = -2,
@@ -2741,6 +2825,22 @@ print("PASS GUI/native commit bridge, strict rival proposal/entity veto, shared-
       and previewItem.body.curves[1][3] == 300 and previewItem.body.curves[1][5] == 200,
     "the road preview lost its Hermite endpoints or tangents")
   assert(previewItem.body.curves[2][3] == 500, "the second road curve was dropped")
+
+  -- The optional 3D detail set rides along with the same two curves, carrying
+  -- resource NAMES (never the indices above) so the receiver resolves its own.
+  local publishedDetails = assert(previewItem.body.details,
+    "the captured road proposal published no 3D detail set")
+  assert(#publishedDetails == 2,
+    "the 3D detail set did not match the published curve count")
+  assert(publishedDetails[1][1] == 0 and publishedDetails[1][2] == 12
+      and publishedDetails[1][3] == 0 and publishedDetails[1][4] == 4,
+    "the road detail lost its endpoint or tangent heights")
+  assert(publishedDetails[1][5] == 0 and publishedDetails[1][6] == "standard/country_new.lua"
+      and publishedDetails[1][7] == 1 and publishedDetails[1][8] == 1
+      and publishedDetails[1][9] == 0 and publishedDetails[1][10] == "",
+    "the ground road detail lost its terrain class, street name or lane flags")
+  assert(publishedDetails[2][5] == 1 and publishedDetails[2][10] == "z_concrete_new.lua",
+    "the bridge segment did not carry its bridge type name")
 
   -- An error state on the same proposal marks the preview invalid.
   roadParam.data.errorState.messages = { "the slope is too steep" }
@@ -2837,6 +2937,179 @@ print("PASS GUI/native commit bridge, strict rival proposal/entity veto, shared-
       and zoneState["tpf2mp_preview_player2_2"] == nil,
     "a stale remote preview was not cleared from the ground")
 
+  -- (2b) A preview carrying the 3D detail set goes to the hook's renderer, so
+  -- the game draws the other player's ghost instead of a flat ribbon.
+  local nextSocialId = 20
+  local function writeRail(file, invalid)
+    nextSocialId = nextSocialId + 1
+    writeIn({
+      schemaVersion = 1, session = "gui-social-test", peer = "player2", seq = nextSocialId,
+      items = { { id = nextSocialId, peer = "player2", channel = "preview", at = os.time(),
+        body = { kind = "rail", invalid = invalid,
+          curves = { { 0, 0, 200, 0, 200, 0, 200, 0 } },
+          details = { { 0, 6, 0, 3, 0, file, 0, 0, 1, "" } } } } },
+    })
+  end
+  writeRail("high_speed.lua", false)
+  local buildsBefore, commandsBefore = #nativePreview.builds, #issuedCanonicalCommands
+  poll()
+  assert(#nativePreview.builds == buildsBefore + 1,
+    "a remote 3D preview never reached api.cmd.make.buildProposal for conversion")
+  assert(#issuedCanonicalCommands == commandsBefore,
+    "the native preview conversion leaked a command into api.cmd.sendCommand")
+  local converted = nativePreview.builds[#nativePreview.builds]
+  assert(converted.context == nil and converted.ignoreErrors == false,
+    "the preview conversion was not a plain, non-submitting buildProposal call")
+  local previewNode = converted.proposal.streetProposal.nodesToAdd[1]
+  local previewEdge = converted.proposal.streetProposal.edgesToAdd[1]
+  assert(previewNode and previewNode.entity == -1 and previewNode.comp.position.z == 0,
+    "the preview proposal did not carry a temporary negative node id")
+  assert(previewEdge and previewEdge.entity < 0
+      and previewEdge.comp.node0 == -1 and previewEdge.comp.node1 == -2,
+    "the preview proposal edge did not reference its own temporary nodes")
+  assert(previewEdge.type == 1 and previewEdge.trackEdge.trackType == 6
+      and previewEdge.trackEdge.catenary == true,
+    "the rail preview edge did not resolve its track type name locally")
+  assert(previewEdge.streetEdge.streetType == 9,
+    "the rail preview edge lost the dummy street type its street component needs")
+  assert(previewEdge.comp.tangent1.z == 3 and previewEdge.comp.type == 0
+      and previewEdge.comp.typeIndex == -1,
+    "the preview edge lost its 3D tangent, terrain class or structure slot")
+  assert(nativeModes("player2") == "drawok",
+    "a valid remote preview was not offered with the drawok mode")
+  assert(zoneState["tpf2mp_preview_player2_1"] == nil,
+    "a natively drawn preview was also painted as a ground ribbon")
+
+  -- An unchanged preview is refreshed once a second, never rebuilt per frame,
+  -- and is taken down with one clear when it goes off.
+  local afterDraw = #nativePreview.builds
+  poll(0.25)
+  assert(nativeModes("player2") == "drawok" and #nativePreview.builds == afterDraw,
+    "an unchanged native preview was touched before its keepalive was due")
+  poll(1)
+  assert(nativeModes("player2") == "drawok,keep" and #nativePreview.builds == afterDraw,
+    "an unchanged native preview was rebuilt instead of kept alive")
+  nextSocialId = nextSocialId + 1
+  writeIn({
+    schemaVersion = 1, session = "gui-social-test", peer = "player2", seq = nextSocialId,
+    items = { { id = nextSocialId, peer = "player2", channel = "preview", at = os.time(),
+      body = { kind = "off" } } },
+  })
+  poll()
+  assert(nativeModes("player2") == "drawok,keep,clear",
+    "a preview turned off did not clear the native renderer exactly once")
+
+  -- Without the renderer the same preview falls back to ground ribbons.
+  nativePreview.available = false
+  writeRail("high_speed.lua", false)
+  poll()
+  local fallbackRibbon = zoneState["tpf2mp_preview_player2_1"]
+  assert(fallbackRibbon and fallbackRibbon.draw == true,
+    "an unavailable native renderer did not fall back to a ground ribbon")
+  assert(nativeModes("player2") == "drawok,keep,clear",
+    "an unavailable native renderer was still asked to draw")
+
+  -- A renderer that refuses the preview falls back too, and the refusal is
+  -- remembered so the proposal is not rebuilt on every later frame.
+  nativePreview.available, nativePreview.result = true, "error"
+  poll(5.5)
+  writeRail("high_speed.lua", true)
+  local beforeRefusal = #nativePreview.builds
+  poll()
+  assert(#nativePreview.builds == beforeRefusal + 1,
+    "the native renderer was never offered the invalid preview")
+  assert(nativeModes("player2"):sub(-7) == "drawbad",
+    "an invalid remote preview was not offered with the drawbad mode")
+  local refusedRibbon = zoneState["tpf2mp_preview_player2_1"]
+  assert(refusedRibbon and refusedRibbon.draw == true
+      and refusedRibbon.drawColor[1] == 0.88,
+    "a refused native preview did not fall back to a tinted ground ribbon")
+  local afterRefusal = #nativePreview.builds
+  for _ = 1, 4 do poll(0.25) end
+  assert(#nativePreview.builds == afterRefusal,
+    "a refused native preview was retried before its five-second backoff expired")
+
+  -- A renderer that refuses to arm is never handed a conversion at all.
+  nativePreview.result, nativePreview.accept = "ok", false
+  poll(5.5)
+  writeRail("standard.lua", false)
+  local beforeRefusedBegin = #nativePreview.builds
+  poll()
+  assert(#nativePreview.builds == beforeRefusedBegin,
+    "a begin the renderer refused still converted a preview proposal")
+  local refusedBeginRibbon = zoneState["tpf2mp_preview_player2_1"]
+  assert(refusedBeginRibbon and refusedBeginRibbon.draw == true,
+    "a renderer that refused to arm did not fall back to a ground ribbon")
+  nativePreview.accept = true
+
+  -- (2c) A construction preview carries its parameter set as a typed string.
+  local sampleParams = { seed = 7, module = "platform", flags = { true, false }, [3] = -1.5 }
+  local encodedParams = assert(socialParams.encode(sampleParams),
+    "a construction parameter set did not encode")
+  assert(not encodedParams:find("[^\32-\126]"),
+    "the encoded parameter set is not printable ASCII")
+  assert(socialCodec.validParams(encodedParams) == encodedParams,
+    "the wire codec rejected its own parameter encoding")
+  local roundTripped = assert(socialParams.decode(encodedParams),
+    "an encoded parameter set did not decode")
+  assert(roundTripped.seed == 7 and roundTripped.module == "platform"
+      and roundTripped.flags[1] == true and roundTripped.flags[2] == false
+      and roundTripped[3] == -1.5,
+    "the construction parameter set did not round-trip through the codec")
+  assert(socialParams.decode(encodedParams .. "n1:") == nil,
+    "a parameter string with trailing bytes was accepted")
+  assert(socialCodec.validParams("m1:s4:6e616d65n1:" .. string.char(7)) == nil,
+    "a parameter string carrying a control character was accepted")
+
+  nativePreview.result = "ok"
+  poll(5.5)
+  nextSocialId = nextSocialId + 1
+  writeIn({
+    schemaVersion = 1, session = "gui-social-test", peer = "player2", seq = nextSocialId,
+    items = { { id = nextSocialId, peer = "player2", channel = "preview", at = os.time(),
+      body = { kind = "construction", invalid = false,
+        file = "station/rail/mock_station.con", x = 100, y = 200, z = 5,
+        transf = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 100, 200, 5, 1 },
+        params = encodedParams } } },
+  })
+  local beforeConstruction = #nativePreview.builds
+  poll()
+  assert(#nativePreview.builds == beforeConstruction + 1,
+    "a remote construction preview never reached the native renderer")
+  local placed = nativePreview.builds[#nativePreview.builds].proposal.constructionsToAdd[1]
+  assert(placed and placed.fileName == "station/rail/mock_station.con"
+      and placed.name == "Multiplayer preview" and placed.playerEntity == 100,
+    "the native construction preview lost its file name, owner or label")
+  assert(placed.params.seed == 7 and placed.params.module == "platform",
+    "the native construction preview did not decode its parameter set")
+  assert(placed.transf[4].x == 100 and placed.transf[4].y == 200 and placed.transf[4].w == 1,
+    "the construction preview transform did not reach api.type.Mat4f")
+  assert(zoneState["tpf2mp_preview_player2_1"] == nil,
+    "a natively drawn construction preview was also painted as a ground quad")
+
+  -- (2d) The wire codec pairs each detail row with the curve of the same
+  -- index, so a set of the wrong length rejects the whole item.
+  local twoCurves = {
+    { 0, 0, 10, 0, 10, 0, 10, 0 }, { 10, 0, 20, 0, 10, 0, 10, 0 },
+  }
+  local groundDetail = { 0, 0, 0, 0, 0, "standard/country_new.lua", 1, 2, 0, "" }
+  assert(socialCodec.validBody("preview", { kind = "road", invalid = false,
+      curves = twoCurves, details = { groundDetail } }) == nil,
+    "a detail set shorter than the curve list was accepted")
+  local matched = assert(socialCodec.validBody("preview", { kind = "road", invalid = false,
+      curves = { twoCurves[1] }, details = { groundDetail } }),
+    "a detail set matching the curve list was rejected")
+  assert(matched.details[1][6] == "standard/country_new.lua" and matched.details[1][8] == 2,
+    "a valid detail row lost its resource name or tram kind")
+  assert(socialCodec.validBody("preview", { kind = "road", invalid = false,
+      curves = { twoCurves[1] },
+      details = { { 0, 0, 0, 0, 0, "bad name.lua", 0, 0, 0, "" } } }) == nil,
+    "a detail row naming an out-of-charset resource was accepted")
+  assert(socialCodec.validBody("preview", { kind = "road", invalid = false,
+      curves = { twoCurves[1] },
+      details = { { 0, 0, 0, 0, 0, "standard/country_new.lua", 0, 0, 0, "rock.lua" } } }) == nil,
+    "a ground detail row carrying a structure name was accepted")
+
   -- (3) Without a bridge root the module is inert: nothing is written, and
   -- any zone it still owned is taken down.
   assert(os.remove(outPath), "the social output file could not be removed")
@@ -2853,7 +3126,18 @@ print("PASS GUI/native commit bridge, strict rival proposal/entity veto, shared-
   assert(zoneState["tpf2mp_marker_player2"] == nil,
     "going inert left a social zone painted on the ground")
   assert(#zoneCalls > 0, "the social channel never reached game.interface.setZone")
+  assert(nativeModes("player2"):sub(-5) == "clear",
+    "going inert left a preview in the native renderer")
 
+  for key in pairs(socialRepNames) do api.res[key] = nil end
+  api.type.Vec3f, api.type.Vec4f, api.type.Mat4f = restoreVec3f, nil, nil
+  api.type.NodeAndEntity, api.type.SegmentAndEntity = nil, nil
+  api.type.BaseEdgeStreet, api.type.BaseEdgeTrack, api.type.SimpleProposal = nil, nil, nil
+  api.engine.util = nil
+  api.cmd.make.buildProposal = restoreSocialBuildFactory
+  tpf2mp_native_preview_status = nil
+  tpf2mp_native_preview_begin = nil
+  tpf2mp_native_preview_result = nil
   game.config.tpf2mp = restoreConfig
   os.execute('rmdir /s /q "' .. root:gsub("/", "\\") .. '" 2>nul')
 end)()

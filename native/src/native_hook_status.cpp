@@ -75,8 +75,17 @@ std::string SerializeHookStatus(const HookStatusView& status) {
            << ",\"blockCopy\":" << timing.block_copy_seconds << ",\"scan\":" << timing.scan_seconds
            << ",\"material\":" << timing.material_seconds << '}';
   }
-  output << '}'
-         << ",\"sendCommandWrapping\":true"
+  output << '}';
+  const auto previews = tpf2mp::preview_render::Snapshot();
+  output << ",\"preview\":{"
+         << "\"enabled\":" << (status.hooks.preview.enabled ? "true" : "false")
+         << ",\"installed\":" << (status.hooks.preview.installed ? "true" : "false")
+         << ",\"reason\":\"" << tpf2mp::JsonEscape(status.hooks.preview.reason) << "\""
+         << ",\"peers\":" << previews.peers
+         << ",\"drawn\":" << previews.drawn
+         << ",\"requests\":" << previews.requests
+         << ",\"errors\":" << previews.errors << '}';
+  output << ",\"sendCommandWrapping\":true"
          << ",\"enabled\":" << (status.hooks.enabled ? "true" : "false") << '}';
   output << ",\"setupCommandInterface\":{" 
          << "\"calls\":" << status.setup_calls

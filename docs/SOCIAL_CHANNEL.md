@@ -59,14 +59,53 @@ holds at most 32 items in `social_out.json` and 64 in `social_in.json`.
     - `{"kind": "off"}`;
     - `{"kind": "road"|"rail", "invalid": true|false,
        "curves": [[x0, y0, x1, y1, tx0, ty0, tx1, ty1], ...]}` with 1 to 24
-      curves of finite numbers (a cubic Hermite per new segment, XY only);
+      curves of finite numbers (a cubic Hermite per new segment, XY only),
+      plus an optional `"details"` key described below;
     - `{"kind": "construction", "invalid": true|false, "file": "<name>.con",
        "x": .., "y": .., "z": .., "transf": [16 finite numbers]}` where
-      `file` matches `^[%w_./%-]+%.con$` and is at most 128 characters.
+      `file` matches `^[%w_./%-]+%.con$` and is at most 128 characters, plus
+      an optional `"params"` key described below.
+
+A road or rail body therefore has exactly the key set
+`{kind, invalid, curves}` or `{kind, invalid, curves, details}`, and a
+construction body exactly `{kind, invalid, file, x, y, z, transf}` or
+`{kind, invalid, file, x, y, z, transf, params}`.
+
+### `details`: per-curve segment detail (road and rail)
+
+`details` is a list holding exactly as many entries as `curves`, in the same
+order. Each entry is a list of exactly ten values:
+
+```json
+[z0, z1, tz0, tz1, terrain, file, bus, tram, catenary, structure]
+```
+
+- `z0`, `z1`, `tz0`, `tz1`: finite numbers, the height and height tangent the
+  XY curve omits;
+- `terrain`: integer `0` (on the ground), `1` (bridge) or `2` (tunnel);
+- `file`: the street or track type, 1 to 128 characters matching
+  `^[A-Za-z0-9_./-]+$` (`^[%w_./%-]+$` in Lua);
+- `bus`: integer `0` or `1`, whether the segment carries a bus lane;
+- `tram`: integer `0`, `1` or `2`, the segment's tram track level;
+- `catenary`: integer `0` or `1`, whether the track is electrified;
+- `structure`: the bridge or tunnel type. It is exactly `""` when
+  `terrain` is `0`, and otherwise a 1-to-128-character name matching the same
+  charset as `file`.
+
+Booleans are rejected wherever an integer is expected, so `true` never stands
+in for `1`.
+
+### `params`: construction parameters
+
+`params` is an optional string of 1 to 4096 printable ASCII characters (each
+code point in `0x20..0x7E`). It is opaque to the companion: it carries the
+construction's authored parameter values so a receiver can rebuild the same
+variant instead of guessing the default one.
 
 The sender keeps only the latest `preview` item in its ring; a newer preview
 replaces the older one (the id still increases). Chat and ping items are kept
-until the ring overflows.
+until the ring overflows. A full 24-curve preview carrying `details` stays
+well inside the 32 KiB frame budget.
 
 ## Wire frame
 
@@ -111,8 +150,15 @@ ends inside the game:
   as tinted ground ribbons with `game.interface.setZone`, cleared when the
   preview goes `off`, changes, or is older than four seconds.
 
-Previews are ground outlines only. They do not evaluate the remote proposal,
-do not show bridges or tunnels in height, and never call `api.cmd`.
+When the native hook's preview renderer is available, the receiver rebuilds the
+remote proposal from `curves` plus `details` (and, for a construction, from
+`file`, `transf` and `params`) and lets the game draw its own builder ghost,
+heights, bridges and tunnels included. Otherwise the ground ribbons remain.
+
+Either way a preview stays advisory: the ribbon fallback is a ground outline
+only, and the rebuilt ghost is never built or costed. The native path calls
+`api.cmd.make.buildProposal` purely so the engine converts the proposal for
+the renderer; nothing is ever passed to `api.cmd.sendCommand`.
 
 ## Limits and trust
 

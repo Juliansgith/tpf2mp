@@ -3,14 +3,20 @@
 -- script needs no new local (Lua 5.1 caps a chunk at 200 locals).
 --
 -- Advisory only. Nothing here enters an intent, a commit, an event record, a
--- checkpoint digest or the audit replay, and nothing here calls api.cmd. The
--- two JSON files under the per-peer bridge root are the whole transport: the
--- companion forwards social_out.json and fills social_in.json.
+-- checkpoint digest or the audit replay, and no command reaches
+-- api.cmd.sendCommand. The two JSON files under the per-peer bridge root are
+-- the whole transport: the companion forwards social_out.json and fills
+-- social_in.json.
+--
+-- A remote preview is offered to the hook's native renderer first, which draws
+-- it as the game's own builder ghost (gui_social_native.lua). Ground ribbons
+-- remain the fallback for every preview the renderer does not take.
 local guiView = require "tpf2_mp/gui_view"
 local json = require "tpf2_mp/json"
 local runtimeConfig = require "tpf2_mp/runtime_config"
 local preview = require "tpf2_mp/gui_social_preview"
 local codec = require "tpf2_mp/gui_social_codec"
+local native = require "tpf2_mp/gui_social_native"
 
 local M = {}
 
@@ -301,6 +307,7 @@ local function zonesAvailable()
 end
 
 local function clearZones()
+  pcall(native.clearAll)
   if not zonesAvailable() then
     state.drawn = {}
     return
@@ -315,12 +322,23 @@ local function tint(peer, invalid)
   return { colour[1], colour[2], colour[3], 0.8 }
 end
 
-local function collectZones(now)
+-- Ageing runs before anything is drawn, so the native renderer and the ground
+-- ribbons always see the same set of live previews.
+local function pruneRemote(now)
+  for peer, entry in pairs(state.remote) do
+    if now - entry.at > PREVIEW_STALE_SECONDS then state.remote[peer] = nil end
+  end
+  for peer, marker in pairs(state.markers) do
+    if now - marker.at > MARKER_SECONDS then state.markers[peer] = nil end
+  end
+end
+
+-- `nativePeers` holds the peers the hook's renderer is already drawing as real
+-- 3D ghosts; drawing a ribbon under one of those would only double the route.
+local function collectZones(now, nativePeers)
   local wanted = {}
   for peer, entry in pairs(state.remote) do
-    if now - entry.at > PREVIEW_STALE_SECONDS then
-      state.remote[peer] = nil
-    else
+    if not nativePeers[peer] then
       local body = entry.body
       local colour = tint(peer, body.invalid)
       if body.kind == "construction" then
@@ -340,24 +358,27 @@ local function collectZones(now)
     end
   end
   for peer, marker in pairs(state.markers) do
-    if now - marker.at > MARKER_SECONDS then
-      state.markers[peer] = nil
-    else
-      -- One pulse per second so the ring reads as a live call for attention.
-      local radius = 10 + 8 * ((now - marker.at) % 1)
-      wanted["tpf2mp_marker_" .. peer] = {
-        polygon = preview.ring(marker.x, marker.y, radius, 2.5),
-        colour = tint(peer, false),
-        signature = string.format("%s:%.1f", peer, radius),
-      }
-    end
+    -- One pulse per second so the ring reads as a live call for attention.
+    local radius = 10 + 8 * ((now - marker.at) % 1)
+    wanted["tpf2mp_marker_" .. peer] = {
+      polygon = preview.ring(marker.x, marker.y, radius, 2.5),
+      colour = tint(peer, false),
+      signature = string.format("%s:%.1f", peer, radius),
+    }
   end
   return wanted
 end
 
+-- The native renderer is offered every live preview first. Whatever it took is
+-- drawn by the game itself, in 3D; the rest stays on the ground as before.
 local function renderZones()
+  local now = clock()
+  pruneRemote(now)
+  local nativePeers = {}
+  local ok, taken = pcall(native.sync, state.remote, now)
+  if ok and type(taken) == "table" then nativePeers = taken end
   if not zonesAvailable() then return end
-  local wanted = collectZones(clock())
+  local wanted = collectZones(now, nativePeers)
   for key in pairs(state.drawn) do
     if not wanted[key] then
       setZone(key, nil)
@@ -405,6 +426,16 @@ function M.observeBuilderEvent(gui, id, name, param)
       local okFlag, flag = pcall(preview.invalidFlag, param)
       if okFlag and flag == true then invalid = true end
       body.invalid = invalid
+      -- The optional 3D detail set travels with the curves it belongs to, so a
+      -- receiver with the native renderer can rebuild the real builder ghost.
+      -- Only plain numbers and resource names are copied; a partial or
+      -- mismatched read is dropped and the peer keeps the flat ribbons.
+      if type(body.curves) == "table" then
+        local okDetails, details = pcall(preview.extractDetails, id, param)
+        if okDetails and type(details) == "table" and #details == #body.curves then
+          body.details = details
+        end
+      end
       state.localPreview = body
     else
       state.localPreview = nil

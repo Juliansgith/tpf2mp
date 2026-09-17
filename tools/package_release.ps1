@@ -177,6 +177,7 @@ Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_worldgen_lab.dll') -Destina
 Copy-Item -LiteralPath (Join-Path $nativeBin 'tpf2mp_hook_build35924.dll') -Destination (Join-Path $releaseRoot 'bin\native\tpf2mp_hook_build35924.dll')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'native\third_party\minhook\LICENSE.txt') -Destination (Join-Path $releaseRoot 'licenses\MinHook-BSD-2-Clause.txt')
 Copy-Item -LiteralPath (Join-Path $projectRoot 'native\third_party\tpf2-bigmap\LICENSE.txt') -Destination (Join-Path $releaseRoot 'licenses\tpf2-bigmap-MIT.txt')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'native\third_party\tpf2-multiplayer\LICENSE') -Destination (Join-Path $releaseRoot 'licenses\tpf2-multiplayer-MIT.txt')
 
 $toolNames = @(
     'release_common.ps1', 'install_release.ps1', 'verify_install.ps1', 'uninstall.ps1',

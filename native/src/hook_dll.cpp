@@ -637,7 +637,7 @@ void RegisterNativeApi(lua_State* state) {
   }
   g_native_registration = true;
   g_lua_rawgeti(state, kLuaRegistryIndex, kLuaGlobalsRegistryIndex);
-  RegisterNativeFunction(state, "tpf2mp_native_status", NativeStatus);
+  RegisterNativeFunction(state, "tpf2mp_native_status", NativeStatus); tpf2mp::preview_render::RegisterLuaApi(state, {g_lua_pushlstring, g_lua_tolstring, g_lua_gettop, g_lua_pushcclosure, g_lua_rawset, g_lua_callk});
   tpf2mp::async_bridge::RegisterLuaApi(state, g_lua_pushlstring, g_lua_tolstring, g_lua_gettop, g_lua_pushcclosure, g_lua_rawset);
   tpf2mp::launcher::RegisterBootstrapApi(state, g_lua_pushlstring, g_lua_pushcclosure, g_lua_rawset, g_lua_rawgeti, g_lua_insert, g_lua_callk, g_lua_gettop, g_lua_settop);
   RegisterNativeFunction(state, "tpf2mp_native_mark_context", NativeMarkContext); RegisterNativeFunction(state, "tpf2mp_native_enable_build_gate", NativeEnableBuildGate);
@@ -1309,7 +1309,7 @@ bool InstallHooks(HMODULE executable) {
   for (const auto& visitor : tpf2mp::profile::kAuthorityCommandVisitors) {
     MH_QueueEnableHook(AtRva<void*>(executable, visitor.rva));
   }
-  g_hooks.terrain_fast = tpf2mp::terrain_fast::InstallFromEnvironment(executable);
+  g_hooks.terrain_fast = tpf2mp::terrain_fast::InstallFromEnvironment(executable); g_hooks.preview = tpf2mp::preview_render::InstallFromEnvironment(executable);
   const auto apply = MH_ApplyQueued();
   if (apply != MH_OK) {
     StateLock lock;

@@ -4,6 +4,7 @@
 -- received field is still checked here: an item that fails any check is
 -- dropped, never repaired. Nothing in this module touches the GUI or the game.
 local preview = require "tpf2_mp/gui_social_preview"
+local params = require "tpf2_mp/gui_social_params"
 
 local M = {}
 
@@ -84,6 +85,54 @@ local function validCurves(body)
   return curves
 end
 
+-- One optional 3D detail row: the heights and resource NAMES that let a
+-- receiver rebuild the vanilla builder ghost. Its index must match the curve
+-- of the same index, so a set of the wrong length rejects the whole item
+-- rather than silently pairing a height with another segment.
+local function validDetail(source)
+  if type(source) ~= "table" or #source ~= 10 then return nil end
+  local detail = {}
+  for field = 1, 4 do
+    detail[field] = preview.finite(source[field])
+    if not detail[field] then return nil end
+  end
+  detail[5] = preview.whole(source[5], 2)
+  detail[6] = preview.resourceName(source[6])
+  detail[7] = preview.whole(source[7], 1)
+  detail[8] = preview.whole(source[8], 2)
+  detail[9] = preview.whole(source[9], 1)
+  for field = 5, 9 do
+    if not detail[field] then return nil end
+  end
+  if detail[5] == 0 then
+    if source[10] ~= "" then return nil end
+    detail[10] = ""
+  else
+    detail[10] = preview.resourceName(source[10])
+    if not detail[10] then return nil end
+  end
+  return detail
+end
+
+local function validDetails(source, count)
+  if type(source) ~= "table" or #source ~= count then return nil end
+  local details = {}
+  for index = 1, count do
+    details[index] = validDetail(source[index])
+    if not details[index] then return nil end
+  end
+  return details
+end
+
+-- A construction's parameter set, as the typed codec writes it: printable
+-- ASCII, bounded, and decodable without ever calling load or eval.
+function M.validParams(text)
+  if type(text) ~= "string" or #text < 1 or #text > params.MAX_BYTES then return nil end
+  if text:find("[^\32-\126]") then return nil end
+  if type(params.decode(text)) ~= "table" then return nil end
+  return text
+end
+
 local function validConstruction(body)
   if type(body.file) ~= "string" or #body.file > M.MAX_FILE then return nil end
   if not body.file:match("^[%w_./%-]+%.con$") then return nil end
@@ -95,8 +144,13 @@ local function validConstruction(body)
   end
   local x, y, z = preview.finite(body.x), preview.finite(body.y), preview.finite(body.z)
   if not x or not y or not z then return nil end
-  return { kind = "construction", invalid = body.invalid == true,
+  local result = { kind = "construction", invalid = body.invalid == true,
     file = body.file, x = x, y = y, z = z, transf = transf }
+  if body.params ~= nil then
+    result.params = M.validParams(body.params)
+    if not result.params then return nil end
+  end
+  return result
 end
 
 -- Returns a fresh body holding exactly the contract's key set, or nil.
@@ -121,7 +175,12 @@ function M.validBody(channel, body)
   if body.kind == "road" or body.kind == "rail" then
     local curves = validCurves(body)
     if not curves then return nil end
-    return { kind = body.kind, invalid = body.invalid == true, curves = curves }
+    local result = { kind = body.kind, invalid = body.invalid == true, curves = curves }
+    if body.details ~= nil then
+      result.details = validDetails(body.details, #curves)
+      if not result.details then return nil end
+    end
+    return result
   end
   if body.kind ~= "construction" then return nil end
   return validConstruction(body)
