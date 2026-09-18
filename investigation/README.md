@@ -1,6 +1,6 @@
 # TPF2MP investigation record
 
-Current release: `0.45.4-alpha` (experimental).
+Current release: `0.45.5-alpha` (experimental).
 [Terrain load fast paths ported from tpf2-bigmap (2026-09-17)](TERRAIN_LOAD_FAST_PATHS_2026-09-17.md)
 records the evaluation of silver2127's big-map performance work, the
 bit-identical alignment/refinement/min-max/material fast paths now on by
@@ -43,7 +43,7 @@ the earlier mid-road-split bus/tram fixtures; it is not covered merely because
 those workflows passed.
 
 Last updated: 2026-09-17 (Europe/Amsterdam), experimental release
-`0.45.4-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
+`0.45.5-alpha`, state schema `35`, checkpoint format `5`, operation schema `4`,
 passenger-presentation schema `4`, cargo-presentation schema `2`,
 freight-industry schema `3`, edge proposal schema `6`, construction proposal
 schemas `8`/`9`, native edge-object inventory schema `3`, native hook `0.20.0`.

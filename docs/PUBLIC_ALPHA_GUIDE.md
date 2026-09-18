@@ -1,13 +1,13 @@
 # TPF2MP public alpha guide
 
-This guide is for the two-player `0.45.4-alpha` experimental release. It supports the
+This guide is for the two-player `0.45.5-alpha` experimental release. It supports the
 Windows x64 Transport Fever 2 **Build 35924** only. This is an early alpha:
 use a disposable or backed-up save and expect bugs.
 
 In this version, combined demolition, road/rail attachment and terrain work
 are not fully revalidated; some variants and save/load scenarios remain
 unverified. Native Load Game stalls are still under investigation. Read the
-[testing limits](release-notes/RELEASE_NOTES_0.45.4-alpha.md) before playing.
+[testing limits](release-notes/RELEASE_NOTES_0.45.5-alpha.md) before playing.
 
 ## New: create the world in the lobby
 
@@ -24,7 +24,7 @@ this path. See [lobby settings and limits](LOBBY_DEVELOPMENT.md).
 2. Close Transport Fever 2, then run `INSTALL_TPF2MP.cmd`.
 3. Accept the optional desktop shortcut if wanted.
 4. Open **TPF2MP Multiplayer** and confirm that it reports
-   `0.45.4-alpha` and a compatible native hook.
+   `0.45.5-alpha` and a compatible native hook.
 
 For the first test, enable only TPF2MP. Later tests may use identical
 data-only mods on both computers, with the same versions and load order.
@@ -162,10 +162,11 @@ protected.
 - **Chat and pings**: type a line and press Enter, or send one of four pings
   (Wait, Ready, Look here, Pause please). "Look here" marks the ground under
   your cursor on the other player's map for ten seconds.
-- While you plan a road, track or building, the other player sees its outline
-  on the ground in your colour (red while the game marks it invalid). The
-  outline is advisory only: it does not reserve land, cost money or enter the
-  match, and it disappears when you build, cancel or close the tool.
+- While you plan a road, track or building, the other player sees it as the
+  game's own builder ghost (red while the game marks it invalid), or as a
+  ground outline when the native hook is not active. The preview is advisory
+  only: it does not reserve land, cost money or enter the match, and it
+  disappears when you build, cancel or close the tool.
 
 ## 5. Save and continue a healthy match
 
@@ -236,7 +237,7 @@ start a new world.
 Please paste this template:
 
 ```text
-TPF2MP version: 0.45.4-alpha
+TPF2MP version: 0.45.5-alpha
 Support/session ID: mp-________________
 Player: P1/Host or P2/Join
 Approximate local time and timezone:

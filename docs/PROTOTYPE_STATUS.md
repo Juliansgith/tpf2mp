@@ -1,6 +1,6 @@
 # TPF2MP prototype status
 
-Current release: `0.45.4-alpha` (experimental testing release)
+Current release: `0.45.5-alpha` (experimental testing release)
 
 Last reviewed: 2026-09-15
 
@@ -19,7 +19,15 @@ This release has targeted real-game evidence, not a complete UI matrix PASS.
 Combined demolition/attachment/terrain cases, all construction variants and
 fresh save/load/recovery remain incomplete. Intermittent native Load Game
 stalls remain unresolved. Back up saves; see the
-[release notes](release-notes/RELEASE_NOTES_0.45.4-alpha.md).
+[release notes](release-notes/RELEASE_NOTES_0.45.5-alpha.md).
+
+The 0.45.5 patch adds an advisory social channel (chat, pings and live
+previews of the other player's planned build, drawn by the game's own builder
+renderer through a new native-hook module or as ground outlines without it),
+a next-action line, notices, collapsible panel sections, a scoreboard, and a
+launcher checklist with invite links, resume and a pre-launch mod comparison.
+Protocol and schemas are unchanged; see the
+[0.45.5 notes](release-notes/RELEASE_NOTES_0.45.5-alpha.md).
 
 The 0.45.4 patch restyles the launcher, the world lobby and the in-game
 window on one shared dark theme (status badges, section captions, wrapped
@@ -234,7 +242,7 @@ finance/ownership, core digest `035ccd29`, and structural digest `9995a4be`.
 
 ## Release position
 
-`0.45.4-alpha` is an experimental release for external trusted-tester feedback,
+`0.45.5-alpha` is an experimental release for external trusted-tester feedback,
 not a fully qualified construction or persistence release. The previous
 `0.43.5-alpha` release remains available for rollback using backed-up saves.
 The next

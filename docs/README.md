@@ -47,5 +47,5 @@ excluded from Git.
 
 ## Releases
 
-- [Current release: 0.45.4-alpha (experimental)](release-notes/RELEASE_NOTES_0.45.4-alpha.md)
+- [Current release: 0.45.5-alpha (experimental)](release-notes/RELEASE_NOTES_0.45.5-alpha.md)
 - [Complete release-note archive](release-notes/)

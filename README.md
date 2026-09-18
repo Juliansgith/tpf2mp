@@ -8,17 +8,19 @@ systems to Transport Fever 2. It contains two related modes:
 2. a restricted same-area network alpha in which two independent game
    processes replay supported actions and verify their results.
 
-Current release: `0.45.4-alpha` (experimental testing release)
+Current release: `0.45.5-alpha` (experimental testing release)
 
 Complex placement combining building demolition, road/rail attachment and
 terrain changes is not fully revalidated and may fail or fault the session.
 Some variants and save/load scenarios remain unverified; intermittent native
 Load Game stalls are still under investigation. Back up saves and update both
-players. Read the [release notes](docs/release-notes/RELEASE_NOTES_0.45.4-alpha.md)
+players. Read the [release notes](docs/release-notes/RELEASE_NOTES_0.45.5-alpha.md)
 before testing.
 
-0.45.4 gives the launcher, the world lobby and the in-game window one clean
-dark look; nothing about sessions, saves or the protocol changed.
+0.45.5 adds chat, pings and live build previews between the players (the
+other player's planned road or track appears as the game's own builder ghost),
+a guided panel and launcher, and invite links. 0.45.4 gave every surface one
+clean dark look. Sessions, saves and the protocol are unchanged.
 
 The [World Lobby](docs/LOBBY_DEVELOPMENT.md) now shows a native map-generation
 preview to both players: choose settings, generate/regenerate, review the map,
@@ -154,7 +156,7 @@ release build.
 Build and transactionally verify a clean release bundle:
 
 ```powershell
-.\tools\package_release.ps1 -Version 0.45.4-alpha
+.\tools\package_release.ps1 -Version 0.45.5-alpha
 ```
 
 Publishing requires a clean commit, matching manifest, SHA-256 sidecar, release
@@ -162,8 +164,8 @@ notes, and explicit confirmation:
 
 ```powershell
 .\tools\publish_github_release.ps1 `
-  -Version 0.45.4-alpha `
-  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.45.4-alpha.md `
+  -Version 0.45.5-alpha `
+  -ReleaseNotesPath .\docs\release-notes\RELEASE_NOTES_0.45.5-alpha.md `
   -ConfirmPublish
 ```
 
